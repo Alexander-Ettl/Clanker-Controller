@@ -84,6 +84,7 @@ class SchedulerQueue {
         model: task.model,
         ...(task.modelId && task.modelId !== 'auto' ? { modelId: String(task.modelId) } : {}), // P17-X: exact tier for badges
         prompt: String(task.prompt),
+        ...(task.chatId ? { chatId: String(task.chatId) } : {}), // resumes in that chat when it fires
         attachments,
         dispatchTrigger: task.dispatchTrigger,
         ...(task.dispatchTrigger === 'fixed-time' ? { dispatchTime: new Date(task.dispatchTime).toISOString() } : {}),

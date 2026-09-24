@@ -50,6 +50,14 @@
                 "title": "AI Chat Panel: Inject Prompt"
             },
             {
+                "command": "aiChatPanel.setupVisualEditor",
+                "title": "Astro Visual Editor: Set Up in This Folder"
+            },
+            {
+                "command": "aiChatPanel.routePrompt",
+                "title": "AI Chat Panel: Route Prompt to a Site-Edit Chat"
+            },
+            {
                 "command": "aiChatPanel.runNextBatchInCleanSession",
                 "title": "AI Chat Panel: Run Next Batch in Clean Session"
             },

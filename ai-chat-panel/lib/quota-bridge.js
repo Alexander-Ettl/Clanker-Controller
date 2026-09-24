@@ -43,30 +43,64 @@ async function getCanonicalQuotaReader() {
   return exportsObj && typeof exportsObj.getQuotas === 'function' ? exportsObj : null;
 }
 
+// Our own reset clock. A provider's usage file only updates when that CLI runs,
+// so after a limit it can say "0% left, resets 18:30" (or nothing at all) long
+// past 18:30, and a scheduled task waiting for quota never fires. So every
+// window's last reading is remembered (on disk, surviving a restart); once its
+// resetsAt has passed, the window counts as fresh (100% left) until the
+// provider reports something newer.
+const fs = require('node:fs');
+const path = require('node:path');
+const cacheFile = () => process.env.AI_CHAT_PANEL_QUOTA_CACHE || path.join(require('node:os').tmpdir(), 'ai-chat-panel-quota-resets.json');
+let resetCache = null;
+let resetCacheFile = null;
+function cache() {
+  if (!resetCache || resetCacheFile !== cacheFile()) {
+    resetCacheFile = cacheFile();
+    try { resetCache = JSON.parse(fs.readFileSync(resetCacheFile, 'utf8')); } catch { resetCache = {}; }
+  }
+  return resetCache;
+}
+function remember(key, window) {
+  const known = cache()[key];
+  if (known && known.resetsAt === window.resetsAt && known.remaining === window.remaining) return;
+  cache()[key] = window;
+  try { fs.writeFileSync(resetCacheFile, JSON.stringify(resetCache)); } catch { /* best effort */ }
+}
+const resetPassed = (window) => typeof window?.resetsAt === 'number' && window.resetsAt * 1000 <= Date.now();
+const fresh = (window) => ({ ...window, remaining: 100, used: 0, resetsAt: null, assumedReset: true });
+
 // P16-M: the full window objects (used, remaining, resetsAt, windowMinutes),
 // not just a percentage, so the launcher can draw 5h and 7d gauges with
 // reset countdowns. `remaining`/`windowLabel` stay for the chat header.
-function windowOf(raw, windowLabel) {
-  if (!raw || typeof raw.remaining !== 'number') return null;
-  return { remaining: raw.remaining, used: raw.used, resetsAt: raw.resetsAt ?? null, windowMinutes: raw.windowMinutes ?? null, windowLabel };
+function windowOf(raw, windowLabel, key) {
+  const live = raw && typeof raw.remaining === 'number'
+    ? { remaining: raw.remaining, used: raw.used, resetsAt: raw.resetsAt ?? null, windowMinutes: raw.windowMinutes ?? null, windowLabel }
+    : null;
+  if (!key) return live && resetPassed(live) ? fresh(live) : live;
+  if (live && !resetPassed(live)) { remember(key, live); return live; }
+  // Stale or missing: the last reading, reset by our own clock once its time has come.
+  const last = live || cache()[key] || null;
+  return last && resetPassed(last) ? fresh(last) : last;
 }
 
 // P17-B: Opus runs on the same Anthropic account, so its 5h window is
 // Claude's; its 7d gauge is the account's Opus-only weekly cap when one is
 // reported, else the all-models week.
 function shapeQuotas(quotas) {
-  const claude = windowOf(quotas.claude, '5h');
+  const claude = windowOf(quotas.claude, '5h', 'claude');
+  // Remembered only for the 5h windows that gate scheduled tasks; a missing weekly/Opus cap means "none on this plan".
   const claudeWeekly = windowOf(quotas.claudeWeekly, '7d');
   const claudeOpus = windowOf(quotas.claudeOpus, '7d');
-  const codex = windowOf(quotas.codex, '5h');
-  const gemini = windowOf(quotas.gemini, '5h');
+  const codex = windowOf(quotas.codex, '5h', 'codex');
+  const gemini = windowOf(quotas.gemini, '5h', 'gemini');
   return {
     claude: claude && { ...claude, secondary: claudeWeekly },
     claudeWeekly,
     claudeOpus,
     opus: claude && { ...claude, secondary: claudeOpus || claudeWeekly },
-    codex: codex && { ...codex, secondary: windowOf(quotas.codex.secondary, '7d') },
-    gemini: gemini && { ...gemini, secondary: windowOf(quotas.gemini.secondary, '7d') },
+    codex: codex && { ...codex, secondary: windowOf(quotas.codex?.secondary, '7d') },
+    gemini: gemini && { ...gemini, secondary: windowOf(quotas.gemini?.secondary, '7d') },
   };
 }
 

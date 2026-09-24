@@ -469,29 +469,45 @@ setImmediate(() => Promise.all(pendingTests).then(() => {
   }
 }));
 
+// Quota tests get their own reset cache and resets in the future (the bridge treats past resets as fresh windows).
+const quotaCache = (name) => { process.env.AI_CHAT_PANEL_QUOTA_CACHE = path.join(os.tmpdir(), `ai-chat-panel-test-${name}-${process.pid}.json`); };
+const SOON = Math.floor(Date.now() / 1000) + 3600;
+
 test('quota bridge passes full 5h/7d windows per provider, Antigravity included', () => {
+  quotaCache('windows');
   const { shapeQuotas } = require('../lib/quota-bridge.js');
+  assert.equal(shapeQuotas({ gemini: null }).gemini, null, 'no model-name placeholder when there is no quota, live or remembered');
   const shaped = shapeQuotas({
-    claude: { used: 38, remaining: 62, resetsAt: 1000, windowMinutes: 300 },
-    claudeWeekly: { used: 19, remaining: 81, resetsAt: 9000, windowMinutes: 10080 },
-    codex: { used: 86, remaining: 14, resetsAt: 500, windowMinutes: 300, secondary: { used: 45, remaining: 55, resetsAt: 7000, windowMinutes: 10080 } },
-    gemini: { used: 20, remaining: 80, resetsAt: 600, windowMinutes: 300, secondary: { used: 73, remaining: 27, resetsAt: 8000, windowMinutes: 10080 } },
+    claude: { used: 38, remaining: 62, resetsAt: SOON, windowMinutes: 300 },
+    claudeWeekly: { used: 19, remaining: 81, resetsAt: SOON + 9000, windowMinutes: 10080 },
+    codex: { used: 86, remaining: 14, resetsAt: SOON, windowMinutes: 300, secondary: { used: 45, remaining: 55, resetsAt: SOON + 7000, windowMinutes: 10080 } },
+    gemini: { used: 20, remaining: 80, resetsAt: SOON, windowMinutes: 300, secondary: { used: 73, remaining: 27, resetsAt: SOON + 8000, windowMinutes: 10080 } },
   });
-  assert.deepEqual(shaped.claude, { remaining: 62, used: 38, resetsAt: 1000, windowMinutes: 300, windowLabel: '5h', secondary: { remaining: 81, used: 19, resetsAt: 9000, windowMinutes: 10080, windowLabel: '7d' } });
+  assert.deepEqual(shaped.claude, { remaining: 62, used: 38, resetsAt: SOON, windowMinutes: 300, windowLabel: '5h', secondary: { remaining: 81, used: 19, resetsAt: SOON + 9000, windowMinutes: 10080, windowLabel: '7d' } });
   assert.equal(shaped.codex.secondary.remaining, 55);
   assert.equal(shaped.gemini.secondary.remaining, 27);
-  assert.equal(shapeQuotas({ gemini: null }).gemini, null, 'no model-name placeholder when there is no live quota');
+});
+
+test('quota bridge: a window whose reset time has passed counts as fresh, even with no new reading', () => {
+  quotaCache('reset');
+  const { shapeQuotas } = require('../lib/quota-bridge.js');
+  const past = Math.floor(Date.now() / 1000) - 60;
+  assert.equal(shapeQuotas({ claude: { used: 100, remaining: 0, resetsAt: past, windowMinutes: 300 } }).claude.remaining, 100, 'stale reading after its reset');
+  shapeQuotas({ claude: { used: 100, remaining: 0, resetsAt: SOON, windowMinutes: 300 } });
+  assert.equal(shapeQuotas({ claude: null }).claude.remaining, 0, 'no reading: the remembered one until its reset');
 });
 
 test('P17-B: Opus shares Claude\'s 5h window and prefers the Opus-only weekly cap for its 7d gauge', () => {
+  quotaCache('opus');
   const { shapeQuotas } = require('../lib/quota-bridge.js');
-  const claude = { used: 42, remaining: 58, resetsAt: 1000, windowMinutes: 300 };
-  const claudeWeekly = { used: 19, remaining: 81, resetsAt: 9000, windowMinutes: 10080 };
-  const withCap = shapeQuotas({ claude, claudeWeekly, claudeOpus: { used: 70, remaining: 30, resetsAt: 9500, windowMinutes: 10080 } });
+  const claude = { used: 42, remaining: 58, resetsAt: SOON, windowMinutes: 300 };
+  const claudeWeekly = { used: 19, remaining: 81, resetsAt: SOON + 9000, windowMinutes: 10080 };
+  const withCap = shapeQuotas({ claude, claudeWeekly, claudeOpus: { used: 70, remaining: 30, resetsAt: SOON + 9500, windowMinutes: 10080 } });
   assert.equal(withCap.opus.remaining, 58);
   assert.equal(withCap.opus.secondary.remaining, 30);
   assert.equal(shapeQuotas({ claude, claudeWeekly }).opus.secondary.remaining, 81, 'no Opus cap on this plan: the all-models week');
-  assert.equal(shapeQuotas({}).opus, null);
+  quotaCache('opus-never-seen');
+  assert.equal(shapeQuotas({}).opus, null, 'nothing read and nothing remembered');
 });
 
 test('composer model picker: each catalog entry reaches its CLI as model + effort flags', () => {
