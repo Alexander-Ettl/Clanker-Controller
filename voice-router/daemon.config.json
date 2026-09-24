@@ -1,0 +1,13 @@
+{
+  "hotkey": { "modifiers": ["Control"], "key": "Space" },
+  "micDevice": "Mikrofonarray (Realtek(R) Audio)",
+  "ffmpegPath": "ffmpeg",
+  "nodePath": "node",
+  "windowTitles": {
+    "claude": "Claude Code",
+    "codex": "Codex"
+  },
+  "autoSubmit": true,
+  "submitDelayMs": 1200,
+  "recordingsDir": ".recordings"
+}
