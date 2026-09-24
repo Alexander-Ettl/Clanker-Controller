@@ -5,13 +5,13 @@ Voice-to-LLM quota-aware router. Spec: [`docs/voice-quota-router-spec.md`](../..
 Speak a prompt, and it transcribes (Groq Whisper), cleans it up and classifies
 its intent (Groq `openai/gpt-oss-120b`), then routes it to Claude, Codex, or
 Gemini based on the task type and your live token quotas — reading the same
-caches as [`tools/antigravity-usage-statusbar/`](../antigravity-usage-statusbar/).
+caches as [`astro-visual-editor/tools/antigravity-usage-statusbar/`](../antigravity-usage-statusbar/).
 
 Two ways to use it: a manual CLI, or a background hotkey daemon.
 
 ## Setup
 
-1. `tools/voice-router/.env` (gitignored, never commit it):
+1. `astro-visual-editor/tools/voice-router/.env` (gitignored, never commit it):
    ```
    GROQ_API_KEY=your-key-here
    ```

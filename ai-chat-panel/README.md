@@ -57,7 +57,7 @@ carry.
 
 ## Try it
 
-1. Open this folder (`tools/ai-chat-panel/`) in VS Code, press `F5` (Run →
+1. Open this folder (`astro-visual-editor/tools/ai-chat-panel/`) in VS Code, press `F5` (Run →
    Start Debugging) → launches an Extension Development Host window with
    the extension loaded.
 2. In that new window, click the AI Chat Panel icon in the Activity Bar —
@@ -97,15 +97,15 @@ Then run **Developer: Reload Window** (`Ctrl+Shift+P`) in Antigravity.
 
 The mic button (one per chat window) records from the same mic device
 configured in
-[`tools/voice-router/daemon.config.json`](../voice-router/daemon.config.json)
+[`astro-visual-editor/tools/voice-router/daemon.config.json`](../voice-router/daemon.config.json)
 (`ffmpeg`, same as the voice-router daemon), then runs it through
-`tools/voice-router/lib/groq-client.mjs`'s transcribe → clean → classify →
+`astro-visual-editor/tools/voice-router/lib/groq-client.mjs`'s transcribe → clean → classify →
 route pipeline (dynamically imported — this extension is CommonJS, that
 library is ESM) and sends the cleaned prompt through that window's own
 headless `send` pipeline, targeting whichever agent the classifier picked.
 No clipboard, no window-title guessing, no real terminal involved.
 
-Needs `tools/voice-router/.env` with `GROQ_API_KEY` set (loaded the same
+Needs `astro-visual-editor/tools/voice-router/.env` with `GROQ_API_KEY` set (loaded the same
 way `router.mjs` loads it).
 
 ## Voice router command integration
