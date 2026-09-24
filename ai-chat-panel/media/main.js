@@ -40,7 +40,9 @@
 
   // ---------- P16-K: full-screen Liquid Glass modals (queue + history) ----------
   const CLOSE_SVG = '<svg viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M4 4l8 8M12 4l-8 8" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>';
-  const HANDLE_SVG = '<svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><circle cx="6" cy="4" r="1.1"/><circle cx="10" cy="4" r="1.1"/><circle cx="6" cy="8" r="1.1"/><circle cx="10" cy="8" r="1.1"/><circle cx="6" cy="12" r="1.1"/><circle cx="10" cy="12" r="1.1"/></svg>';
+  // The suite's one pencil (sources/noun_Pencil_3437310.svg, omeneko / Noun Project): every edit button and the Edit tool card.
+  const PENCIL_SVG = '<svg viewBox="7.99 7.95 496.01 496.06" fill="currentColor" aria-hidden="true"><path d="M339.24,100.59a8,8,0,0,0-11.32,0C21.76,406.75,39.26,388,37.51,393.51L8.76,483.11a16,16,0,0,0,20.13,20.13c97.07-31.14,92.2-28.84,96-32.67L411.41,184.08a8,8,0,0,0,0-11.32Z"/><path d="M403.22,25.29,361.86,66.65a8,8,0,0,0,0,11.31L434,150.14a8,8,0,0,0,11.31,0l41.36-41.36A58.65,58.65,0,0,0,504,67C504,14.85,440.44-11.93,403.22,25.29Z"/></svg>';
+  const HANDLE_SVG ='<svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><circle cx="6" cy="4" r="1.1"/><circle cx="10" cy="4" r="1.1"/><circle cx="6" cy="8" r="1.1"/><circle cx="10" cy="8" r="1.1"/><circle cx="6" cy="12" r="1.1"/><circle cx="10" cy="12" r="1.1"/></svg>';
   const MODEL_LABELS = { claude: 'Claude', codex: 'Codex', gemini: 'Gemini' };
   let lastFocus = null;
   function createModal(id, title) {
@@ -315,7 +317,12 @@
   let scheduleArmed = false;
   let pendingScheduleLabel = null;
   // 'auto' has no quota of its own to wait for; scheduling needs a real model.
-  function scheduleModel() { return activeAgent === 'auto' ? 'claude' : activeAgent; }
+  // The picked provider; on Auto, whoever answered last in this chat (a "continue" must reach the same agent).
+  function lastReplyAgent() {
+    const agent = turnRoutedAgent || [...transcriptEl.querySelectorAll('.msg-assistant[data-agent], [data-agent]')].pop()?.dataset.agent;
+    return AGENT_IDS.includes(agent) ? agent : null;
+  }
+  function scheduleModel() { return activeAgent === 'auto' ? lastReplyAgent() || 'claude' : activeAgent; }
   function setScheduleArmed(armed) {
     scheduleArmed = armed;
     scheduleBtn.classList.toggle('is-scheduled', armed);
@@ -333,7 +340,8 @@
     const model = scheduleModel();
     pendingScheduleLabel = AGENT_LABELS[model];
     const modelId = activeAgent === model ? activeModelId : undefined;
-    vscode.postMessage({ type: 'scheduleTask', task: { model, modelId, prompt: text, dispatchTrigger: 'quota-reset' }, attachments: attachments.map((attachment) => attachment.path) });
+    // resumeHere: it fires into this chat, with its context, not a fresh headless one.
+    vscode.postMessage({ type: 'scheduleTask', task: { model, modelId, prompt: text, dispatchTrigger: 'quota-reset', resumeHere: true }, attachments: attachments.map((attachment) => attachment.path) });
   }
 
   function showToast(text, { error } = {}) {
@@ -647,13 +655,13 @@
   modelMenu.className = 'model-menu glass';
   modelMenu.setAttribute('role', 'listbox');
   modelMenu.setAttribute('aria-label', 'Model');
-  // The menu and a neck down to the pill share one goo-filtered stage (#msg-goo, as the
-  // bubble dock), so the menu buds out of the pill and stays fused to it by a liquid neck.
+  // The menu and its two fillets share one goo-filtered stage (#msg-goo, as the bubble
+  // dock), so the menu grows out of the composer's top edge and rests fused to it.
   const modelMenuStage = document.createElement('div');
   modelMenuStage.className = 'model-menu-stage';
-  const modelMenuNeck = document.createElement('div');
-  modelMenuNeck.className = 'model-menu-neck';
-  modelMenuStage.append(modelMenu, modelMenuNeck);
+  const modelMenuFillets = document.createElement('div');
+  modelMenuFillets.className = 'model-menu-fillets';
+  modelMenuStage.append(modelMenu, modelMenuFillets);
   document.body.appendChild(modelMenuStage); // outside the composer, above the transcript
 
   const optionFor = (id) => MODEL_OPTIONS.find((option) => option.id === id);
@@ -736,14 +744,14 @@
 
   function placeModelMenu() {
     const rect = modelPickerBtn.getBoundingClientRect();
-    modelMenuStage.style.bottom = `${window.innerHeight - rect.top + 8}px`; // 8px gap: the neck's length
-    modelMenuStage.style.right = `${Math.max(10, window.innerWidth - rect.right)}px`;
-    const stage = modelMenuStage.getBoundingClientRect();
-    const cap = rect.height / 2; // the neck stays on the pill's flat top, clear of its round ends
-    modelMenuStage.style.setProperty('--neck-x', `${rect.left + cap - stage.left}px`);
-    modelMenuStage.style.setProperty('--neck-w', `${Math.max(0, rect.width - 2 * cap)}px`);
-    modelMenuStage.style.setProperty('--bud-x', `${rect.left + rect.width / 2 - stage.left}px`);
-    modelMenuStage.style.setProperty('--bud-drop', `${8 + cap}px`);
+    const composerTop = modelPickerBtn.closest('.composer').getBoundingClientRect().top;
+    const css = getComputedStyle(modelMenuStage);
+    const fillet = parseFloat(css.getPropertyValue('--menu-fillet'));
+    // The seam sits 1px into the composer, over its top hairline; the root hangs below it, clipped.
+    modelMenuStage.style.bottom = `${window.innerHeight - composerTop - 1 - parseFloat(css.getPropertyValue('--menu-root'))}px`;
+    modelMenuStage.style.right = `${Math.max(10, window.innerWidth - rect.right) - fillet}px`;
+    const menuLeft = modelMenuStage.getBoundingClientRect().left + fillet;
+    modelMenuStage.style.setProperty('--bud-x', `${rect.left + rect.width / 2 - menuLeft}px`);
   }
   const menuOpen = () => modelMenu.classList.contains('is-open');
   function openModelMenu() {
@@ -967,7 +975,7 @@
   const queueSvg = (d) => `<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${d}</svg>`;
   const QUEUE_ICONS = {
     steer: queueSvg('<path d="M9 1.75 3.5 9h4L7 14.25 12.5 7h-4z"/>'),
-    edit: queueSvg('<path d="M10.75 2.75l2.5 2.5L6 12.5l-3.25.75.75-3.25z"/><path d="M9.5 4l2.5 2.5"/>'),
+    edit: PENCIL_SVG,
     remove: queueSvg('<path d="M4 4l8 8M12 4l-8 8"/>'),
     unschedule: queueSvg('<path d="M5.5 3 2.5 6l3 3"/><path d="M2.5 6h6.75a4 4 0 0 1 0 8H7"/>'),
     grip: queueSvg('<path d="M6 4h.01M10 4h.01M6 8h.01M10 8h.01M6 12h.01M10 12h.01" stroke-width="2"/>'),
@@ -1021,6 +1029,37 @@
     grip.addEventListener('pointerup', up);
     grip.addEventListener('pointercancel', up);
   }
+  // A queued turn's files: up to three overlapping thumbnails plus "3 photos" /
+  // "2 files"; narrow rows drop the thumbnails, then the word (style.css).
+  function queuedFilesBadge(files) {
+    const photos = files.filter((file) => file.mime?.startsWith('image/') && file.uri);
+    const allPhotos = photos.length === files.length;
+    const badge = document.createElement('span');
+    badge.className = 'turn-queue-files';
+    badge.title = files.map((file) => file.name).join('\n');
+    const thumbs = document.createElement('span');
+    thumbs.className = 'turn-queue-thumbs';
+    for (const photo of photos.slice(0, 3)) {
+      const img = document.createElement('img');
+      img.src = photo.uri; img.alt = '';
+      thumbs.append(img);
+    }
+    const icon = document.createElement('span');
+    icon.className = 'turn-queue-files-icon';
+    icon.innerHTML = queueSvg(allPhotos
+      ? '<rect x="2" y="3" width="12" height="10" rx="2"/><circle cx="6" cy="6.5" r="1.1"/><path d="m2.5 12 3.5-3.5 2.5 2.5 2-2 3 3"/>'
+      : '<path d="M10.5 4.5 5.8 9.2a1.4 1.4 0 0 0 2 2l5-5a2.8 2.8 0 0 0-4-4l-5 5a4.2 4.2 0 0 0 6 6l4.2-4.2"/>');
+    const count = document.createElement('span');
+    count.className = 'turn-queue-files-count';
+    const word = document.createElement('span');
+    word.className = 'turn-queue-files-word';
+    word.textContent = allPhotos ? (files.length === 1 ? ' photo' : ' photos') : (files.length === 1 ? ' file' : ' files');
+    count.append(String(files.length), word);
+    if (photos.length) badge.append(thumbs);
+    badge.append(icon, count);
+    return badge;
+  }
+
   function renderTurnQueue() {
     queueStrip.hidden = !turnQueue.length;
     queueStrip.replaceChildren();
@@ -1069,14 +1108,23 @@
         return btn;
       };
       const remove = () => { turnQueue = turnQueue.filter((item) => item !== turn); renderTurnQueue(); };
-      row.append(pill, text,
+      row.append(pill, text);
+      if (turn.files?.length) row.append(queuedFilesBadge(turn.files));
+      row.append(
         button(QUEUE_ICONS.steer, 'Steer Now', busy ? 'Interrupt the running turn and send this now' : 'Send this now', 'is-primary', () => { remove(); queuePaused = false; renderTurnQueue(); steerTurn(turn); }),
         button(QUEUE_ICONS.edit, 'Edit', 'Move back into the composer', '', () => {
           remove();
           promptInput.value = promptInput.value.trim() ? `${promptInput.value}\n${turn.text}` : turn.text;
+          // The queued files come back with the text (they were dropped here before).
+          const held = new Set(attachments.map((attachment) => attachment.path));
+          attachments.push(...(turn.files || []).filter((file) => !held.has(file.path)));
+          renderAttachments();
           autoGrow(); renderComposerState(); promptInput.focus();
         }),
-        button(QUEUE_ICONS.remove, '', 'Delete', 'is-danger is-icon', remove));
+        button(QUEUE_ICONS.remove, '', 'Delete', 'is-danger is-icon', () => {
+          for (const file of turn.files || []) vscode.postMessage({ type: 'removeAttachment', path: file.path }); // as a composer chip's ×
+          remove();
+        }));
       queueStrip.append(row);
     }
   }
@@ -1746,9 +1794,33 @@
   let turnBubbles = [];
   let turnRoleName = null; // set only on the turn that handed this agent its role
   let turnModelLabel = null; // the running turn's model, from the host's routing message
+  // "You've hit your usage limit" (Claude, Codex) / quota exhausted (Gemini): the turn stopped because
+  // the plan ran out, so offer to send "continue" into this chat once that agent's limit resets.
+  const LIMIT_RE = /\b(usage|session|weekly|daily|rate)\s+limit\b|hit your .{0,24}limit|limit (reached|exceeded)|quota (exceeded|exhausted)|RESOURCE_EXHAUSTED|out of (usage|credits)/i;
+  let turnRoutedAgent = null; // who ran the current turn (set by 'routing')
+  let limitHitThisTurn = false; // an upstream_error card already said so
+  function offerContinueAtReset(host) {
+    const agent = turnRoutedAgent;
+    if (!host || !AGENT_IDS.includes(agent) || host.querySelector('.continue-at-reset')) return;
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'continue-at-reset';
+    btn.innerHTML = `<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="8" cy="8.5" r="5.5"/><path d="M8 5.5v3l2 1.2"/></svg><span>Continue when ${AGENT_LABELS[agent] || agent} resets</span>`;
+    btn.title = 'Sends "continue" into this chat automatically once the usage limit resets';
+    btn.addEventListener('click', () => {
+      pendingScheduleLabel = AGENT_LABELS[agent];
+      vscode.postMessage({ type: 'scheduleTask', task: { model: agent, prompt: 'continue', dispatchTrigger: 'quota-reset', resumeHere: true }, attachments: [] });
+      btn.disabled = true;
+      btn.querySelector('span').textContent = 'Scheduled: "continue" sends when the limit resets';
+    }, { once: true });
+    host.append(btn);
+  }
+
   function endAssistantTurn(at = new Date().toISOString()) {
     const last = turnBubbles[turnBubbles.length - 1];
     if (last && !last.querySelector('.msg-actions')) last.append(messageActions(at, () => last.dataset.raw.trim()));
+    if (limitHitThisTurn || (last && LIMIT_RE.test((last.dataset.raw || '').slice(-600)))) offerContinueAtReset(last || turnHost());
+    limitHitThisTurn = false;
     turnBubbles = [];
     currentAssistantBubble = null;
   }
@@ -1827,7 +1899,7 @@
   }
   const TOOL_ICONS = {
     shell: '<svg viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M3 4.5 6.5 8 3 11.5M8 11.5h5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>',
-    edit: '<svg viewBox="7.99 8.02 496.02 495.98" fill="currentColor" aria-hidden="true"><path d="M486.71,25.29a59.1,59.1,0,0,0-83.49,0C16.09,412.42,39.26,388,37.51,393.51L8.76,483.11a16,16,0,0,0,20.13,20.13c97.05-31.14,92.2-28.84,96-32.67L309.5,286a16,16,0,0,0-22.63-22.63L105,445.21,48.74,463.26,66.79,407,356.21,117.56l38.23,38.23-31.82,31.83a16,16,0,0,0,22.63,22.63L486.71,108.78A59,59,0,0,0,486.71,25.29ZM464.08,86.15l-47,47L378.83,94.93l47-47C442.87,30.9,472,43.11,472,67A26.82,26.82,0,0,1,464.08,86.15Z"/><path d="M345.14,224.63a16,16,0,0,0-26.06,10.8c-1.85,19.2,25.64,24.46,31.22,6.22A16,16,0,0,0,345.14,224.63Z"/></svg>',
+    edit: PENCIL_SVG,
     search: '<svg viewBox="0 0 16 16" fill="none" aria-hidden="true"><circle cx="7" cy="7" r="4.25" stroke="currentColor" stroke-width="1.5"/><path d="m10.2 10.2 3.3 3.3" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>',
     read: '<svg viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M1.75 8S4.25 3.5 8 3.5 14.25 8 14.25 8 11.75 12.5 8 12.5 1.75 8 1.75 8z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/><circle cx="8" cy="8" r="2" stroke="currentColor" stroke-width="1.5"/></svg>',
     other: '<svg viewBox="0 0 16 16" fill="none" aria-hidden="true"><circle cx="8" cy="8" r="5.5" stroke="currentColor" stroke-width="1.5"/><path d="M8 5.5v3l2 1.2" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>',
@@ -2273,7 +2345,7 @@
     const remaining = Math.max(0, limit - tokens);
     const pct = Math.min(100, Math.round((tokens / limit) * 100));
     const isEst = context?.estimated ? '~' : '';
-    pendingTokens.textContent = tokens ? `${isEst}${kTokens(tokens)} / ${kTokens(limit)} (${kTokens(remaining)} left)` : '';
+    pendingTokens.textContent = tokens ? `${isEst}${kTokens(tokens)} / ${kTokens(limit)} Token Context` : '';
     pendingTokens.title = `${context?.agent ? AGENT_NAMES[context.agent] || context.agent : 'Model'} context: ${tokens.toLocaleString()} tokens used (${pct}%), ${remaining.toLocaleString()} tokens remaining in ${limit.toLocaleString()} window.`;
     contextWarning.hidden = pct < CONTEXT_WARN_PCT;
     if (contextWarning.hidden) return;
@@ -2300,6 +2372,7 @@
    * so far stays open, and the stream picks up where it is. */
   function restoreChat(chat, running = null) {
     currentChatId = chat.id;
+    turnRoutedAgent = null; // the restored transcript's own last reply says who answered here
     isCompacting = Boolean(running?.compact);
     renderContextGauge(chat.context);
     transcriptEl.replaceChildren();
@@ -2411,7 +2484,7 @@
 
   const CHAT_ICONS = {
     stop: '<svg viewBox="0 0 16 16" fill="none" aria-hidden="true"><rect x="4.5" y="4.5" width="7" height="7" rx="1.5" fill="currentColor"/></svg>',
-    rename: '<svg viewBox="7.99 8.02 496.02 495.98" fill="currentColor" aria-hidden="true"><path d="M486.71,25.29a59.1,59.1,0,0,0-83.49,0C16.09,412.42,39.26,388,37.51,393.51L8.76,483.11a16,16,0,0,0,20.13,20.13c97.05-31.14,92.2-28.84,96-32.67L309.5,286a16,16,0,0,0-22.63-22.63L105,445.21,48.74,463.26,66.79,407,356.21,117.56l38.23,38.23-31.82,31.83a16,16,0,0,0,22.63,22.63L486.71,108.78A59,59,0,0,0,486.71,25.29ZM464.08,86.15l-47,47L378.83,94.93l47-47C442.87,30.9,472,43.11,472,67A26.82,26.82,0,0,1,464.08,86.15Z"/><path d="M345.14,224.63a16,16,0,0,0-26.06,10.8c-1.85,19.2,25.64,24.46,31.22,6.22A16,16,0,0,0,345.14,224.63Z"/></svg>',
+    rename: PENCIL_SVG,
     // The Source Control mark: one trunk, one branch splitting off, a node on each end.
     fork: '<svg viewBox="0 0 16 16" fill="none" aria-hidden="true"><circle cx="4.5" cy="3.5" r="1.6" stroke="currentColor" stroke-width="1.3"/><circle cx="4.5" cy="12.5" r="1.6" stroke="currentColor" stroke-width="1.3"/><circle cx="11.5" cy="4.5" r="1.6" stroke="currentColor" stroke-width="1.3"/><path d="M4.5 5.1v5.8M11.5 6.1c0 2.6-2 3.4-4.3 3.9-1.5.3-2.7.7-2.7 1" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>',
     delete: '<svg viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M2.75 4.25h10.5M6.25 4.25V2.75h3.5v1.5M4.25 4.25l.6 8.4a1 1 0 0 0 1 .93h4.3a1 1 0 0 0 1-.93l.6-8.4M6.75 7v4M9.25 7v4" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>',
@@ -2594,7 +2667,7 @@
         const files = Array.isArray(message.files) ? message.files : [];
         const text = message.text || '';
         if (message.sendNow) {
-          const turn = { id: `${Date.now()}-now`, text, modelId: 'auto', attachments: files.map((file) => file.path), files };
+          const turn = { id: `${Date.now()}-now`, text, modelId: message.modelId || 'auto', attachments: files.map((file) => file.path), files };
           if (busy) { turnQueue.unshift(turn); renderTurnQueue(); } else dispatchTurn(turn);
           break;
         }
@@ -2677,6 +2750,7 @@
       }
       case 'upstream_error': {
         appendUpstreamErrorCard({ agent: message.agent, detail: message.detail || '' });
+        if (LIMIT_RE.test(message.detail || '')) limitHitThisTurn = true;
         break;
       }
       case 'binariesLocated': {
@@ -2710,6 +2784,7 @@
       }
       case 'routing': {
         awaitingInterruptAck = false; // the new turn has started; nothing older can still arrive
+        turnRoutedAgent = message.agentId || null;
         pendingEl.dataset.agent = message.agentId || '';
         if (currentTurnEl) currentTurnEl.dataset.agent = message.agentId || '';
         turnModelLabel = message.modelLabel || null;

@@ -17,6 +17,16 @@
   let lastQuotas = null;
 
   newChatWindowBtn.addEventListener('click', () => vscode.postMessage({ type: 'newChatWindow' }));
+  const siteSetupBtn = document.getElementById('siteSetupBtn');
+  const sitePromptBtn = document.getElementById('sitePromptBtn');
+  siteSetupBtn?.addEventListener('click', () => vscode.postMessage({ type: 'setupSite' }));
+  sitePromptBtn?.addEventListener('click', () => vscode.postMessage({ type: 'copySitePrompt' }));
+  window.addEventListener('message', (event) => {
+    if (event.data?.type !== 'siteSetup') return;
+    siteSetupBtn.hidden = event.data.ready; // shown with no folder too: the click explains what to open
+    sitePromptBtn.hidden = !event.data.ready;
+  });
+  vscode.postMessage({ type: 'requestSiteSetup' });
 
   function setTab(tab) {
     if (!panels[tab] || tab === activeTab) return;
@@ -345,7 +355,7 @@
       rename.className = 'history-rename';
       rename.title = 'Rename chat';
       rename.setAttribute('aria-label', 'Rename chat');
-      rename.innerHTML = '<svg viewBox="7.99 8.02 496.02 495.98" fill="currentColor" aria-hidden="true"><path d="M486.71,25.29a59.1,59.1,0,0,0-83.49,0C16.09,412.42,39.26,388,37.51,393.51L8.76,483.11a16,16,0,0,0,20.13,20.13c97.05-31.14,92.2-28.84,96-32.67L309.5,286a16,16,0,0,0-22.63-22.63L105,445.21,48.74,463.26,66.79,407,356.21,117.56l38.23,38.23-31.82,31.83a16,16,0,0,0,22.63,22.63L486.71,108.78A59,59,0,0,0,486.71,25.29ZM464.08,86.15l-47,47L378.83,94.93l47-47C442.87,30.9,472,43.11,472,67A26.82,26.82,0,0,1,464.08,86.15Z"/><path d="M345.14,224.63a16,16,0,0,0-26.06,10.8c-1.85,19.2,25.64,24.46,31.22,6.22A16,16,0,0,0,345.14,224.63Z"/></svg>';
+      rename.innerHTML = '<svg viewBox="7.99 7.95 496.01 496.06" fill="currentColor" aria-hidden="true"><path d="M339.24,100.59a8,8,0,0,0-11.32,0C21.76,406.75,39.26,388,37.51,393.51L8.76,483.11a16,16,0,0,0,20.13,20.13c97.07-31.14,92.2-28.84,96-32.67L411.41,184.08a8,8,0,0,0,0-11.32Z"/><path d="M403.22,25.29,361.86,66.65a8,8,0,0,0,0,11.31L434,150.14a8,8,0,0,0,11.31,0l41.36-41.36A58.65,58.65,0,0,0,504,67C504,14.85,440.44-11.93,403.22,25.29Z"/></svg>';
       rename.addEventListener('click', (event) => {
         event.stopPropagation();
         editTitle(title, session.preview || '', (name) => vscode.postMessage({ type: 'renameChat', id: session.id, title: name }));

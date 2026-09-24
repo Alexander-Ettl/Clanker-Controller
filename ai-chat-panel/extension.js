@@ -43,9 +43,51 @@ function quotaAvailable(quotas, model) {
     : typeof quota?.remaining === 'number' && quota.remaining > WATCHDOG_THRESHOLD_PCT;
 }
 
+// ---------- Astro Visual Editor setup (scripts/setup-site.mjs does the work; this only launches it) ----------
+/** The editor checkout this extension belongs to (or ASTRO_VISUAL_EDITOR_PATH), wherever the extension is installed. */
+function editorRoot() {
+  return [
+    process.env.ASTRO_VISUAL_EDITOR_PATH,
+    path.join(__dirname, '..', '..'),
+    path.join(require('node:os').homedir(), 'Nextcloud', 'Eigene Projekte', 'Portfolio', '2026', 'astro-visual-editor'),
+  ].find((dir) => dir && fs.existsSync(path.join(dir, 'scripts', 'setup-site.mjs'))) || null;
+}
+function siteSetupState() {
+  const folder = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+  return { hasFolder: Boolean(folder), ready: Boolean(folder && fs.existsSync(path.join(folder, 'astro-visual-editor.config.json'))) };
+}
+async function copyAdaptPrompt() {
+  const root = editorRoot();
+  if (!root) return void vscode.window.showWarningMessage('Astro Visual Editor: editor checkout not found (set ASTRO_VISUAL_EDITOR_PATH).');
+  await vscode.env.clipboard.writeText(fs.readFileSync(path.join(root, 'templates', 'site', 'ADAPT_PROMPT.md'), 'utf8'));
+  vscode.window.showInformationMessage('Copied. Paste it into Claude or Codex in this folder (or into a chat here).');
+}
+async function setupVisualEditor() {
+  const folder = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+  if (!folder) return void vscode.window.showWarningMessage('Open a folder first (an empty one for a new site, or your Astro project), then click Set up again.');
+  const root = editorRoot();
+  if (!root) return void vscode.window.showErrorMessage('Astro Visual Editor: editor checkout not found (set ASTRO_VISUAL_EDITOR_PATH).');
+  // A task, not a hidden child process: npm's progress and any error stay visible in the terminal.
+  const task = new vscode.Task({ type: 'astroVisualEditorSetup' }, vscode.TaskScope.Workspace, 'Set up Astro Visual Editor', 'Astro Visual Editor',
+    new vscode.ProcessExecution('node', [path.join(root, 'scripts', 'setup-site.mjs'), folder], { cwd: folder }));
+  const execution = await vscode.tasks.executeTask(task);
+  const done = vscode.tasks.onDidEndTaskProcess(async (event) => {
+    if (event.execution !== execution) return;
+    done.dispose();
+    if (event.exitCode !== 0) return void vscode.window.showErrorMessage('Astro Visual Editor setup stopped; the terminal says why.');
+    const pick = await vscode.window.showInformationMessage('Astro Visual Editor is set up. Start the dev server?', 'Start dev server', 'Copy AI adapt prompt');
+    if (pick === 'Copy AI adapt prompt') void copyAdaptPrompt();
+    if (pick === 'Start dev server') {
+      void vscode.tasks.executeTask(new vscode.Task({ type: 'astroVisualEditorDev' }, vscode.TaskScope.Workspace, 'astro dev', 'Astro Visual Editor', new vscode.ShellExecution('npm run dev', { cwd: folder })));
+      void vscode.env.openExternal(vscode.Uri.parse('http://localhost:4321/?edit=1'));
+    }
+  });
+}
+
 class SchedulerWatchdog {
-  constructor({ queue, workspaceDir, getModels, telegram, onQueueChange, chatStore, onHistoryChange, notify }) {
+  constructor({ queue, workspaceDir, getModels, telegram, onQueueChange, chatStore, onHistoryChange, notify, resumeInChat }) {
     this.notify = notify || null;
+    this.resumeInChat = resumeInChat || null;
     this.queue = queue; this.workspaceDir = workspaceDir; this.getModels = getModels; this.telegram = telegram;
     this.onQueueChange = onQueueChange || (() => {});
     this.chatStore = chatStore || null; this.onHistoryChange = onHistoryChange || (() => {});
@@ -80,6 +122,13 @@ class SchedulerWatchdog {
   async dispatch(task) {
     await this.queue.markDispatched(task.id);
     this.onQueueChange();
+    // "Continue when the limit resets": the message goes back into the chat it came from, so the
+    // agent resumes its own session there instead of starting a context-free headless run.
+    if (task.chatId && this.resumeInChat?.(task)) {
+      await this.queue.markCompleted(task.id, 'Sent into its chat');
+      this.onQueueChange();
+      return;
+    }
     this.activeTaskId = task.id; this.output = ''; this.failed = ''; this.engine.models = this.getModels();
     // P17-H: a headless run is a real chat, so it lands in the Recent tab.
     if (this.chatStore) {
@@ -277,6 +326,53 @@ async function voiceVocabulary() {
  * closes. At most one ChatWindowHost watches it at a time; the
  * ChatWindowManager keeps it alive while it runs or is on screen.
  */
+function safeAttachmentPaths(deps, paths) {
+  const root = path.resolve(deps.attachmentsDir) + path.sep;
+  return (Array.isArray(paths) ? paths : []).filter((file) => { const resolved = path.resolve(file); return resolved.startsWith(root) && fs.existsSync(resolved); });
+}
+
+/**
+ * Routes one message and builds the turn ChatRun.begin runs: the agent, its
+ * model, and the prompt with the briefing it needs. Shared by a chat window's
+ * own sends and by windowless runs (site-edit chats fed by routePrompt).
+ * `message.modelId` is the picker's model ('auto' or a catalog id).
+ */
+async function planTurn(run, message, deps) {
+  const text = message.text;
+  const quotas = await readQuotas();
+  let option = modelOption(message.modelId);
+  const requested = option ? option.agent : 'auto';
+  const codexCommand = await deps.codexCommands.resolve(text);
+  const dispatch = codexCommand
+    ? { agent: 'codex', directive: '', contract: '', roleName: null, split: false }
+    : route(text, quotas, requested, option?.brand);
+  const rerouted = Boolean(option && dispatch.agent !== option.agent);
+  if (rerouted) option = MODEL_CATALOG.find((entry) => entry.agent === dispatch.agent) || null;
+  // Auto runs the agent's first catalog model, so every reply can name the exact model it came from.
+  const used = option || MODEL_CATALOG.find((entry) => entry.agent === dispatch.agent) || null;
+  // Memory across turns and agents: the agent resumes its own session in this
+  // chat (it remembers its turns), and is briefed on the turns it missed while
+  // other agents answered. The role boundary goes out once, when the agent
+  // first joins this chat (a new session); its session remembers it after that.
+  const session = run.chat.sessions?.[dispatch.agent] || null;
+  // Never further back than the last compaction: its summary stands in for everything before it.
+  const briefing = (from) => buildHandoff(run.chat.messages.slice(Math.max(from, checkpointStart(run.chat.messages))), dispatch.agent);
+  const compose = (handoff, fresh) => [fresh ? dispatch.directive : '', dispatch.contract, handoff, text].filter(Boolean).join('\n\n');
+  const prompt = codexCommand ? codexCommand.prompt : session?.id ? compose(briefing(session.seen || 0), false) : compose(briefing(0), true);
+  const freshPrompt = codexCommand ? null : session?.id ? compose(briefing(0), true) : null;
+  return {
+    agent: dispatch.agent,
+    rerouted,
+    begin: {
+      agent: dispatch.agent,
+      user: { role: 'user', text, at: new Date().toISOString(), agent: dispatch.agent, attachments: Array.isArray(message.attachments) ? message.attachments : [] },
+      reply: { role: 'assistant', text: '', agent: dispatch.agent, modelLabel: used?.label, roleName: session?.id ? undefined : dispatch.roleName, routing: dispatch.split ? 'contract-lock' : undefined },
+      routing: { agentId: dispatch.agent, modelLabel: used?.label, roleName: session?.id ? null : dispatch.roleName, auto: requested === 'auto', split: dispatch.split },
+      run: { agent: dispatch.agent, prompt, freshPrompt, resume: codexCommand ? null : session?.id || null, codexCommand: codexCommand?.name || null, attachments: safeAttachmentPaths(deps, message.attachments), model: used?.model, effort: used?.effort },
+    },
+  };
+}
+
 class ChatRun {
   constructor(chat, deps) {
     if (chat.context?.agent === 'codex' && !chat.context.estimated) {
@@ -289,6 +385,8 @@ class ChatRun {
     this.turnAgent = null;
     this.turn = null; // the running turn's routing message, replayed when a window attaches
     this.pending = new Map(); // unanswered approval/question cards, replayed the same way
+    this.queue = []; // routed messages waiting for this chat's current turn (site-edit chats)
+    this.starting = false; // a queued message is being planned; its turn hasn't begun yet
     this.streamEngine = new StreamEngine({ cwd: deps.workspaceDir, models: deps.getModels(), interactive: true });
     this.streamEngine.on('event', (event) => this.handleStreamEvent(event));
   }
@@ -331,6 +429,26 @@ class ChatRun {
     this.streamEngine.models = this.deps.getModels();
     this.streamEngine.start(run);
     this.deps.notifyHistory();
+  }
+
+  /** FIFO: a routed message runs once every earlier one in this chat has finished. */
+  enqueue(message) {
+    this.queue.push(message);
+    this.drain();
+  }
+
+  drain() {
+    if (this.turn || this.starting || !this.queue.length) return;
+    const next = this.queue.shift();
+    this.starting = true;
+    // With a window open, the window runs it (picker and transcript stay in step); windowless, the run does.
+    const start = this.host ? this.host.startTurn(next) : planTurn(this, next, this.deps).then((plan) => {
+      this.chat.modelId = next.modelId || 'auto';
+      this.begin(plan.begin);
+    });
+    Promise.resolve(start)
+      .catch((error) => console.error('[ai-chat-panel] queued turn failed to start:', error))
+      .finally(() => { this.starting = false; this.deps.notifyHistory(); });
   }
 
   respond(actionId, reply) {
@@ -449,6 +567,8 @@ class ChatRun {
       this.afterCompact = null;
       setImmediate(() => this.host?.startTurn(next));
     }
+    // The next queued message follows a finished turn; a Stop pauses the queue until the next one arrives.
+    if (event.type === 'turn_complete' && !event.interrupted && !autoCompact && !this.afterCompact) setImmediate(() => this.drain());
     if (event.type === 'turn_complete') {
       this.deps.chatWindowManager.release(this);
       this.deps.notifyHistory();
@@ -567,6 +687,8 @@ class ChatWindowHost {
   }
 
   async scheduleTask({ task, attachments } = {}) {
+    // A limit-reset "continue" belongs to this chat (the webview may not know a fresh chat's id yet).
+    if (task?.resumeHere) task = { ...task, chatId: this.run.chat.id };
     try {
       await this.deps.schedulerQueue.enqueue(task, this.safeAttachmentPaths(attachments));
       this.panel.webview.postMessage({ type: 'taskScheduled' });
@@ -589,7 +711,9 @@ class ChatWindowHost {
     await this.deps.schedulerQueue.dequeue(taskId);
     this.deps.notifySchedulerQueue?.();
     this.panel.reveal(undefined, false);
-    this.panel.webview.postMessage({ type: 'restoreScheduledDraft', text: task.prompt, files, sendNow: Boolean(sendNow) });
+    // Sent now, it keeps the provider it was scheduled for; Auto would reroute it by quota (e.g. to Gemini).
+    const modelId = task.modelId || MODEL_CATALOG.find((entry) => entry.agent === task.model)?.id || 'auto';
+    this.panel.webview.postMessage({ type: 'restoreScheduledDraft', text: task.prompt, files, sendNow: Boolean(sendNow), modelId });
   }
 
   get chat() { return this.run.chat; }
@@ -653,39 +777,15 @@ class ChatWindowHost {
     // A message sent while a compaction runs waits for it, instead of cutting the summary off.
     if (run.turn?.compact) { run.afterCompact = message; return; }
     run.streamEngine.interrupt();
-    const quotas = await readQuotas();
     if (message.modelId) this.selectModel(message.modelId);
     else if (message.agentId) this.setActiveAgent(message.agentId);
-    let option = modelOption(this.activeModelId);
-    const requested = option ? option.agent : 'auto';
-    const codexCommand = await this.deps.codexCommands.resolve(text);
-    const dispatch = codexCommand
-      ? { agent: 'codex', directive: '', contract: '', roleName: null, split: false }
-      : route(text, quotas, requested, option?.brand);
-    this.lastRoutedAgent = dispatch.agent;
+    const plan = await planTurn(run, { ...message, text, modelId: this.activeModelId }, this.deps);
+    this.lastRoutedAgent = plan.agent;
     // A low quota can reroute an explicit pick; the picker follows it. 'auto'
     // stays selected across turns (the reply bubble names the agent used).
-    if (option && dispatch.agent !== option.agent) { this.setActiveAgent(dispatch.agent); option = modelOption(this.activeModelId); }
-    // Auto runs the agent's first catalog model, so every reply can name the exact model it came from.
-    const used = option || MODEL_CATALOG.find((entry) => entry.agent === dispatch.agent) || null;
-    // Memory across turns and agents: the agent resumes its own session in this
-    // chat (it remembers its turns), and is briefed on the turns it missed while
-    // other agents answered. The role boundary goes out once, when the agent
-    // first joins this chat (a new session); its session remembers it after that.
-    const session = run.chat.sessions?.[dispatch.agent] || null;
-    // Never further back than the last compaction: its summary stands in for everything before it.
-    const briefing = (from) => buildHandoff(run.chat.messages.slice(Math.max(from, checkpointStart(run.chat.messages))), dispatch.agent);
-    const compose = (handoff, fresh) => [fresh ? dispatch.directive : '', dispatch.contract, handoff, text].filter(Boolean).join('\n\n');
-    const prompt = codexCommand ? codexCommand.prompt : session?.id ? compose(briefing(session.seen || 0), false) : compose(briefing(0), true);
-    const freshPrompt = codexCommand ? null : session?.id ? compose(briefing(0), true) : null;
+    if (plan.rerouted) this.setActiveAgent(plan.agent);
     run.chat.modelId = this.activeModelId; // what the picker shows when you come back to this chat
-    run.begin({
-      agent: dispatch.agent,
-      user: { role: 'user', text, at: new Date().toISOString(), agent: dispatch.agent, attachments: Array.isArray(message.attachments) ? message.attachments : [] },
-      reply: { role: 'assistant', text: '', agent: dispatch.agent, modelLabel: used?.label, roleName: session?.id ? undefined : dispatch.roleName, routing: dispatch.split ? 'contract-lock' : undefined },
-      routing: { agentId: dispatch.agent, modelLabel: used?.label, roleName: session?.id ? null : dispatch.roleName, auto: requested === 'auto', split: dispatch.split },
-      run: { agent: dispatch.agent, prompt, freshPrompt, resume: codexCommand ? null : session?.id || null, codexCommand: codexCommand?.name || null, attachments: this.safeAttachmentPaths(message.attachments), model: used?.model, effort: used?.effort },
-    });
+    run.begin(plan.begin);
   }
 
   /** The Compact button: compacts whichever agent's context the gauge shows (see ChatRun.compact). */
@@ -698,7 +798,7 @@ class ChatWindowHost {
 
   postHistory() { this.panel.webview.postMessage({ type: 'history', sessions: this.deps.chatWindowManager.listChats() }); }
   async pushSchedulerQueue() { if (this.deps.schedulerQueue) this.panel.webview.postMessage({ type: 'schedulerQueue', queue: await this.deps.schedulerQueue.getQueue() }); }
-  safeAttachmentPaths(paths) { const root = path.resolve(this.deps.attachmentsDir) + path.sep; return (Array.isArray(paths) ? paths : []).filter((file) => { const resolved = path.resolve(file); return resolved.startsWith(root) && fs.existsSync(resolved); }); }
+  safeAttachmentPaths(paths) { return safeAttachmentPaths(this.deps, paths); }
   attachmentMetadata(file, mime = '') { const stat = fs.statSync(file); return { path: file, name: path.basename(file), size: stat.size, mime, uri: this.panel.webview.asWebviewUri(vscode.Uri.file(file)).toString() }; }
   /** P17-Q: the @-mention list. The webview filters it locally, so one query per composer session. */
   async postWorkspaceFiles() {
@@ -959,7 +1059,7 @@ class ChatWindowManager {
 
   /** Forgets a run nobody is watching and that has nothing left to do. */
   release(run) {
-    if (!run.host && !run.turn && this.runs.get(run.chat.id) === run) this.runs.delete(run.chat.id);
+    if (!run.host && !run.turn && !run.starting && !run.queue.length && this.runs.get(run.chat.id) === run) this.runs.delete(run.chat.id);
   }
 
   /** History for Manage Chats: every stored chat, flagged active if it runs now or ran in the last five minutes. */
@@ -1015,6 +1115,41 @@ class ChatWindowManager {
     this.activeChatId = newChatId;
   }
 
+  /**
+   * aiChatPanel.routePrompt (the site editor's Ask AI): Auto picks the agent,
+   * and the message joins that agent's one "Site edits" chat -- same thread and
+   * context for every edit it gets, queued behind the ones still running. The
+   * chats run without a window and show under Active Chats in Manage Chats.
+   */
+  async routeToSiteEditChat(prompt) {
+    const text = String(prompt || '').trim();
+    if (!text) return;
+    const { agent } = route(text, await readQuotas(), 'auto');
+    const lanesFile = path.join(this.deps.sessionDir, 'site-edit-chats.json');
+    let lanes = {};
+    try { lanes = JSON.parse(fs.readFileSync(lanesFile, 'utf8')) || {}; } catch { /* first use */ }
+    let run = lanes[agent] ? this.runFor(lanes[agent]) : null;
+    if (!run) {
+      const name = { claude: 'Claude', codex: 'Codex', gemini: 'Gemini' }[agent] || agent;
+      run = this.runFor(this.deps.chatStore.save({ ...this.deps.chatStore.create(), title: `Site edits · ${name}` }).id);
+      lanes[agent] = run.chat.id;
+      fs.mkdirSync(path.dirname(lanesFile), { recursive: true });
+      fs.writeFileSync(lanesFile, JSON.stringify(lanes, null, 2));
+    }
+    // Locked to the agent Auto chose, so a lane never hands its own turns to another agent.
+    run.enqueue({ text, modelId: MODEL_CATALOG.find((entry) => entry.agent === agent)?.id || 'auto' });
+    this.deps.notifyHistory();
+  }
+
+  /** A scheduled task bound to a chat (limit-reset "continue"): queued into that chat, false if the chat is gone. */
+  resumeChat(task) {
+    const run = this.runFor(task.chatId);
+    if (!run) return false;
+    run.enqueue({ text: task.prompt, modelId: task.modelId || MODEL_CATALOG.find((entry) => entry.agent === task.model)?.id || 'auto' });
+    this.deps.notifyHistory();
+    return true;
+  }
+
   /** Used by cross-extension IPC (injectPrompt, batch dispatch): the currently focused
    * window if there is one, else the most recently opened one, else a brand-new window. */
   getOrCreateActive() {
@@ -1056,6 +1191,12 @@ class LauncherViewProvider {
     };
     webviewView.webview.html = this.renderHtml(webviewView.webview);
     webviewView.webview.onDidReceiveMessage((message) => this.handleMessage(message));
+    // Set-up button while the folder has no astro-visual-editor.config.json, the AI prompt once it does.
+    const postSiteSetup = () => this.view?.webview.postMessage({ type: 'siteSetup', ...siteSetupState() });
+    postSiteSetup();
+    const watcher = vscode.workspace.createFileSystemWatcher('**/astro-visual-editor.config.json');
+    watcher.onDidCreate(postSiteSetup); watcher.onDidDelete(postSiteSetup);
+    webviewView.onDidDispose(() => watcher.dispose());
     webviewView.onDidDispose(() => {
       if (this.pollTimer) clearInterval(this.pollTimer);
       this.pollTimer = null;
@@ -1071,6 +1212,9 @@ class LauncherViewProvider {
   handleMessage(message) {
     switch (message.type) {
       case 'newChatWindow': this.deps.chatWindowManager.open(); break;
+      case 'setupSite': void vscode.commands.executeCommand('aiChatPanel.setupVisualEditor'); break;
+      case 'requestSiteSetup': this.view?.webview.postMessage({ type: 'siteSetup', ...siteSetupState() }); break;
+      case 'copySitePrompt': void copyAdaptPrompt(); break;
       case 'openChat': this.deps.chatWindowManager.open(message.id); break;
       case 'deleteChat': this.deps.chatWindowManager.deleteChat(message.id); break;
       case 'renameChat': this.deps.renameChat(message.id, message.title); break;
@@ -1218,6 +1362,19 @@ class LauncherViewProvider {
         <path d="M8 3v10M3 8h10" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
       </svg>
       <span>New Chat Window</span>
+    </button>
+    <button class="new-chat-btn glass" id="siteSetupBtn" type="button" title="Adds the Astro Visual Editor to this folder: a starter site if it's empty, or wires it into your existing Astro project" hidden>
+      <svg viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+        <path d="M2.5 13.5 8 2.5l5.5 11M4.7 9.5h6.6" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+      </svg>
+      <span>Set up Astro Visual Editor</span>
+    </button>
+    <button class="new-chat-btn glass" id="sitePromptBtn" type="button" title="Copies a prompt that has Claude or Codex make the rest of this site editable" hidden>
+      <svg viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+        <rect x="5" y="5" width="8.5" height="8.5" rx="1.5" stroke="currentColor" stroke-width="1.4"/>
+        <path d="M3.5 10.5h-.5A1 1 0 0 1 2 9.5V3a1 1 0 0 1 1-1h6.5a1 1 0 0 1 1 1v.5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>
+      </svg>
+      <span>Copy AI adapt prompt</span>
     </button>
 
     <div class="model-cards" id="modelCards" aria-label="Model quotas"></div>
@@ -1378,7 +1535,7 @@ function activate(context) {
     launcher?.postHistory();
     for (const { host } of chatWindowManager?.hosts.values() || []) host.postHistory();
   }
-  const watchdog = new SchedulerWatchdog({ queue: schedulerQueue, workspaceDir, getModels, telegram: null, onQueueChange: notifySchedulerQueue, chatStore, onHistoryChange: notifyHistory, notify });
+  const watchdog = new SchedulerWatchdog({ queue: schedulerQueue, workspaceDir, getModels, telegram: null, onQueueChange: notifySchedulerQueue, chatStore, onHistoryChange: notifyHistory, notify, resumeInChat: (task) => chatWindowManager?.resumeChat(task) });
 
   function bindTelegram(bridge) {
     bridge.onApproval(async (actionId, approved) => { watchdog.engine.respondToApproval(actionId, approved); });
@@ -1501,6 +1658,8 @@ function activate(context) {
       const host = chatWindowManager.getOrCreateActive();
       host.revealAndInject(target.agentId, prompt, submit !== false, target.modelId);
     }),
+    vscode.commands.registerCommand('aiChatPanel.routePrompt', (payload) => chatWindowManager.routeToSiteEditChat(payload?.prompt)),
+    vscode.commands.registerCommand('aiChatPanel.setupVisualEditor', setupVisualEditor),
   );
 
   // P12-D: Supervised Fresh-Session Chaining. Called with
