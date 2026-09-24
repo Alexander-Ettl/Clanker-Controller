@@ -20,6 +20,7 @@ const { SchedulerQueue, ACTIVE_STATUSES } = require('./lib/scheduler-queue.js');
 const { TelegramBridge } = require('./lib/telegram-bridge.js');
 const { resolveEditorTheme } = require('./lib/editor-theme.js');
 const { buildHandoff, checkpointStart, COMPACT_DIRECTIVE } = require('./lib/chat-handoff.js');
+const { CodexCommandCatalog } = require('./lib/codex-commands.js');
 
 // Context windows (the webview's gauge uses the same numbers) and the point
 // where the panel compacts Gemini itself: agy has no compaction of its own,
@@ -298,7 +299,9 @@ class ChatRun {
 
   /** Pushes the user message and the empty reply it streams into, then starts the agent. */
   begin({ agent, user, reply, routing, run }) {
-    this.turnAgent = agent;
+    // Native one-shot commands have their own thread. Keep that thread id,
+    // seen cursor, and context usage out of the resumable Codex chat session.
+    this.turnAgent = run.codexCommand ? null : agent;
     this.chat.messages.push(user);
     this.activeAssistantMessage = reply;
     this.chat.messages.push(reply);
@@ -347,7 +350,7 @@ class ChatRun {
   }
 
   handleStreamEvent(event) {
-    if (event.type === 'session' && event.sessionId) {
+    if (event.type === 'session' && event.sessionId && this.turnAgent === event.agent) {
       this.chat.sessions = { ...this.chat.sessions, [event.agent]: { ...this.chat.sessions?.[event.agent], id: event.sessionId } };
     }
     // Everything up to here is in that agent's own session now.
@@ -355,7 +358,7 @@ class ChatRun {
       this.chat.sessions[this.turnAgent].seen = this.chat.messages.length;
       this.turnAgent = null;
     }
-    if (event.type === 'usage') this.chat.context = { agent: event.agent, tokens: event.contextTokens }; // P17-R: saved with the turn
+    if (event.type === 'usage' && this.turnAgent === event.agent) this.chat.context = { agent: event.agent, tokens: event.contextTokens }; // P17-R: saved with the turn
     if (event.type === 'delta' && this.activeAssistantMessage) this.activeAssistantMessage.text += event.text;
     // `offset`: how much reply text came before this tool, so a reload shows them in order.
     if (event.type === 'tool_start') this.chat.messages.push({ role: 'tool', event, offset: this.activeAssistantMessage?.text.length });
@@ -398,7 +401,7 @@ class ChatRun {
       this.turn = null;
       this.pending.clear();
     }
-    this.post(event);
+    this.post(autoCompact ? { ...event, compacting: true } : event);
     if (compacted) this.post({ type: 'usage', agent: compacted.agent, contextTokens: compacted.tokens });
     // Gemini past 85% of its window compacts before the next turn can overflow it
     // (sources/autocompacting_implementation_guide.md §3). Started before release() so the run stays alive.
@@ -485,6 +488,7 @@ class ChatWindowHost {
       case 'removeAttachment': this.removeAttachment(message.path); break;
       case 'openFile': await this.openFile(message.path, message.line); break;
       case 'queryFiles': await this.postWorkspaceFiles(); break;
+      case 'querySlashCommands': this.panel.webview.postMessage({ type: 'slashCommands', commands: await this.deps.codexCommands.list() }); break;
       case 'mentionUris': this.postMentions((message.uris || []).map((uri) => vscode.Uri.parse(uri))); break;
       case 'compact': this.compactSession(); break;
       case 'requestQuotas': await this.pushQuotas(); break;
@@ -513,9 +517,11 @@ class ChatWindowHost {
       }
       case 'locateBinaries': {
         refreshBinaries();
+        this.deps.codexCommands.refresh();
         const results = ['claude', 'codex', 'gemini'].map((agent) => locate(agent));
         this.deps.sessionManager.refreshCommands?.(agentList());
         this.panel.webview.postMessage({ type: 'binariesLocated', results, agent: message.agent });
+        this.panel.webview.postMessage({ type: 'slashCommands', commands: await this.deps.codexCommands.list() });
         break;
       }
       default: break;
@@ -614,7 +620,10 @@ class ChatWindowHost {
     else if (message.agentId) this.setActiveAgent(message.agentId);
     let option = modelOption(this.activeModelId);
     const requested = option ? option.agent : 'auto';
-    const dispatch = route(text, quotas, requested, option?.brand);
+    const codexCommand = await this.deps.codexCommands.resolve(text);
+    const dispatch = codexCommand
+      ? { agent: 'codex', directive: '', contract: '', roleName: null, split: false }
+      : route(text, quotas, requested, option?.brand);
     this.lastRoutedAgent = dispatch.agent;
     // A low quota can reroute an explicit pick; the picker follows it. 'auto'
     // stays selected across turns (the reply bubble names the agent used).
@@ -629,15 +638,15 @@ class ChatWindowHost {
     // Never further back than the last compaction: its summary stands in for everything before it.
     const briefing = (from) => buildHandoff(run.chat.messages.slice(Math.max(from, checkpointStart(run.chat.messages))), dispatch.agent);
     const compose = (handoff, fresh) => [fresh ? dispatch.directive : '', dispatch.contract, handoff, text].filter(Boolean).join('\n\n');
-    const prompt = session?.id ? compose(briefing(session.seen || 0), false) : compose(briefing(0), true);
-    const freshPrompt = session?.id ? compose(briefing(0), true) : null;
+    const prompt = codexCommand ? codexCommand.prompt : session?.id ? compose(briefing(session.seen || 0), false) : compose(briefing(0), true);
+    const freshPrompt = codexCommand ? null : session?.id ? compose(briefing(0), true) : null;
     run.chat.modelId = this.activeModelId; // what the picker shows when you come back to this chat
     run.begin({
       agent: dispatch.agent,
       user: { role: 'user', text, at: new Date().toISOString(), agent: dispatch.agent, attachments: Array.isArray(message.attachments) ? message.attachments : [] },
       reply: { role: 'assistant', text: '', agent: dispatch.agent, modelLabel: used?.label, roleName: session?.id ? undefined : dispatch.roleName, routing: dispatch.split ? 'contract-lock' : undefined },
       routing: { agentId: dispatch.agent, modelLabel: used?.label, roleName: session?.id ? null : dispatch.roleName, auto: requested === 'auto', split: dispatch.split },
-      run: { agent: dispatch.agent, prompt, freshPrompt, resume: session?.id || null, attachments: this.safeAttachmentPaths(message.attachments), model: used?.model, effort: used?.effort },
+      run: { agent: dispatch.agent, prompt, freshPrompt, resume: codexCommand ? null : session?.id || null, codexCommand: codexCommand?.name || null, attachments: this.safeAttachmentPaths(message.attachments), model: used?.model, effort: used?.effort },
     });
   }
 
@@ -1181,6 +1190,7 @@ function activate(context) {
   const workspaceDir = (vscode.workspace.workspaceFolders?.[0]?.uri.fsPath || path.dirname(ASTRO_SESSION_DIR)).replace(/^[a-z]:/, (drive) => drive.toUpperCase());
   const attachmentsDir = path.join(ASTRO_SESSION_DIR, 'attachments');
   fs.mkdirSync(attachmentsDir, { recursive: true });
+  const codexCommands = new CodexCommandCatalog();
 
   function getModels() {
     const configured = vscode.workspace.getConfiguration('aiChatPanel').get('models', {});
@@ -1203,7 +1213,7 @@ function activate(context) {
   }).then((subscription) => context.subscriptions.push(subscription));
 
   chatWindowManager = new ChatWindowManager(context.extensionUri, {
-    sessionManager, chatStore, voiceCapture, workspaceDir, sessionDir: ASTRO_SESSION_DIR, attachmentsDir, getModels, schedulerQueue, notifySchedulerQueue, renameChat, getEditorTheme: () => editorTheme, notify, notifyHistory,
+    sessionManager, chatStore, voiceCapture, workspaceDir, sessionDir: ASTRO_SESSION_DIR, attachmentsDir, getModels, codexCommands, schedulerQueue, notifySchedulerQueue, renameChat, getEditorTheme: () => editorTheme, notify, notifyHistory,
   });
   let telegram = null;
   const tunnelStatus = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, -2);

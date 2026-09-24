@@ -13,6 +13,7 @@ const os = require('node:os');
 const { writeMicroHandoff, readMicroHandoff, formatMicroHandoffPrompt, MAX_CHARS } = require('../lib/handoff.js');
 const { SchedulerQueue, MAX_QUEUE_SIZE, MAX_ATTACHMENT_BYTES } = require('../lib/scheduler-queue.js');
 const { TelegramBridge } = require('../lib/telegram-bridge.js');
+const { CodexCommandCatalog, parseCommandTable, parseInvocation, supportsComposerCommand } = require('../lib/codex-commands.js');
 
 let failures = 0;
 
@@ -73,6 +74,22 @@ test('formatMicroHandoffPrompt renders a compact prefix, or an empty string for 
   assert.match(rendered, /foo\.mjs/);
   assert.equal(formatMicroHandoffPrompt({ decisions: [], modifiedExports: [], invariants: [] }), '');
   assert.equal(formatMicroHandoffPrompt(null), '');
+});
+
+test('Codex slash commands are discovered from the installed exec help instead of a static renderer list', async () => {
+  const rootHelp = `Run Codex non-interactively\n\nCommands:\n  resume  Resume a previous session\n  review  Run a code review against the current repository\n  help    Print help\n`;
+  const reviewHelp = `Run a code review against the current repository\n\nUsage: codex exec review [OPTIONS] [PROMPT]\n\nArguments:\n  [PROMPT]\n          Custom instructions. If - is used, read from stdin\n\nOptions:\n      --json\n          Print JSONL\n      --skip-git-repo-check\n          Allow running outside Git\n  -m, --model <MODEL>\n          Override the model\n  -c, --config <key=value>\n          Override configuration\n`;
+  let calls = 0;
+  const runImpl = async (_binary, args) => { calls++; return args.length === 2 ? rootHelp : args[1] === 'review' ? reviewHelp : 'Usage: codex exec resume [SESSION_ID]\n'; };
+  const catalog = new CodexCommandCatalog({ locateImpl: () => ({ path: 'codex' }), runImpl });
+  assert.equal(await catalog.resolve('ordinary prompt'), null);
+  assert.equal(calls, 0, 'ordinary turns do not probe the Codex binary');
+  assert.deepEqual(parseCommandTable(rootHelp).map((entry) => entry.name), ['resume', 'review', 'help']);
+  assert.equal(supportsComposerCommand(reviewHelp, 'review'), true);
+  assert.equal(supportsComposerCommand(reviewHelp.replace('      --skip-git-repo-check\n', ''), 'review'), false, 'discovery rejects commands that cannot accept the launch flags');
+  assert.deepEqual(await catalog.list(), [{ name: 'review', description: 'Run a code review against the current repository' }]);
+  assert.deepEqual(await catalog.resolve('/review focus on races'), { name: 'review', description: 'Run a code review against the current repository', prompt: 'focus on races' });
+  assert.equal(parseInvocation('/unknown', await catalog.list()), null);
 });
 
 test('package.json declares the webview view, the injectPrompt command, and the 3 focus commands', () => {
@@ -336,6 +353,12 @@ test('CLI command lines use only flags the real CLIs accept, and stdin payloads 
   assert.ok(!claude.args.includes('accept-non-destructive') && !claude.args.includes('--input-format'));
   const codex = e.commandFor('codex', 'hi');
   assert.deepEqual(codex.args, ['exec', '--json', '--sandbox', 'workspace-write', '--skip-git-repo-check', '-m', 'gpt-5.6-terra', '-']);
+  const review = e.commandFor('codex', 'focus on races', [], { codexCommand: 'review' });
+  assert.deepEqual(review.args, ['exec', 'review', '--json', '--skip-git-repo-check', '-m', 'gpt-5.6-terra', '-']);
+  assert.equal(review.input, 'focus on races\n');
+  const defaultReview = e.commandFor('codex', '', [], { codexCommand: 'review' });
+  assert.deepEqual(defaultReview.args, ['exec', 'review', '--json', '--skip-git-repo-check', '-m', 'gpt-5.6-terra']);
+  assert.equal(defaultReview.input, '');
   const gemini = e.commandFor('gemini', 'hi');
   assert.deepEqual(JSON.parse(gemini.input), { event: 'user', message: { content: 'hi' } });
 });
