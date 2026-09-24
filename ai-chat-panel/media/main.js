@@ -31,7 +31,7 @@
   let attachments = [];
 
   const attachmentStrip = document.createElement('div');
-  attachmentStrip.className = 'attachment-strip';
+  attachmentStrip.className = 'attachment-strip island-bud';
   document.querySelector('.compose-row').insertBefore(attachmentStrip, document.querySelector('.composer'));
   const attachBtn = document.createElement('button');
   attachBtn.type = 'button'; attachBtn.id = 'attachBtn'; attachBtn.className = 'composer-icon-btn'; attachBtn.title = 'Attach files';
@@ -444,13 +444,14 @@
   let workspaceRoot = '';
   const mentioned = new Set();
   const mentionStrip = document.createElement('div');
-  mentionStrip.className = 'attachment-strip mention-strip';
+  mentionStrip.className = 'attachment-strip mention-strip island-bud';
   document.querySelector('.compose-row').insertBefore(mentionStrip, document.querySelector('.composer'));
   const mentionMenu = document.createElement('div');
   mentionMenu.className = 'mention-menu glass';
   mentionMenu.setAttribute('role', 'listbox');
   mentionMenu.hidden = true;
-  document.querySelector('.composer').appendChild(mentionMenu);
+  // Outside the composer: the dock's goo filter (.compose-row) would clip a 260px menu.
+  document.body.appendChild(mentionMenu);
   let mentionHits = [];
   let mentionIndex = 0;
 
@@ -492,6 +493,9 @@
       return item;
     }));
     mentionMenu.hidden = !mentionHits.length;
+    if (mentionMenu.hidden) return;
+    const dock = document.querySelector('.compose-row').getBoundingClientRect();
+    Object.assign(mentionMenu.style, { left: `${dock.left + 8}px`, width: `${dock.width - 16}px`, bottom: `${innerHeight - dock.top + 6}px` });
   }
   function insertMention(file, replaceQuery) {
     if (!file) return;
@@ -869,10 +873,11 @@
   }
 
   const queueStrip = document.createElement('div');
-  queueStrip.className = 'turn-queue-strip glass';
+  queueStrip.className = 'turn-queue-strip island-bud';
   queueStrip.hidden = true;
   queueStrip.setAttribute('aria-label', 'Queued turns');
-  document.body.insertBefore(queueStrip, document.querySelector('.compose-row'));
+  // Inside the dock, so it fuses with the pill (docs/dynamic-island-composer-spec.md).
+  document.querySelector('.compose-row').prepend(queueStrip);
 
   // P17-L: hairline icons, no emoji.
   const queueSvg = (d) => `<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${d}</svg>`;
@@ -2171,12 +2176,11 @@
   const CONTEXT_LIMITS = { claude: 1000000, codex: 1000000, gemini: 1048576 };
   const CONTEXT_WARN_PCT = 75;
   const contextWarning = document.createElement('div');
-  contextWarning.className = 'context-warning';
+  contextWarning.className = 'context-warning island-bud';
   contextWarning.hidden = true;
   contextWarning.innerHTML = `${WARN_SVG}<span class="context-warning-text"></span><button type="button" class="context-compact">Compact</button>`;
-  // Part of the composer pill, not a strip above it: it grows out of the pill's
-  // top edge and stays joined to it (docs/dynamic-island-composer-spec.md).
-  composerEl.append(contextWarning);
+  // A bud of the dock right above the pill; the dock's goo fuses the two (docs/dynamic-island-composer-spec.md).
+  composerEl.before(contextWarning);
   const kTokens = (n) => (n >= 1e6 ? `${(n / 1e6).toFixed(n >= 1e7 ? 0 : 1)}M` : `${Math.max(1, Math.round(n / 1000))}k`);
   function renderContextGauge(context) {
     const tokens = context?.tokens || 0;
