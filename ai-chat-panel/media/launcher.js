@@ -7,7 +7,7 @@
   const historyList = document.getElementById('historyList');
   const scheduledList = document.getElementById('scheduledList');
   const tabs = document.querySelectorAll('.launcher-tab');
-  const panels = { recent: document.getElementById('recentPanel'), scheduled: document.getElementById('scheduledPanel'), system: document.getElementById('systemPanel') };
+  const panels = { recent: document.getElementById('recentPanel'), scheduled: document.getElementById('scheduledPanel'), settings: document.getElementById('settingsPanel') || document.getElementById('systemPanel') };
   const modelCards = document.getElementById('modelCards');
   const ICONS = window.AGENT_ICONS || {};
   const names = window.AGENT_NAMES || { claude: 'Claude Code', codex: 'Codex', gemini: 'Antigravity', opus: 'Claude Opus 5.5' };
@@ -24,14 +24,23 @@
     for (const btn of tabs) btn.setAttribute('aria-selected', String(btn.dataset.tab === tab));
     for (const [id, panel] of Object.entries(panels)) panel.hidden = id !== tab;
     if (tab === 'scheduled') vscode.postMessage({ type: 'requestSchedulerQueue' });
-    if (tab === 'system') vscode.postMessage({ type: 'requestFleet' });
+    if (tab === 'settings' || tab === 'system') vscode.postMessage({ type: 'requestFleet' });
   }
   for (const btn of tabs) btn.addEventListener('click', () => setTab(btn.dataset.tab));
 
-  // ---------- P17-W: System tab (fleet, CLIs, background services) ----------
+  // ---------- Settings tab (Fleet, Telegram, Tunnel, Preferences) ----------
   const fleetList = document.getElementById('fleetList');
-  const serviceList = document.getElementById('serviceList');
   const pingClisBtn = document.getElementById('pingClisBtn');
+  const telegramDot = document.getElementById('telegramDot');
+  const telegramDesc = document.getElementById('telegramDesc');
+  const configureTelegramBtn = document.getElementById('configureTelegramBtn');
+  const testTelegramBtn = document.getElementById('testTelegramBtn');
+  const disconnectTelegramBtn = document.getElementById('disconnectTelegramBtn');
+  const tunnelDot = document.getElementById('tunnelDot');
+  const tunnelDesc = document.getElementById('tunnelDesc');
+  const toggleTunnelBtn = document.getElementById('toggleTunnelBtn');
+  const formatPills = document.querySelectorAll('.format-pill');
+  const openTerminalBtn = document.getElementById('openTerminalBtn');
   const CLI_NAMES = { claude: 'claude', codex: 'codex', gemini: 'agy' };
   function systemRow(state, title, detail, hint = '') {
     const row = document.createElement('div');
@@ -54,26 +63,76 @@
       if (pinged && cli.version === null) return ['warn', `${CLI_NAMES[agent]} found, but --version failed`];
       return ['ok', cli.version || `${CLI_NAMES[agent]} ready`];
     };
-    fleetList.replaceChildren(
-      systemRow('ok', 'Auto', 'Routes each prompt by role and remaining quota'),
-      ...models.map((m) => {
-        const [state, cliText] = cliState(m.agent);
-        return systemRow(state, m.label, `${m.model || m.agent}${m.effort ? ` · ${m.effort}` : ''} · ${cliText}`, clis[m.agent]?.path || '');
-      }),
-    );
-    const tunnelState = services.tunnel === 'live' ? 'ok' : services.tunnel === 'connecting' ? 'warn' : 'off';
-    serviceList.replaceChildren(
-      systemRow(services.watchdog ? 'ok' : 'off', 'Scheduler Watchdog', services.watchdog ? 'Polling the queue' : 'Stopped'),
-      systemRow(services.quotaBridge ? 'ok' : 'warn', 'Quota Bridge', services.quotaBridge ? 'Connected to the usage status bar' : 'Usage extension not found; quotas show as unknown'),
-      systemRow(services.telegram ? 'ok' : 'off', 'Telegram Bridge', services.telegram ? 'Running, single user' : 'Not configured'),
-      systemRow(tunnelState, 'Cloudflare Tunnel', services.tunnelUrl || (tunnelState === 'warn' ? 'Connecting' : 'Off')),
-    );
-    pingClisBtn.disabled = false;
-    pingClisBtn.textContent = 'Check CLIs';
+    if (fleetList) {
+      fleetList.replaceChildren(
+        systemRow('ok', 'Auto', 'Routes each prompt by role and remaining quota'),
+        ...models.map((m) => {
+          const [state, cliText] = cliState(m.agent);
+          return systemRow(state, m.label, `${m.model || m.agent}${m.effort ? ` · ${m.effort}` : ''} · ${cliText}`, clis[m.agent]?.path || '');
+        }),
+      );
+    }
+
+    // 1. Telegram Bridge state
+    if (telegramDot && telegramDesc && configureTelegramBtn) {
+      const tg = services.telegram || {};
+      const isTgConfigured = typeof tg === 'boolean' ? tg : tg.configured;
+      if (isTgConfigured) {
+        telegramDot.className = 'system-dot is-ok';
+        const mode = tg.mode === 'webhook' ? 'live webhook' : 'long-polling';
+        telegramDesc.textContent = `Connected (Chat ID: ${tg.maskedChatId || 'linked'}) · ${mode}`;
+        configureTelegramBtn.textContent = 'Edit';
+        if (testTelegramBtn) testTelegramBtn.style.display = 'inline-block';
+        if (disconnectTelegramBtn) disconnectTelegramBtn.style.display = 'inline-block';
+      } else {
+        telegramDot.className = 'system-dot is-off';
+        telegramDesc.textContent = 'Not configured. Receive mobile task alerts & approvals.';
+        configureTelegramBtn.textContent = 'Configure';
+        if (testTelegramBtn) testTelegramBtn.style.display = 'none';
+        if (disconnectTelegramBtn) disconnectTelegramBtn.style.display = 'none';
+      }
+    }
+
+    // 2. Cloudflare Tunnel state
+    if (tunnelDot && tunnelDesc && toggleTunnelBtn) {
+      const tn = typeof services.tunnel === 'string' ? { status: services.tunnel, url: services.tunnelUrl } : (services.tunnel || {});
+      const isLive = tn.status === 'live';
+      const isConnecting = tn.status === 'connecting';
+      tunnelDot.className = `system-dot ${isLive ? 'is-ok' : isConnecting ? 'is-warn' : 'is-off'}`;
+      tunnelDesc.textContent = isLive ? `Live: ${tn.url}` : isConnecting ? 'Connecting tunnel…' : 'Off. Instant webhook ingress requires an active tunnel.';
+      toggleTunnelBtn.textContent = isLive ? 'Stop Tunnel' : isConnecting ? 'Connecting…' : 'Start Tunnel';
+      toggleTunnelBtn.disabled = isConnecting;
+    }
+
+    // 3. Time format selector sync
+    const currentFormat = services.timeFormat || '24h';
+    for (const pill of formatPills) {
+      pill.classList.toggle('active', pill.dataset.format === currentFormat);
+    }
+
+    if (pingClisBtn) {
+      pingClisBtn.disabled = false;
+      pingClisBtn.textContent = 'Check CLIs';
+    }
   }
-  pingClisBtn.addEventListener('click', () => { pingClisBtn.disabled = true; pingClisBtn.textContent = 'Checking…'; vscode.postMessage({ type: 'pingClis' }); });
-  document.getElementById('modelSettingsBtn').addEventListener('click', () => vscode.postMessage({ type: 'openModelSettings' }));
-  document.getElementById('resetCacheBtn').addEventListener('click', () => vscode.postMessage({ type: 'resetCliCache' }));
+  pingClisBtn?.addEventListener('click', () => { pingClisBtn.disabled = true; pingClisBtn.textContent = 'Checking…'; vscode.postMessage({ type: 'pingClis' }); });
+  document.getElementById('modelSettingsBtn')?.addEventListener('click', () => vscode.postMessage({ type: 'openModelSettings' }));
+  document.getElementById('resetCacheBtn')?.addEventListener('click', () => vscode.postMessage({ type: 'resetCliCache' }));
+  configureTelegramBtn?.addEventListener('click', () => vscode.postMessage({ type: 'configureTelegram' }));
+  testTelegramBtn?.addEventListener('click', () => vscode.postMessage({ type: 'testTelegram' }));
+  disconnectTelegramBtn?.addEventListener('click', () => vscode.postMessage({ type: 'disconnectTelegram' }));
+  toggleTunnelBtn?.addEventListener('click', () => {
+    const isLive = toggleTunnelBtn.textContent.startsWith('Stop');
+    vscode.postMessage({ type: isLive ? 'stopTunnel' : 'startTunnel' });
+  });
+  for (const pill of formatPills) {
+    pill.addEventListener('click', () => {
+      for (const p of formatPills) p.classList.remove('active');
+      pill.classList.add('active');
+      vscode.postMessage({ type: 'setTimeFormat', format: pill.dataset.format });
+    });
+  }
+  openTerminalBtn?.addEventListener('click', () => vscode.postMessage({ type: 'openTerminal' }));
 
   // P16-M: legible model cards with 5h and 7d "% remaining" gauges.
   function resetsIn(resetsAt) {
@@ -286,7 +345,7 @@
       rename.className = 'history-rename';
       rename.title = 'Rename chat';
       rename.setAttribute('aria-label', 'Rename chat');
-      rename.innerHTML = '<svg viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M11.5 2.5a1.4 1.4 0 0 1 2 2L5 13l-2.5.5L3 11z" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/></svg>';
+      rename.innerHTML = '<svg viewBox="7.99 8.02 496.02 495.98" fill="currentColor" aria-hidden="true"><path d="M486.71,25.29a59.1,59.1,0,0,0-83.49,0C16.09,412.42,39.26,388,37.51,393.51L8.76,483.11a16,16,0,0,0,20.13,20.13c97.05-31.14,92.2-28.84,96-32.67L309.5,286a16,16,0,0,0-22.63-22.63L105,445.21,48.74,463.26,66.79,407,356.21,117.56l38.23,38.23-31.82,31.83a16,16,0,0,0,22.63,22.63L486.71,108.78A59,59,0,0,0,486.71,25.29ZM464.08,86.15l-47,47L378.83,94.93l47-47C442.87,30.9,472,43.11,472,67A26.82,26.82,0,0,1,464.08,86.15Z"/><path d="M345.14,224.63a16,16,0,0,0-26.06,10.8c-1.85,19.2,25.64,24.46,31.22,6.22A16,16,0,0,0,345.14,224.63Z"/></svg>';
       rename.addEventListener('click', (event) => {
         event.stopPropagation();
         editTitle(title, session.preview || '', (name) => vscode.postMessage({ type: 'renameChat', id: session.id, title: name }));

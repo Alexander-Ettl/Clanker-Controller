@@ -19,14 +19,14 @@ const { MODEL_CATALOG, modelOption, resolveModel } = require('./lib/model-catalo
 const { SchedulerQueue, ACTIVE_STATUSES } = require('./lib/scheduler-queue.js');
 const { TelegramBridge } = require('./lib/telegram-bridge.js');
 const { resolveEditorTheme } = require('./lib/editor-theme.js');
-const { buildHandoff, checkpointStart, COMPACT_DIRECTIVE } = require('./lib/chat-handoff.js');
+const { buildHandoff, buildCompactionHandoff, checkpointStart, estimateTokens, COMPACT_DIRECTIVE, COMPACT_TARGET_TOKENS } = require('./lib/chat-handoff.js');
 const { CodexCommandCatalog } = require('./lib/codex-commands.js');
 
 // Context windows (the webview's gauge uses the same numbers) and the point
 // where the panel compacts Gemini itself: agy has no compaction of its own,
 // while Claude Code and Codex auto-compact natively (both on by default).
 const CONTEXT_LIMITS = { claude: 1000000, codex: 1000000, gemini: 1048576 };
-const AUTO_COMPACT_RATIO = 0.85;
+const AUTO_COMPACT_RATIO = 0.90;
 const { notifyReply } = require('./lib/notify.js');
 
 // P17-X: clock locale + format shared by both webviews ('24h' default, 'auto' follows vscode.env.language).
@@ -279,6 +279,9 @@ async function voiceVocabulary() {
  */
 class ChatRun {
   constructor(chat, deps) {
+    if (chat.context?.agent === 'codex' && !chat.context.estimated) {
+      chat.context = { agent: 'codex', tokens: Math.min(CONTEXT_LIMITS.codex, estimateTokens(buildCompactionHandoff(chat.messages || [], 'codex'))), estimated: true };
+    }
     this.chat = chat;
     this.deps = deps; // { chatStore, workspaceDir, getModels, notify, notifyHistory, chatWindowManager }
     this.host = null;
@@ -302,6 +305,21 @@ class ChatRun {
     // Native one-shot commands have their own thread. Keep that thread id,
     // seen cursor, and context usage out of the resumable Codex chat session.
     this.turnAgent = run.codexCommand ? null : agent;
+    let contextEstimate = null;
+    if (!run.codexCommand && !reply.compact) {
+      const limit = CONTEXT_LIMITS[agent] || 1000000;
+      const baseTokens = this.chat.context?.agent === agent && this.chat.context.tokens > 0 && this.chat.context.tokens <= limit
+        ? this.chat.context.tokens
+        : estimateTokens(buildCompactionHandoff(this.chat.messages, agent));
+      const promptTokens = estimateTokens(run.prompt || user?.text || '');
+      const startingTokens = Math.min(limit, baseTokens + (run.resume ? promptTokens : 0));
+      contextEstimate = {
+        agent,
+        tokens: startingTokens,
+        estimated: agent === 'codex' || !this.chat.context?.tokens,
+      };
+      this.chat.context = contextEstimate;
+    }
     this.chat.messages.push(user);
     this.activeAssistantMessage = reply;
     this.chat.messages.push(reply);
@@ -309,6 +327,7 @@ class ChatRun {
     this.save();
     this.turn = { ...routing, startedAt: Date.now() };
     this.post({ type: 'routing', ...routing });
+    if (contextEstimate) this.post({ type: 'usage', agent, contextTokens: contextEstimate.tokens, estimated: true });
     this.streamEngine.models = this.deps.getModels();
     this.streamEngine.start(run);
     this.deps.notifyHistory();
@@ -321,29 +340,34 @@ class ChatRun {
   }
 
   /**
-   * P17-R: shrinks `agent`'s context to a checkpoint summary. Claude compacts
-   * its own session natively (/compact). agy has no compaction and Codex exec
-   * can't take /compact, so they write the summary and their next turn starts
-   * a fresh session from it (see handleStreamEvent) instead of resuming the
-   * full one, which is what left Gemini over its limit after "Compact". A
-   * session already past its window can't summarize itself, so it gets the
-   * chat's own condensed record to summarize instead.
+   * P17-R: shrinks `agent`'s context to a checkpoint. Claude compacts its own
+   * session natively (/compact). Codex resumes its native thread so its own
+   * automatic compaction and complete history remain available while writing
+   * the checkpoint. Gemini uses the bounded transcript fallback when needed.
    */
   compact(agent, used, { auto = false } = {}) {
     const session = this.chat.sessions?.[agent] || null;
-    const history = buildHandoff(this.chat.messages.slice(checkpointStart(this.chat.messages)), agent);
+    const lastCheckpoint = this.chat.messages.findLast((message) => message.role === 'assistant' && message.checkpoint);
+    // Older checkpoints were only ~1k tokens. Re-read the complete stored
+    // transcript once so the first rich checkpoint can recover what remains.
+    const from = lastCheckpoint?.retainedTokens ? checkpointStart(this.chat.messages) : 0;
+    const history = buildCompactionHandoff(this.chat.messages.slice(from), agent);
     const fromTranscript = [history, COMPACT_DIRECTIVE].filter(Boolean).join('\n\n');
     const overflowing = this.chat.context?.agent === agent && this.chat.context.tokens >= CONTEXT_LIMITS[agent];
     const native = agent === 'claude' && Boolean(session?.id);
-    const resume = native || (session?.id && !overflowing) ? session.id : null;
+    // Codex exec reports cumulative turn consumption, not live context size,
+    // and auto-compacts resumable threads itself. Never discard that thread
+    // because its usage total exceeded the nominal window.
+    const resume = native || (session?.id && (agent === 'codex' || !overflowing)) ? session.id : null;
     const text = auto ? 'Auto-compact: context nearly full' : 'Compact session';
+    const previousContext = this.chat.context;
     this.streamEngine.interrupt();
     this.chat.context = { agent, tokens: 0 };
     this.post({ type: 'compacting', text, auto });
     this.begin({
       agent,
       user: { role: 'user', text, compact: true, auto, at: new Date().toISOString(), agent },
-      reply: { role: 'assistant', text: '', agent, modelLabel: used?.label, compact: true },
+      reply: { role: 'assistant', text: '', agent, modelLabel: used?.label, compact: true, compactContext: history, compactPreviousContext: previousContext },
       routing: { agentId: agent, modelLabel: used?.label, roleName: null, compact: true },
       run: { agent, prompt: native ? '/compact' : resume ? COMPACT_DIRECTIVE : fromTranscript, resume, freshPrompt: resume && !native ? fromTranscript : null, model: used?.model, effort: used?.effort },
     });
@@ -372,25 +396,39 @@ class ChatRun {
     if (event.type === 'approval_cancelled') this.pending.delete(event.actionId);
     let compacted = null;
     let autoCompact = null;
-    if (event.type === 'turn_complete' && !event.interrupted && this.activeAssistantMessage) {
+    let contextEstimate = null;
+    if (event.type === 'turn_complete' && this.activeAssistantMessage) {
       const reply = this.activeAssistantMessage;
       const summary = reply.text.trim();
-      if (reply.compact && reply.agent !== 'claude' && summary && !/^(Gemini|Codex) error:/.test(summary)) {
+      const previousContext = reply.compactPreviousContext;
+      delete reply.compactPreviousContext;
+      if (reply.compact && reply.agent !== 'claude' && !event.interrupted && summary && !/^(Gemini|Codex) error:/.test(summary)) {
         // The summary is the new starting point: no session id, so the next
         // turn opens a fresh session briefed from this checkpoint on.
         reply.checkpoint = true;
         this.chat.sessions = { ...this.chat.sessions, [reply.agent]: {} };
-        compacted = { agent: reply.agent, tokens: Math.ceil(summary.length / 4) };
+        reply.retainedTokens = Math.min(COMPACT_TARGET_TOKENS, estimateTokens(buildHandoff(this.chat.messages.slice(checkpointStart(this.chat.messages)), reply.agent)));
+        // The latest checkpoint subsumes earlier hidden context. Keep saved
+        // chat files bounded across repeated compactions.
+        for (const message of this.chat.messages) if (message !== reply && message.checkpoint) delete message.compactContext;
+        compacted = { agent: reply.agent, tokens: reply.retainedTokens, estimated: true };
         this.chat.context = compacted;
-      } else if (!reply.compact && reply.agent === 'gemini' && this.chat.context?.agent === 'gemini' && this.chat.context.tokens >= CONTEXT_LIMITS.gemini * AUTO_COMPACT_RATIO) {
-        autoCompact = MODEL_CATALOG.find((entry) => entry.agent === 'gemini' && entry.label === reply.modelLabel) || MODEL_CATALOG.find((entry) => entry.agent === 'gemini');
+      } else if (reply.compact && reply.agent !== 'claude') {
+        contextEstimate = previousContext || { agent: reply.agent, tokens: 0, estimated: true };
+        this.chat.context = contextEstimate;
+      } else if (!event.interrupted && !reply.compact && this.chat.context?.tokens >= (CONTEXT_LIMITS[reply.agent] || 1000000) * AUTO_COMPACT_RATIO) {
+        autoCompact = MODEL_CATALOG.find((entry) => entry.agent === reply.agent && entry.label === reply.modelLabel) || MODEL_CATALOG.find((entry) => entry.agent === reply.agent);
       }
     }
     if (event.type === 'turn_complete') {
       // The chime every agent plays in its own UI; a Windows toast too when you're in another app.
       if (!event.interrupted && this.activeAssistantMessage) {
         const reply = this.activeAssistantMessage;
-        this.deps.notify?.(reply.agent, reply.text, this.chat.title || this.chat.messages.find((entry) => entry.role === 'user')?.text?.slice(0, 40));
+        if (!reply.compact) this.deps.notify?.(reply.agent, reply.text, this.chat.title || this.chat.messages.find((entry) => entry.role === 'user')?.text?.slice(0, 40));
+        if (reply.agent === 'codex' && !reply.compact && this.chat.context?.estimated) {
+          this.chat.context.tokens = Math.min(CONTEXT_LIMITS.codex, this.chat.context.tokens + estimateTokens(reply.text));
+          contextEstimate = this.chat.context;
+        }
       }
       if (this.activeAssistantMessage) this.activeAssistantMessage.at = new Date().toISOString();
       if (this.activeAssistantMessage && event.totalTokens) this.activeAssistantMessage.tokens = event.totalTokens; // P17-V
@@ -402,10 +440,10 @@ class ChatRun {
       this.pending.clear();
     }
     this.post(autoCompact ? { ...event, compacting: true } : event);
-    if (compacted) this.post({ type: 'usage', agent: compacted.agent, contextTokens: compacted.tokens });
-    // Gemini past 85% of its window compacts before the next turn can overflow it
-    // (sources/autocompacting_implementation_guide.md §3). Started before release() so the run stays alive.
-    if (autoCompact) this.compact('gemini', autoCompact, { auto: true });
+    if (compacted) this.post({ type: 'usage', agent: compacted.agent, contextTokens: compacted.tokens, estimated: true });
+    else if (contextEstimate) this.post({ type: 'usage', agent: contextEstimate.agent, contextTokens: contextEstimate.tokens, estimated: true });
+    // An agent past 90% of its window compacts before the next turn can overflow it.
+    if (autoCompact) this.compact(autoCompact.agent || 'gemini', autoCompact, { auto: true });
     if (event.type === 'turn_complete' && !autoCompact && this.afterCompact) {
       const next = this.afterCompact;
       this.afterCompact = null;
@@ -697,7 +735,11 @@ class ChatWindowHost {
   /** P17-K: stored user messages keep attachment paths; the webview needs names and URIs for their pills. */
   webviewChat(chat) {
     const files = (paths) => this.safeAttachmentPaths(paths).map((file) => this.attachmentMetadata(file, /\.(png|jpe?g|gif|webp|bmp)$/i.test(file) ? 'image/*' : ''));
-    return { ...chat, messages: (chat.messages || []).map((m) => (m.role === 'user' && m.attachments?.length ? { ...m, files: files(m.attachments) } : m)) };
+    return { ...chat, messages: (chat.messages || []).map((m) => {
+      const { compactContext, compactPreviousContext, ...visible } = m;
+      if (visible.role === 'assistant' && visible.compact) visible.text = '';
+      return visible.role === 'user' && visible.attachments?.length ? { ...visible, files: files(visible.attachments) } : visible;
+    }) };
   }
   saveAttachment({ name, mime, data }) { if (typeof data !== 'string' || data.length > 28 * 1024 * 1024) return; const filename = path.basename(String(name || 'attachment.bin')).replace(/[^a-zA-Z0-9._-]/g, '_'); const file = path.join(this.deps.attachmentsDir, `${Date.now()}_${filename}`); try { fs.writeFileSync(file, Buffer.from(data.replace(/^data:[^,]+,/, ''), 'base64')); this.panel.webview.postMessage({ type: 'attachmentSaved', attachment: this.attachmentMetadata(file, mime) }); } catch (error) { vscode.window.showErrorMessage(`AI Chat Panel: could not save attachment (${error.message}).`); } }
   async pickAttachments() { const files = await vscode.window.showOpenDialog({ canSelectMany: true, openLabel: 'Attach', filters: { Images: ['png', 'jpg', 'jpeg', 'webp', 'svg'], Documents: ['md', 'json', 'ts', 'js', 'txt'] } }); for (const uri of files || []) { const filename = path.basename(uri.fsPath).replace(/[^a-zA-Z0-9._-]/g, '_'); const target = path.join(this.deps.attachmentsDir, `${Date.now()}_${filename}`); fs.copyFileSync(uri.fsPath, target); this.panel.webview.postMessage({ type: 'attachmentSaved', attachment: this.attachmentMetadata(target) }); } }
@@ -846,22 +888,13 @@ class ChatWindowHost {
         <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><g stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M12,12h0a6.93,6.93,0,0,1,2-4.89l4.66-4.66a2,2,0,0,1,2.87,0h0a2,2,0,0,1,0,2.87L16.89,10A6.92,6.92,0,0,1,12,12Z"/><path d="M14.86,1.48H5.32A3.82,3.82,0,0,0,1.5,5.3v9.54a3.82,3.82,0,0,0,3.82,3.82H9.14L12,21.52l2.86-2.86h3.82a3.82,3.82,0,0,0,3.82-3.82V9.11"/></g></svg>
         <span class="round-btn-tip" aria-hidden="true">New Chat</span>
       </button>
-      <button class="round-btn" id="terminalBtn" type="button" aria-label="Terminal">
-        <svg viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
-          <path d="M2 3.5C2 2.67 2.67 2 3.5 2h9C13.33 2 14 2.67 14 3.5v9c0 .83-.67 1.5-1.5 1.5h-9C2.67 14 2 13.33 2 12.5v-9Z" stroke="currentColor" stroke-width="1.2"/>
-          <path d="M4.5 6.5 7 8.5l-2.5 2" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/>
-          <path d="M8.5 10.5h3" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/>
-        </svg>
-        <span class="round-btn-tip" aria-hidden="true">Terminal</span>
-      </button>
     </div>
   </div>
 
   <div class="transcript" id="transcript" aria-live="polite">
     <div class="empty-state">
       <p>Agents run headlessly in the background and stream their output straight into this panel.
-      Open <strong>[ &gt;_ ]</strong> above any time to inspect the raw terminal session for the
-      active agent.</p>
+      Raw terminal sessions can be inspected from the Settings tab in the sidebar if ever needed.</p>
     </div>
   </div>
 
@@ -1053,6 +1086,46 @@ class LauncherViewProvider {
       case 'pingClis': void this.pushFleet(true); break;
       case 'openModelSettings': void vscode.commands.executeCommand('workbench.action.openSettings', 'aiChatPanel.models'); break;
       case 'resetCliCache': refreshBinaries(); void this.pushFleet(); break;
+      case 'configureTelegram': void this.deps.configureTelegram?.().then(() => this.pushFleet()); break;
+      case 'testTelegram': {
+        const bridge = this.deps.getTelegramBridge?.();
+        if (!bridge || !bridge.isConfigured()) {
+          vscode.window.showWarningMessage('AI Chat Panel: Configure Telegram before sending a test ping.');
+          break;
+        }
+        bridge.sendMessage('🚀 AI Chat Panel: Test message from your workspace! Connection verified.')
+          .then((ok) => {
+            if (ok) vscode.window.showInformationMessage('AI Chat Panel: Test message sent successfully.');
+            else vscode.window.showErrorMessage('AI Chat Panel: Failed to send Telegram test message.');
+          })
+          .catch((err) => vscode.window.showErrorMessage(`AI Chat Panel: Telegram error (${err.message}).`));
+        break;
+      }
+      case 'disconnectTelegram': void this.deps.disconnectTelegram?.().then(() => this.pushFleet()); break;
+      case 'startTunnel': {
+        this.deps.startTunnel?.()
+          .then(() => this.pushFleet())
+          .catch((err) => {
+            vscode.window.showErrorMessage(`AI Chat Panel: Unable to start Cloudflare Tunnel (${err.message}). Make sure 'cloudflared' is installed.`);
+            this.pushFleet();
+          });
+        break;
+      }
+      case 'stopTunnel': void this.deps.stopTunnel?.().then(() => this.pushFleet()); break;
+      case 'setTimeFormat': {
+        if (message.format) {
+          void vscode.workspace.getConfiguration('aiChatPanel').update('timeFormat', message.format, vscode.ConfigurationTarget.Global);
+        }
+        break;
+      }
+      case 'openTerminal': {
+        const brand = message.brand;
+        const agent = message.agentId || 'claude';
+        const session = this.deps.sessionManager?.get(brand && this.deps.sessionManager.get(brand) ? brand : agent);
+        if (session) session.focus();
+        else void vscode.commands.executeCommand('workbench.action.terminal.toggleTerminal');
+        break;
+      }
       default: break;
     }
   }
@@ -1130,8 +1203,12 @@ class LauncherViewProvider {
     <button class="launcher-tab" data-tab="scheduled" role="tab" aria-selected="false">
       <svg viewBox="0 0 16 16" fill="none" aria-hidden="true"><circle cx="8" cy="8.5" r="5.75" stroke="currentColor" stroke-width="1.5"/><path d="M8 5.5v3.25l2 1.25" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg><span>Scheduled</span>
     </button>
-    <button class="launcher-tab" data-tab="system" role="tab" aria-selected="false">
-      <svg viewBox="0 0 16 16" fill="none" aria-hidden="true"><circle cx="8" cy="8" r="2" stroke="currentColor" stroke-width="1.5"/><path d="M8 1.75v1.5M8 12.75v1.5M1.75 8h1.5M12.75 8h1.5M3.58 3.58l1.06 1.06M11.36 11.36l1.06 1.06M3.58 12.42l1.06-1.06M11.36 4.64l1.06-1.06" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg><span>System</span>
+    <button class="launcher-tab" data-tab="settings" role="tab" aria-selected="false">
+      <svg viewBox="0 0 16 16" fill="none" aria-hidden="true">
+        <circle cx="8" cy="8" r="2.2" stroke="currentColor" stroke-width="1.4"/>
+        <path d="M6.8 1.5h2.4l.35 1.45c.4.15.75.35 1.1.6l1.35-.55 1.7 1.7-.55 1.35c.25.35.45.7.6 1.1l1.45.35v2.4l-1.45.35c-.15.4-.35.75-.6 1.1l.55 1.35-1.7 1.7-1.35-.55c-.35.25-.7.45-1.1.6l-.35 1.45H6.8l-.35-1.45c-.4-.15-.75-.35-1.1-.6l-1.35.55-1.7-1.7.55-1.35c-.25-.35-.45-.7-.6-1.1L1.5 9.2V6.8l1.45-.35c.15-.4.35-.75.6-1.1L3 4l1.7-1.7 1.35.55c.35-.25.7-.45 1.1-.6L6.8 1.5z" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/>
+      </svg>
+      <span>Settings</span>
     </button>
   </div>
 
@@ -1157,15 +1234,67 @@ class LauncherViewProvider {
     </div>
   </div>
 
-  <div class="launcher-panel" id="systemPanel" hidden>
-    <div class="history-label">Fleet</div>
+  <div class="launcher-panel" id="settingsPanel" hidden>
+    <div class="history-label">Remote Control</div>
+    <div class="settings-card glass">
+      <div class="settings-row" id="telegramRow">
+        <div class="settings-header">
+          <span class="system-dot is-off" id="telegramDot"></span>
+          <div class="settings-info">
+            <span class="settings-title">Telegram Bridge</span>
+            <span class="settings-desc" id="telegramDesc">Remote task approvals and mobile notifications.</span>
+          </div>
+        </div>
+        <div class="settings-actions">
+          <button class="settings-btn" id="configureTelegramBtn" type="button">Configure</button>
+          <button class="settings-btn secondary" id="testTelegramBtn" type="button" style="display:none">Test Ping</button>
+          <button class="settings-btn danger" id="disconnectTelegramBtn" type="button" style="display:none">Disconnect</button>
+        </div>
+      </div>
+      <div class="settings-divider"></div>
+      <div class="settings-row" id="tunnelRow">
+        <div class="settings-header">
+          <span class="system-dot is-off" id="tunnelDot"></span>
+          <div class="settings-info">
+            <span class="settings-title">Cloudflare Tunnel</span>
+            <span class="settings-desc" id="tunnelDesc">Enables real-time webhook delivery without port forwarding.</span>
+          </div>
+        </div>
+        <div class="settings-actions">
+          <button class="settings-btn" id="toggleTunnelBtn" type="button">Start Tunnel</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="history-label">Fleet & CLIs</div>
     <div class="system-list glass" id="fleetList"></div>
-    <div class="history-label">Services</div>
-    <div class="system-list glass" id="serviceList"></div>
     <div class="system-actions">
       <button class="system-action" id="pingClisBtn" type="button">Check CLIs</button>
       <button class="system-action" id="modelSettingsBtn" type="button">Model settings</button>
       <button class="system-action" id="resetCacheBtn" type="button" title="Forget resolved CLI paths and look them up again">Reset CLI cache</button>
+    </div>
+
+    <div class="history-label">Preferences & Tools</div>
+    <div class="settings-card glass">
+      <div class="settings-row">
+        <div class="settings-info">
+          <span class="settings-title">Time Format</span>
+          <span class="settings-desc">Timestamp style across chat cards and queue items.</span>
+        </div>
+        <div class="time-format-picker" role="radiogroup">
+          <button class="format-pill" data-format="24h" type="button">24h</button>
+          <button class="format-pill" data-format="12h" type="button">12h</button>
+          <button class="format-pill" data-format="auto" type="button">Auto</button>
+        </div>
+      </div>
+      <div class="settings-divider"></div>
+      <div class="settings-row">
+        <div class="settings-info">
+          <span class="settings-title">Agent Terminal</span>
+          <span class="settings-desc">Inspect raw PTY session output for debugging.</span>
+        </div>
+        <button class="settings-btn" id="openTerminalBtn" type="button">Open Terminal</button>
+      </div>
     </div>
   </div>
 
@@ -1301,6 +1430,13 @@ function activate(context) {
     vscode.window.showInformationMessage('AI Chat Panel: Telegram bridge started in secure single-user mode.');
   }
 
+  async function disconnectTelegram() {
+    await context.secrets.delete('aiChatPanel.telegramBotToken');
+    await context.secrets.delete('aiChatPanel.telegramChatId');
+    if (telegram) { await telegram.stop(); telegram = null; watchdog.telegram = null; }
+    vscode.window.showInformationMessage('AI Chat Panel: Telegram bridge disconnected.');
+  }
+
   void (async () => {
     const token = await context.secrets.get('aiChatPanel.telegramBotToken');
     const chatId = await context.secrets.get('aiChatPanel.telegramChatId');
@@ -1312,9 +1448,25 @@ function activate(context) {
     vscode.window.onDidCloseTerminal((terminal) => sessionManager.handleTerminalClosed(terminal)),
   );
 
-  // P17-W: live service state for the launcher's System tab.
-  const getServices = () => ({ telegram: Boolean(telegram), tunnel: tunnel.status || 'off', tunnelUrl: tunnel.publicUrl || '' });
-  launcher = new LauncherViewProvider(context.extensionUri, { chatStore, chatWindowManager, schedulerQueue, getModels, watchdog, notifySchedulerQueue, renameChat, getServices });
+  // Live service state for the launcher's Settings tab.
+  const getServices = () => ({
+    telegram: {
+      configured: Boolean(telegram?.isConfigured()),
+      running: Boolean(telegram?.running),
+      maskedChatId: telegram?.chatId ? `${telegram.chatId.slice(0, 3)}***` : '',
+      mode: telegram?.webhookPublicUrl ? 'webhook' : telegram?.running ? 'polling' : 'off',
+    },
+    tunnel: {
+      status: tunnel.status || 'off',
+      url: tunnel.publicUrl || '',
+    },
+    timeFormat: vscode.workspace.getConfiguration('aiChatPanel').get('timeFormat', '24h'),
+  });
+  launcher = new LauncherViewProvider(context.extensionUri, {
+    chatStore, chatWindowManager, schedulerQueue, getModels, watchdog, notifySchedulerQueue, renameChat,
+    getServices, configureTelegram, disconnectTelegram, startTunnel: () => tunnel.start(), stopTunnel: () => tunnel.stop(),
+    getTelegramBridge: () => telegram, sessionManager,
+  });
   context.subscriptions.push(vscode.window.registerWebviewViewProvider('aiChatPanel.mainView', launcher));
 
   context.subscriptions.push(

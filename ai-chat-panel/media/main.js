@@ -838,6 +838,7 @@
   composerActions.insertBefore(stopBtn, sendBtn);
 
   let busy = false;
+  let isCompacting = false;
   let queuePaused = false;
   let awaitingInterruptAck = false; // the host's turn_complete for a turn this window already closed out
   let turnQueue = []; // { id, text, modelId, attachments }
@@ -1226,7 +1227,7 @@
   queueBtn.addEventListener('click', () => { renderQueue(); openModal(queueModal); });
   newChatBtn.addEventListener('click', () => { attachments = []; renderAttachments(); vscode.postMessage({ type: 'newChat' }); });
   historyBtn.addEventListener('click', () => { vscode.postMessage({ type: 'requestHistory' }); openModal(historyModal); });
-  terminalBtn.addEventListener('click', () => {
+  terminalBtn?.addEventListener('click', () => {
     // The only action that ever reveals the real VS Code terminal — an
     // explicit escape hatch for debugging, not something a tab click does.
     vscode.postMessage({ type: 'focusTerminal', agentId: activeAgent });
@@ -1826,7 +1827,7 @@
   }
   const TOOL_ICONS = {
     shell: '<svg viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M3 4.5 6.5 8 3 11.5M8 11.5h5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>',
-    edit: '<svg viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M11.5 2.5a1.4 1.4 0 0 1 2 2L5 13l-2.5.5L3 11z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/></svg>',
+    edit: '<svg viewBox="7.99 8.02 496.02 495.98" fill="currentColor" aria-hidden="true"><path d="M486.71,25.29a59.1,59.1,0,0,0-83.49,0C16.09,412.42,39.26,388,37.51,393.51L8.76,483.11a16,16,0,0,0,20.13,20.13c97.05-31.14,92.2-28.84,96-32.67L309.5,286a16,16,0,0,0-22.63-22.63L105,445.21,48.74,463.26,66.79,407,356.21,117.56l38.23,38.23-31.82,31.83a16,16,0,0,0,22.63,22.63L486.71,108.78A59,59,0,0,0,486.71,25.29ZM464.08,86.15l-47,47L378.83,94.93l47-47C442.87,30.9,472,43.11,472,67A26.82,26.82,0,0,1,464.08,86.15Z"/><path d="M345.14,224.63a16,16,0,0,0-26.06,10.8c-1.85,19.2,25.64,24.46,31.22,6.22A16,16,0,0,0,345.14,224.63Z"/></svg>',
     search: '<svg viewBox="0 0 16 16" fill="none" aria-hidden="true"><circle cx="7" cy="7" r="4.25" stroke="currentColor" stroke-width="1.5"/><path d="m10.2 10.2 3.3 3.3" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>',
     read: '<svg viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M1.75 8S4.25 3.5 8 3.5 14.25 8 14.25 8 11.75 12.5 8 12.5 1.75 8 1.75 8z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/><circle cx="8" cy="8" r="2" stroke="currentColor" stroke-width="1.5"/></svg>',
     other: '<svg viewBox="0 0 16 16" fill="none" aria-hidden="true"><circle cx="8" cy="8" r="5.5" stroke="currentColor" stroke-width="1.5"/><path d="M8 5.5v3l2 1.2" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>',
@@ -2269,24 +2270,23 @@
   function renderContextGauge(context) {
     const tokens = context?.tokens || 0;
     const limit = CONTEXT_LIMITS[context?.agent] || 1000000;
+    const remaining = Math.max(0, limit - tokens);
     const pct = Math.min(100, Math.round((tokens / limit) * 100));
-    pendingTokens.textContent = tokens ? `${kTokens(tokens)} / ${kTokens(limit)} context` : '';
+    const isEst = context?.estimated ? '~' : '';
+    pendingTokens.textContent = tokens ? `${isEst}${kTokens(tokens)} / ${kTokens(limit)} (${kTokens(remaining)} left)` : '';
+    pendingTokens.title = `${context?.agent ? AGENT_NAMES[context.agent] || context.agent : 'Model'} context: ${tokens.toLocaleString()} tokens used (${pct}%), ${remaining.toLocaleString()} tokens remaining in ${limit.toLocaleString()} window.`;
     contextWarning.hidden = pct < CONTEXT_WARN_PCT;
     if (contextWarning.hidden) return;
-    contextWarning.querySelector('.context-warning-text').textContent = `Context ${pct}% full`;
-    contextWarning.title = `${AGENT_NAMES[context.agent] || context.agent} context window: ${tokens.toLocaleString()} of ${limit.toLocaleString()} tokens. Compacting summarizes the chat so far into a short checkpoint.`;
+    contextWarning.querySelector('.context-warning-text').textContent = `Context ${pct}% full (${kTokens(remaining)} left)`;
+    contextWarning.title = `${AGENT_NAMES[context.agent] || context.agent} context window: ${context.estimated ? 'approximately ' : ''}${tokens.toLocaleString()} of ${limit.toLocaleString()} tokens (${remaining.toLocaleString()} left). Compacting retains up to roughly 100,000 tokens in a detailed checkpoint.`;
   }
   const COMPACT_SVG = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 2.5 8 6l4-3.5M4 13.5 8 10l4 3.5"/></svg>';
-  // The history stays on screen: a divider marks where the agent's context was
-  // compacted, the summary reply follows it, and the chat carries on below.
+  // The history stays on screen; only a quiet divider marks the hidden handoff.
   function appendCompactDivider(auto) {
     const divider = document.createElement('div');
     divider.className = 'compact-divider';
     divider.innerHTML = COMPACT_SVG;
     divider.append(auto ? 'Context auto-compacted' : 'Context compacted');
-    const hint = document.createElement('small');
-    hint.textContent = 'Everything above stays here. The agent continues from the summary below.';
-    divider.append(hint);
     transcriptEl.appendChild(divider);
   }
   contextWarning.querySelector('.context-compact').addEventListener('click', () => {
@@ -2300,6 +2300,7 @@
    * so far stays open, and the stream picks up where it is. */
   function restoreChat(chat, running = null) {
     currentChatId = chat.id;
+    isCompacting = Boolean(running?.compact);
     renderContextGauge(chat.context);
     transcriptEl.replaceChildren();
     currentAssistantBubble = null;
@@ -2314,13 +2315,16 @@
     const flush = () => { if (anchor) collapseTurn(anchor, startedAt && endedAt ? Date.parse(endedAt) - Date.parse(startedAt) : null); anchor = null; };
     const storedTool = (message) => appendToolCard({ name: message.event?.name, command: message.event?.command || message.event?.file, output: { text: message.event?.output || '' }, done: true, error: message.error, diff: message.event?.diff });
     const placed = new Set();
+    let hiddenCompactTurn = false;
     messages.forEach((message, index) => {
       if (message.role === 'user') {
         flush();
-        if (message.compact) appendCompactDivider(message.auto);
+        hiddenCompactTurn = Boolean(message.compact);
+        if (hiddenCompactTurn) { appendCompactDivider(message.auto); return; }
         appendUserMessage(message.text || '', message.at || null, message.files);
         anchor = currentTurnEl.firstElementChild; startedAt = message.at; endedAt = null;
       }
+      else if (hiddenCompactTurn) return;
       else if (message.role === 'assistant') {
         // The tools that follow a reply record where in its text they ran, so
         // text and steps come back in the order they happened (older chats: tools last).
@@ -2407,7 +2411,7 @@
 
   const CHAT_ICONS = {
     stop: '<svg viewBox="0 0 16 16" fill="none" aria-hidden="true"><rect x="4.5" y="4.5" width="7" height="7" rx="1.5" fill="currentColor"/></svg>',
-    rename: '<svg viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M11.5 2.5a1.4 1.4 0 0 1 2 2L5 13l-2.5.5L3 11z" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/></svg>',
+    rename: '<svg viewBox="7.99 8.02 496.02 495.98" fill="currentColor" aria-hidden="true"><path d="M486.71,25.29a59.1,59.1,0,0,0-83.49,0C16.09,412.42,39.26,388,37.51,393.51L8.76,483.11a16,16,0,0,0,20.13,20.13c97.05-31.14,92.2-28.84,96-32.67L309.5,286a16,16,0,0,0-22.63-22.63L105,445.21,48.74,463.26,66.79,407,356.21,117.56l38.23,38.23-31.82,31.83a16,16,0,0,0,22.63,22.63L486.71,108.78A59,59,0,0,0,486.71,25.29ZM464.08,86.15l-47,47L378.83,94.93l47-47C442.87,30.9,472,43.11,472,67A26.82,26.82,0,0,1,464.08,86.15Z"/><path d="M345.14,224.63a16,16,0,0,0-26.06,10.8c-1.85,19.2,25.64,24.46,31.22,6.22A16,16,0,0,0,345.14,224.63Z"/></svg>',
     // The Source Control mark: one trunk, one branch splitting off, a node on each end.
     fork: '<svg viewBox="0 0 16 16" fill="none" aria-hidden="true"><circle cx="4.5" cy="3.5" r="1.6" stroke="currentColor" stroke-width="1.3"/><circle cx="4.5" cy="12.5" r="1.6" stroke="currentColor" stroke-width="1.3"/><circle cx="11.5" cy="4.5" r="1.6" stroke="currentColor" stroke-width="1.3"/><path d="M4.5 5.1v5.8M11.5 6.1c0 2.6-2 3.4-4.3 3.9-1.5.3-2.7.7-2.7 1" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>',
     delete: '<svg viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M2.75 4.25h10.5M6.25 4.25V2.75h3.5v1.5M4.25 4.25l.6 8.4a1 1 0 0 0 1 .93h4.3a1 1 0 0 0 1-.93l.6-8.4M6.75 7v4M9.25 7v4" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>',
@@ -2603,20 +2607,26 @@
       // Forward-compatible with the Unified Event Protocol the headless
       // streaming bridge (P13-E) will emit; inert until that lands.
       case 'thought': {
-        appendThought(message.text || '');
+        if (!isCompacting) appendThought(message.text || '');
         break;
       }
       case 'delta': {
+        if (isCompacting) {
+          if (/^(Gemini|Codex) error:/i.test(message.text || '')) appendNotice(message.text);
+          break;
+        }
         foldThought();
         appendAssistantDelta(message.text, message.model, turnModelLabel, turnRoleName);
         break;
       }
       case 'tool_start': {
+        if (isCompacting) break;
         foldThought();
         openToolCard = appendToolCard({ name: message.name, command: message.command || message.file, output: { text: '' }, toolId: message.toolId, done: message.done, diff: message.diff });
         break;
       }
       case 'tool_end': {
+        if (isCompacting) break;
         const card = (message.toolId && toolCards.get(message.toolId)) || openToolCard;
         finishToolCard(card, { output: message.output, error: message.error });
         if (card === openToolCard) openToolCard = null;
@@ -2640,15 +2650,18 @@
         break;
       }
       case 'compacting': {
-        // Manual (the Compact button) or automatic (Gemini near its window): same divider, same flow.
+        // The handoff streams invisibly; the transcript only gets this divider.
+        isCompacting = true;
+        currentAssistantBubble = null;
+        currentTurnEl = null;
+        turnAnchor = null;
         appendCompactDivider(message.auto);
-        appendUserMessage(message.text || 'Compact session');
         renderContextGauge(null);
         setBusy(true);
         break;
       }
       case 'usage': {
-        renderContextGauge({ agent: message.agent, tokens: message.contextTokens });
+        renderContextGauge({ agent: message.agent, tokens: message.contextTokens, estimated: message.estimated });
         break;
       }
       case 'workspaceFiles': {
@@ -2675,17 +2688,21 @@
         break;
       }
       case 'turn_complete': {
-        if (awaitingInterruptAck) { awaitingInterruptAck = false; break; } // already closed out by Stop / Steer Now
+        if (awaitingInterruptAck) { awaitingInterruptAck = false; isCompacting = false; break; } // already closed out by Stop / Steer Now
+        const completedCompaction = isCompacting;
+        isCompacting = false;
         // Anything still unanswered can't be answered any more.
         for (const [id, card] of pendingCards) { settleCard(card, 'Turn ended', 'denied'); pendingCards.delete(id); }
-        document.querySelectorAll('.tool-card.is-running').forEach((card) => {
-          finishToolCard(card, { output: card.querySelector('.tool-body')?.textContent || '' });
-          if (message.interrupted) card.classList.add('is-cancelled');
-        });
-        foldThought();
-        if (message.interrupted) appendInterruptedPill(); // interrupted host-side (a voice turn)
-        endAssistantTurn();
-        collapseTurn(turnAnchor, Date.now() - turnStartedAt);
+        if (!completedCompaction) {
+          document.querySelectorAll('.tool-card.is-running').forEach((card) => {
+            finishToolCard(card, { output: card.querySelector('.tool-body')?.textContent || '' });
+            if (message.interrupted) card.classList.add('is-cancelled');
+          });
+          foldThought();
+          if (message.interrupted) appendInterruptedPill(); // interrupted host-side (a voice turn)
+          endAssistantTurn();
+          collapseTurn(turnAnchor, Date.now() - turnStartedAt);
+        } else resetThought();
         turnAnchor = null;
         setBusy(false);
         if (!message.interrupted && !message.compacting && !queuePaused && turnQueue.length) { dispatchTurn(turnQueue.shift()); renderTurnQueue(); }
