@@ -25,7 +25,9 @@ const FIRST_OUTPUT_TIMEOUT_MS = 30000;
 /**
  * P17-R: how full the context window is after this event, or 0 when it says
  * nothing about that. Claude: each assistant message's API usage (prompt +
- * cache + output). Codex: turn.completed usage. agy: result usage, if any.
+ * cache + output). agy: result usage, if any. Codex's turn.completed usage is
+ * cumulative work across the turn and can exceed the context window many
+ * times over, so ChatRun maintains an explicit context estimate instead.
  */
 /** What a Claude tool call acts on, for its card: the command, a search's pattern and scope, a URL, a query. */
 function toolTarget(input = {}) {
@@ -38,7 +40,7 @@ function toolTarget(input = {}) {
 function contextTokensOf(raw) {
   const n = (x) => (Number.isFinite(x) ? x : 0);
   const u = raw?.type === 'assistant' ? raw.message?.usage
-    : raw?.type === 'turn.completed' ? raw.usage
+    : raw?.step_update?.usage ? raw.step_update.usage
     : raw?.event === 'result' ? raw.result?.usage
     : null;
   if (!u) return 0;

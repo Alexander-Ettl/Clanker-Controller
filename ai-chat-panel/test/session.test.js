@@ -364,7 +364,7 @@ test('CLI command lines use only flags the real CLIs accept, and stdin payloads 
 });
 
 test('vendor stream shapes (claude, codex exec --json, agy) map to delta/tool/turn_complete', () => {
-  const { normalizeEvent } = require('../lib/stream-engine.js');
+  const { normalizeEvent, contextTokensOf } = require('../lib/stream-engine.js');
   assert.deepEqual(normalizeEvent({ type: 'assistant', message: { content: [{ type: 'text', text: 'OK' }] } }, 'claude'), { type: 'delta', text: 'OK', block: true, model: 'claude', agent: 'claude' });
   assert.equal(normalizeEvent({ type: 'assistant', message: { content: [{ type: 'tool_use', name: 'Bash', input: { command: 'ls' } }] } }, 'claude').command, 'ls');
   assert.equal(normalizeEvent({ type: 'result', session_id: 's', result: 'OK' }, 'claude').type, 'turn_complete');
@@ -375,6 +375,9 @@ test('vendor stream shapes (claude, codex exec --json, agy) map to delta/tool/tu
   assert.equal(normalizeEvent({ event: 'step_update', step_update: { text_delta: 'OK' } }, 'gemini').text, 'OK');
   assert.equal(normalizeEvent({ event: 'result', result: { status: 'SUCCESS' } }, 'gemini').type, 'turn_complete');
   assert.match(normalizeEvent({ event: 'result', result: { status: 'ERROR', error: 'boom' } }, 'gemini').text, /boom/);
+  assert.equal(contextTokensOf({ type: 'turn.completed', usage: { input_tokens: 4601075, output_tokens: 1000 } }), 0, 'Codex turn consumption is not context occupancy');
+  assert.equal(contextTokensOf({ type: 'assistant', message: { usage: { input_tokens: 100, cache_read_input_tokens: 200, output_tokens: 10 } } }), 310);
+  assert.equal(contextTokensOf({ event: 'step_update', step_update: { usage: { input_tokens: 142000, output_tokens: 500 } } }), 142500, 'Gemini step_update provides live context tokens');
 });
 
 test('interactive claude: control_request -> approval/question cards, clicks -> control_response on stdin', () => {
@@ -635,19 +638,28 @@ test('chat memory: the handoff briefs only missed turns, without tool output, wi
 });
 
 test('compaction: a checkpoint bounds the briefing and always survives the budget', () => {
-  const { buildHandoff, checkpointStart } = require('../lib/chat-handoff.js');
+  const { buildHandoff, buildCompactionHandoff, checkpointStart, estimateTokens, COMPACT_DIRECTIVE, COMPACT_TARGET_TOKENS } = require('../lib/chat-handoff.js');
   const before = [{ role: 'user', text: 'old secret question', agent: 'gemini' }, { role: 'assistant', text: 'old answer', agent: 'gemini' }];
   assert.equal(checkpointStart(before), 0, 'no checkpoint: brief from the start');
   const failed = [...before, { role: 'user', text: 'Compact session', compact: true }, { role: 'assistant', text: 'Gemini error: quota', compact: true, agent: 'gemini' }];
   assert.equal(checkpointStart(failed), 0, 'a failed compaction is not a checkpoint');
   const summary = `# CONTEXT CHECKPOINT SUMMARY\n- **Primary Goal:** ship P17-R ${'z'.repeat(3000)}`;
   const long = Array.from({ length: 20 }, (_, i) => [{ role: 'user', text: `after ${i} ${'x'.repeat(500)}`, agent: 'gemini' }, { role: 'assistant', text: 'y'.repeat(2000), agent: 'gemini' }]).flat();
-  const messages = [...before, { role: 'user', text: 'Compact session', compact: true }, { role: 'assistant', text: summary, compact: true, checkpoint: true, agent: 'gemini' }, ...long];
+  const retained = `detailed chronology ${'d'.repeat(60000)}`;
+  const messages = [...before, { role: 'user', text: 'Compact session', compact: true }, { role: 'assistant', text: summary, compactContext: retained, compact: true, checkpoint: true, agent: 'gemini' }, ...long];
   const from = checkpointStart(messages);
   assert.equal(from, 2, 'briefing starts at the Compact session message');
   const handoff = buildHandoff(messages.slice(from), 'gemini');
   assert.doesNotMatch(handoff, /old secret question/, 'nothing from before the checkpoint');
-  assert.match(handoff, /CHECKPOINT: everything in this chat before this point/);
+  assert.match(handoff, /CHECKPOINT: everything in this chat before this point, retained/);
   assert.ok(handoff.includes('z'.repeat(3000)), 'the summary goes in whole, not clipped to an answer');
+  assert.match(handoff, /detailed chronology/, 'the hidden detailed context survives alongside the generated summary');
   assert.match(handoff, /after 19/, 'recent turns still follow it');
+  const rich = buildCompactionHandoff(long, 'codex');
+  assert.ok(rich.length > 40000 && rich.length <= COMPACT_TARGET_TOKENS * 4 + 1000, `rich handoff uses the larger bounded budget (${rich.length} chars)`);
+  assert.ok(estimateTokens(rich) > estimateTokens(buildHandoff(long, 'codex')), 'compaction retains more detail than an ordinary cross-agent briefing');
+  const repeated = buildCompactionHandoff(messages, 'codex');
+  assert.ok(repeated.length <= COMPACT_TARGET_TOKENS * 4 + 1000, 'repeated compaction shares one budget between the checkpoint and newer turns');
+  assert.match(repeated, /after 19/, 'repeated compaction prioritizes the newest work');
+  assert.match(COMPACT_DIRECTIVE, /100,000 tokens/);
 });

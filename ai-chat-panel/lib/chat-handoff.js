@@ -11,18 +11,20 @@ const MAX_CHARS = 9000; // ~2-3k tokens
 const USER_CHARS = 700;
 const ANSWER_CHARS = 1400;
 const MAX_TOOLS = 8;
-const CHECKPOINT_CHARS = 20000; // a compaction summary (~5k tokens) goes in whole
+const COMPACT_TARGET_TOKENS = 100000;
+const COMPACT_TARGET_CHARS = COMPACT_TARGET_TOKENS * 4;
+const CHECKPOINT_CHARS = COMPACT_TARGET_CHARS;
 
 /**
  * The compactor's instructions (sources/autocompacting_implementation_guide.md
  * §4): keep what the next turn can't rediscover, drop what it can.
  */
 const COMPACT_DIRECTIVE = [
-  'You are a CONTEXT CHECKPOINT COMPACTOR. Condense this conversation into a handoff for the agent that resumes the task in a fresh session.',
+  'You are a CONTEXT CHECKPOINT ARCHIVIST. Produce a detailed handoff for the agent that resumes this task in a fresh session.',
+  'When the source is large enough, retain roughly 100,000 tokens (about 400,000 characters). This is archival compression, not an executive summary. Never pad or repeat material merely to reach the target.',
   'DROP: raw terminal output and stack traces already resolved, superseded file reads and directory scans, debugging dead ends.',
-  'KEEP (exact and verbatim): the user\'s objective and explicit constraints; files read, modified and created, with exact paths; decisions made and why alternatives were rejected; exact error messages, file names and line numbers of anything unsolved; the pending tasks and next steps.',
-  'Reply with only this, in Markdown:',
-  '# CONTEXT CHECKPOINT SUMMARY\n- **Primary Goal:**\n- **Key Decisions:**\n- **Files Modified / Created:**\n- **Active State / Blocker:**\n- **Next Planned Actions:**',
+  'KEEP: every user objective and explicit constraint; the chronological work log; files read, modified and created with exact paths; architectural and implementation decisions with rejected alternatives; interfaces and contracts; relevant code excerpts; exact errors, line numbers and unresolved findings; verification results; current state and next actions.',
+  'Prefer exact detail over generalization. Preserve the most recent work at the highest fidelity. Reply only with a structured Markdown checkpoint.',
 ].join('\n');
 
 function clip(text, max) {
@@ -46,16 +48,17 @@ function turnsOf(messages) {
   return turns;
 }
 
-function renderTurn(turn) {
+function renderTurn(turn, { userChars = USER_CHARS, answerChars = ANSWER_CHARS, maxTools = MAX_TOOLS, checkpointChars = CHECKPOINT_CHARS } = {}) {
   const agent = turn.answers.find((answer) => answer.agent)?.agent || turn.user.agent;
   if (turn.answers.some((answer) => answer.checkpoint)) {
-    return `CHECKPOINT: everything in this chat before this point, summarized when ${NAMES[agent] || agent}'s context was compacted:\n${clip(turn.answers.map((entry) => entry.text).join('\n'), CHECKPOINT_CHARS)}`;
+    const body = turn.answers.flatMap((entry) => [entry.text, entry.compactContext ? `DETAILED RETAINED CONTEXT:\n${entry.compactContext}` : '']).filter(Boolean).join('\n\n');
+    return `CHECKPOINT: everything in this chat before this point, retained when ${NAMES[agent] || agent}'s context was compacted:\n${clip(body, checkpointChars)}`;
   }
-  const lines = [`User: ${clip(turn.user.text, USER_CHARS)}`];
+  const lines = [`User: ${clip(turn.user.text, userChars)}`];
   const tools = [...new Set(turn.tools.map(toolLine))];
-  if (tools.length) lines.push(`${NAMES[agent] || agent} used: ${tools.slice(0, MAX_TOOLS).join('; ')}${tools.length > MAX_TOOLS ? `; +${tools.length - MAX_TOOLS} more` : ''}`);
+  if (tools.length) lines.push(`${NAMES[agent] || agent} used: ${tools.slice(0, maxTools).join('; ')}${tools.length > maxTools ? `; +${tools.length - maxTools} more` : ''}`);
   const answer = turn.answers.map((entry) => entry.text).join('\n').trim();
-  lines.push(answer ? `${NAMES[agent] || agent} answered: ${clip(answer, ANSWER_CHARS)}` : `${NAMES[agent] || agent} gave no text answer${turn.answers.some((entry) => entry.interrupted) ? ' (stopped by the user)' : ''}.`);
+  lines.push(answer ? `${NAMES[agent] || agent} answered: ${clip(answer, answerChars)}` : `${NAMES[agent] || agent} gave no text answer${turn.answers.some((entry) => entry.interrupted) ? ' (stopped by the user)' : ''}.`);
   return lines.join('\n');
 }
 
@@ -64,20 +67,27 @@ function renderTurn(turn) {
  * agent's last turn), or '' when there is nothing it hasn't seen. Oldest
  * turns are dropped first when the budget runs out.
  */
-function buildHandoff(missed, agent) {
+function buildHandoff(missed, agent, options = {}) {
+  const maxChars = options.maxChars || MAX_CHARS;
   const all = turnsOf(missed || []);
-  // A compaction checkpoint heads the briefing and never counts against the budget.
-  const checkpoint = all[0]?.answers.some((answer) => answer.checkpoint) ? renderTurn(all.shift()) : '';
-  const turns = all.map(renderTurn);
-  if (!turns.length && !checkpoint) return '';
-  const kept = checkpoint ? [checkpoint] : [];
+  const checkpointTurn = all[0]?.answers.some((answer) => answer.checkpoint) ? all.shift() : null;
+  // Ordinary turns always receive the complete retained checkpoint. When
+  // producing the next checkpoint, old context and new work share one budget.
+  let checkpoint = checkpointTurn && !options.includeCheckpointInBudget ? renderTurn(checkpointTurn, options) : '';
+  const turns = all.map((turn) => renderTurn(turn, options));
+  if (!turns.length && !checkpoint && !checkpointTurn) return '';
   let size = 0;
   const recent = [];
   for (let i = turns.length - 1; i >= 0; i -= 1) {
-    if (recent.length && size + turns[i].length > MAX_CHARS) break;
+    if (recent.length && size + turns[i].length > maxChars) break;
     recent.unshift(turns[i]);
     size += turns[i].length;
   }
+  if (checkpointTurn && options.includeCheckpointInBudget) {
+    const remaining = Math.max(0, maxChars - size);
+    if (remaining) checkpoint = renderTurn(checkpointTurn, { ...options, checkpointChars: remaining });
+  }
+  const kept = checkpoint ? [checkpoint] : [];
   kept.push(...recent);
   const dropped = turns.length - recent.length;
   return [
@@ -88,10 +98,24 @@ function buildHandoff(missed, agent) {
   ].filter(Boolean).join('\n\n');
 }
 
+/** Detailed, bounded source for compaction fallback and checkpoint continuity. */
+function buildCompactionHandoff(messages, agent) {
+  return buildHandoff(messages, agent, {
+    maxChars: COMPACT_TARGET_CHARS,
+    userChars: 12000,
+    answerChars: 50000,
+    maxTools: 100,
+    checkpointChars: COMPACT_TARGET_CHARS,
+    includeCheckpointInBudget: true,
+  });
+}
+
+function estimateTokens(text) { return Math.ceil(String(text || '').length / 4); }
+
 /** Where the chat's last successful compaction starts (its "Compact session" message), else 0. */
 function checkpointStart(messages) {
   const reply = messages.findLastIndex((message) => message.role === 'assistant' && message.checkpoint);
   return reply > 0 ? messages.findLastIndex((message, i) => i < reply && message.role === 'user') : 0;
 }
 
-module.exports = { buildHandoff, turnsOf, checkpointStart, COMPACT_DIRECTIVE };
+module.exports = { buildHandoff, buildCompactionHandoff, turnsOf, checkpointStart, estimateTokens, COMPACT_DIRECTIVE, COMPACT_TARGET_TOKENS, COMPACT_TARGET_CHARS };
