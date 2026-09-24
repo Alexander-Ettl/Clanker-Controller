@@ -1083,24 +1083,55 @@ body {
 .mention-name { white-space: nowrap; }
 .mention-dir { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; direction: rtl; text-align: left; color: var(--text-secondary); font-size: 11px; }
 
-/* P17-R: from 75% full, a quiet amber strip above the composer with one-click compaction. */
+/* P17-R: from 75% full, a tab grows out of the composer pill's top edge (Dynamic
+   Island: docs/dynamic-island-composer-spec.md). It shares the pill's surface and
+   covers the pill's top border where they meet, and two concave fillets curve its
+   sides into the pill, so they read as one shape. Amber is only in its content. */
 .context-warning {
-  align-self: center;
+  --island-fillet: 12px;
+  /* The pill's own colour at its top edge (.glass: --eo-surface under a 9% white sheen), near-opaque
+     because a child's backdrop-filter can't reach through the composer's. */
+  --island-fill: linear-gradient(rgba(255, 255, 255, 0.09), rgba(255, 255, 255, 0.09)), rgba(20, 21, 26, 0.97);
+  position: absolute;
+  bottom: calc(100% - 1px);
+  left: 50%;
+  z-index: 2;
   display: inline-flex;
   align-items: center;
   gap: 8px;
-  padding: 4px 4px 4px 10px;
-  border: 1px solid rgba(255, 179, 64, 0.35);
-  border-radius: 999px;
-  background: rgba(255, 179, 64, 0.1);
-  -webkit-backdrop-filter: blur(20px) saturate(180%);
-  backdrop-filter: blur(20px) saturate(180%);
+  padding: 5px 5px 4px 12px;
+  border: 1px solid var(--eo-border);
+  border-bottom: 0;
+  border-radius: 16px 16px 0 0;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.05), transparent 60%), var(--island-fill);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.08), 0 -10px 24px rgba(255, 179, 64, 0.06);
   color: rgb(255, 179, 64);
   font: 600 11.5px var(--font-text);
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
-  animation: context-warning-in 0.45s cubic-bezier(0.34, 1.56, 0.64, 1);
+  transform: translateX(-50%);
+  transform-origin: 50% 100%;
+  animation: island-emerge 0.55s cubic-bezier(0.34, 1.56, 0.64, 1) both;
 }
+/* The fillets: concave corners on each side where the tab meets the pill. The
+   fill sits outside a circle centred on the outer corner, a hairline ring traces
+   the curve (continuing the tab's border), and the mask cuts the circle away. */
+.context-warning::before,
+.context-warning::after {
+  content: "";
+  position: absolute;
+  bottom: 0;
+  width: var(--island-fillet);
+  height: var(--island-fillet);
+  pointer-events: none;
+  background:
+    radial-gradient(circle at var(--fillet-at), transparent calc(var(--island-fillet) - 1px), var(--eo-border) calc(var(--island-fillet) - 1px) var(--island-fillet), transparent var(--island-fillet)),
+    var(--island-fill);
+  -webkit-mask: radial-gradient(circle at var(--fillet-at), transparent calc(var(--island-fillet) - 1px), #000 calc(var(--island-fillet) - 1px));
+  mask: radial-gradient(circle at var(--fillet-at), transparent calc(var(--island-fillet) - 1px), #000 calc(var(--island-fillet) - 1px));
+}
+.context-warning::before { right: 100%; --fillet-at: 0 0; }
+.context-warning::after { left: 100%; --fillet-at: 100% 0; }
 .context-warning[hidden] { display: none; }
 .context-warning > svg { width: 14px; height: 14px; flex-shrink: 0; }
 .context-compact {
@@ -1117,30 +1148,39 @@ body {
 .context-compact:hover { background: rgba(255, 179, 64, 0.28); transform: scale(1.04); }
 .context-compact:active { transform: scale(0.96); }
 .context-compact:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
-@keyframes context-warning-in { from { opacity: 0; transform: translateY(6px) scale(0.96); } }
+/* Emerges from inside the pill: starts as a sliver sunk into the top edge, then
+   springs up and out to full width, anchored at the join the whole time. */
+@keyframes island-emerge {
+  0% { opacity: 0; transform: translateX(-50%) translateY(70%) scale(0.55, 0.3); }
+  45% { opacity: 1; }
+  100% { transform: translateX(-50%); }
+}
 @media (prefers-reduced-motion: reduce) { .context-warning { animation: none; } }
 
-.compact-card {
-  border: 1px solid var(--eo-border);
-  border-radius: var(--radius-md);
-  background: linear-gradient(180deg, rgba(255, 255, 255, 0.06), rgba(255, 255, 255, 0) 45%), var(--eo-surface);
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.08);
+/* Where a compaction happened: the history above stays, the summary follows. */
+.compact-divider {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: 4px 8px;
+  margin: 6px 0;
+  font: 600 11.5px var(--font-text);
+  color: var(--text-secondary);
+  text-align: center;
   animation: msg-in 0.28s var(--eo-ease);
 }
-.compact-card > summary {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 9px 12px;
-  font: 600 12px var(--font-text);
-  color: var(--text-primary);
-  cursor: pointer;
-  list-style: none;
+.compact-divider::before,
+.compact-divider::after {
+  content: "";
+  flex: 1 1 24px;
+  height: 1px;
+  background: linear-gradient(90deg, transparent, var(--eo-border));
+  order: -1;
 }
-.compact-card > summary::-webkit-details-marker { display: none; }
-.compact-card > summary svg { width: 14px; height: 14px; color: var(--text-secondary); }
-.compact-card > summary small { margin-left: auto; font-weight: 500; color: var(--text-secondary); }
-.compact-body { display: flex; flex-direction: column; gap: 10px; padding: 4px 10px 10px; opacity: 0.8; }
+.compact-divider::after { order: 1; background: linear-gradient(90deg, var(--eo-border), transparent); }
+.compact-divider svg { width: 14px; height: 14px; }
+.compact-divider small { flex-basis: 100%; order: 2; font-weight: 500; opacity: 0.8; }
 
 /* Replies: no bubble, no rule; typography carries the structure. */
 .msg-assistant {
