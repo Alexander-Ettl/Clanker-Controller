@@ -455,6 +455,69 @@
   let mentionHits = [];
   let mentionIndex = 0;
 
+  // Codex actions come from the installed CLI, not a renderer-maintained list.
+  // Reuse the existing autocomplete surface so slash preview inherits its
+  // keyboard behavior, accessibility, and visual language without new chrome.
+  let slashCommands = null;
+  let slashHits = [];
+  let slashIndex = 0;
+  const slashMenu = document.createElement('div');
+  slashMenu.className = 'mention-menu glass';
+  slashMenu.setAttribute('role', 'listbox');
+  slashMenu.setAttribute('aria-label', 'Codex commands');
+  slashMenu.hidden = true;
+  document.body.appendChild(slashMenu);
+
+  function slashAtCaret() {
+    if (promptInput.selectionStart !== promptInput.value.length || promptInput.selectionEnd !== promptInput.value.length) return null;
+    return /^\/([^\s]*)$/.exec(promptInput.value);
+  }
+  function closeSlashMenu() { slashMenu.hidden = true; slashHits = []; }
+  function slashScore(command, query) {
+    const q = query.toLowerCase();
+    const name = command.name.toLowerCase();
+    if (!q) return 1;
+    if (name.startsWith(q)) return 100;
+    if (name.includes(q)) return 80;
+    const flat = `${name} ${command.description || ''}`.toLowerCase().replace(/[^a-z0-9]+/g, '');
+    const needle = q.replace(/[^a-z0-9]+/g, '');
+    if (flat.includes(needle)) return 60;
+    let i = 0;
+    for (const ch of flat) if (ch === needle[i]) i++;
+    return i === needle.length ? 10 : 0;
+  }
+  function updateSlashMenu() {
+    const match = slashAtCaret();
+    if (!match) return closeSlashMenu();
+    closeMentionMenu();
+    if (slashCommands === null) { slashCommands = []; vscode.postMessage({ type: 'querySlashCommands' }); }
+    slashHits = slashCommands.map((command) => [command, slashScore(command, match[1])]).filter(([, score]) => score > 0)
+      .sort((a, b) => b[1] - a[1]).slice(0, 8).map(([command]) => command);
+    slashIndex = Math.min(slashIndex, Math.max(0, slashHits.length - 1));
+    slashMenu.replaceChildren(...slashHits.map((command, i) => {
+      const item = document.createElement('div');
+      item.className = 'mention-item' + (i === slashIndex ? ' is-active' : '');
+      item.setAttribute('role', 'option');
+      const name = document.createElement('span'); name.className = 'mention-name'; name.textContent = `/${command.name}`;
+      const description = document.createElement('span'); description.className = 'model-option-hint'; description.textContent = `Codex · ${command.description || 'Command'}`;
+      const copy = document.createElement('span'); copy.className = 'model-option-text'; copy.append(name, description);
+      item.append(copy);
+      item.addEventListener('mousedown', (event) => { event.preventDefault(); insertSlashCommand(command); });
+      return item;
+    }));
+    slashMenu.hidden = !slashHits.length;
+    if (slashMenu.hidden) return;
+    const dock = document.querySelector('.compose-row').getBoundingClientRect();
+    Object.assign(slashMenu.style, { left: `${dock.left + 8}px`, width: `${dock.width - 16}px`, bottom: `${innerHeight - dock.top + 6}px` });
+  }
+  function insertSlashCommand(command) {
+    promptInput.value = `/${command.name} `;
+    promptInput.selectionStart = promptInput.selectionEnd = promptInput.value.length;
+    closeSlashMenu();
+    promptInput.dispatchEvent(new Event('input'));
+    promptInput.focus();
+  }
+
   function requestWorkspaceFiles() { if (workspaceFiles === null) { workspaceFiles = []; vscode.postMessage({ type: 'queryFiles' }); } }
   promptInput.addEventListener('focus', requestWorkspaceFiles, { once: true });
   function mentionAtCaret() { return /(^|\s)@([^\s@]*)$/.exec(promptInput.value.slice(0, promptInput.selectionStart)); }
@@ -529,8 +592,10 @@
       return chip;
     }));
   }
-  promptInput.addEventListener('input', () => { mentionIndex = 0; renderMentions(); updateMentionMenu(); });
-  promptInput.addEventListener('blur', () => setTimeout(closeMentionMenu, 120));
+  promptInput.addEventListener('input', () => { mentionIndex = 0; slashIndex = 0; renderMentions(); updateMentionMenu(); updateSlashMenu(); });
+  promptInput.addEventListener('keyup', (event) => { if (event.key !== 'Escape') updateSlashMenu(); });
+  promptInput.addEventListener('mouseup', updateSlashMenu);
+  promptInput.addEventListener('blur', () => setTimeout(() => { closeMentionMenu(); closeSlashMenu(); }, 120));
   promptInput.addEventListener('keydown', (event) => {
     if (!mentionMenu.hidden && mentionHits.length) {
       if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
@@ -556,6 +621,24 @@
         promptInput.selectionStart = promptInput.selectionEnd = start;
         promptInput.dispatchEvent(new Event('input'));
       }
+    }
+  });
+  promptInput.addEventListener('keydown', (event) => {
+    if (slashMenu.hidden || !slashHits.length) return;
+    if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+      event.preventDefault(); event.stopImmediatePropagation();
+      slashIndex = (slashIndex + (event.key === 'ArrowDown' ? 1 : -1) + slashHits.length) % slashHits.length;
+      updateSlashMenu();
+      return;
+    }
+    if (event.key === 'Escape') { event.preventDefault(); event.stopImmediatePropagation(); closeSlashMenu(); return; }
+    if (event.key === 'Tab') {
+      event.preventDefault(); event.stopImmediatePropagation(); insertSlashCommand(slashHits[slashIndex]);
+    } else if (event.key === 'Enter' && !event.shiftKey) {
+      event.preventDefault(); event.stopImmediatePropagation();
+      promptInput.value = `/${slashHits[slashIndex].name}`;
+      closeSlashMenu();
+      sendPrompt({ steer: event.ctrlKey || event.metaKey });
     }
   });
   // ---------- Model picker: a pill in the composer, menu opens above it ----------
@@ -1016,6 +1099,7 @@
     mentioned.clear();
     renderMentions();
     promptInput.value = '';
+    closeSlashMenu();
     autoGrow();
     renderComposerState();
   }
@@ -2573,6 +2657,11 @@
         if (document.activeElement === promptInput) updateMentionMenu();
         break;
       }
+      case 'slashCommands': {
+        slashCommands = Array.isArray(message.commands) ? message.commands : [];
+        if (document.activeElement === promptInput) updateSlashMenu();
+        break;
+      }
       case 'upstream_error': {
         appendUpstreamErrorCard({ agent: message.agent, detail: message.detail || '' });
         break;
@@ -2599,7 +2688,7 @@
         collapseTurn(turnAnchor, Date.now() - turnStartedAt);
         turnAnchor = null;
         setBusy(false);
-        if (!message.interrupted && !queuePaused && turnQueue.length) { dispatchTurn(turnQueue.shift()); renderTurnQueue(); }
+        if (!message.interrupted && !message.compacting && !queuePaused && turnQueue.length) { dispatchTurn(turnQueue.shift()); renderTurnQueue(); }
         break;
       }
       case 'routing': {

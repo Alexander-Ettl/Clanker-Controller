@@ -302,15 +302,24 @@ class StreamEngine extends EventEmitter {
       return { command, args: ['-p', '--output-format', 'stream-json', '--verbose', '--permission-mode', 'auto', ...modelArgs], input: fullPrompt + '\n' };
     }
     const effortArgs = effort ? ['-c', `model_reasoning_effort="${effort}"`] : [];
+    // Composer slash actions are discovered from this installed CLI's own
+    // `codex exec --help`, then run through its native JSONL subcommand.
+    if (choice.codexCommand) {
+      return {
+        command,
+        args: ['exec', choice.codexCommand, '--json', '--skip-git-repo-check', '-m', model, ...effortArgs, ...(fullPrompt ? ['-'] : [])],
+        input: fullPrompt ? `${fullPrompt}\n` : '',
+      };
+    }
     // `exec resume` keeps the sandbox its session started with and takes no --sandbox.
     if (resume) return { command, args: ['exec', 'resume', resume, '--json', '--skip-git-repo-check', '-m', model, ...effortArgs, '-'], input: fullPrompt + '\n' };
     return { command, args: ['exec', '--json', '--sandbox', 'workspace-write', '--skip-git-repo-check', '-m', model, ...effortArgs, '-'], input: fullPrompt + '\n' };
   }
-  start({ agent, prompt, attachments = [], model, effort, resume = null, freshPrompt = null, attempt = 0 }) {
+  start({ agent, prompt, attachments = [], model, effort, resume = null, freshPrompt = null, codexCommand = null, attempt = 0 }) {
     this.cancel();
-    this.turn = { agent, prompt, attachments, model, effort, resume, freshPrompt, attempt };
+    this.turn = { agent, prompt, attachments, model, effort, resume, freshPrompt, codexCommand, attempt };
     this.tokens = { input: 0, output: 0, lastId: null }; // P17-V: this turn's token draw
-    const spec = this.commandFor(agent, prompt, attachments, { model, effort, resume });
+    const spec = this.commandFor(agent, prompt, attachments, { model, effort, resume, codexCommand });
     // A session that no longer exists (cleared, or made on another machine)
     // reruns the turn once as a new session, with the chat's full handoff.
     this.resumeRetry = resume ? { agent, prompt: freshPrompt || prompt, attachments, model, effort } : null;
