@@ -1,0 +1,11 @@
+{
+  "name": "voice-router",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Voice-to-LLM quota-aware router prototype (docs/voice-quota-router-spec.md).",
+  "main": "router.mjs",
+  "scripts": {
+    "test": "node test/test-scenarios.mjs"
+  }
+}

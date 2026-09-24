@@ -1,0 +1,704 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Voice-to-LLM Quota Router — Architecture Flowchart</title>
+  <style>
+    :root {
+      --bg: #09090b;
+      --card-bg: rgba(24, 24, 27, 0.7);
+      --card-border: rgba(255, 255, 255, 0.1);
+      --card-hover: rgba(255, 255, 255, 0.15);
+      --text-main: #f4f4f5;
+      --text-muted: #a1a1aa;
+      --accent: #3b82f6;
+      --accent-glow: rgba(59, 130, 246, 0.3);
+      --claude: #e07a5f;
+      --codex: #818cf8;
+      --gemini: #60a5fa;
+      --success: #10b981;
+      --warning: #f59e0b;
+      --danger: #ef4444;
+      --radius: 12px;
+      --font: -apple-system, BlinkMacSystemFont, "SF Pro Display", "Segoe UI", Roboto, sans-serif;
+    }
+
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    body {
+      background-color: var(--bg);
+      color: var(--text-main);
+      font-family: var(--font);
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: 48px 24px 80px;
+      -webkit-font-smoothing: antialiased;
+      line-height: 1.5;
+    }
+
+    /* Clean Header */
+    header {
+      text-align: center;
+      max-width: 800px;
+      margin-bottom: 40px;
+    }
+
+    h1 {
+      font-size: 38px;
+      font-weight: 600;
+      letter-spacing: -0.02em;
+      margin-bottom: 12px;
+      color: #ffffff;
+    }
+
+    p.subtitle {
+      font-size: 17px;
+      color: var(--text-muted);
+      line-height: 1.5;
+    }
+
+    /* Presentation Control Bar */
+    .controls-bar {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 12px;
+      margin-bottom: 48px;
+      background: rgba(255, 255, 255, 0.04);
+      border: 1px solid var(--card-border);
+      padding: 8px 14px;
+      border-radius: 9999px;
+      backdrop-filter: blur(12px);
+    }
+
+    .btn {
+      background: rgba(255, 255, 255, 0.08);
+      border: 1px solid var(--card-border);
+      color: var(--text-main);
+      padding: 8px 16px;
+      font-size: 13px;
+      font-weight: 500;
+      border-radius: 9999px;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      transition: all 0.2s ease;
+    }
+
+    .btn:hover {
+      background: rgba(255, 255, 255, 0.15);
+      border-color: rgba(255, 255, 255, 0.3);
+    }
+
+    .btn.active {
+      background: var(--accent);
+      border-color: var(--accent);
+      color: #fff;
+    }
+
+    .btn-toggle-quota {
+      border-color: rgba(239, 68, 68, 0.3);
+      color: #fca5a5;
+    }
+
+    .btn-toggle-quota.throttled {
+      background: var(--danger);
+      color: #ffffff;
+      border-color: var(--danger);
+    }
+
+    /* The Flowchart Container */
+    .flowchart {
+      width: 100%;
+      max-width: 960px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      position: relative;
+    }
+
+    /* Node Styles */
+    .node {
+      background: var(--card-bg);
+      border: 1px solid var(--card-border);
+      border-radius: var(--radius);
+      padding: 20px 24px;
+      width: 100%;
+      max-width: 580px;
+      position: relative;
+      transition: all 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+      backdrop-filter: blur(16px);
+      box-shadow: 0 4px 20px rgba(0, 0, 0, 0.4);
+    }
+
+    .node:hover {
+      border-color: var(--card-hover);
+    }
+
+    .node.highlight {
+      border-color: var(--accent);
+      box-shadow: 0 0 24px var(--accent-glow);
+      transform: scale(1.015);
+    }
+
+    .node-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 8px;
+    }
+
+    .node-title-group {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    .step-number {
+      font-size: 11px;
+      font-weight: 700;
+      color: var(--accent);
+      background: rgba(59, 130, 246, 0.12);
+      border: 1px solid rgba(59, 130, 246, 0.3);
+      padding: 2px 8px;
+      border-radius: 9999px;
+      letter-spacing: 0.05em;
+    }
+
+    .node-title {
+      font-size: 16px;
+      font-weight: 600;
+      color: #ffffff;
+    }
+
+    .node-timing {
+      font-size: 12px;
+      font-family: ui-monospace, Menlo, Consolas, monospace;
+      color: var(--text-muted);
+      background: rgba(255, 255, 255, 0.06);
+      padding: 2px 8px;
+      border-radius: 4px;
+    }
+
+    .node-body {
+      font-size: 14px;
+      color: var(--text-muted);
+      line-height: 1.5;
+    }
+
+    /* Dual input row for Step 2 */
+    .split-row {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 16px;
+      width: 100%;
+      max-width: 660px;
+    }
+
+    .sub-node {
+      background: rgba(24, 24, 27, 0.5);
+      border: 1px dashed var(--card-border);
+      border-radius: var(--radius);
+      padding: 16px;
+      transition: all 0.3s ease;
+    }
+
+    .sub-node.highlight {
+      border-color: var(--accent);
+      background: rgba(59, 130, 246, 0.06);
+    }
+
+    .sub-node-title {
+      font-size: 13px;
+      font-weight: 600;
+      color: #ffffff;
+      margin-bottom: 4px;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .sub-node-desc {
+      font-size: 12px;
+      color: var(--text-muted);
+      line-height: 1.4;
+    }
+
+    /* Vertical Connectors */
+    .connector {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      height: 42px;
+      position: relative;
+    }
+
+    .line {
+      width: 2px;
+      height: 100%;
+      background: rgba(255, 255, 255, 0.15);
+      transition: background 0.3s ease;
+    }
+
+    .line.active {
+      background: var(--accent);
+      box-shadow: 0 0 8px var(--accent);
+    }
+
+    .arrow-down {
+      width: 0;
+      height: 0;
+      border-left: 5px solid transparent;
+      border-right: 5px solid transparent;
+      border-top: 6px solid rgba(255, 255, 255, 0.2);
+    }
+
+    .arrow-down.active {
+      border-top-color: var(--accent);
+    }
+
+    /* Branching Target Models Grid */
+    .branch-grid {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 16px;
+      width: 100%;
+      max-width: 900px;
+      margin-top: 8px;
+    }
+
+    .model-card {
+      background: var(--card-bg);
+      border: 1px solid var(--card-border);
+      border-radius: var(--radius);
+      padding: 20px;
+      display: flex;
+      flex-direction: column;
+      position: relative;
+      backdrop-filter: blur(16px);
+      transition: all 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+    }
+
+    .model-card:hover {
+      border-color: var(--card-hover);
+    }
+
+    .model-card.active-target {
+      border-color: #ffffff;
+      box-shadow: 0 0 30px rgba(255, 255, 255, 0.15);
+      transform: translateY(-4px);
+    }
+
+    .model-card.card-claude.active-target {
+      border-color: var(--claude);
+      box-shadow: 0 0 30px rgba(224, 122, 95, 0.35);
+    }
+
+    .model-card.card-codex.active-target {
+      border-color: var(--codex);
+      box-shadow: 0 0 30px rgba(129, 140, 248, 0.35);
+    }
+
+    .model-card.card-gemini.active-target {
+      border-color: var(--gemini);
+      box-shadow: 0 0 30px rgba(96, 165, 250, 0.35);
+    }
+
+    .model-badge {
+      display: inline-flex;
+      align-items: center;
+      font-size: 11px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      padding: 3px 8px;
+      border-radius: 4px;
+      margin-bottom: 12px;
+      width: fit-content;
+    }
+
+    .badge-claude { background: rgba(224, 122, 95, 0.15); color: var(--claude); border: 1px solid rgba(224, 122, 95, 0.3); }
+    .badge-codex  { background: rgba(129, 140, 248, 0.15); color: var(--codex);  border: 1px solid rgba(129, 140, 248, 0.3); }
+    .badge-gemini { background: rgba(96, 165, 250, 0.15); color: var(--gemini); border: 1px solid rgba(96, 165, 250, 0.3); }
+
+    .model-name {
+      font-size: 18px;
+      font-weight: 600;
+      color: #ffffff;
+      margin-bottom: 4px;
+    }
+
+    .model-role {
+      font-size: 12px;
+      color: var(--text-muted);
+      margin-bottom: 12px;
+    }
+
+    .model-triggers {
+      font-size: 13px;
+      color: #e4e4e7;
+      line-height: 1.4;
+      flex: 1;
+    }
+
+    .model-rule {
+      margin-top: 14px;
+      padding-top: 12px;
+      border-top: 1px solid rgba(255, 255, 255, 0.08);
+      font-size: 11px;
+      color: var(--text-muted);
+    }
+
+    .rule-alert {
+      color: #f87171;
+      font-weight: 600;
+    }
+
+    /* Explanation Banner at Bottom */
+    .narrative-box {
+      margin-top: 48px;
+      width: 100%;
+      max-width: 780px;
+      background: rgba(255, 255, 255, 0.03);
+      border: 1px solid var(--card-border);
+      border-radius: var(--radius);
+      padding: 24px;
+      display: flex;
+      gap: 16px;
+      align-items: flex-start;
+    }
+
+    .narrative-icon {
+      font-size: 24px;
+      line-height: 1;
+    }
+
+    .narrative-content h3 {
+      font-size: 16px;
+      font-weight: 600;
+      color: #ffffff;
+      margin-bottom: 6px;
+    }
+
+    .narrative-content p {
+      font-size: 14px;
+      color: var(--text-muted);
+      line-height: 1.6;
+    }
+
+    @media (max-width: 768px) {
+      .split-row, .branch-grid {
+        grid-template-columns: 1fr;
+      }
+      .controls-bar {
+        flex-wrap: wrap;
+      }
+      h1 {
+        font-size: 28px;
+      }
+    }
+  </style>
+</head>
+<body>
+
+  <!-- Header -->
+  <header>
+    <h1>Voice-to-LLM Quota Router</h1>
+    <p class="subtitle">
+      A 315-millisecond background pipeline that captures developer voice, enriches it with active workspace context, checks live token headroom, and routes to the optimal AI model.
+    </p>
+  </header>
+
+  <!-- Interactive Controls Bar -->
+  <div class="controls-bar">
+    <button class="btn active" id="btnAll" onclick="setStep('all')">Show Complete Flow</button>
+    <button class="btn" id="btnStep1" onclick="setStep(1)">1. Voice</button>
+    <button class="btn" id="btnStep2" onclick="setStep(2)">2. Context &amp; Quotas</button>
+    <button class="btn" id="btnStep3" onclick="setStep(3)">3. Decision Engine</button>
+    <button class="btn" id="btnStep4" onclick="setStep(4)">4. Model Routing</button>
+    <button class="btn" id="btnStep5" onclick="setStep(5)">5. Dispatch</button>
+    <button class="btn btn-toggle-quota" id="btnQuota" onclick="toggleQuota()">
+      <span id="quotaLabel">Claude Quota: Healthy (88%)</span>
+    </button>
+  </div>
+
+  <!-- The Main Flowchart -->
+  <div class="flowchart">
+
+    <!-- Step 1: Voice Ingestion -->
+    <div class="node" id="node1">
+      <div class="node-header">
+        <div class="node-title-group">
+          <span class="step-number">STEP 1</span>
+          <span class="node-title">Voice Ingestion (OpenWhispr / Groq)</span>
+        </div>
+        <span class="node-timing">~120 ms</span>
+      </div>
+      <div class="node-body">
+        Developer presses hotkey or clicks <code>[ ✨ Ask AI ]</code>. Speech is recorded and immediately converted to raw text via <strong>Whisper-large-v3-turbo</strong> on Groq LPUs.
+      </div>
+    </div>
+
+    <!-- Connector 1 -> 2 -->
+    <div class="connector">
+      <div class="line" id="line1"></div>
+      <div class="arrow-down" id="arrow1"></div>
+    </div>
+
+    <!-- Step 2: Parallel Context & Quota Gathering -->
+    <div class="split-row" id="node2">
+      <div class="sub-node" id="subContext">
+        <div class="sub-node-title">
+          <span>📂 Workspace Context</span>
+          <span class="node-timing">&lt; 3 ms</span>
+        </div>
+        <div class="sub-node-desc">
+          Reads currently open file path (e.g. <code>site/src/layouts/Screen.astro</code>), active cursor line, and current Git branch.
+        </div>
+      </div>
+      <div class="sub-node" id="subQuota">
+        <div class="sub-node-title">
+          <span>📊 Live Token Headroom</span>
+          <span class="node-timing">&lt; 2 ms</span>
+        </div>
+        <div class="sub-node-desc" id="quotaStatusText">
+          Synchronously reads VS Code status bar caches (Claude 5h window, Codex session rate limits, Gemini availability).
+        </div>
+      </div>
+    </div>
+
+    <!-- Connector 2 -> 3 -->
+    <div class="connector">
+      <div class="line" id="line2"></div>
+      <div class="arrow-down" id="arrow2"></div>
+    </div>
+
+    <!-- Step 3: Single-Pass Contextual Cleaner & Router -->
+    <div class="node" id="node3">
+      <div class="node-header">
+        <div class="node-title-group">
+          <span class="step-number">STEP 3</span>
+          <span class="node-title">Single-Pass Decision Engine (GPT-OSS 120B / Jev)</span>
+        </div>
+        <span class="node-timing">~180 ms</span>
+      </div>
+      <div class="node-body">
+        Takes raw spoken text + local file context + live token quotas in a <strong>single fast prompt</strong>. It cleans stutters/disfluencies into formatted Markdown while simultaneously outputting the optimal model routing decision.
+      </div>
+    </div>
+
+    <!-- Connector 3 -> 4 -->
+    <div class="connector">
+      <div class="line" id="line3"></div>
+      <div class="arrow-down" id="arrow3"></div>
+    </div>
+
+    <!-- Step 4: Semantic Routing Destinations -->
+    <div class="branch-grid" id="node4">
+      
+      <!-- Claude Card -->
+      <div class="model-card card-claude active-target" id="cardClaude">
+        <div class="model-badge badge-claude">UI &amp; Aesthetics</div>
+        <div class="model-name">Claude Sonnet 3.7</div>
+        <div class="model-role">Design &amp; Typography Specialist</div>
+        <div class="model-triggers">
+          Selected for: CSS, Liquid Glass styling, layout refactoring, animations, and visual critiques.
+        </div>
+        <div class="model-rule" id="claudeRule">
+          <strong>Quota Guard:</strong> Strict 5-hour rate limits. If remaining tokens drop below 20%, tasks are rerouted to Codex.
+        </div>
+      </div>
+
+      <!-- Codex Card -->
+      <div class="model-card card-codex" id="cardCodex">
+        <div class="model-badge badge-codex">AST &amp; Code Execution</div>
+        <div class="model-name">Codex 5.6 (Sol / Terra)</div>
+        <div class="model-role">Backend &amp; CLI Workhorse</div>
+        <div class="model-triggers">
+          Selected for: TypeScript AST parsing, Zod schemas, unit tests, PowerShell automation, and compiler fixes.
+        </div>
+        <div class="model-rule">
+          <strong>Throughput:</strong> High-volume coding limits. Also serves as the failover engine when Claude tokens are low.
+        </div>
+      </div>
+
+      <!-- Gemini Card -->
+      <div class="model-card card-gemini" id="cardGemini">
+        <div class="model-badge badge-gemini">Planning &amp; Synthesis</div>
+        <div class="model-name">Gemini 2.0 Pro / Flash</div>
+        <div class="model-role">Infinite-Context Architect</div>
+        <div class="model-triggers">
+          Selected for: Entire codebase indexing, architecture roadmaps, doc synthesis, and quick single-line Q&amp;A.
+        </div>
+        <div class="model-rule">
+          <strong>Advantage:</strong> 2-Million token context window. Zero quota anxiety; saves coding tokens.
+        </div>
+      </div>
+
+    </div>
+
+    <!-- Connector 4 -> 5 -->
+    <div class="connector">
+      <div class="line" id="line4"></div>
+      <div class="arrow-down" id="arrow4"></div>
+    </div>
+
+    <!-- Step 5: Immediate Dispatch -->
+    <div class="node" id="node5">
+      <div class="node-header">
+        <div class="node-title-group">
+          <span class="step-number">STEP 5</span>
+          <span class="node-title">Target Dispatch &amp; Execution</span>
+        </div>
+        <span class="node-timing">&lt; 10 ms</span>
+      </div>
+      <div class="node-body">
+        The cleaned Markdown prompt and injected file context land directly on the system clipboard or trigger the active agent CLI automatically. Total turnaround: <strong>315 ms</strong> (perceptually instantaneous).
+      </div>
+    </div>
+
+  </div>
+
+  <!-- Dynamic Explanation Box -->
+  <div class="narrative-box">
+    <div class="narrative-icon" id="narrativeIcon">💡</div>
+    <div class="narrative-content">
+      <h3 id="narrativeTitle">How to Present This Flow</h3>
+      <p id="narrativeText">
+        In 2026, developers no longer use just one generic AI. We use three frontier models with asymmetric strengths and rate limits. This pipeline eliminates the friction of deciding which model to open, copying text, or wasting expensive Claude Pro tokens on routine tasks.
+      </p>
+    </div>
+  </div>
+
+  <script>
+    let isThrottled = false;
+    let currentStep = 'all';
+
+    const narrativeData = {
+      all: {
+        icon: "💡",
+        title: "The 2026 Multi-Model Workflow",
+        text: "In 2026, developers use three specialized models: Claude for UI aesthetics, Codex for code execution, and Gemini for big-context planning. This pipeline eliminates the friction of manually choosing models, formatting prompts, and managing rate limits."
+      },
+      1: {
+        icon: "🎤",
+        title: "Step 1: Ultra-Fast Voice Ingestion (~120ms)",
+        text: "The developer speaks naturally without stopping to type or format. Whisper-large-v3-turbo running on Groq LPUs transcribes the raw audio stream into text in approximately 120 milliseconds."
+      },
+      2: {
+        icon: "📂",
+        title: "Step 2: Instant Workspace & Quota Probe (<5ms)",
+        text: "Before deciding where to send the prompt, the system synchronously reads two local data sources: the active file path/git branch, and the live token status from the VS Code status bar."
+      },
+      3: {
+        icon: "⚡",
+        title: "Step 3: Single-Pass Cleaner & Classifier (~180ms)",
+        text: "Rather than calling an LLM twice, GPT-OSS 120B cleans the raw spoken text into clean Markdown and classifies the task intent in a single fast pass. In the near future, this will be powered by Jev (TypeSafe AI) in under 25ms."
+      },
+      4: {
+        icon: "⚖️",
+        title: "Step 4: Quota-Aware Routing Decision",
+        text: "Tasks are routed based on model specialty: UI tasks go to Claude, backend/AST to Codex, and planning to Gemini. If Claude's 5-hour quota is below 20%, UI tasks automatically fall back to Codex to protect token limits."
+      },
+      5: {
+        icon: "🚀",
+        title: "Step 5: Zero-Friction Dispatch (<10ms)",
+        text: "The formatted Markdown prompt and context are placed onto the clipboard or injected into the active agent interface. The developer simply speaks, and the ideal model responds in under 380 milliseconds."
+      }
+    };
+
+    function setStep(step) {
+      currentStep = step;
+      
+      // Update nav buttons
+      document.querySelectorAll('.controls-bar .btn:not(.btn-toggle-quota)').forEach(btn => {
+        btn.classList.remove('active');
+      });
+      if (step === 'all') {
+        document.getElementById('btnAll').classList.add('active');
+      } else {
+        document.getElementById('btnStep' + step).classList.add('active');
+      }
+
+      // Reset all highlights
+      document.querySelectorAll('.node, .sub-node, .line, .arrow-down').forEach(el => {
+        el.classList.remove('highlight', 'active');
+      });
+
+      // Apply highlights
+      if (step === 'all') {
+        document.querySelectorAll('.line, .arrow-down').forEach(el => el.classList.add('active'));
+      } else if (step === 1) {
+        document.getElementById('node1').classList.add('highlight');
+        document.getElementById('line1').classList.add('active');
+        document.getElementById('arrow1').classList.add('active');
+      } else if (step === 2) {
+        document.getElementById('subContext').classList.add('highlight');
+        document.getElementById('subQuota').classList.add('highlight');
+        document.getElementById('line2').classList.add('active');
+        document.getElementById('arrow2').classList.add('active');
+      } else if (step === 3) {
+        document.getElementById('node3').classList.add('highlight');
+        document.getElementById('line3').classList.add('active');
+        document.getElementById('arrow3').classList.add('active');
+      } else if (step === 4) {
+        document.getElementById('cardClaude').classList.add('highlight');
+        document.getElementById('cardCodex').classList.add('highlight');
+        document.getElementById('cardGemini').classList.add('highlight');
+        document.getElementById('line4').classList.add('active');
+        document.getElementById('arrow4').classList.add('active');
+      } else if (step === 5) {
+        document.getElementById('node5').classList.add('highlight');
+      }
+
+      // Update narrative
+      const info = narrativeData[step];
+      document.getElementById('narrativeIcon').textContent = info.icon;
+      document.getElementById('narrativeTitle').textContent = info.title;
+      document.getElementById('narrativeText').textContent = info.text;
+    }
+
+    function toggleQuota() {
+      isThrottled = !isThrottled;
+      const btn = document.getElementById('btnQuota');
+      const label = document.getElementById('quotaLabel');
+      const quotaText = document.getElementById('quotaStatusText');
+      const claudeCard = document.getElementById('cardClaude');
+      const codexCard = document.getElementById('cardCodex');
+      const claudeRule = document.getElementById('claudeRule');
+
+      if (isThrottled) {
+        btn.classList.add('throttled');
+        label.textContent = "Claude Quota: Low (8% Throttled)";
+        quotaText.innerHTML = "<strong style='color:#f87171;'>⚠️ Claude 5h: 8% left (Low)</strong>. Codex: 74% left. Gemini: OK.";
+        claudeCard.classList.remove('active-target');
+        codexCard.classList.add('active-target');
+        claudeRule.innerHTML = "<span class='rule-alert'>⚠️ ACTIVE OVERRIDE: Claude tokens depleted. Redirecting UI prompts to Codex with design tokens.</span>";
+        
+        document.getElementById('narrativeIcon').textContent = "🛡️";
+        document.getElementById('narrativeTitle').textContent = "Quota-Protection Rule Triggered";
+        document.getElementById('narrativeText').textContent = "Because Claude's 5-hour quota dropped below 20%, the router automatically intercepted the task and reassigned it to Codex. This ensures the developer's Claude Pro subscription is never locked out by accidental overuse.";
+      } else {
+        btn.classList.remove('throttled');
+        label.textContent = "Claude Quota: Healthy (88%)";
+        quotaText.innerHTML = "Claude 5h: 88% remaining. Codex: 74% remaining. Gemini: Unlimited.";
+        claudeCard.classList.add('active-target');
+        codexCard.classList.remove('active-target');
+        claudeRule.innerHTML = "<strong>Quota Guard:</strong> Strict 5-hour rate limits. If remaining tokens drop below 20%, tasks are rerouted to Codex.";
+        setStep(currentStep);
+      }
+    }
+
+    // Initialize all active
+    setStep('all');
+  </script>
+</body>
+</html>
