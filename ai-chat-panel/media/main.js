@@ -2174,7 +2174,9 @@
   contextWarning.className = 'context-warning';
   contextWarning.hidden = true;
   contextWarning.innerHTML = `${WARN_SVG}<span class="context-warning-text"></span><button type="button" class="context-compact">Compact</button>`;
-  composerEl.before(contextWarning);
+  // Part of the composer pill, not a strip above it: it grows out of the pill's
+  // top edge and stays joined to it (docs/dynamic-island-composer-spec.md).
+  composerEl.append(contextWarning);
   const kTokens = (n) => (n >= 1e6 ? `${(n / 1e6).toFixed(n >= 1e7 ? 0 : 1)}M` : `${Math.max(1, Math.round(n / 1000))}k`);
   function renderContextGauge(context) {
     const tokens = context?.tokens || 0;
@@ -2187,31 +2189,23 @@
     contextWarning.title = `${AGENT_NAMES[context.agent] || context.agent} context window: ${tokens.toLocaleString()} of ${limit.toLocaleString()} tokens. Compacting summarizes the chat so far into a short checkpoint.`;
   }
   const COMPACT_SVG = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 2.5 8 6l4-3.5M4 13.5 8 10l4 3.5"/></svg>';
-  // Everything so far folds into one closed card; the summary reply follows it.
-  function foldTranscriptIntoSummary() {
-    const items = [...transcriptEl.children].filter((el) => el !== pendingEl && !el.classList.contains('empty-state'));
-    if (!items.length) return;
-    const card = document.createElement('details');
-    card.className = 'compact-card';
-    const summary = document.createElement('summary');
-    summary.innerHTML = COMPACT_SVG;
-    const turns = items.reduce((sum, el) => sum + el.querySelectorAll('.msg-group-user').length, 0);
-    summary.append('Compacted Session Summary');
-    const count = document.createElement('small'); count.textContent = `${turns} turn${turns === 1 ? '' : 's'}`;
-    summary.append(count);
-    const body = document.createElement('div');
-    body.className = 'compact-body';
-    body.append(...items);
-    card.append(summary, body);
-    transcriptEl.prepend(card);
+  // The history stays on screen: a divider marks where the agent's context was
+  // compacted, the summary reply follows it, and the chat carries on below.
+  function appendCompactDivider(auto) {
+    const divider = document.createElement('div');
+    divider.className = 'compact-divider';
+    divider.innerHTML = COMPACT_SVG;
+    divider.append(auto ? 'Context auto-compacted' : 'Context compacted');
+    const hint = document.createElement('small');
+    hint.textContent = 'Everything above stays here. The agent continues from the summary below.';
+    divider.append(hint);
+    transcriptEl.appendChild(divider);
   }
   contextWarning.querySelector('.context-compact').addEventListener('click', () => {
     if (busy) { showToast('Compaction runs once the current turn is done.'); return; }
-    foldTranscriptIntoSummary();
-    appendUserMessage('Compact session');
     renderContextGauge(null);
     setBusy(true);
-    vscode.postMessage({ type: 'compact' });
+    vscode.postMessage({ type: 'compact' }); // the host answers with 'compacting'
   });
 
   /** `running`: the host's routing message for a turn still in progress. Its reply
@@ -2235,7 +2229,7 @@
     messages.forEach((message, index) => {
       if (message.role === 'user') {
         flush();
-        if (message.compact) foldTranscriptIntoSummary();
+        if (message.compact) appendCompactDivider(message.auto);
         appendUserMessage(message.text || '', message.at || null, message.files);
         anchor = currentTurnEl.firstElementChild; startedAt = message.at; endedAt = null;
       }
@@ -2555,6 +2549,14 @@
       }
       case 'binary_missing': {
         appendBinaryMissingCard({ agent: message.agent, checked: Array.isArray(message.checked) ? message.checked : [] });
+        break;
+      }
+      case 'compacting': {
+        // Manual (the Compact button) or automatic (Gemini near its window): same divider, same flow.
+        appendCompactDivider(message.auto);
+        appendUserMessage(message.text || 'Compact session');
+        renderContextGauge(null);
+        setBusy(true);
         break;
       }
       case 'usage': {

@@ -19,7 +19,13 @@ const { MODEL_CATALOG, modelOption, resolveModel } = require('./lib/model-catalo
 const { SchedulerQueue, ACTIVE_STATUSES } = require('./lib/scheduler-queue.js');
 const { TelegramBridge } = require('./lib/telegram-bridge.js');
 const { resolveEditorTheme } = require('./lib/editor-theme.js');
-const { buildHandoff } = require('./lib/chat-handoff.js');
+const { buildHandoff, checkpointStart, COMPACT_DIRECTIVE } = require('./lib/chat-handoff.js');
+
+// Context windows (the webview's gauge uses the same numbers) and the point
+// where the panel compacts Gemini itself: agy has no compaction of its own,
+// while Claude Code and Codex auto-compact natively (both on by default).
+const CONTEXT_LIMITS = { claude: 1000000, codex: 1000000, gemini: 1048576 };
+const AUTO_COMPACT_RATIO = 0.85;
 const { notifyReply } = require('./lib/notify.js');
 
 // P17-X: clock locale + format shared by both webviews ('24h' default, 'auto' follows vscode.env.language).
@@ -311,6 +317,35 @@ class ChatRun {
     if (!this.pending.size) this.deps.notifyHistory();
   }
 
+  /**
+   * P17-R: shrinks `agent`'s context to a checkpoint summary. Claude compacts
+   * its own session natively (/compact). agy has no compaction and Codex exec
+   * can't take /compact, so they write the summary and their next turn starts
+   * a fresh session from it (see handleStreamEvent) instead of resuming the
+   * full one, which is what left Gemini over its limit after "Compact". A
+   * session already past its window can't summarize itself, so it gets the
+   * chat's own condensed record to summarize instead.
+   */
+  compact(agent, used, { auto = false } = {}) {
+    const session = this.chat.sessions?.[agent] || null;
+    const history = buildHandoff(this.chat.messages.slice(checkpointStart(this.chat.messages)), agent);
+    const fromTranscript = [history, COMPACT_DIRECTIVE].filter(Boolean).join('\n\n');
+    const overflowing = this.chat.context?.agent === agent && this.chat.context.tokens >= CONTEXT_LIMITS[agent];
+    const native = agent === 'claude' && Boolean(session?.id);
+    const resume = native || (session?.id && !overflowing) ? session.id : null;
+    const text = auto ? 'Auto-compact: context nearly full' : 'Compact session';
+    this.streamEngine.interrupt();
+    this.chat.context = { agent, tokens: 0 };
+    this.post({ type: 'compacting', text, auto });
+    this.begin({
+      agent,
+      user: { role: 'user', text, compact: true, auto, at: new Date().toISOString(), agent },
+      reply: { role: 'assistant', text: '', agent, modelLabel: used?.label, compact: true },
+      routing: { agentId: agent, modelLabel: used?.label, roleName: null, compact: true },
+      run: { agent, prompt: native ? '/compact' : resume ? COMPACT_DIRECTIVE : fromTranscript, resume, freshPrompt: resume && !native ? fromTranscript : null, model: used?.model, effort: used?.effort },
+    });
+  }
+
   handleStreamEvent(event) {
     if (event.type === 'session' && event.sessionId) {
       this.chat.sessions = { ...this.chat.sessions, [event.agent]: { ...this.chat.sessions?.[event.agent], id: event.sessionId } };
@@ -332,6 +367,22 @@ class ChatRun {
     // A background chat waiting on you shows as "Needs input" in Manage Chats.
     if (event.type === 'approval_required' || event.type === 'question_required') { this.pending.set(event.actionId, event); this.deps.notifyHistory(); }
     if (event.type === 'approval_cancelled') this.pending.delete(event.actionId);
+    let compacted = null;
+    let autoCompact = null;
+    if (event.type === 'turn_complete' && !event.interrupted && this.activeAssistantMessage) {
+      const reply = this.activeAssistantMessage;
+      const summary = reply.text.trim();
+      if (reply.compact && reply.agent !== 'claude' && summary && !/^(Gemini|Codex) error:/.test(summary)) {
+        // The summary is the new starting point: no session id, so the next
+        // turn opens a fresh session briefed from this checkpoint on.
+        reply.checkpoint = true;
+        this.chat.sessions = { ...this.chat.sessions, [reply.agent]: {} };
+        compacted = { agent: reply.agent, tokens: Math.ceil(summary.length / 4) };
+        this.chat.context = compacted;
+      } else if (!reply.compact && reply.agent === 'gemini' && this.chat.context?.agent === 'gemini' && this.chat.context.tokens >= CONTEXT_LIMITS.gemini * AUTO_COMPACT_RATIO) {
+        autoCompact = MODEL_CATALOG.find((entry) => entry.agent === 'gemini' && entry.label === reply.modelLabel) || MODEL_CATALOG.find((entry) => entry.agent === 'gemini');
+      }
+    }
     if (event.type === 'turn_complete') {
       // The chime every agent plays in its own UI; a Windows toast too when you're in another app.
       if (!event.interrupted && this.activeAssistantMessage) {
@@ -348,6 +399,15 @@ class ChatRun {
       this.pending.clear();
     }
     this.post(event);
+    if (compacted) this.post({ type: 'usage', agent: compacted.agent, contextTokens: compacted.tokens });
+    // Gemini past 85% of its window compacts before the next turn can overflow it
+    // (sources/autocompacting_implementation_guide.md §3). Started before release() so the run stays alive.
+    if (autoCompact) this.compact('gemini', autoCompact, { auto: true });
+    if (event.type === 'turn_complete' && !autoCompact && this.afterCompact) {
+      const next = this.afterCompact;
+      this.afterCompact = null;
+      setImmediate(() => this.host?.startTurn(next));
+    }
     if (event.type === 'turn_complete') {
       this.deps.chatWindowManager.release(this);
       this.deps.notifyHistory();
@@ -546,6 +606,8 @@ class ChatWindowHost {
     // P17-F: a message that arrives mid-turn (Steer Now, voice) interrupts
     // that turn visibly instead of silently replacing it.
     const run = this.run;
+    // A message sent while a compaction runs waits for it, instead of cutting the summary off.
+    if (run.turn?.compact) { run.afterCompact = message; return; }
     run.streamEngine.interrupt();
     const quotas = await readQuotas();
     if (message.modelId) this.selectModel(message.modelId);
@@ -564,7 +626,8 @@ class ChatWindowHost {
     // other agents answered. The role boundary goes out once, when the agent
     // first joins this chat (a new session); its session remembers it after that.
     const session = run.chat.sessions?.[dispatch.agent] || null;
-    const briefing = (from) => buildHandoff(run.chat.messages.slice(from), dispatch.agent);
+    // Never further back than the last compaction: its summary stands in for everything before it.
+    const briefing = (from) => buildHandoff(run.chat.messages.slice(Math.max(from, checkpointStart(run.chat.messages))), dispatch.agent);
     const compose = (handoff, fresh) => [fresh ? dispatch.directive : '', dispatch.contract, handoff, text].filter(Boolean).join('\n\n');
     const prompt = session?.id ? compose(briefing(session.seen || 0), false) : compose(briefing(0), true);
     const freshPrompt = session?.id ? compose(briefing(0), true) : null;
@@ -578,31 +641,12 @@ class ChatWindowHost {
     });
   }
 
-  /**
-   * P17-R: shrinks the last agent's own session in place. Claude has a native
-   * /compact on a resumed session; Codex exec and agy get the same request as
-   * a plain directive, and their reply becomes the checkpoint.
-   */
+  /** The Compact button: compacts whichever agent's context the gauge shows (see ChatRun.compact). */
   compactSession() {
     const option = modelOption(this.activeModelId);
     const agent = this.chat.context?.agent || this.lastRoutedAgent || (option?.agent !== 'auto' ? option?.agent : null);
     if (!agent) return;
-    const session = this.chat.sessions?.[agent] || null;
-    const used = option?.agent === agent ? option : MODEL_CATALOG.find((entry) => entry.agent === agent) || null;
-    const directive = 'Summarize and compact this conversation history: retain the current goal, active files, and architectural decisions; discard verbose tool output. Reply with the summary only.';
-    // Without a session of its own the agent has to be handed the history to summarize.
-    const prompt = agent === 'claude' && session?.id ? '/compact'
-      : session?.id ? directive
-      : [buildHandoff(this.chat.messages, agent), directive].filter(Boolean).join('\n\n');
-    this.run.streamEngine.interrupt();
-    this.chat.context = { agent, tokens: 0 };
-    this.run.begin({
-      agent,
-      user: { role: 'user', text: 'Compact session', compact: true, at: new Date().toISOString(), agent },
-      reply: { role: 'assistant', text: '', agent, modelLabel: used?.label, compact: true },
-      routing: { agentId: agent, modelLabel: used?.label, roleName: null, compact: true },
-      run: { agent, prompt, resume: session?.id || null, model: used?.model, effort: used?.effort },
-    });
+    this.run.compact(agent, option?.agent === agent ? option : MODEL_CATALOG.find((entry) => entry.agent === agent) || null);
   }
 
   postHistory() { this.panel.webview.postMessage({ type: 'history', sessions: this.deps.chatWindowManager.listChats() }); }

@@ -610,3 +610,21 @@ test('chat memory: the handoff briefs only missed turns, without tool output, wi
   assert.match(clipped, /earlier turns omitted/);
   assert.match(clipped, /question 59/, 'the newest turns are the ones kept');
 });
+
+test('compaction: a checkpoint bounds the briefing and always survives the budget', () => {
+  const { buildHandoff, checkpointStart } = require('../lib/chat-handoff.js');
+  const before = [{ role: 'user', text: 'old secret question', agent: 'gemini' }, { role: 'assistant', text: 'old answer', agent: 'gemini' }];
+  assert.equal(checkpointStart(before), 0, 'no checkpoint: brief from the start');
+  const failed = [...before, { role: 'user', text: 'Compact session', compact: true }, { role: 'assistant', text: 'Gemini error: quota', compact: true, agent: 'gemini' }];
+  assert.equal(checkpointStart(failed), 0, 'a failed compaction is not a checkpoint');
+  const summary = `# CONTEXT CHECKPOINT SUMMARY\n- **Primary Goal:** ship P17-R ${'z'.repeat(3000)}`;
+  const long = Array.from({ length: 20 }, (_, i) => [{ role: 'user', text: `after ${i} ${'x'.repeat(500)}`, agent: 'gemini' }, { role: 'assistant', text: 'y'.repeat(2000), agent: 'gemini' }]).flat();
+  const messages = [...before, { role: 'user', text: 'Compact session', compact: true }, { role: 'assistant', text: summary, compact: true, checkpoint: true, agent: 'gemini' }, ...long];
+  const from = checkpointStart(messages);
+  assert.equal(from, 2, 'briefing starts at the Compact session message');
+  const handoff = buildHandoff(messages.slice(from), 'gemini');
+  assert.doesNotMatch(handoff, /old secret question/, 'nothing from before the checkpoint');
+  assert.match(handoff, /CHECKPOINT: everything in this chat before this point/);
+  assert.ok(handoff.includes('z'.repeat(3000)), 'the summary goes in whole, not clipped to an answer');
+  assert.match(handoff, /after 19/, 'recent turns still follow it');
+});
