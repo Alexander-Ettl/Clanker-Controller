@@ -257,6 +257,7 @@ test('inline callback navigation updates message in-place and switches models', 
 test('setWebhook retries upon temporary DNS host resolution failure before trycloudflare propagates', async () => {
   const { bridge, calls } = fixture();
   bridge.webhookPublicUrl = 'https://delayed-dns-tunnel.trycloudflare.com';
+  bridge.webhookPort = 0;
   let attempts = 0;
   bridge.api = async (method, payload) => {
     calls.push({ method, payload });
@@ -272,6 +273,70 @@ test('setWebhook retries upon temporary DNS host resolution failure before trycl
   assert.equal(attempts, 2);
   assert.equal(bridge.running, true);
   await bridge.stop();
+});
+
+test('dynamic dock updates button label with active chat title and model', async () => {
+  const { bridge, user, calls } = fixture();
+  const run = { chat: { id: 'chat-portfolio', title: 'Portfolio 2026' }, turn: null, enqueue: () => {} };
+  const manager = { listChats: () => [{ id: run.chat.id, preview: 'Portfolio 2026' }], runs: new Map([[run.chat.id, run]]), runFor: () => run };
+  bindTelegramControls(bridge, {
+    manager, watchdog: {}, queue: { getQueue: async () => [] },
+    readQuotas: async () => ({}), models: [{ id: 'codex', agent: 'codex' }], resolveTarget: () => ({ agentId: 'codex' }), notifyQueue() {}
+  });
+
+  // Tap dynamic chat switcher button
+  await bridge.handleUpdate(user('💬 Portfolio ▾'));
+  const switcherCall = calls.at(-1);
+  assert.match(switcherCall.text, /SELECT CHAT TARGET/);
+  assert.ok(switcherCall.reply_markup?.inline_keyboard?.length >= 2);
+});
+
+test('switching chat via inline button emits session divider and updates reply keyboard', async () => {
+  const { bridge, tap, calls } = fixture();
+  const chat1 = { id: 'c-1', preview: 'Astro Studio' };
+  const manager = { listChats: () => [chat1], runs: new Map() };
+  bindTelegramControls(bridge, {
+    manager, watchdog: {}, queue: { getQueue: async () => [] },
+    readQuotas: async () => ({}), models: [{ id: 'codex', agent: 'codex' }], resolveTarget: () => ({ agentId: 'codex' }), notifyQueue() {}
+  });
+
+  await bridge.handleUpdate(tap('chat:use:c-1'));
+  const dividerCall = calls.findLast((c) => c.text && c.text.includes('CONNECTED TO: "Astro Studio"'));
+  assert.ok(dividerCall);
+  const kb = dividerCall.reply_markup?.keyboard?.[0];
+  assert.equal(kb[0].text, '📊 Cockpit');
+  assert.match(kb[1].text, /Astro Studio/);
+  assert.match(kb[2].text, /Codex/);
+});
+
+test('clean-slate new chat mode spawns fresh session on next conversational prompt', async () => {
+  const { bridge, tap, user, calls } = fixture();
+  let created = 0;
+  const newRun = { chat: { id: 'c-fresh', title: 'Brand New' }, turn: null, enqueue: () => {} };
+  const manager = {
+    listChats: () => [],
+    runs: new Map(),
+    runFor: (id) => {
+      if (id === null) { created++; return newRun; }
+      return null;
+    }
+  };
+  bindTelegramControls(bridge, {
+    manager, watchdog: {}, queue: { getQueue: async () => [] },
+    readQuotas: async () => ({}), models: [{ id: 'codex', agent: 'codex' }], resolveTarget: () => ({ agentId: 'codex' }), notifyQueue() {}
+  });
+
+  // Tap start fresh chat
+  await bridge.handleUpdate(tap('chat:new'));
+  const dividerCall = calls.findLast((c) => c.text && c.text.includes('NEW CHAT SESSION (Clean Slate)'));
+  assert.ok(dividerCall);
+  const kb = dividerCall.reply_markup?.keyboard?.[0];
+  assert.equal(kb[1].text, '➕ New Chat');
+
+  // Send prompt
+  await bridge.handleUpdate(user('Build a contact form'));
+  assert.equal(created, 1);
+  assert.match(calls.at(-1).text, /Dispatched to workstation/);
 });
 
 

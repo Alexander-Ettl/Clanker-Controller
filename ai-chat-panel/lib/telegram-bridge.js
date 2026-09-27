@@ -6,14 +6,38 @@ const crypto = require('node:crypto');
 const { setTimeout: delay } = require('node:timers/promises');
 const clip = (text, limit = 3500) => String(text).slice(0, limit).replace(/[\uD800-\uDBFF]$/, '');
 
-const DOCK_KEYBOARD = {
-  keyboard: [
-    [{ text: '📊 Cockpit' }, { text: '💬 Chats' }],
-    [{ text: '⚡ Active Task' }, { text: '⚙️ Models' }]
-  ],
-  resize_keyboard: true,
-  is_persistent: true
-};
+function makeDockKeyboard({ chatTitle = null, isNewChat = false, model = 'codex' } = {}) {
+  const modelIcons = {
+    codex: '🤖 Codex ▾',
+    claude: '🧠 Claude ▾',
+    gemini: '⚡ Gemini ▾',
+    opus: '🎭 Opus ▾'
+  };
+  const modelText = modelIcons[model?.toLowerCase()] || `🤖 ${String(model || 'CODEX').toUpperCase()} ▾`;
+
+  let chatText = '➕ New Chat';
+  if (!isNewChat && chatTitle) {
+    const cleanTitle = String(chatTitle)
+      .replace(/^[#\s]+/, '')
+      .trim()
+      .slice(0, 14);
+    chatText = `💬 ${cleanTitle || 'Chat'} ▾`;
+  }
+
+  return {
+    keyboard: [
+      [
+        { text: '📊 Cockpit' },
+        { text: chatText },
+        { text: modelText }
+      ]
+    ],
+    resize_keyboard: true,
+    is_persistent: true
+  };
+}
+
+const DOCK_KEYBOARD = makeDockKeyboard({ chatTitle: null, isNewChat: true, model: 'codex' });
 
 const COMMANDS = [
   ['cockpit', 'Live workstation cockpit & quotas'],
@@ -314,6 +338,7 @@ class TelegramBridge {
         const payload = {
           chat_id: this.chatId,
           text: part,
+          ...(options.message_thread_id ? { message_thread_id: options.message_thread_id } : {}),
           ...(isLast && options.reply_markup ? { reply_markup: options.reply_markup } : {}),
           ...(options.parse_mode ? { parse_mode: options.parse_mode } : {}),
         };
@@ -468,7 +493,16 @@ class TelegramBridge {
     const callback = update?.callback_query;
     const message = callback?.message || update?.message;
     const sender = callback?.from || message?.from;
-    if (!sender || String(sender.id) !== this.chatId || String(message?.chat?.id) !== this.chatId || (message.chat.type && message.chat.type !== 'private')) return;
+    if (!sender || !message?.chat) return;
+    const isPrivate = message.chat.type === 'private';
+    const isSupergroup = message.chat.type === 'supergroup';
+    if (isPrivate) {
+      if (String(sender.id) !== this.chatId || String(message.chat.id) !== this.chatId) return;
+    } else if (isSupergroup) {
+      if (String(message.chat.id) !== this.chatId) return;
+    } else {
+      return;
+    }
     this.pruneActions();
     if (callback) {
       const data = String(callback.data || '');
@@ -577,4 +611,4 @@ class TelegramBridge {
   }
 }
 
-module.exports = { TelegramBridge, HELP, DOCK_KEYBOARD };
+module.exports = { TelegramBridge, HELP, DOCK_KEYBOARD, makeDockKeyboard };
