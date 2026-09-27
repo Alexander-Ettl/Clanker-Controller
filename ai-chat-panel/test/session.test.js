@@ -6,6 +6,7 @@
 // and `node test/check.js` covers syntax for every script.
 
 const assert = require('node:assert/strict');
+const { EventEmitter } = require('node:events');
 const fs = require('node:fs');
 const path = require('node:path');
 
@@ -13,7 +14,9 @@ const os = require('node:os');
 const { writeMicroHandoff, readMicroHandoff, formatMicroHandoffPrompt, MAX_CHARS } = require('../lib/handoff.js');
 const { SchedulerQueue, MAX_QUEUE_SIZE, MAX_ATTACHMENT_BYTES } = require('../lib/scheduler-queue.js');
 const { TelegramBridge } = require('../lib/telegram-bridge.js');
-const { CodexCommandCatalog, parseCommandTable, parseInvocation, supportsComposerCommand } = require('../lib/codex-commands.js');
+const { CodexCommandCatalog, methodNamesFromSchema, parseInvocation } = require('../lib/codex-commands.js');
+const { CodexAppServer, commandsForMethods } = require('../lib/codex-app-server.js');
+const { SlashCommandCatalog } = require('../lib/slash-commands.js');
 
 let failures = 0;
 
@@ -76,21 +79,215 @@ test('formatMicroHandoffPrompt renders a compact prefix, or an empty string for 
   assert.equal(formatMicroHandoffPrompt(null), '');
 });
 
-test('Codex slash commands are discovered from the installed exec help instead of a static renderer list', async () => {
-  const rootHelp = `Run Codex non-interactively\n\nCommands:\n  resume  Resume a previous session\n  review  Run a code review against the current repository\n  help    Print help\n`;
-  const reviewHelp = `Run a code review against the current repository\n\nUsage: codex exec review [OPTIONS] [PROMPT]\n\nArguments:\n  [PROMPT]\n          Custom instructions. If - is used, read from stdin\n\nOptions:\n      --json\n          Print JSONL\n      --skip-git-repo-check\n          Allow running outside Git\n  -m, --model <MODEL>\n          Override the model\n  -c, --config <key=value>\n          Override configuration\n`;
+test('Codex slash commands are capability-gated by the installed App Server schema', async () => {
+  const methods = new Set(['review/start', 'thread/goal/get', 'thread/goal/set', 'thread/goal/clear', 'thread/compact/start']);
   let calls = 0;
-  const runImpl = async (_binary, args) => { calls++; return args.length === 2 ? rootHelp : args[1] === 'review' ? reviewHelp : 'Usage: codex exec resume [SESSION_ID]\n'; };
-  const catalog = new CodexCommandCatalog({ locateImpl: () => ({ path: 'codex' }), runImpl });
+  const catalog = new CodexCommandCatalog({
+    locateImpl: () => ({ path: 'codex' }),
+    discoverMethodsImpl: async () => { calls++; return methods; },
+  });
   assert.equal(await catalog.resolve('ordinary prompt'), null);
   assert.equal(calls, 0, 'ordinary turns do not probe the Codex binary');
-  assert.deepEqual(parseCommandTable(rootHelp).map((entry) => entry.name), ['resume', 'review', 'help']);
-  assert.equal(supportsComposerCommand(reviewHelp, 'review'), true);
-  assert.equal(supportsComposerCommand(reviewHelp.replace('      --skip-git-repo-check\n', ''), 'review'), false, 'discovery rejects commands that cannot accept the launch flags');
-  assert.deepEqual(await catalog.list(), [{ name: 'review', description: 'Run a code review against the current repository' }]);
-  assert.deepEqual(await catalog.resolve('/review focus on races'), { name: 'review', description: 'Run a code review against the current repository', prompt: 'focus on races' });
+  assert.deepEqual(methodNamesFromSchema({ oneOf: [{ properties: { method: { enum: ['review/start'] } } }] }), new Set(['review/start']));
+  assert.deepEqual((await catalog.list()).map((entry) => entry.name), ['review', 'goal', 'compact']);
+  assert.deepEqual(commandsForMethods(methods).map((entry) => entry.name), ['review', 'goal', 'compact']);
+  assert.equal((await catalog.resolve('/review focus on races')).prompt, 'focus on races');
+  assert.equal((await catalog.resolve('/goal ship the app')).prompt, 'ship the app');
+  assert.equal((await catalog.resolve('/review')).prompt, '');
+  assert.equal(await catalog.resolve('/mcp'), null, 'unsupported installed methods are not advertised');
   assert.equal(parseInvocation('/unknown', await catalog.list()), null);
+  assert.equal(calls, 1, 'the generated schema is cached');
 });
+
+test('Codex App Server speaks newline-delimited requests and performs the native initialize handshake', async () => {
+  const child = new EventEmitter();
+  child.stdout = new EventEmitter();
+  child.stderr = new EventEmitter();
+  child.stdin = new EventEmitter();
+  child.stdin.writable = true;
+  child.stdin.end = () => { child.stdin.writable = false; };
+  child.kill = () => {};
+  const written = [];
+  child.stdin.write = (line) => {
+    const message = JSON.parse(line);
+    written.push(message);
+    if (message.method === 'initialize') queueMicrotask(() => child.stdout.emit('data', Buffer.from(`${JSON.stringify({ id: message.id, result: { userAgent: 'codex-test' } })}\n`)));
+    if (message.method === 'model/list') queueMicrotask(() => child.stdout.emit('data', Buffer.from(`${JSON.stringify({ id: message.id, result: { data: [{ id: 'gpt-test' }] } })}\n`)));
+    return true;
+  };
+  const server = new CodexAppServer({ cwd: os.tmpdir(), locateImpl: () => ({ path: 'codex' }), spawnImpl: () => child });
+  const notifications = [];
+  server.on('notification', (message) => notifications.push(message));
+  await server.connect();
+  assert.deepEqual(written.slice(0, 2).map((message) => message.method), ['initialize', 'initialized']);
+  assert.equal('jsonrpc' in written[0], false, 'App Server JSONL is not JSON-RPC 2.0');
+  assert.deepEqual(await server.request('model/list', {}), { data: [{ id: 'gpt-test' }] });
+  child.stdout.emit('data', Buffer.from(`${JSON.stringify({ method: 'skills/changed', params: {} })}\n`));
+  assert.equal(notifications[0].method, 'skills/changed');
+  server.dispose();
+});
+
+test('Codex App Server kills a failed initializer and ignores that stale child after reconnecting', async () => {
+  const children = [];
+  const makeChild = (answerInitialize) => {
+    const child = new EventEmitter();
+    child.stdout = new EventEmitter(); child.stderr = new EventEmitter(); child.stdin = new EventEmitter();
+    child.stdin.writable = true;
+    child.stdin.end = () => { child.stdin.writable = false; };
+    child.kill = () => { child.killed = true; };
+    child.stdin.write = (line) => {
+      const message = JSON.parse(line);
+      if (answerInitialize && message.method === 'initialize') queueMicrotask(() => child.stdout.emit('data', Buffer.from(`${JSON.stringify({ id: message.id, result: {} })}\n`)));
+      return true;
+    };
+    return child;
+  };
+  const server = new CodexAppServer({
+    cwd: os.tmpdir(), timeoutMs: 5, locateImpl: () => ({ path: 'codex' }),
+    spawnImpl: () => { const child = makeChild(children.length > 0); children.push(child); return child; },
+  });
+  await assert.rejects(server.connect(), /no response/);
+  assert.equal(children[0].killed, true);
+  await server.connect();
+  children[0].emit('close', 1);
+  assert.equal(server.child, children[1], 'a superseded child cannot close the replacement connection');
+  server.dispose();
+});
+
+test('Codex turns, native commands, approvals, and questions use one persistent App Server thread', async () => {
+  const { StreamEngine } = require('../lib/stream-engine.js');
+  class FakeServer extends EventEmitter {
+    constructor() { super(); this.calls = []; this.responses = []; }
+    async connect() {}
+    async request(method, params) {
+      this.calls.push({ method, params });
+      if (method === 'thread/start') return { thread: { id: 'thread-1' } };
+      if (method === 'turn/start' || method === 'review/start') return { turn: { id: 'turn-1' } };
+      if (method === 'thread/goal/set') return { goal: { objective: params.objective, status: 'active' } };
+      return {};
+    }
+    respond(id, result) { this.responses.push({ id, result }); }
+    dispose() {}
+  }
+  const server = new FakeServer();
+  const engine = new StreamEngine({ cwd: os.tmpdir(), interactive: true, codexServerFactory: () => server });
+  const events = [];
+  engine.on('event', (event) => events.push(event));
+  engine.start({ agent: 'codex', prompt: 'hello', model: 'gpt-test', effort: 'high' });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(server.calls.map((call) => call.method), ['thread/start', 'turn/start']);
+  assert.equal(server.calls[1].params.threadId, 'thread-1');
+  assert.deepEqual(server.calls[1].params.input, [{ type: 'text', text: 'hello' }]);
+  assert.equal(events.find((event) => event.type === 'session')?.sessionId, 'thread-1');
+
+  server.emit('request', { id: 7, method: 'item/commandExecution/requestApproval', params: { command: 'npm test', reason: 'Run tests' } });
+  const approval = events.findLast((event) => event.type === 'approval_required');
+  assert.equal(approval.command, 'npm test');
+  assert.equal(engine.respondToApproval(approval.actionId, true, { always: true }), true);
+  assert.deepEqual(server.responses.at(-1), { id: 7, result: { decision: 'acceptForSession' } });
+
+  const questions = [{ id: 'scope', header: 'Scope', question: 'Which scope?', options: [{ label: 'All', description: 'Everything' }] }];
+  server.emit('request', { id: 8, method: 'item/tool/requestUserInput', params: { questions } });
+  const question = events.findLast((event) => event.type === 'question_required');
+  assert.equal(engine.respondToQuestion(question.actionId, { 'Which scope?': 'All' }), true);
+  assert.deepEqual(server.responses.at(-1), { id: 8, result: { answers: { scope: { answers: ['All'] } } } });
+
+  server.emit('notification', { method: 'item/agentMessage/delta', params: { delta: 'Done' } });
+  server.emit('notification', { method: 'turn/completed', params: { turn: { id: 'turn-1', status: 'completed' } } });
+  assert.equal(events.findLast((event) => event.type === 'delta').text, 'Done');
+  assert.equal(events.at(-1).type, 'turn_complete');
+
+  engine.start({ agent: 'codex', prompt: 'Ship it', model: 'gpt-test', codexCommand: 'goal', resume: 'thread-1' });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(server.calls.filter((call) => call.method === 'thread/start').length, 1, 'commands reuse the loaded thread');
+  assert.equal(server.calls.findLast((call) => call.method === 'thread/goal/set').params.objective, 'Ship it');
+  assert.match(events.findLast((event) => event.type === 'delta').text, /Ship it/);
+
+  engine.start({ agent: 'codex', prompt: '', model: 'gpt-test', codexCommand: 'compact', resume: 'thread-1' });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(server.calls.at(-1).method, 'thread/compact/start');
+  assert.equal(engine.codexActive, true, 'compaction stays active until the server confirms it finished');
+  server.emit('notification', { method: 'thread/compacted', params: { threadId: 'thread-1', turnId: 'compact-1' } });
+  assert.equal(engine.codexActive, false);
+
+  engine.start({ agent: 'codex', prompt: '', model: 'gpt-test', codexCommand: 'review', resume: 'thread-1' });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(server.calls.findLast((call) => call.method === 'review/start').params.target, { type: 'uncommittedChanges' });
+  engine.dispose();
+});
+
+test('late notifications from an interrupted Codex turn cannot complete its replacement', async () => {
+  const { StreamEngine } = require('../lib/stream-engine.js');
+  class RacingServer extends EventEmitter {
+    constructor() { super(); this.turns = []; }
+    async connect() {}
+    async request(method) {
+      if (method === 'thread/start') return { thread: { id: 'thread-race' } };
+      if (method === 'turn/interrupt') return {};
+      if (method === 'turn/start') return new Promise((resolve) => this.turns.push(resolve));
+      return {};
+    }
+    respond() {}
+    dispose() {}
+  }
+  const server = new RacingServer();
+  const engine = new StreamEngine({ cwd: os.tmpdir(), codexServerFactory: () => server });
+  const events = [];
+  engine.on('event', (event) => events.push(event));
+  engine.start({ agent: 'codex', prompt: 'old', model: 'gpt-test' });
+  await new Promise((resolve) => setImmediate(resolve));
+  server.emit('notification', { method: 'turn/started', params: { threadId: 'thread-race', turn: { id: 'old-turn' } } });
+  assert.equal(engine.interrupt(), true);
+  engine.start({ agent: 'codex', prompt: 'new', model: 'gpt-test', resume: 'thread-race' });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(server.turns.length, 2);
+  server.turns[0]({ turn: { id: 'old-turn' } });
+  server.turns[1]({ turn: { id: 'new-turn' } });
+  await new Promise((resolve) => setImmediate(resolve));
+  const beforeStale = events.filter((event) => event.type === 'turn_complete').length;
+  server.emit('notification', { method: 'turn/completed', params: { threadId: 'thread-race', turn: { id: 'old-turn', status: 'completed' } } });
+  assert.equal(events.filter((event) => event.type === 'turn_complete').length, beforeStale);
+  server.emit('notification', { method: 'item/agentMessage/delta', params: { threadId: 'thread-race', turnId: 'new-turn', delta: 'new answer' } });
+  server.emit('notification', { method: 'turn/completed', params: { threadId: 'thread-race', turn: { id: 'new-turn', status: 'completed' } } });
+  assert.equal(events.findLast((event) => event.type === 'delta').text, 'new answer');
+  assert.equal(events.filter((event) => event.type === 'turn_complete').length, beforeStale + 1);
+  engine.dispose();
+});
+
+test('slash command ownership stays with the explicitly selected provider', async () => {
+  let claudeProbes = 0;
+  let geminiProbes = 0;
+  const catalog = new SlashCommandCatalog({
+    codexCommands: { list: async () => [{ name: 'review', description: 'Review changes' }] },
+    workspaceDir: os.tmpdir(),
+    cacheFile: path.join(os.tmpdir(), `missing-slash-cache-${process.pid}.json`),
+    claudeHome: path.join(os.tmpdir(), `missing-claude-home-${process.pid}`),
+    probe: async () => { claudeProbes++; return null; },
+    probeGemini: async () => {
+      geminiProbes++;
+      return [
+        { name: 'goal', description: 'Run until the specified goal is completely finished.' },
+        { name: 'grill-me', description: 'Interview me to align on a plan.' },
+        { name: 'plan', description: 'Plan carefully before executing a task.' },
+      ];
+    },
+  });
+  catalog.claudeLive = ['compact', 'review'];
+  assert.equal(await catalog.owner('/review', 'codex'), 'codex');
+  assert.equal(claudeProbes, 0, 'Codex command lookup does not touch Claude');
+  assert.equal(geminiProbes, 0, 'Codex command lookup does not touch Gemini');
+  assert.equal(await catalog.owner('/review', 'claude'), 'claude');
+  assert.equal(await catalog.owner('/compact', 'codex'), null);
+  assert.equal(await catalog.owner('/compact', 'auto'), 'claude');
+
+  // Antigravity (Gemini) exclusivity & aliases
+  assert.equal(await catalog.owner('/goal', 'gemini'), 'gemini');
+  assert.equal(await catalog.owner('/grill-me', 'gemini'), 'gemini');
+  assert.equal(await catalog.owner('/grillme', 'gemini'), 'gemini');
+  assert.equal(await catalog.owner('/goal', 'codex'), null);
+  assert.equal(await catalog.owner('/goal', 'claude'), null);
+});
+
 
 test('package.json declares the webview view, the injectPrompt command, and the 3 focus commands', () => {
   const pkg = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'package.json'), 'utf8'));
@@ -102,7 +299,7 @@ test('package.json declares the webview view, the injectPrompt command, and the 
   assert.ok(commandIds.includes('aiChatPanel.focusClaude'));
   assert.ok(commandIds.includes('aiChatPanel.focusCodex'));
   assert.ok(commandIds.includes('aiChatPanel.focusGemini'));
-  assert.equal(pkg.contributes.configuration.properties['aiChatPanel.models'].default.codex, 'gpt-5.6-terra');
+  assert.equal(pkg.contributes.configuration.properties['aiChatPanel.models'].default.codex, 'gpt-6-sol');
 });
 
 test('P16-I: binary-locator finds the newest bundled CLI across IDE extension dirs and reports every path checked', () => {
@@ -152,6 +349,7 @@ test('P16-I: StreamEngine turns a missing CLI into a binary_missing event, never
 });
 
 test('readQuotas without the usage extension reports every provider as unknown', async () => {
+  process.env.AI_CHAT_PANEL_QUOTA_CACHE = path.join(os.tmpdir(), `ai-chat-panel-test-unknown-${process.pid}.json`); // nothing remembered either
   const { readQuotas } = require('../lib/quota-bridge.js');
   assert.deepEqual(await readQuotas(), { claude: null, claudeWeekly: null, claudeOpus: null, opus: null, codex: null, gemini: null });
 });
@@ -347,17 +545,17 @@ test('P16-L: no microphone at all is a clear error', async () => {
 
 test('CLI command lines use only flags the real CLIs accept, and stdin payloads they parse', () => {
   const { StreamEngine } = require('../lib/stream-engine.js');
-  const e = new StreamEngine({ models: { claude: 'claude', codex: 'gpt-5.6-terra', gemini: 'gemini-3.8-flash-high' } });
+  const e = new StreamEngine({ models: { claude: 'claude', codex: 'gpt-6-sol', gemini: 'gemini-3.8-flash-high' } });
   const claude = e.commandFor('claude', 'hi');
   assert.ok(claude.args.includes('-p') && claude.args.includes('auto') && !claude.args.includes('--model'));
   assert.ok(!claude.args.includes('accept-non-destructive') && !claude.args.includes('--input-format'));
   const codex = e.commandFor('codex', 'hi');
-  assert.deepEqual(codex.args, ['exec', '--json', '--sandbox', 'workspace-write', '--skip-git-repo-check', '-m', 'gpt-5.6-terra', '-']);
+  assert.deepEqual(codex.args, ['exec', '--json', '--sandbox', 'workspace-write', '--skip-git-repo-check', '-m', 'gpt-6-sol', '-']);
   const review = e.commandFor('codex', 'focus on races', [], { codexCommand: 'review' });
-  assert.deepEqual(review.args, ['exec', 'review', '--json', '--skip-git-repo-check', '-m', 'gpt-5.6-terra', '-']);
+  assert.deepEqual(review.args, ['exec', 'review', '--json', '--skip-git-repo-check', '-m', 'gpt-6-sol', '-']);
   assert.equal(review.input, 'focus on races\n');
-  const defaultReview = e.commandFor('codex', '', [], { codexCommand: 'review' });
-  assert.deepEqual(defaultReview.args, ['exec', 'review', '--json', '--skip-git-repo-check', '-m', 'gpt-5.6-terra']);
+  const defaultReview = e.commandFor('codex', '', [], { codexCommand: 'review', codexCommandArgs: ['--uncommitted'] });
+  assert.deepEqual(defaultReview.args, ['exec', 'review', '--uncommitted', '--json', '--skip-git-repo-check', '-m', 'gpt-6-sol']);
   assert.equal(defaultReview.input, '');
   const gemini = e.commandFor('gemini', 'hi');
   assert.deepEqual(JSON.parse(gemini.input), { event: 'user', message: { content: 'hi' } });
@@ -516,8 +714,8 @@ test('composer model picker: each catalog entry reaches its CLI as model + effor
   const e = new StreamEngine({ interactive: true });
   const claude = e.commandFor('claude', 'hi', [], modelOption('claude-opus-5-5-medium')).args;
   assert.deepEqual(claude.slice(claude.indexOf('--model')), ['--model', 'claude-opus-5-5', '--effort', 'medium']);
-  const codex = e.commandFor('codex', 'hi', [], modelOption('gpt-5.6-terra-high')).args;
-  assert.deepEqual(codex.slice(-5), ['-m', 'gpt-5.6-terra', '-c', 'model_reasoning_effort="high"', '-']);
+  const codex = e.commandFor('codex', 'hi', [], modelOption('gpt-6-sol-high')).args;
+  assert.deepEqual(codex.slice(-5), ['-m', 'gpt-6-sol', '-c', 'model_reasoning_effort="high"', '-']);
   const gemini = e.commandFor('gemini', 'hi', [], modelOption('gemini-3.8-flash-high')).args;
   assert.equal(gemini[gemini.indexOf('--model') + 1], 'gemini-3.8-flash-high');
   assert.ok(!e.commandFor('codex', 'hi').args.includes('-c'), 'no picker choice: the configured default, no effort override');
@@ -533,7 +731,7 @@ test('P17-A: Opus 5.5 is a branded Claude model, and family names resolve to cat
   assert.equal(resolveModel('opus').id, 'claude-opus-5-5-medium');
   assert.equal(resolveModel('Claude Opus 5.5').id, 'claude-opus-5-5-medium');
   assert.equal(resolveModel('SONNET').id, 'claude-sonnet-5-high');
-  assert.equal(resolveModel('terra').agent, 'codex');
+  assert.equal(resolveModel('sol').agent, 'codex');
   assert.equal(resolveModel('gemini-3.8-flash-high').agent, 'gemini');
   assert.equal(resolveModel('haiku'), null);
 });
@@ -612,7 +810,7 @@ test('P17-H: a task left "dispatched" by a restart loads as "interrupted", persi
 
 test('chat memory: each CLI resumes its own session by id, and a missing session reruns fresh', () => {
   const { StreamEngine, normalizeEvent } = require('../lib/stream-engine.js');
-  const engine = new StreamEngine({ cwd: process.cwd(), models: { claude: 'claude', codex: 'gpt-5.6-terra', gemini: 'gemini-3.8-flash-high' } });
+  const engine = new StreamEngine({ cwd: process.cwd(), models: { claude: 'claude', codex: 'gpt-6-sol', gemini: 'gemini-3.8-flash-high' } });
   assert.deepEqual(engine.commandFor('claude', 'hi', [], { resume: 'c-1' }).args.slice(-2), ['--resume', 'c-1']);
   assert.deepEqual(engine.commandFor('codex', 'hi', [], { resume: 'x-1' }).args.slice(0, 3), ['exec', 'resume', 'x-1']);
   assert.ok(!engine.commandFor('codex', 'hi', [], { resume: 'x-1' }).args.includes('--sandbox'), 'exec resume takes no --sandbox');
@@ -678,4 +876,29 @@ test('compaction: a checkpoint bounds the briefing and always survives the budge
   assert.ok(repeated.length <= COMPACT_TARGET_TOKENS * 4 + 1000, 'repeated compaction shares one budget between the checkpoint and newer turns');
   assert.match(repeated, /after 19/, 'repeated compaction prioritizes the newest work');
   assert.match(COMPACT_DIRECTIVE, /100,000 tokens/);
+});
+
+test('Claude usage: rate-limit events and /usage text both yield the 5h and weekly windows', () => {
+  const { fromRateLimitEvent, parseUsageText } = require('../lib/claude-usage.js');
+  const event = { type: 'rate_limit_event', rate_limit_info: { unifiedWindows: { five_hour: { utilization: 0.79, resetsAt: 1790307600 }, seven_day: { utilization: 0.64, resetsAt: 1790341200 } } } };
+  assert.deepEqual(fromRateLimitEvent(event), { fiveHour: { used: 79, resetsAt: 1790307600 }, sevenDay: { used: 64, resetsAt: 1790341200 } });
+  assert.equal(fromRateLimitEvent({ type: 'rate_limit_event' }), null);
+
+  const now = new Date(2026, 8, 25, 1, 0);
+  const text = 'Current session: 77% used · resets Sep 25, 5:39am (Europe/Berlin)\nCurrent week (all models): 65% used · resets Sep 25, 2:59pm (Europe/Berlin)';
+  const parsed = parseUsageText(text, now);
+  assert.equal(parsed.fiveHour.used, 77);
+  assert.equal(parsed.fiveHour.resetsAt, new Date(2026, 8, 25, 5, 39).getTime() / 1000);
+  assert.equal(parsed.sevenDay.used, 65);
+  assert.equal(parsed.sevenDay.resetsAt, new Date(2026, 8, 25, 14, 59).getTime() / 1000);
+  assert.equal(parseUsageText('Unknown command', now), null);
+});
+
+test('quota bridge: Claude\'s own recorded numbers beat a stale status-bar reading until their window ends', () => {
+  quotaCache('claude-live');
+  const { shapeQuotas, recordClaudeUsage } = require('../lib/quota-bridge.js');
+  recordClaudeUsage({ fiveHour: { used: 77, resetsAt: SOON }, sevenDay: { used: 65, resetsAt: SOON + 9000 } });
+  const shaped = shapeQuotas({ claude: { used: 0, remaining: 100, resetsAt: SOON, windowMinutes: 300 } });
+  assert.equal(shaped.claude.remaining, 23);
+  assert.equal(shaped.claude.secondary.remaining, 35);
 });

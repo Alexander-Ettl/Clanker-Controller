@@ -6,7 +6,18 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { pathToFileURL } = require('node:url');
 const { TerminalSessionManager } = require('./lib/pty-session.js');
-const { readQuotas, onDidChangeQuotas, quotaBridgeConnected } = require('./lib/quota-bridge.js');
+const { readQuotas, onDidChangeQuotas, quotaBridgeConnected, recordClaudeUsage, claudeUsageAge } = require('./lib/quota-bridge.js');
+const { probeClaudeUsage } = require('./lib/claude-usage.js');
+
+// Claude's real usage after a restart or a quiet spell: `claude -p /usage` is a local command
+// (0 tokens), so it's asked whenever the last real reading is 15+ minutes old or a window rolled over.
+const USAGE_PROBE_AFTER_MS = 15 * 60 * 1000;
+let usageProbe = null;
+function refreshClaudeUsage(cwd) {
+  if (usageProbe || claudeUsageAge() < USAGE_PROBE_AFTER_MS) return usageProbe;
+  usageProbe = probeClaudeUsage(cwd).then((windows) => recordClaudeUsage(windows)).catch(() => {}).finally(() => { usageProbe = null; });
+  return usageProbe;
+}
 const { VoiceCapture } = require('./lib/voice-capture.js');
 const { learnedTerms } = require('./lib/voice-learn.js');
 const { writeMicroHandoff, formatMicroHandoffPrompt } = require('./lib/handoff.js');
@@ -21,6 +32,7 @@ const { TelegramBridge } = require('./lib/telegram-bridge.js');
 const { resolveEditorTheme } = require('./lib/editor-theme.js');
 const { buildHandoff, buildCompactionHandoff, checkpointStart, estimateTokens, COMPACT_DIRECTIVE, COMPACT_TARGET_TOKENS } = require('./lib/chat-handoff.js');
 const { CodexCommandCatalog } = require('./lib/codex-commands.js');
+const { SlashCommandCatalog } = require('./lib/slash-commands.js');
 
 // Context windows (the webview's gauge uses the same numbers) and the point
 // where the panel compacts Gemini itself: agy has no compaction of its own,
@@ -101,6 +113,7 @@ class SchedulerWatchdog {
     if (this.running || this.activeTaskId) return;
     this.running = true;
     try {
+      await refreshClaudeUsage(this.workspaceDir); // real numbers before deciding a Claude task may run
       const queue = await this.queue.getQueue();
       const next = queue.find((task) => task.status === 'pending' && (task.dispatchTrigger !== 'fixed-time' || Date.parse(task.dispatchTime) <= Date.now()));
       if (!next || !quotaAvailable(await readQuotas(), next.model)) return;
@@ -140,6 +153,7 @@ class SchedulerWatchdog {
     this.engine.start({ agent: task.model, prompt: task.prompt, model, effort, attachments:task.attachments.map((attachment) => path.resolve(this.workspaceDir, attachment.relativePath)) });
   }
   async handleEvent(event) {
+    if (event.type === 'rate_limits' && event.agent === 'claude') recordClaudeUsage(event.windows);
     if (!this.activeTaskId) return;
     if (event.type === 'tool_start' && this.chat) { this.chat.messages.push({ role: 'tool', event }); this.chat = this.chatStore.save(this.chat); }
     if (event.type === 'delta') {
@@ -342,14 +356,24 @@ async function planTurn(run, message, deps) {
   const quotas = await readQuotas();
   let option = modelOption(message.modelId);
   const requested = option ? option.agent : 'auto';
-  const codexCommand = await deps.codexCommands.resolve(text);
+  // "/simplify" and the like go to the CLI that has them, as typed: a briefing in front would hide the command.
+  // Under Remote Control every message goes to the live Claude session (as typed: it already has the context).
+  const slashAgent = run.remote ? 'claude' : await deps.slashCommands?.owner(text, requested);
+  const codexCommand = slashAgent === 'codex' ? await deps.codexCommands.resolve(text) : null;
   const dispatch = codexCommand
     ? { agent: 'codex', directive: '', contract: '', roleName: null, split: false }
-    : route(text, quotas, requested, option?.brand);
+    : slashAgent
+      ? { agent: slashAgent, directive: '', contract: '', roleName: null, split: false }
+      : route(text, quotas, requested, option?.brand);
   const rerouted = Boolean(option && dispatch.agent !== option.agent);
   if (rerouted) option = MODEL_CATALOG.find((entry) => entry.agent === dispatch.agent) || null;
   // Auto runs the agent's first catalog model, so every reply can name the exact model it came from.
   const used = option || MODEL_CATALOG.find((entry) => entry.agent === dispatch.agent) || null;
+  // Normalize Gemini aliases (e.g. /grillme -> /grill-me) for CLI execution
+  let promptText = text;
+  if (dispatch.agent === 'gemini' && /^\/grillme(\b|\s|$)/i.test(promptText)) {
+    promptText = promptText.replace(/^\/grillme(\b|\s|$)/i, '/grill-me$1');
+  }
   // Memory across turns and agents: the agent resumes its own session in this
   // chat (it remembers its turns), and is briefed on the turns it missed while
   // other agents answered. The role boundary goes out once, when the agent
@@ -357,9 +381,9 @@ async function planTurn(run, message, deps) {
   const session = run.chat.sessions?.[dispatch.agent] || null;
   // Never further back than the last compaction: its summary stands in for everything before it.
   const briefing = (from) => buildHandoff(run.chat.messages.slice(Math.max(from, checkpointStart(run.chat.messages))), dispatch.agent);
-  const compose = (handoff, fresh) => [fresh ? dispatch.directive : '', dispatch.contract, handoff, text].filter(Boolean).join('\n\n');
-  const prompt = codexCommand ? codexCommand.prompt : session?.id ? compose(briefing(session.seen || 0), false) : compose(briefing(0), true);
-  const freshPrompt = codexCommand ? null : session?.id ? compose(briefing(0), true) : null;
+  const compose = (handoff, fresh) => [fresh ? dispatch.directive : '', dispatch.contract, handoff, promptText].filter(Boolean).join('\n\n');
+  const prompt = codexCommand ? codexCommand.prompt : slashAgent ? promptText : session?.id ? compose(briefing(session.seen || 0), false) : compose(briefing(0), true);
+  const freshPrompt = codexCommand || slashAgent ? null : session?.id ? compose(briefing(0), true) : null;
   return {
     agent: dispatch.agent,
     rerouted,
@@ -368,16 +392,17 @@ async function planTurn(run, message, deps) {
       user: { role: 'user', text, at: new Date().toISOString(), agent: dispatch.agent, attachments: Array.isArray(message.attachments) ? message.attachments : [] },
       reply: { role: 'assistant', text: '', agent: dispatch.agent, modelLabel: used?.label, roleName: session?.id ? undefined : dispatch.roleName, routing: dispatch.split ? 'contract-lock' : undefined },
       routing: { agentId: dispatch.agent, modelLabel: used?.label, roleName: session?.id ? null : dispatch.roleName, auto: requested === 'auto', split: dispatch.split },
-      run: { agent: dispatch.agent, prompt, freshPrompt, resume: codexCommand ? null : session?.id || null, codexCommand: codexCommand?.name || null, attachments: safeAttachmentPaths(deps, message.attachments), model: used?.model, effort: used?.effort },
+      run: { agent: dispatch.agent, prompt, freshPrompt, resume: session?.id || null, codexCommand: codexCommand?.name || null, codexCommandArgs: codexCommand?.args || [], attachments: safeAttachmentPaths(deps, message.attachments), model: used?.model, effort: used?.effort },
     },
   };
 }
 
 class ChatRun {
   constructor(chat, deps) {
-    if (chat.context?.agent === 'codex' && !chat.context.estimated) {
-      chat.context = { agent: 'codex', tokens: Math.min(CONTEXT_LIMITS.codex, estimateTokens(buildCompactionHandoff(chat.messages || [], 'codex'))), estimated: true };
-    }
+    // Codex's number is kept as recorded: its app-server reports each request's real context
+    // size (thread/tokenUsage/updated: last.totalTokens). It used to be replaced on every load by
+    // an estimate of the handoff briefing, which leaves out Codex's own turns, so a mostly-Codex
+    // chat read ~1k tokens however long it ran.
     this.chat = chat;
     this.deps = deps; // { chatStore, workspaceDir, getModels, notify, notifyHistory, chatWindowManager }
     this.host = null;
@@ -400,9 +425,7 @@ class ChatRun {
 
   /** Pushes the user message and the empty reply it streams into, then starts the agent. */
   begin({ agent, user, reply, routing, run }) {
-    // Native one-shot commands have their own thread. Keep that thread id,
-    // seen cursor, and context usage out of the resumable Codex chat session.
-    this.turnAgent = run.codexCommand ? null : agent;
+    this.turnAgent = agent;
     let contextEstimate = null;
     if (!run.codexCommand && !reply.compact) {
       const limit = CONTEXT_LIMITS[agent] || 1000000;
@@ -414,7 +437,7 @@ class ChatRun {
       contextEstimate = {
         agent,
         tokens: startingTokens,
-        estimated: agent === 'codex' || !this.chat.context?.tokens,
+        estimated: !this.chat.context?.tokens || Boolean(this.chat.context?.estimated), // a real reading stays real, Codex's too
       };
       this.chat.context = contextEstimate;
     }
@@ -428,6 +451,54 @@ class ChatRun {
     if (contextEstimate) this.post({ type: 'usage', agent, contextTokens: contextEstimate.tokens, estimated: true });
     this.streamEngine.models = this.deps.getModels();
     this.streamEngine.start(run);
+    this.deps.notifyHistory();
+  }
+
+  /**
+   * /remote-control: this chat's Claude session, live in the Claude app (Code). One headless
+   * Claude process (lib/stream-engine.js live mode) resumes the chat's session and opens
+   * Remote Control; the panel and the phone then drive that same process: steps, approvals
+   * and replies show on both, and a prompt typed on the phone runs here as its own turn.
+   * Sending /remote-control again closes it; later turns go back to one process each.
+   */
+  async toggleRemote() {
+    const notice = (text) => this.post({ type: 'notice', text });
+    if (this.remote) {
+      await this.streamEngine.disableRemote();
+      this.remote = null;
+      this.post({ type: 'remoteState', on: false });
+      notice('Remote Control is off. This chat runs in the panel only again.');
+      this.deps.notifyHistory();
+      return;
+    }
+    const name = String(this.chat.title || this.chat.messages?.find((entry) => entry.role === 'user')?.text || 'AI Chat').replace(/\s+/g, ' ').slice(0, 60);
+    const used = modelOption(this.chat.modelId)?.agent === 'claude' ? modelOption(this.chat.modelId) : MODEL_CATALOG.find((entry) => entry.agent === 'claude');
+    try {
+      notice('Starting Remote Control…');
+      const bridge = await this.streamEngine.enableRemote({ name, model: used?.model, effort: used?.effort, resume: this.chat.sessions?.claude?.id || null });
+      this.remote = { url: bridge.session_url || null, model: used };
+      this.post({ type: 'remoteState', on: true, url: this.remote.url });
+      notice(`Remote Control is on: open the Claude app › Code › "${name}". Steps, approvals and replies show there live, and what you type on the phone runs here.${this.remote.url ? ` ${this.remote.url}` : ''}`);
+      this.deps.notifyHistory();
+    } catch (error) {
+      this.remote = null;
+      notice(`Remote Control didn't start: ${error.message}`);
+    }
+  }
+
+  /** A prompt typed in the Claude app: shown and saved like any turn, run by the live process that received it. */
+  beginRemoteTurn(text) {
+    this.turnAgent = 'claude';
+    const label = this.remote?.model?.label;
+    const user = { role: 'user', text, at: new Date().toISOString(), agent: 'claude', remote: true };
+    const reply = { role: 'assistant', text: '', agent: 'claude', modelLabel: label };
+    this.chat.messages.push(user, reply);
+    this.activeAssistantMessage = reply;
+    this.chat.lastRunAt = new Date().toISOString();
+    this.save();
+    this.turn = { agentId: 'claude', modelLabel: label, startedAt: Date.now(), remote: true };
+    this.post({ type: 'remoteUserMessage', text });
+    this.post({ type: 'routing', agentId: 'claude', modelLabel: label });
     this.deps.notifyHistory();
   }
 
@@ -472,7 +543,7 @@ class ChatRun {
     const history = buildCompactionHandoff(this.chat.messages.slice(from), agent);
     const fromTranscript = [history, COMPACT_DIRECTIVE].filter(Boolean).join('\n\n');
     const overflowing = this.chat.context?.agent === agent && this.chat.context.tokens >= CONTEXT_LIMITS[agent];
-    const native = agent === 'claude' && Boolean(session?.id);
+    const native = (agent === 'claude' || agent === 'codex') && Boolean(session?.id);
     // Codex exec reports cumulative turn consumption, not live context size,
     // and auto-compacts resumable threads itself. Never discard that thread
     // because its usage total exceeded the nominal window.
@@ -487,11 +558,22 @@ class ChatRun {
       user: { role: 'user', text, compact: true, auto, at: new Date().toISOString(), agent },
       reply: { role: 'assistant', text: '', agent, modelLabel: used?.label, compact: true, compactContext: history, compactPreviousContext: previousContext },
       routing: { agentId: agent, modelLabel: used?.label, roleName: null, compact: true },
-      run: { agent, prompt: native ? '/compact' : resume ? COMPACT_DIRECTIVE : fromTranscript, resume, freshPrompt: resume && !native ? fromTranscript : null, model: used?.model, effort: used?.effort },
+      run: { agent, prompt: native ? '' : resume ? COMPACT_DIRECTIVE : fromTranscript, resume, freshPrompt: resume && !native ? fromTranscript : null, codexCommand: native && agent === 'codex' ? 'compact' : null, model: used?.model, effort: used?.effort },
     });
   }
 
   handleStreamEvent(event) {
+    if (event.type === 'rate_limits' && event.agent === 'claude') recordClaudeUsage(event.windows);
+    if (event.type === 'remote_prompt') { this.beginRemoteTurn(event.text); return; }
+    if (event.type === 'remote_state') {
+      // The live process ended or the bridge dropped: say so, and fall back to per-turn runs.
+      if (event.state === 'ended' && this.remote) { this.remote = null; this.post({ type: 'remoteState', on: false }); this.post({ type: 'notice', text: 'Remote Control ended (the Claude process exited). Send /remote-control to start it again.' }); }
+      if ((event.state === 'disconnected' || event.state === 'failed') && this.remote) this.post({ type: 'notice', text: `Remote Control ${event.state}; Claude Code reconnects on its own when it can.` });
+      return;
+    }
+    if (event.type === 'session' && event.agent === 'claude' && this.deps.slashCommands?.recordClaude(event.slashCommands)) {
+      void this.deps.slashCommands.list().then((commands) => this.post({ type: 'slashCommands', commands }));
+    }
     if (event.type === 'session' && event.sessionId && this.turnAgent === event.agent) {
       this.chat.sessions = { ...this.chat.sessions, [event.agent]: { ...this.chat.sessions?.[event.agent], id: event.sessionId } };
     }
@@ -522,9 +604,10 @@ class ChatRun {
       delete reply.compactPreviousContext;
       if (reply.compact && reply.agent !== 'claude' && !event.interrupted && summary && !/^(Gemini|Codex) error:/.test(summary)) {
         // The summary is the new starting point: no session id, so the next
-        // turn opens a fresh session briefed from this checkpoint on.
+        // turn opens a fresh session briefed from this checkpoint on. Codex's
+        // native App Server compaction keeps the same thread instead.
         reply.checkpoint = true;
-        this.chat.sessions = { ...this.chat.sessions, [reply.agent]: {} };
+        if (reply.agent !== 'codex') this.chat.sessions = { ...this.chat.sessions, [reply.agent]: {} };
         reply.retainedTokens = Math.min(COMPACT_TARGET_TOKENS, estimateTokens(buildHandoff(this.chat.messages.slice(checkpointStart(this.chat.messages)), reply.agent)));
         // The latest checkpoint subsumes earlier hidden context. Keep saved
         // chat files bounded across repeated compactions.
@@ -646,13 +729,14 @@ class ChatWindowHost {
       case 'removeAttachment': this.removeAttachment(message.path); break;
       case 'openFile': await this.openFile(message.path, message.line); break;
       case 'queryFiles': await this.postWorkspaceFiles(); break;
-      case 'querySlashCommands': this.panel.webview.postMessage({ type: 'slashCommands', commands: await this.deps.codexCommands.list() }); break;
+      case 'querySlashCommands': this.panel.webview.postMessage({ type: 'slashCommands', commands: await this.deps.slashCommands.list() }); break;
       case 'mentionUris': this.postMentions((message.uris || []).map((uri) => vscode.Uri.parse(uri))); break;
       case 'compact': this.compactSession(); break;
       case 'requestQuotas': await this.pushQuotas(); break;
       case 'micToggle': await this.handleMicToggle(); break;
       case 'voiceDraftSubmitted': await this.learnVoiceCorrections(message.original, message.edited); break;
       case 'scheduleTask': await this.scheduleTask(message); break;
+      case 'remoteControl': void this.run.toggleRemote(); break;
       case 'requestSchedulerQueue': await this.pushSchedulerQueue(); break;
       case 'cancelScheduledTask': if (message.taskId) { await this.deps.schedulerQueue.dequeue(message.taskId); this.deps.notifySchedulerQueue?.(); } break;
       case 'editScheduledTask': {
@@ -679,7 +763,7 @@ class ChatWindowHost {
         const results = ['claude', 'codex', 'gemini'].map((agent) => locate(agent));
         this.deps.sessionManager.refreshCommands?.(agentList());
         this.panel.webview.postMessage({ type: 'binariesLocated', results, agent: message.agent });
-        this.panel.webview.postMessage({ type: 'slashCommands', commands: await this.deps.codexCommands.list() });
+        this.panel.webview.postMessage({ type: 'slashCommands', commands: await this.deps.slashCommands.list() });
         break;
       }
       default: break;
@@ -766,6 +850,31 @@ class ChatWindowHost {
     this.restoreChat(fork.id);
     this.postHistory();
     this.panel.webview.postMessage({ type: 'prefillPrompt', text });
+  }
+
+  /**
+   * /remote-control: Claude Code's Remote Control works in a live interactive session, not in
+   * this panel's one-process-per-turn runs. So it starts one in a terminal, resuming this chat's
+   * Claude session and named after the chat, and the Claude app (Code) continues it from there.
+   */
+  startRemoteControl() {
+    const notice = (text) => this.panel.webview.postMessage({ type: 'notice', text });
+    const binary = locate('claude').path;
+    if (!binary) return notice('Remote Control needs the Claude Code CLI, which wasn\'t found on this machine.');
+    const session = this.chat.sessions?.claude?.id || null;
+    const name = String(this.chat.title || this.chat.messages?.find((entry) => entry.role === 'user')?.text || 'AI Chat').replace(/\s+/g, ' ').slice(0, 40);
+    const shim = process.platform === 'win32' && /\.cmd$/i.test(binary) ? resolveShim(binary) : null;
+    const terminal = vscode.window.createTerminal({
+      name: `Remote Control · ${name}`,
+      cwd: this.deps.workspaceDir,
+      shellPath: shim?.command || binary,
+      shellArgs: [...(shim?.args || []), ...(session ? ['--resume', session] : []), '--remote-control', name],
+      iconPath: new vscode.ThemeIcon('remote'),
+    });
+    terminal.show(true);
+    notice(session
+      ? `Remote Control is on: open the Claude app › Code and pick "${name}" to continue this chat. It runs in the "Remote Control" terminal; keep VS Code open, and don't send here while you're using it from the phone.`
+      : `Remote Control is on as a new Claude session "${name}" (this chat has no Claude session yet). Open the Claude app › Code to use it; keep VS Code open.`);
   }
 
   async startTurn(message) {
@@ -1059,7 +1168,11 @@ class ChatWindowManager {
 
   /** Forgets a run nobody is watching and that has nothing left to do. */
   release(run) {
-    if (!run.host && !run.turn && !run.starting && !run.queue.length && this.runs.get(run.chat.id) === run) this.runs.delete(run.chat.id);
+    // A chat under Remote Control stays alive with no window: the phone is still driving it.
+    if (!run.host && !run.turn && !run.starting && !run.queue.length && !run.remote && this.runs.get(run.chat.id) === run) {
+      run.streamEngine.dispose();
+      this.runs.delete(run.chat.id);
+    }
   }
 
   /** History for Manage Chats: every stored chat, flagged active if it runs now or ran in the last five minutes. */
@@ -1071,7 +1184,7 @@ class ChatWindowManager {
   /** A chat still running with no window on it stops too; one open in a window keeps its thread in memory. */
   deleteChat(id) {
     const run = this.runs.get(id);
-    if (run && !run.host) { run.streamEngine.cancel(); this.runs.delete(id); }
+    if (run && !run.host) { run.streamEngine.dispose(); this.runs.delete(id); }
     this.deps.chatStore.delete(id);
     this.deps.notifyHistory();
   }
@@ -1089,12 +1202,24 @@ class ChatWindowManager {
       'aiChatPanel.chatWindow',
       titleFor(run.chat),
       { viewColumn, preserveFocus },
-      {
-        enableScripts: true,
-        retainContextWhenHidden: true,
-        localResourceRoots: [vscode.Uri.joinPath(this.extensionUri, 'media'), vscode.Uri.file(this.deps.sessionDir)],
-      },
+      { ...this.webviewOptions(), retainContextWhenHidden: true },
     );
+    return this.wire(panel, run);
+  }
+
+  webviewOptions() {
+    return { enableScripts: true, localResourceRoots: [vscode.Uri.joinPath(this.extensionUri, 'media'), vscode.Uri.file(this.deps.sessionDir)] };
+  }
+
+  /** A chat window VS Code restored after a restart, in the tab spot it had: shows the chat it was showing. */
+  restore(panel, chatId) {
+    panel.webview.options = this.webviewOptions();
+    const run = (chatId && this.runFor(chatId)) || this.runFor(null);
+    panel.title = titleFor(run.chat);
+    return this.wire(panel, run);
+  }
+
+  wire(panel, run) {
     // The host attaches to its run (and registers itself via rebind) as it starts.
     const host = new ChatWindowHost({ panel, extensionUri: this.extensionUri, run, deps: { ...this.deps, chatWindowManager: this } });
 
@@ -1162,7 +1287,7 @@ class ChatWindowManager {
   dispose() {
     for (const { panel } of this.hosts.values()) panel.dispose();
     this.hosts.clear();
-    for (const run of this.runs.values()) run.streamEngine.cancel();
+    for (const run of this.runs.values()) run.streamEngine.dispose();
     this.runs.clear();
   }
 }
@@ -1477,10 +1602,11 @@ function activate(context) {
   const attachmentsDir = path.join(ASTRO_SESSION_DIR, 'attachments');
   fs.mkdirSync(attachmentsDir, { recursive: true });
   const codexCommands = new CodexCommandCatalog();
+  const slashCommands = new SlashCommandCatalog({ codexCommands, workspaceDir, cacheFile: path.join(ASTRO_SESSION_DIR, 'slash-commands.json') });
 
   function getModels() {
     const configured = vscode.workspace.getConfiguration('aiChatPanel').get('models', {});
-    return { claude: configured.claude || 'claude', codex: configured.codex || 'gpt-5.6-terra', gemini: configured.gemini || 'gemini-3.8-flash-high' };
+    return { claude: configured.claude || 'claude', codex: configured.codex || 'gpt-6-sol', gemini: configured.gemini || 'gemini-3.8-flash-high' };
   }
 
   const schedulerQueue = new SchedulerQueue({ workspaceDir, sessionDir: path.join(workspaceDir, '.astro', 'session') });
@@ -1499,8 +1625,13 @@ function activate(context) {
   }).then((subscription) => context.subscriptions.push(subscription));
 
   chatWindowManager = new ChatWindowManager(context.extensionUri, {
-    sessionManager, chatStore, voiceCapture, workspaceDir, sessionDir: ASTRO_SESSION_DIR, attachmentsDir, getModels, codexCommands, schedulerQueue, notifySchedulerQueue, renameChat, getEditorTheme: () => editorTheme, notify, notifyHistory,
+    sessionManager, chatStore, voiceCapture, workspaceDir, sessionDir: ASTRO_SESSION_DIR, attachmentsDir, getModels, codexCommands, slashCommands, schedulerQueue, notifySchedulerQueue, renameChat, getEditorTheme: () => editorTheme, notify, notifyHistory,
   });
+  // Chat windows come back after a restart in the tab spot they had, showing the same chat
+  // (the webview keeps its chat id in its saved state; activation event onWebviewPanel:aiChatPanel.chatWindow).
+  context.subscriptions.push(vscode.window.registerWebviewPanelSerializer('aiChatPanel.chatWindow', {
+    async deserializeWebviewPanel(panel, state) { chatWindowManager.restore(panel, state?.chatId || null); },
+  }));
   let telegram = null;
   const tunnelStatus = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, -2);
   tunnelStatus.show();
