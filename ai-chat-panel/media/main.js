@@ -323,17 +323,34 @@
     return AGENT_IDS.includes(agent) ? agent : null;
   }
   function scheduleModel() { return activeAgent === 'auto' ? lastReplyAgent() || 'claude' : activeAgent; }
-  function setScheduleArmed(armed) {
+  function setScheduleArmed(armed, { outOfUsage = false } = {}) {
     scheduleArmed = armed;
     scheduleBtn.classList.toggle('is-scheduled', armed);
     scheduleBtn.setAttribute('aria-pressed', String(armed));
-    scheduleBtn.title = armed ? 'Scheduling is on: the next message is queued instead of sent' : 'Schedule the next message for the next quota reset';
+    scheduleBtn.title = armed && outOfUsage
+      ? `${AGENT_LABELS[scheduleModel()]} is out of usage, so messages are scheduled for its reset. Click to send now instead.`
+      : armed ? 'Scheduling is on: the next message is queued instead of sent' : 'Schedule the next message for the next quota reset';
     document.querySelector('.composer').classList.toggle('is-scheduled', armed);
     promptInput.placeholder = armed
       ? `\u23F0 Schedule prompt for ${AGENT_LABELS[scheduleModel()]} (will auto-dispatch when quota resets)\u2026`
       : DEFAULT_PLACEHOLDER;
   }
-  scheduleBtn.addEventListener('click', () => { setScheduleArmed(!scheduleArmed); promptInput.focus(); });
+
+  // With the chat's model out of usage, scheduling is on by default, so a run of prompts can be queued
+  // without pressing the clock each time. Out of usage: the quota feed shows nothing left, or the
+  // model just answered with a usage-limit message; a normal reply from it clears that again.
+  // The clock still overrides (send anyway, or schedule while usage is left) until the model or chat changes.
+  const limitHitAgents = new Set();
+  let scheduleChoice = null; // the clock's own pick; null follows the model's usage
+  function isOutOfUsage(agent) {
+    const remaining = lastQuotas[agent]?.remaining;
+    return limitHitAgents.has(agent) || (typeof remaining === 'number' && remaining < 1);
+  }
+  function refreshScheduleDefault() {
+    const outOfUsage = isOutOfUsage(scheduleModel());
+    setScheduleArmed(scheduleChoice ?? outOfUsage, { outOfUsage: scheduleChoice === null && outOfUsage });
+  }
+  scheduleBtn.addEventListener('click', () => { scheduleChoice = !scheduleArmed; refreshScheduleDefault(); promptInput.focus(); });
   setScheduleArmed(false);
 
   function schedulePrompt(text) {
@@ -722,7 +739,8 @@
     else label.textContent = option.label;
     modelPickerBtn.title = `Model: ${option.label}`;
     for (const item of modelMenu.querySelectorAll('.model-option')) item.setAttribute('aria-selected', String(item.dataset.modelId === option.id));
-    if (scheduleArmed) setScheduleArmed(true); // placeholder names the new model
+    if (scheduleChoice === false) scheduleChoice = null; // a "send anyway" was for the previous model
+    refreshScheduleDefault(); // on if this model is out of usage; the placeholder names it
     if (slashMenu && !slashMenu.hidden) updateSlashMenu();
     try { vscode.setState({ ...(vscode.getState() || {}), modelId: option.id }); } catch {}
     // Picking a model only retargets the next message; it never reveals the
@@ -1178,7 +1196,8 @@
     const turn = { id: `${Date.now()}-${turnQueue.length}`, text, modelId: activeModelId, attachments: attachments.map((attachment) => attachment.path), files: attachments.slice() };
     if (scheduleArmed) {
       schedulePrompt(text);
-      setScheduleArmed(false);
+      scheduleChoice = null;
+      refreshScheduleDefault(); // stays on while the model is out of usage, so the next prompt queues too
     } else if (busy && !steer) {
       turnQueue.push(turn);
       renderTurnQueue();
@@ -1872,7 +1891,14 @@
   function endAssistantTurn(at = new Date().toISOString()) {
     const last = turnBubbles[turnBubbles.length - 1];
     if (last && !last.querySelector('.msg-actions')) last.append(messageActions(at, () => last.dataset.raw.trim()));
-    if (!restoringHistory && (limitHitThisTurn || (last && LIMIT_RE.test((last.dataset.raw || '').slice(-600))))) offerContinueAtReset(last || turnHost());
+    const limitHit = limitHitThisTurn || Boolean(last && LIMIT_RE.test((last.dataset.raw || '').slice(-600)));
+    if (!restoringHistory && limitHit) offerContinueAtReset(last || turnHost());
+    // The model's own answer is the freshest word on its usage: a limit reply turns scheduling on, a normal one off.
+    const replied = turnRoutedAgent || lastReplyAgent();
+    if (!restoringHistory && AGENT_IDS.includes(replied)) {
+      if (limitHit) limitHitAgents.add(replied); else limitHitAgents.delete(replied);
+      refreshScheduleDefault();
+    }
     limitHitThisTurn = false;
     turnBubbles = [];
     currentAssistantBubble = null;
@@ -2473,6 +2499,8 @@
       else if (message.role === 'tool' && !placed.has(index)) storedTool(message);
     });
     restoringHistory = false;
+    scheduleChoice = null; // a new chat starts from its own model's usage, not the last chat's clock pick
+    refreshScheduleDefault();
     if (running) {
       turnAnchor = anchor;
       turnStartedAt = running.startedAt || Date.now();
@@ -2656,6 +2684,7 @@
           const agent = quota.parentElement.querySelector('.model-option')?.dataset.agent;
           quota.querySelector('.model-group-quota').textContent = quotaText(agent);
         }
+        refreshScheduleDefault();
         break;
       }
       case 'setActive': {
