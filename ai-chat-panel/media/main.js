@@ -145,13 +145,13 @@
     if (queueBtn.hidden) { pulseOnShow = true; return; } // the queue broadcast lands right after taskScheduled
     queueBtn.classList.remove('is-saved');
     void queueBtn.offsetWidth; // restart the animation
-    queueTip.textContent = '\u{1F4BE} Saved to disk · Survives reboot';
+    queueTip.innerHTML = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3.5 8.5l3 3 6-7"/></svg><span>Saved to disk · survives a restart</span>';
     queueBtn.classList.add('is-saved');
     clearTimeout(pulseQueueSaved.timer);
     pulseQueueSaved.timer = setTimeout(() => {
       queueBtn.classList.remove('is-saved');
-      pulseQueueSaved.timer = setTimeout(() => { queueTip.textContent = 'Queue'; }, 300); // after the tag fades
-    }, 2600);
+      pulseQueueSaved.timer = setTimeout(() => { queueTip.textContent = 'Queue'; }, 350); // after the tag sinks back
+    }, 5000);
   }
   function beginEdit(card, task) {
     const promptEl = card.querySelector('.queue-prompt');
@@ -344,6 +344,34 @@
     vscode.postMessage({ type: 'scheduleTask', task: { model, modelId, prompt: text, dispatchTrigger: 'quota-reset', resumeHere: true }, attachments: attachments.map((attachment) => attachment.path) });
   }
 
+  // "Scheduled" confirmation: a bud of the composer pill (Dynamic Island), readable for a while,
+  // held while hovered, then it sinks back into the pill.
+  const CLOCK_SVG = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="8" cy="8.5" r="5.75"/><path d="M8 5.5v3.2l2.1 1.3"/></svg>';
+  const scheduleBud = document.createElement('div');
+  scheduleBud.className = 'schedule-bud island-bud';
+  scheduleBud.setAttribute('role', 'status');
+  scheduleBud.hidden = true;
+  document.querySelector('.compose-row').insertBefore(scheduleBud, document.querySelector('.compose-row > .composer'));
+  let scheduleBudTimer = null;
+  function hideScheduleBud() {
+    clearTimeout(scheduleBudTimer);
+    scheduleBud.classList.add('is-leaving');
+    scheduleBudTimer = setTimeout(() => { scheduleBud.hidden = true; scheduleBud.classList.remove('is-leaving'); }, 280);
+  }
+  function showScheduleBud(text) {
+    clearTimeout(scheduleBudTimer);
+    scheduleBud.innerHTML = `${CLOCK_SVG}<span></span>`;
+    scheduleBud.querySelector('span').textContent = text;
+    scheduleBud.classList.remove('is-leaving');
+    scheduleBud.hidden = true;
+    void scheduleBud.offsetWidth; // replay the bud's grow-out animation
+    scheduleBud.hidden = false;
+    scheduleBudTimer = setTimeout(hideScheduleBud, 6000);
+  }
+  scheduleBud.addEventListener('mouseenter', () => clearTimeout(scheduleBudTimer));
+  scheduleBud.addEventListener('mouseleave', () => { scheduleBudTimer = setTimeout(hideScheduleBud, 2000); });
+  scheduleBud.addEventListener('click', hideScheduleBud);
+
   function showToast(text, { error } = {}) {
     const toast = document.createElement('div');
     toast.className = `toast glass${error ? ' toast-error' : ''}`;
@@ -469,12 +497,13 @@
   let slashCommands = null;
   let slashHits = [];
   let slashIndex = 0;
+  // A bud of the dock (like queued turns and attachments): right above the pill, fused by the goo.
   const slashMenu = document.createElement('div');
-  slashMenu.className = 'mention-menu glass';
+  slashMenu.className = 'mention-menu slash-bud island-bud';
   slashMenu.setAttribute('role', 'listbox');
-  slashMenu.setAttribute('aria-label', 'Codex commands');
+  slashMenu.setAttribute('aria-label', 'Commands');
   slashMenu.hidden = true;
-  document.body.appendChild(slashMenu);
+  document.querySelector('.compose-row').insertBefore(slashMenu, document.querySelector('.compose-row > .composer'));
 
   function slashAtCaret() {
     if (promptInput.selectionStart !== promptInput.value.length || promptInput.selectionEnd !== promptInput.value.length) return null;
@@ -498,16 +527,21 @@
     const match = slashAtCaret();
     if (!match) return closeSlashMenu();
     closeMentionMenu();
-    if (slashCommands === null) { slashCommands = []; vscode.postMessage({ type: 'querySlashCommands' }); }
-    slashHits = slashCommands.map((command) => [command, slashScore(command, match[1])]).filter(([, score]) => score > 0)
-      .sort((a, b) => b[1] - a[1]).slice(0, 8).map(([command]) => command);
+    // Asked fresh each time the menu opens: the CLIs gain commands (skills, plugins) without this panel reloading.
+    if (slashCommands === null) slashCommands = [];
+    if (!match[1] && slashMenu.hidden) vscode.postMessage({ type: 'querySlashCommands' });
+    // The picked provider's CLI only; Auto shows every CLI's commands.
+    const pool = activeAgent === 'auto' ? slashCommands : slashCommands.filter((command) => (command.agent || 'codex') === activeAgent);
+    slashHits = pool.map((command) => [command, slashScore(command, match[1])]).filter(([, score]) => score > 0)
+      .sort((a, b) => b[1] - a[1]).slice(0, 50).map(([command]) => command);
     slashIndex = Math.min(slashIndex, Math.max(0, slashHits.length - 1));
     slashMenu.replaceChildren(...slashHits.map((command, i) => {
       const item = document.createElement('div');
       item.className = 'mention-item' + (i === slashIndex ? ' is-active' : '');
       item.setAttribute('role', 'option');
       const name = document.createElement('span'); name.className = 'mention-name'; name.textContent = `/${command.name}`;
-      const description = document.createElement('span'); description.className = 'model-option-hint'; description.textContent = `Codex · ${command.description || 'Command'}`;
+      const description = document.createElement('span'); description.className = 'model-option-hint'; description.textContent = `${AGENT_LABELS[command.agent] || 'Codex'}${command.description ? ` · ${command.description}` : ''}`;
+      if (command.description) item.title = command.description; // the hint shows two lines; the rest on hover
       const copy = document.createElement('span'); copy.className = 'model-option-text'; copy.append(name, description);
       item.append(copy);
       item.addEventListener('mousedown', (event) => { event.preventDefault(); insertSlashCommand(command); });
@@ -515,8 +549,7 @@
     }));
     slashMenu.hidden = !slashHits.length;
     if (slashMenu.hidden) return;
-    const dock = document.querySelector('.compose-row').getBoundingClientRect();
-    Object.assign(slashMenu.style, { left: `${dock.left + 8}px`, width: `${dock.width - 16}px`, bottom: `${innerHeight - dock.top + 6}px` });
+    slashMenu.children[slashIndex]?.scrollIntoView({ block: 'nearest' }); // arrowing through a long list
   }
   function insertSlashCommand(command) {
     promptInput.value = `/${command.name} `;
@@ -689,6 +722,7 @@
     modelPickerBtn.title = `Model: ${option.label}`;
     for (const item of modelMenu.querySelectorAll('.model-option')) item.setAttribute('aria-selected', String(item.dataset.modelId === option.id));
     if (scheduleArmed) setScheduleArmed(true); // placeholder names the new model
+    if (slashMenu && !slashMenu.hidden) updateSlashMenu();
     try { vscode.setState({ ...(vscode.getState() || {}), modelId: option.id }); } catch {}
     // Picking a model only retargets the next message; it never reveals the
     // real terminal (that's the dedicated Terminal button).
@@ -1132,6 +1166,13 @@
   function sendPrompt({ steer = false } = {}) {
     const text = promptInput.value.trim();
     if (!text) return;
+    // A panel command, not a turn: hands this chat's Claude session to the phone (see extension.js).
+    if (/^\/(remote-control|rc)(\s|$)/i.test(text)) {
+      vscode.postMessage({ type: 'remoteControl' });
+      promptInput.value = '';
+      closeSlashMenu(); autoGrow(); renderComposerState();
+      return;
+    }
     flushVoiceDraft(text);
     const turn = { id: `${Date.now()}-${turnQueue.length}`, text, modelId: activeModelId, attachments: attachments.map((attachment) => attachment.path), files: attachments.slice() };
     if (scheduleArmed) {
@@ -1690,7 +1731,7 @@
   // chat just before this message and puts the message back in the composer.
   // The goo that fuses your bubble and its dock: blur, sharpen the alpha into one
   // liquid silhouette, then draw the untouched original back on top (text stays crisp).
-  document.body.insertAdjacentHTML('beforeend', '<svg width="0" height="0" style="position:absolute" aria-hidden="true" focusable="false"><filter id="msg-goo" x="-10%" y="-10%" width="120%" height="130%" color-interpolation-filters="sRGB"><feGaussianBlur in="SourceGraphic" stdDeviation="5" result="blur"/><feColorMatrix in="blur" mode="matrix" values="1 0 0 0 0  0 1 0 0 0  0 0 1 0 0  0 0 0 18 -7" result="goo"/><feComposite in="SourceGraphic" in2="goo" operator="atop"/></filter></svg>');
+  document.body.insertAdjacentHTML('beforeend', '<svg width="0" height="0" style="position:absolute" aria-hidden="true" focusable="false"><filter id="msg-goo" x="-10%" y="-10%" width="120%" height="130%" color-interpolation-filters="sRGB"><feGaussianBlur in="SourceGraphic" stdDeviation="5" result="blur"/><feColorMatrix in="blur" mode="matrix" values="1 0 0 0 0  0 1 0 0 0  0 0 1 0 0  0 0 0 18 -7" result="goo"/><feComposite in="SourceGraphic" in2="goo" operator="atop"/></filter><filter id="tip-goo" filterUnits="userSpaceOnUse" x="-320" y="-40" width="420" height="140" color-interpolation-filters="sRGB"><feGaussianBlur in="SourceGraphic" stdDeviation="5" result="blur"/><feColorMatrix in="blur" mode="matrix" values="1 0 0 0 0  0 1 0 0 0  0 0 1 0 0  0 0 0 18 -7" result="goo"/><feComposite in="SourceGraphic" in2="goo" operator="atop"/></filter></svg>'); // tip-goo: same goo, a wide fixed region for a tag hanging off a 32px button
 
   // P17-K: a prompt longer than three lines clamps behind a fade with a Show more / Show less toggle.
   function clampUserBubble(bubble, body) {
@@ -1772,7 +1813,7 @@
         roleLabel.className = 'msg-role';
         roleLabel.dataset.agent = model;
         roleLabel.innerHTML = AGENT_ICONS[model] || '';
-        roleLabel.append(label || REPLY_NAMES[model] || model); // the exact model, e.g. "GPT 5.6 Terra High"
+        roleLabel.append(label || REPLY_NAMES[model] || model); // the exact model, e.g. "GPT 6 Sol High"
         if (roleName) roleLabel.append(roleChip(roleName));
         currentAssistantBubble.appendChild(roleLabel);
       }
@@ -1796,11 +1837,14 @@
   let turnModelLabel = null; // the running turn's model, from the host's routing message
   // "You've hit your usage limit" (Claude, Codex) / quota exhausted (Gemini): the turn stopped because
   // the plan ran out, so offer to send "continue" into this chat once that agent's limit resets.
-  const LIMIT_RE = /\b(usage|session|weekly|daily|rate)\s+limit\b|hit your .{0,24}limit|limit (reached|exceeded)|quota (exceeded|exhausted)|RESOURCE_EXHAUSTED|out of (usage|credits)/i;
+  // Claude: "You've hit your session limit"; Codex: "You've hit your usage limit"; Gemini: "Quota exceeded" /
+  // "You have exhausted your daily quota" / RESOURCE_EXHAUSTED.
+  const LIMIT_RE = /\b(usage|session|weekly|daily|rate)\s+limit\b|hit your .{0,24}limit|limit (reached|exceeded)|quota (exceeded|exhausted)|exhausted (your|the) .{0,24}(quota|limit)|RESOURCE_EXHAUSTED|out of (usage|credits)/i;
   let turnRoutedAgent = null; // who ran the current turn (set by 'routing')
   let limitHitThisTurn = false; // an upstream_error card already said so
+  let restoringHistory = false; // old limit replies in a restored transcript get no button; only the last may
   function offerContinueAtReset(host) {
-    const agent = turnRoutedAgent;
+    const agent = turnRoutedAgent || lastReplyAgent(); // routing can be missed (reload mid-turn): the reply's own label
     if (!host || !AGENT_IDS.includes(agent) || host.querySelector('.continue-at-reset')) return;
     const btn = document.createElement('button');
     btn.type = 'button';
@@ -1819,7 +1863,7 @@
   function endAssistantTurn(at = new Date().toISOString()) {
     const last = turnBubbles[turnBubbles.length - 1];
     if (last && !last.querySelector('.msg-actions')) last.append(messageActions(at, () => last.dataset.raw.trim()));
-    if (limitHitThisTurn || (last && LIMIT_RE.test((last.dataset.raw || '').slice(-600)))) offerContinueAtReset(last || turnHost());
+    if (!restoringHistory && (limitHitThisTurn || (last && LIMIT_RE.test((last.dataset.raw || '').slice(-600))))) offerContinueAtReset(last || turnHost());
     limitHitThisTurn = false;
     turnBubbles = [];
     currentAssistantBubble = null;
@@ -2372,6 +2416,7 @@
    * so far stays open, and the stream picks up where it is. */
   function restoreChat(chat, running = null) {
     currentChatId = chat.id;
+    try { vscode.setState({ ...(vscode.getState() || {}), chatId: chat.id }); } catch {} // reopened here after a restart
     turnRoutedAgent = null; // the restored transcript's own last reply says who answered here
     isCompacting = Boolean(running?.compact);
     renderContextGauge(chat.context);
@@ -2389,6 +2434,7 @@
     const storedTool = (message) => appendToolCard({ name: message.event?.name, command: message.event?.command || message.event?.file, output: { text: message.event?.output || '' }, done: true, error: message.error, diff: message.event?.diff });
     const placed = new Set();
     let hiddenCompactTurn = false;
+    restoringHistory = true;
     messages.forEach((message, index) => {
       if (message.role === 'user') {
         flush();
@@ -2417,6 +2463,7 @@
       }
       else if (message.role === 'tool' && !placed.has(index)) storedTool(message);
     });
+    restoringHistory = false;
     if (running) {
       turnAnchor = anchor;
       turnStartedAt = running.startedAt || Date.now();
@@ -2424,9 +2471,16 @@
       turnRoleName = running.roleName || null;
       pendingEl.dataset.agent = running.agentId || '';
       if (currentTurnEl) currentTurnEl.dataset.agent = running.agentId || '';
+      turnRoutedAgent = running.agentId || null; // a reload mid-turn must still know who hits a limit
     } else {
       flush();
       turnAnchor = null;
+      // Reopened after the limit hit (reload, restart, next morning): the last reply still offers the button.
+      const lastMessage = messages.findLast((message) => message.role !== 'tool');
+      if (lastMessage?.role === 'assistant' && LIMIT_RE.test(String(lastMessage.text || '').slice(-600))) {
+        turnRoutedAgent = lastMessage.agent || null;
+        offerContinueAtReset([...transcriptEl.querySelectorAll('.msg-assistant')].pop());
+      }
     }
     if (!transcriptEl.childElementCount) transcriptEl.innerHTML = '<div class="empty-state"><p>Start a new conversation.</p></div>';
     scrollTranscriptToEnd(true);
@@ -2800,7 +2854,7 @@
         break;
       }
       case 'taskScheduled': {
-        showToast(`\u23F0 Enqueued prompt for ${pendingScheduleLabel || 'the agent'} on next quota reset`);
+        showScheduleBud(`Scheduled for ${pendingScheduleLabel || 'the agent'}: sends when its usage limit resets`);
         pendingScheduleLabel = null;
         pulseQueueSaved();
         break;

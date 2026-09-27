@@ -10,8 +10,7 @@
 const MODEL_CATALOG = [
   { id: 'claude-opus-5-5-medium', agent: 'claude', brand: 'opus', model: 'claude-opus-5-5', effort: 'medium', label: 'Claude Opus 5.5 Medium', shortLabel: 'Opus' },
   { id: 'claude-sonnet-5-high', agent: 'claude', model: 'claude-sonnet-5', effort: 'high', label: 'Claude Sonnet 5 High' },
-  { id: 'gpt-5.6-sol-high', agent: 'codex', model: 'gpt-5.6-sol', effort: 'high', label: 'GPT 5.6 Sol High' },
-  { id: 'gpt-5.6-terra-high', agent: 'codex', model: 'gpt-5.6-terra', effort: 'high', label: 'GPT 5.6 Terra High' },
+  { id: 'gpt-6-sol-high', agent: 'codex', model: 'gpt-6-sol', effort: 'high', label: 'GPT 6 Sol High' },
   { id: 'gemini-3.8-flash-high', agent: 'gemini', model: 'gemini-3.8-flash-high', effort: null, label: 'Gemini 3.8 Flash High' },
 ];
 
@@ -22,7 +21,7 @@ function modelOption(id) {
 // P17-A: a family word anywhere in a name ("opus", "Claude Opus 5.5", a
 // catalog id) picks that catalog entry, so callers that only know agents
 // (injectPrompt, Telegram /prompt) can target one model directly.
-const FAMILY = /\b(opus|sonnet|sol|terra|flash)\b/i;
+const FAMILY = /\b(opus|sonnet|sol|flash)\b/i;
 function resolveModel(name) {
   const family = FAMILY.exec(String(name || '').replace(/[-_.]/g, ' '))?.[1].toLowerCase();
   return modelOption(name) || (family && MODEL_CATALOG.find((option) => option.label.toLowerCase().includes(family))) || null;

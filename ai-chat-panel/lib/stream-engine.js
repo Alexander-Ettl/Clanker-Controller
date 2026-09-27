@@ -6,7 +6,9 @@ const crypto = require('node:crypto');
 const fs = require('node:fs');
 const path = require('node:path');
 const { locate, resolveShim } = require('./binary-locator.js');
+const { CodexAppServer } = require('./codex-app-server.js');
 const { modelOption } = require('./model-catalog.js');
+const { fromRateLimitEvent } = require('./claude-usage.js');
 
 // P17-D: how an older claude CLI / API rejects the Opus 5.5 model id or the
 // --effort flag. Only checked before a turn has produced any output.
@@ -104,17 +106,32 @@ const git = (args, cwd) => execFileSync('git', args, { cwd, encoding: 'utf8', ti
 function gitSnapshot(cwd) {
   try { return git(['stash', 'create'], cwd).trim() || git(['rev-parse', 'HEAD'], cwd).trim(); } catch { return ''; }
 }
-function codexDiff(changes, cwd, base = '') {
+const gitRoot = (dir) => { try { return path.resolve(git(['rev-parse', '--show-toplevel'], dir).trim()); } catch { return ''; } };
+const readText = (file) => { try { return fs.readFileSync(file, 'utf8'); } catch { return ''; } };
+const diffBody = (text) => String(text).split('\n').filter((l) => /^[-+ ]/.test(l) && !/^(---|\+\+\+) /.test(l));
+/**
+ * One snapshot per repo: the workspace's own and each nested repo right below it
+ * (astro-visual-editor/ has its own .git, and git run in the outer repo sees none of
+ * its files). Keyed by repo root; a repo first met mid-turn diffs against its index.
+ */
+function repoSnapshots(cwd) {
+  const bases = new Map();
+  const add = (dir) => { const root = gitRoot(dir); if (root && !bases.has(root)) bases.set(root, gitSnapshot(root)); };
+  add(cwd);
+  try { for (const entry of fs.readdirSync(cwd, { withFileTypes: true })) if (entry.isDirectory() && fs.existsSync(path.join(cwd, entry.name, '.git'))) add(path.join(cwd, entry.name)); } catch { /* unreadable: the workspace repo alone */ }
+  return bases;
+}
+/** `fileDiff(file)`: the engine's per-file diff against the turn's snapshot (StreamEngine#fileDiff). */
+function codexDiff(changes, cwd, fileDiff) {
   const out = [];
   for (const change of changes) {
     const file = path.resolve(cwd, typeof change?.path === 'string' ? change.path : '');
+    const kind = typeof change?.kind === 'string' ? change.kind : change?.kind?.type; // exec: "add"; app-server: { type: "add" }
     if (changes.length > 1) out.push(` ── ${path.basename(file)}`);
-    try {
-      if (change.kind === 'add') out.push(...editDiff({ content: fs.readFileSync(file, 'utf8') }).split('\n'));
-      else if (change.kind !== 'delete') out.push(...git(['diff', '-U1', '--no-color', ...(base ? [base] : []), '--', file], cwd).split('\n').filter((l) => /^[-+ ]/.test(l) && !/^(---|\+\+\+) /.test(l)));
-    } catch {
-      // Not a git repo, or the file is gone: the card still names it.
-    }
+    // The app-server's own `diff` is used only when it really is a unified diff; otherwise the file tells.
+    const own = typeof change?.diff === 'string' ? diffBody(change.diff) : [];
+    if (own.some((l) => l[0] === '+' || l[0] === '-')) { out.push(...own); if (kind !== 'delete') fileDiff(file); } // fileDiff keeps the per-file baseline current
+    else if (kind !== 'delete') out.push(...fileDiff(file).split('\n'));
   }
   return capDiff(out.filter(Boolean));
 }
@@ -127,6 +144,42 @@ function codexDiff(changes, cwd, base = '') {
  */
 function vendorEvent(raw, agent) {
   const at = (x) => (typeof x === 'string' ? x : '');
+  if (raw?.__appServer) {
+    const params = raw.params || {};
+    const method = raw.method;
+    if (method === 'thread/started') return params.thread?.id ? { type: 'session', sessionId: at(params.thread.id), agent } : null;
+    if (method === 'item/agentMessage/delta') return at(params.delta) ? { type: 'delta', text: at(params.delta), model: agent, agent } : null;
+    if (method === 'item/reasoning/summaryTextDelta' || method === 'item/reasoning/textDelta') return at(params.delta) ? { type: 'thought', text: at(params.delta), agent } : null;
+    if (method === 'turn/completed') return { type: 'turn_complete', agent };
+    if (method === 'error') return { type: 'delta', text: `Codex error: ${at(params.error?.message) || at(params.message) || 'request failed'}`, model: agent, agent };
+    if (method === 'item/started' || method === 'item/completed') {
+      const item = params.item || {};
+      if (item.type === 'agentMessage' || item.type === 'reasoning') return null; // their deltas already streamed
+      if (item.type === 'exitedReviewMode' && at(item.review)) return { type: 'delta', text: at(item.review), block: true, fallback: true, model: agent, agent };
+      const type = method === 'item/started' ? 'item.started' : 'item.completed';
+      const normalized = {
+        ...item,
+        type: { commandExecution: 'command_execution', fileChange: 'file_change' }[item.type] || item.type,
+        aggregated_output: item.aggregatedOutput,
+        exit_code: item.exitCode,
+      };
+      return vendorEvent({ type, item: normalized }, agent);
+    }
+    if (method === 'item/tool/requestUserInput') {
+      const request = raw.request || {};
+      return { type: 'question_required', actionId: String(request.id), questions: params.questions || [], input: params, appServer: request, agent };
+    }
+    if (['item/commandExecution/requestApproval', 'item/fileChange/requestApproval', 'item/permissions/requestApproval', 'mcpServer/elicitation/request', 'execCommandApproval', 'applyPatchApproval'].includes(method)) {
+      const request = raw.request || {};
+      const command = at(params.command) || (Array.isArray(params.command) ? params.command.join(' ') : '');
+      return {
+        type: 'approval_required', actionId: String(request.id), tool: /fileChange|Patch/.test(method) ? 'edit' : method.includes('mcpServer') ? 'mcp' : 'bash',
+        description: at(params.reason) || (method.includes('mcpServer') ? `${at(params.serverName) || 'An MCP server'} is requesting input` : command ? 'Codex wants to run this command' : 'Codex wants additional permissions'),
+        command, file: at(params.grantRoot), preview: '', canAlwaysAllow: true, input: params, appServer: request, agent,
+      };
+    }
+    return null;
+  }
   // Claude interactive mode (--permission-prompt-tool stdio): the CLI stops
   // and waits for a control_response. AskUserQuestion arrives the same way.
   if (raw?.type === 'control_request' && raw.request?.subtype === 'can_use_tool') {
@@ -160,9 +213,15 @@ function vendorEvent(raw, agent) {
     const thought = raw.message.content.filter((b) => b?.type === 'thinking').map((b) => at(b.thinking)).join('');
     return thought ? { type: 'thought', text: thought, agent } : null;
   }
+  // A prompt as Claude echoes it back (--replay-user-messages, live Remote Control sessions):
+  // the panel's own, or one typed in the Claude app.
+  if (raw?.type === 'user' && typeof raw.message?.content === 'string') return { type: 'user_message', text: raw.message.content, agent };
   if (raw?.type === 'user' && Array.isArray(raw.message?.content)) {
     const result = raw.message.content.find((b) => b?.type === 'tool_result');
-    if (!result) return null;
+    if (!result) {
+      const text = raw.message.content.filter((b) => b?.type === 'text').map((b) => at(b.text)).join('');
+      return text ? { type: 'user_message', text, agent } : null;
+    }
     const output = Array.isArray(result.content) ? result.content.map((c) => at(c?.text)).join('') : at(result.content);
     return { type: 'tool_end', toolId: at(result.tool_use_id), output, error: result.is_error === true, diff: '', agent };
   }
@@ -171,8 +230,12 @@ function vendorEvent(raw, agent) {
   // Session ids, so the agent's next turn in this chat resumes the same session.
   // Claude compacts on its own when the window runs full; say so in the transcript.
   if (raw?.type === 'system' && raw.subtype === 'compact_boundary') return { type: 'notice', text: 'Claude compacted the context automatically.', agent };
-  if (raw?.type === 'system') return raw.subtype === 'init' && raw.session_id ? { type: 'session', sessionId: at(raw.session_id), agent } : null;
-  if (raw?.type === 'rate_limit_event') return null;
+  // Remote Control bridge: ready / connected / disconnected / failed.
+  if (raw?.type === 'system' && raw.subtype === 'bridge_state') return { type: 'remote_state', state: at(raw.state), agent };
+  // init also names every slash command this session supports: the "/" menu's live source for Claude.
+  if (raw?.type === 'system') return raw.subtype === 'init' && raw.session_id ? { type: 'session', sessionId: at(raw.session_id), agent, ...(Array.isArray(raw.slash_commands) ? { slashCommands: raw.slash_commands } : {}) } : null;
+  // Claude's live plan usage, sent with every turn: the usage gauges' most exact source.
+  if (raw?.type === 'rate_limit_event') { const windows = fromRateLimitEvent(raw); return windows ? { type: 'rate_limits', agent, windows } : null; }
   // Codex: thread.started / turn.started / item.started|completed / turn.completed
   if (typeof raw?.type === 'string' && /^(thread|turn|item)\./.test(raw.type)) {
     const item = raw.item || {};
@@ -255,6 +318,19 @@ function normalizeEvent(raw, agent) {
 // id): Claude and Codex fail; agy only warns and starts an empty conversation.
 const RESUME_FAILED = /No conversation found with session ID|no rollout found for thread id|conversation "[^"]*" not found/i;
 
+function codexResultText(label, result) {
+  if (result == null || (typeof result === 'object' && !Object.keys(result).length)) return `${label} completed.`;
+  if (typeof result === 'string') return result;
+  const json = JSON.stringify(result, (key, value) => /^(access|refresh|id)?_?token$|secret|password|api.?key|authorization/i.test(key) ? '[redacted]' : value, 2);
+  return `${label}\n\n\`\`\`json\n${json}\n\`\`\``;
+}
+
+function reviewTarget(prompt) {
+  return String(prompt || '').trim()
+    ? { type: 'custom', instructions: String(prompt).trim() }
+    : { type: 'uncommittedChanges' };
+}
+
 class StreamEngine extends EventEmitter {
   /**
    * `interactive`: a person is watching this engine's chat window, so Claude
@@ -262,21 +338,35 @@ class StreamEngine extends EventEmitter {
    * question cards to be answered. The scheduler's unattended engine keeps
    * it off (auto mode, never blocks on a click).
    */
-  constructor({ cwd, models = {}, interactive = false } = {}) {
+  constructor({ cwd, models = {}, interactive = false, codexServerFactory = (options) => new CodexAppServer(options) } = {}) {
     super();
     this.cwd = cwd || process.cwd();
     this.models = models;
     this.interactive = interactive;
     this.child = null;
+    this.live = null; // the Remote Control process, while one is on
+    this.pendingControls = new Map(); // our control_request ids -> { resolve, reject }
+    this.expectEcho = null; // the last panel message sent to the live process, until Claude echoes it
     this.approvals = new Map(); // actionId -> { child, input, suggestions, kind }
+    this.agyEdits = new Map(); // toolId -> { event, file, before }: a Gemini edit waiting for its diff
+    this.codexBases = new Map(); // repo root -> snapshot, for Codex's per-edit diffs
     this.tokens = { input: 0, output: 0, lastId: null };
+    this.codexServerFactory = codexServerFactory;
+    this.codexServer = null;
+    this.codexThreadId = null;
+    this.codexTurnId = null;
+    this.codexActive = false;
+    this.codexGeneration = 0;
+    this.codexAcceptEvents = false;
+    this.codexInterrupting = null;
+    this.codexRetiredTurns = new Set();
   }
 
   /** `choice` = { model, effort } from the composer picker; the configured default otherwise. */
   commandFor(agent, prompt, attachments = [], choice = {}) {
     const effort = choice.effort || null;
     const resume = choice.resume || null;
-    const model = choice.model || this.models[agent] || { claude: 'claude', codex: 'gpt-5.6-terra', gemini: 'gemini-3.8-flash-high' }[agent];
+    const model = choice.model || this.models[agent] || { claude: 'claude', codex: 'gpt-6-sol', gemini: 'gemini-3.8-flash-high' }[agent];
     const pointers = attachments.map((file) => `Attachment available locally: ${file}`).join('\n');
     const fullPrompt = pointers ? `${prompt}\n\n${pointers}` : prompt;
     const command = locate(agent).path;
@@ -284,7 +374,9 @@ class StreamEngine extends EventEmitter {
     // agy). The prompt always goes over stdin, which is then closed.
     if (agent === 'gemini') {
       // agy's stream-json input is {"event":"user","message":{"content":...}}.
-      return { command, args: ['--input-format', 'stream-json', '--output-format', 'stream-json', '--model', model, '--dangerously-skip-permissions', ...(resume ? ['--conversation', resume] : [])], input: JSON.stringify({ event: 'user', message: { content: fullPrompt } }) + '\n' };
+      // --add-dir: without it agy runs its shell and resolves relative paths in its own scratch
+      // folder (~/.gemini/antigravity-cli/scratch), not the project, even though init reports the cwd.
+      return { command, args: ['--input-format', 'stream-json', '--output-format', 'stream-json', '--model', model, '--dangerously-skip-permissions', '--add-dir', this.cwd, ...(resume ? ['--conversation', resume] : [])], input: JSON.stringify({ event: 'user', message: { content: fullPrompt } }) + '\n' };
     }
     if (agent === 'claude') {
       // -p reads the prompt from stdin; stream-json output needs --verbose.
@@ -309,7 +401,7 @@ class StreamEngine extends EventEmitter {
     if (choice.codexCommand) {
       return {
         command,
-        args: ['exec', choice.codexCommand, '--json', '--skip-git-repo-check', '-m', model, ...effortArgs, ...(fullPrompt ? ['-'] : [])],
+        args: ['exec', choice.codexCommand, ...(choice.codexCommandArgs || []), '--json', '--skip-git-repo-check', '-m', model, ...effortArgs, ...(fullPrompt ? ['-'] : [])],
         input: fullPrompt ? `${fullPrompt}\n` : '',
       };
     }
@@ -317,17 +409,279 @@ class StreamEngine extends EventEmitter {
     if (resume) return { command, args: ['exec', 'resume', resume, '--json', '--skip-git-repo-check', '-m', model, ...effortArgs, '-'], input: fullPrompt + '\n' };
     return { command, args: ['exec', '--json', '--sandbox', 'workspace-write', '--skip-git-repo-check', '-m', model, ...effortArgs, '-'], input: fullPrompt + '\n' };
   }
-  start({ agent, prompt, attachments = [], model, effort, resume = null, freshPrompt = null, codexCommand = null, attempt = 0 }) {
+
+  getCodexServer() {
+    if (this.codexServer) return this.codexServer;
+    const server = this.codexServerFactory({ cwd: this.cwd });
+    server.on('notification', (message) => this.handleCodexNotification(message));
+    server.on('request', (message) => this.handleCodexRequest(message));
+    server.on('diagnostic', (text) => this.emit('diagnostic', { agent: 'codex', text, timestamp: new Date().toISOString() }));
+    server.on('close', (error) => {
+      if (this.codexServer !== server) return;
+      this.codexServer = null;
+      this.codexThreadId = null;
+      if (this.codexActive) this.finishCodexTurn(error?.message || 'Codex App Server closed unexpectedly');
+    });
+    this.codexServer = server;
+    return server;
+  }
+
+  resetCodexTurn(turn) {
+    this.turn = turn;
+    this.tokens = { input: 0, output: 0, lastId: null };
+    this.blockCount = 0;
+    this.lastTextKey = null;
+    this.hadText = false;
+    this.sawOutput = false;
+    this.codexTurnId = null;
+    this.codexActive = true;
+    this.codexAcceptEvents = !this.codexInterrupting;
+    this.approvals.clear();
+    this.codexBases = repoSnapshots(this.cwd);
+  }
+
+  async ensureCodexThread(server, { resume, model }) {
+    const common = { cwd: this.cwd, model, sandbox: 'workspace-write', approvalPolicy: this.interactive ? 'on-request' : 'never' };
+    if (resume && this.codexThreadId !== resume) {
+      const result = await server.request('thread/resume', { threadId: resume, ...common });
+      this.codexThreadId = result?.thread?.id || resume;
+    } else if (!this.codexThreadId) {
+      const result = await server.request('thread/start', common);
+      this.codexThreadId = result?.thread?.id;
+    }
+    if (!this.codexThreadId) throw new Error('Codex App Server did not return a thread id');
+    this.consumeLine(JSON.stringify({ type: 'thread.started', thread_id: this.codexThreadId }), 'codex');
+    return this.codexThreadId;
+  }
+
+  startCodex({ prompt, attachments = [], model, effort, resume = null, freshPrompt = null, codexCommand = null, attempt = 0 }) {
     this.cancel();
-    this.turn = { agent, prompt, attachments, model, effort, resume, freshPrompt, codexCommand, attempt };
+    const interrupting = this.codexInterrupting;
+    const generation = ++this.codexGeneration;
+    const turn = { agent: 'codex', prompt, attachments, model, effort, resume, freshPrompt, codexCommand, attempt };
+    this.resetCodexTurn(turn);
+    const pointers = attachments.map((file) => `Attachment available locally: ${file}`).join('\n');
+    const fullPrompt = pointers ? `${prompt}\n\n${pointers}` : prompt;
+    const run = async () => {
+      const server = this.getCodexServer();
+      try {
+        if (interrupting) await interrupting;
+        if (generation !== this.codexGeneration || !this.codexActive) return;
+        this.codexAcceptEvents = true;
+        await server.connect();
+        if (generation !== this.codexGeneration || !this.codexActive) return;
+        try { await this.ensureCodexThread(server, { resume, model }); }
+        catch (error) {
+          if (!resume) throw error;
+          this.codexThreadId = null;
+          await this.ensureCodexThread(server, { resume: null, model });
+          if (freshPrompt) turn.prompt = freshPrompt;
+        }
+        if (generation !== this.codexGeneration || !this.codexActive) return;
+        if (codexCommand) await this.runCodexCommand(server, codexCommand, turn.prompt, generation);
+        else {
+          const text = freshPrompt && turn.prompt === freshPrompt ? freshPrompt : fullPrompt;
+          const result = await server.request('turn/start', {
+            threadId: this.codexThreadId,
+            input: [{ type: 'text', text }],
+            cwd: this.cwd,
+            model,
+            ...(effort ? { effort } : {}),
+            approvalPolicy: this.interactive ? 'on-request' : 'never',
+            sandboxPolicy: { type: 'workspaceWrite', writableRoots: [this.cwd], networkAccess: false },
+          });
+          if (generation !== this.codexGeneration || !this.codexActive) {
+            if (result?.turn?.id) this.codexRetiredTurns.add(result.turn.id);
+            return;
+          }
+          this.codexTurnId = result?.turn?.id || this.codexTurnId;
+        }
+      } catch (error) {
+        if (generation !== this.codexGeneration || !this.codexActive) return;
+        if (error?.code === 'CODEX_BINARY_MISSING') {
+          const { checked } = locate('codex');
+          this.emit('event', { type: 'binary_missing', agent: 'codex', checked });
+          this.finishCodexTurn();
+        } else this.finishCodexTurn(error.message);
+      }
+    };
+    queueMicrotask(run);
+    return null;
+  }
+
+  async runCodexCommand(server, name, prompt, generation) {
+    const threadId = this.codexThreadId;
+    if (name === 'review') {
+      const result = await server.request('review/start', { threadId, target: reviewTarget(prompt), delivery: 'inline' });
+      if (generation !== this.codexGeneration || !this.codexActive) {
+        if (result?.turn?.id) this.codexRetiredTurns.add(result.turn.id);
+        return;
+      }
+      this.codexTurnId = result?.turn?.id || this.codexTurnId;
+      return;
+    }
+    if (name === 'compact') {
+      await server.request('thread/compact/start', { threadId });
+      return;
+    }
+    let label = `/${name}`;
+    let result;
+    if (name === 'goal') {
+      const value = String(prompt || '').trim();
+      if (/^(clear|none|off)$/i.test(value)) result = await server.request('thread/goal/clear', { threadId });
+      else if (value) result = await server.request('thread/goal/set', { threadId, objective: value, status: 'active' });
+      else result = await server.request('thread/goal/get', { threadId });
+    } else if (name === 'status') {
+      const [goal, usage, rateLimits] = await Promise.all([
+        server.request('thread/goal/get', { threadId }),
+        server.request('account/usage/read', null),
+        server.request('account/rateLimits/read', null),
+      ]);
+      result = { threadId, goal: goal?.goal || null, usage, rateLimits };
+    } else {
+      const calls = {
+        model: ['model/list', {}], skills: ['skills/list', { cwds: [this.cwd] }],
+        mcp: ['mcpServerStatus/list', { threadId }], hooks: ['hooks/list', { cwds: [this.cwd] }],
+        plugins: ['plugin/list', { cwds: [this.cwd] }], apps: ['app/list', { threadId }],
+        permissions: ['permissionProfile/list', { cwd: this.cwd }], experimental: ['experimentalFeature/list', { threadId }],
+        usage: ['account/usage/read', null],
+      };
+      const call = calls[name];
+      if (!call) throw new Error(`Unsupported Codex command: /${name}`);
+      result = await server.request(call[0], call[1]);
+      if (name === 'usage') result = { usage: result, rateLimits: await server.request('account/rateLimits/read', null) };
+    }
+    if (generation !== this.codexGeneration || !this.codexActive) return;
+    this.consumeLine(JSON.stringify({ __appServer: true, method: 'item/agentMessage/delta', params: { delta: codexResultText(label, result) } }), 'codex');
+    this.finishCodexTurn();
+  }
+
+  retireCodexTurn(turnId) {
+    if (!turnId) return;
+    this.codexRetiredTurns.add(turnId);
+    while (this.codexRetiredTurns.size > 64) this.codexRetiredTurns.delete(this.codexRetiredTurns.values().next().value);
+  }
+
+  handleCodexNotification(message) {
+    const { method, params = {} } = message;
+    const turnId = params.turnId || params.turn?.id || null;
+    if (params.threadId && this.codexThreadId && params.threadId !== this.codexThreadId) return;
+    if (turnId && (!this.codexAcceptEvents || this.codexRetiredTurns.has(turnId) || (this.codexTurnId && this.codexTurnId !== turnId))) return;
+    if (method === 'thread/compacted' && this.codexActive && this.turn?.codexCommand === 'compact') {
+      this.consumeLine(JSON.stringify({ __appServer: true, method: 'item/agentMessage/delta', params: { delta: 'Codex compacted this thread.' } }), 'codex');
+      this.finishCodexTurn();
+      return;
+    }
+    if (method === 'turn/started') {
+      this.codexTurnId = params.turn?.id || this.codexTurnId;
+      this.codexBases = repoSnapshots(this.cwd);
+    }
+    if (method === 'thread/tokenUsage/updated') {
+      const usage = params.tokenUsage || {};
+      const last = usage.last || {};
+      const total = usage.total || {};
+      if (usage.modelContextWindow && last.totalTokens) this.emit('event', { type: 'usage', agent: 'codex', contextTokens: last.totalTokens });
+      if (total.totalTokens) this.emit('event', { type: 'token_usage', agent: 'codex', inputTokens: total.inputTokens || 0, outputTokens: total.outputTokens || 0, totalTokens: total.totalTokens });
+      return;
+    }
+    if (!this.codexActive && method !== 'thread/started') return;
+    if (method === 'turn/completed' && params.turn?.status === 'failed') {
+      const failure = params.turn?.error?.message || params.turn?.error || 'turn failed';
+      this.consumeLine(JSON.stringify({ __appServer: true, method: 'error', params: { message: String(failure) } }), 'codex');
+    }
+    if (method === 'turn/completed') {
+      this.retireCodexTurn(turnId || this.codexTurnId);
+      this.codexActive = false;
+      this.codexAcceptEvents = false;
+      this.codexTurnId = null;
+    }
+    this.consumeLine(JSON.stringify({ __appServer: true, method, params }), 'codex');
+  }
+
+  handleCodexRequest(request) {
+    const supported = new Set(['item/commandExecution/requestApproval', 'item/fileChange/requestApproval', 'item/tool/requestUserInput', 'item/permissions/requestApproval', 'mcpServer/elicitation/request', 'execCommandApproval', 'applyPatchApproval']);
+    if (!supported.has(request.method)) {
+      try { this.codexServer?.reject(request.id, `The AI chat panel does not provide ${request.method}`); } catch { /* server already closed */ }
+      return;
+    }
+    if (!this.codexActive) {
+      try { this.codexServer?.reject(request.id, 'No Codex turn is active'); } catch { /* server already closed */ }
+      return;
+    }
+    const turnId = request.params?.turnId || null;
+    if ((request.params?.threadId && this.codexThreadId && request.params.threadId !== this.codexThreadId) || !this.codexAcceptEvents || (turnId && (this.codexRetiredTurns.has(turnId) || (this.codexTurnId && this.codexTurnId !== turnId)))) {
+      try { this.codexServer?.reject(request.id, 'This Codex turn is no longer active'); } catch { /* server already closed */ }
+      return;
+    }
+    this.consumeLine(JSON.stringify({ __appServer: true, method: request.method, params: request.params || {}, request: { id: request.id, method: request.method } }), 'codex');
+  }
+
+  finishCodexTurn(error = '') {
+    if (!this.codexActive) return;
+    if (error) this.consumeLine(JSON.stringify({ __appServer: true, method: 'error', params: { message: error } }), 'codex');
+    this.retireCodexTurn(this.codexTurnId);
+    this.codexActive = false;
+    this.codexAcceptEvents = false;
+    this.codexTurnId = null;
+    this.consumeLine(JSON.stringify({ __appServer: true, method: 'turn/completed', params: {} }), 'codex');
+  }
+  // ---------- Live mode: Claude Code Remote Control, headless ----------
+  // Normally every turn is its own `claude -p` process. With Remote Control on, the chat
+  // keeps ONE process (resumed from its session) that both this panel and the Claude app
+  // drive: panel turns are written to its stdin, prompts from the phone come back through
+  // --replay-user-messages, and approvals arrive as control_requests on either side.
+
+  /** Starts (or reuses) the live process and asks it to open a Remote Control session. Resolves to { session_url, ... }. */
+  async enableRemote({ name, model, effort, resume }) {
+    if (!this.live) {
+      this.cancel();
+      this.start({ agent: 'claude', prompt: '', model, effort, resume, live: true });
+      if (!this.live) throw new Error('the Claude Code CLI could not be started');
+    }
+    return this.sendControl({ subtype: 'remote_control', enabled: true, ...(name ? { name } : {}) });
+  }
+
+  /** Closes the Remote Control session and the live process; later turns spawn one process each again. */
+  async disableRemote() {
+    const child = this.live;
+    if (!child) return;
+    await this.sendControl({ subtype: 'remote_control', enabled: false }).catch(() => {});
+    if (this.live !== child) return;
+    this.live = null;
+    if (!child.turnCompleted) return; // a turn is running: its result ends the process (turn_complete closes stdin)
+    try { child.stdin.end(); } catch { /* gone */ }
+    setTimeout(() => killTree(child), 3000).unref?.();
+  }
+
+  sendControl(request) {
+    const child = this.live;
+    if (!child?.stdin?.writable) return Promise.reject(new Error('no live Claude process'));
+    const id = `panel-${crypto.randomUUID()}`;
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => { this.pendingControls.delete(id); reject(new Error(`${request.subtype}: no answer from Claude`)); }, 30000);
+      this.pendingControls.set(id, { resolve: (value) => { clearTimeout(timer); resolve(value); }, reject: (error) => { clearTimeout(timer); reject(error); } });
+      child.stdin.write(JSON.stringify({ type: 'control_request', request_id: id, request }) + '\n');
+    });
+  }
+
+  start({ agent, prompt, attachments = [], model, effort, resume = null, freshPrompt = null, codexCommand = null, codexCommandArgs = [], attempt = 0, live = false }) {
+    // A live Remote Control process takes the turn as a message instead of a new process.
+    if (agent === 'claude' && this.live && !live) return this.sendToLive({ agent, prompt, attachments, model, effort });
+    // Codex and agy don't send the edited text: their +/- come from each file against these snapshots.
+    this.editCache = new Map();
+    if (agent !== 'claude' && !attempt) this.codexBases = repoSnapshots(this.cwd);
+    if (agent === 'codex') return this.startCodex({ prompt, attachments, model, effort, resume, freshPrompt, codexCommand, codexCommandArgs, attempt });
+    this.cancel();
+    this.turn = live ? null : { agent, prompt, attachments, model, effort, resume, freshPrompt, codexCommand, codexCommandArgs, attempt };
     this.tokens = { input: 0, output: 0, lastId: null }; // P17-V: this turn's token draw
-    const spec = this.commandFor(agent, prompt, attachments, { model, effort, resume, codexCommand });
+    const spec = this.commandFor(agent, prompt, attachments, { model, effort, resume, codexCommand, codexCommandArgs });
+    if (live && spec.command) spec.args.push('--replay-user-messages');
     // A session that no longer exists (cleared, or made on another machine)
     // reruns the turn once as a new session, with the chat's full handoff.
-    this.resumeRetry = resume ? { agent, prompt: freshPrompt || prompt, attachments, model, effort } : null;
+    this.resumeRetry = resume && !live ? { agent, prompt: freshPrompt || prompt, attachments, model, effort } : null;
     // P17-D: a claude CLI that predates Opus 5.5 (or --effort) fails before
     // any output; that turn reruns once on the fallback model instead.
-    this.fallback = agent === 'claude' && /opus/i.test(model || '') ? { agent, prompt, attachments, resume, freshPrompt } : null;
+    this.fallback = agent === 'claude' && !live && /opus/i.test(model || '') ? { agent, prompt, attachments, resume, freshPrompt } : null;
     this.sawOutput = false;
     // P16-I: a missing CLI becomes a structured event the chat view renders
     // as a setup card, instead of a raw `spawn ... ENOENT` string posing as
@@ -353,51 +707,92 @@ class StreamEngine extends EventEmitter {
       stdio: ['pipe', 'pipe', 'pipe'],
     });
     this.child = child;
+    if (live) { child.live = true; child.turnCompleted = true; this.live = child; } // idle until a message arrives
     this.blockCount = 0;
     this.lastTextKey = null;
     this.hadText = false;
     let stdoutBuffer = '';
     let stderrBuffer = '';
-    const watchdog = setTimeout(() => { if (this.child === child) this.failUpstream(agent, `No response from ${agent} after ${FIRST_OUTPUT_TIMEOUT_MS / 1000}s.`); }, FIRST_OUTPUT_TIMEOUT_MS);
+    const diagnostics = [];
+    // A live process says nothing until it gets a message, so only per-turn processes have a first-output deadline.
+    const watchdog = live ? null : setTimeout(() => { if (this.child === child) this.failUpstream(agent, `No response from ${agent} after ${FIRST_OUTPUT_TIMEOUT_MS / 1000}s.`); }, FIRST_OUTPUT_TIMEOUT_MS);
+    // A live process keeps talking between our turns (phone prompts), so it's always heard.
+    const current = () => this.child === child || this.live === child;
     const consumeStdout = (chunk) => {
       clearTimeout(watchdog);
-      if (this.child !== child) return;
+      if (!current()) return;
       stdoutBuffer += chunk.toString();
       const lines = stdoutBuffer.split(/\r?\n/);
       stdoutBuffer = lines.pop();
       for (const line of lines) {
-        if (this.child !== child) return;
+        if (!current()) return;
         this.consumeLine(line, agent);
       }
     };
     const consumeStderr = (chunk) => {
       clearTimeout(watchdog);
-      if (this.child !== child) return;
+      if (!current()) return;
       stderrBuffer += chunk.toString();
       const lines = stderrBuffer.split(/\r?\n/);
       stderrBuffer = lines.pop();
       for (const line of lines) {
-        if (this.child !== child) return;
+        if (!current()) return;
+        diagnostics.push(line);
         this.consumeStderrLine(line, agent);
       }
     };
     child.stdout.on('data', consumeStdout);
     child.stderr.on('data', consumeStderr);
-    child.on('error', (error) => this.emit('event', { type: 'delta', text: `Unable to start ${agent}: ${error.message}`, model: agent, agent }));
-    child.on('close', () => {
+    child.on('error', (error) => { child.reportedError = true; this.emit('event', { type: 'delta', text: `Unable to start ${agent}: ${error.message}`, model: agent, agent }); });
+    child.on('close', (code) => {
       clearTimeout(watchdog);
+      if (this.live === child) {
+        this.live = null;
+        for (const pending of this.pendingControls.values()) pending.reject(new Error('Claude exited'));
+        this.pendingControls.clear();
+        this.emit('event', { type: 'remote_state', state: 'ended', agent });
+      }
       if (this.child !== child) return;
       if (stdoutBuffer.trim()) this.consumeLine(stdoutBuffer, agent);
-      if (stderrBuffer.trim()) this.consumeStderrLine(stderrBuffer, agent);
+      if (stderrBuffer.trim()) { diagnostics.push(stderrBuffer); this.consumeStderrLine(stderrBuffer, agent); }
+      if (code && !child.turnCompleted && !this.sawOutput && !child.reportedError) {
+        const detail = diagnostics.findLast((line) => line.trim() && !/^WARNING:/i.test(line.trim()))?.trim();
+        this.emit('event', { type: 'delta', text: detail || `${agent} exited with code ${code}.`, model: agent, agent });
+      }
       this.child = null;
       if (!child.turnCompleted) this.emit('event', { type: 'turn_complete', agent });
     });
     // End stdin: every CLI here treats it as the whole prompt and would
     // otherwise wait for more input forever.
     child.stdin.on('error', () => {});
+    if (live) return child; // the first message comes later, from either side
     if (spec.keepStdinOpen) child.stdin.write(spec.input);
     else child.stdin.end(spec.input || '');
     return child;
+  }
+
+  /** A panel turn into the live process: same message shape a fresh process would get. */
+  sendToLive({ agent, prompt, attachments, model, effort }) {
+    const child = this.live;
+    const spec = this.commandFor(agent, prompt, attachments, { model, effort });
+    this.child = child;
+    this.turn = { agent, prompt, attachments, model, effort, attempt: 0 };
+    this.beginLiveTurn();
+    this.expectEcho = JSON.parse(spec.input).message.content; // its replay is ours, not the phone's
+    child.stdin.write(spec.input);
+    return child;
+  }
+
+  /** Per-turn state for a turn inside the live process (started here or from the phone). */
+  beginLiveTurn() {
+    this.tokens = { input: 0, output: 0, lastId: null };
+    this.blockCount = 0;
+    this.lastTextKey = null;
+    this.hadText = false;
+    this.sawOutput = false;
+    this.resumeRetry = null;
+    this.fallback = null;
+    if (this.live) this.live.turnCompleted = false;
   }
 
   relative(text) {
@@ -457,7 +852,15 @@ class StreamEngine extends EventEmitter {
     // CLIs accept a typed y/n; real approvals arrive as control_requests.)
     let raw;
     try { raw = JSON.parse(line); } catch { raw = undefined; }
-    if (agent === 'codex' && raw?.type === 'turn.started') this.codexBase = gitSnapshot(this.cwd);
+    // Answers to our own control requests (Remote Control on/off, interrupt).
+    if (raw?.type === 'control_response' && this.pendingControls.has(raw.response?.request_id)) {
+      const pending = this.pendingControls.get(raw.response.request_id);
+      this.pendingControls.delete(raw.response.request_id);
+      if (raw.response.subtype === 'success') pending.resolve(raw.response.response || {});
+      else pending.reject(new Error(raw.response.error || 'Claude refused the request'));
+      return;
+    }
+    if (agent === 'codex' && raw?.type === 'turn.started') this.codexBases = repoSnapshots(this.cwd);
     if (raw !== undefined) {
       const contextTokens = contextTokensOf(raw);
       if (contextTokens) this.emit('event', { type: 'usage', agent, contextTokens });
@@ -472,6 +875,20 @@ class StreamEngine extends EventEmitter {
     }
     try { event = raw === undefined ? { type: 'delta', text: line, model: agent, agent } : normalizeEvent(raw, agent); } catch { event = { type: 'delta', text: line, model: agent, agent }; }
     if (!event) return;
+    if (event.fallback) {
+      delete event.fallback;
+      if (this.hadText) return;
+    }
+    if (event.type === 'user_message') {
+      // Our own message echoed back, or a prompt typed in the Claude app (which starts a turn here).
+      if (this.expectEcho !== null && event.text.trim() === this.expectEcho.trim()) { this.expectEcho = null; return; }
+      if (!this.live) return;
+      this.child = this.live;
+      this.turn = { agent, prompt: event.text, attachments: [], attempt: 0 };
+      this.beginLiveTurn();
+      this.emit('event', { type: 'remote_prompt', text: event.text, agent });
+      return;
+    }
     if (event.type === 'delta' || event.type === 'tool_start' || event.type === 'thought') this.sawOutput = true;
     if (event.type === 'turn_complete' && 'response' in event) {
       // Final answer text only in the result event: show it, unless it already streamed.
@@ -489,16 +906,32 @@ class StreamEngine extends EventEmitter {
       if (this.child) this.child.turnCompleted = true;
       this.approvals.clear();
       // Interactive Claude keeps stdin open for answers; the turn is over now.
-      if (this.child?.stdin?.writable) this.child.stdin.end();
+      // The live Remote Control process stays open for the next message (unless it was just switched off).
+      if (this.child?.stdin?.writable && this.child !== this.live) this.child.stdin.end();
+    }
+    // agy's edit steps carry only the target path, never the text, so the lines come from the
+    // file itself: read when the edit starts, compared when it's done. The card is held until
+    // then (edits take milliseconds) so it arrives with its diff and +/- counts.
+    if (agent === 'gemini' && event.type === 'tool_start' && event.name === 'edit' && event.file) {
+      this.agyEdits.set(event.toolId, { event, file: path.resolve(this.cwd, event.file) });
+      return;
+    }
+    if (agent === 'gemini' && event.type === 'tool_end' && this.agyEdits.has(event.toolId)) {
+      const { event: start, file } = this.agyEdits.get(event.toolId);
+      this.agyEdits.delete(event.toolId);
+      if (!event.error) start.diff = this.fileDiff(file);
+      for (const key of ['file', 'command']) if (start[key]) start[key] = this.relative(start[key]);
+      this.emit('event', start);
     }
     // Cards show workspace-relative paths, not the absolute ones the CLIs report.
     if (event.type === 'tool_start' || event.type === 'approval_required') {
       for (const key of ['file', 'command']) if (event[key]) event[key] = this.relative(event[key]);
     }
     if (event.type === 'approval_required' || event.type === 'question_required') {
-      this.approvals.set(event.actionId, { child: this.child, input: event.input, suggestions: event.suggestions || [] });
+      this.approvals.set(event.actionId, { child: this.child, input: event.input, suggestions: event.suggestions || [], appServer: event.appServer || null, questions: event.questions || [] });
       delete event.input;
       delete event.suggestions;
+      delete event.appServer;
     }
     if (event.type === 'approval_cancelled') this.approvals.delete(event.actionId);
     // Whole-message text from separate blocks gets a paragraph break between them.
@@ -517,12 +950,27 @@ class StreamEngine extends EventEmitter {
       return;
     }
     if (event.changes) {
-      event.diff = codexDiff(event.changes, this.cwd, this.codexBase);
+      event.diff = codexDiff(event.changes, this.cwd, (file) => this.fileDiff(file));
       delete event.changes;
-      // The next edit's card shows only what that edit changed.
-      this.codexBase = gitSnapshot(this.cwd);
     }
     this.emit('event', event);
+  }
+
+  /**
+   * What an edit changed in `file`: its text now against its last edit in this turn, else its
+   * version in the repo snapshot taken when the turn started (the file's own repo, nested or
+   * not). A file that didn't exist then counts as all added.
+   */
+  fileDiff(file) {
+    const after = readText(file);
+    let before = this.editCache?.get(file);
+    if (before === undefined) {
+      const root = gitRoot(path.dirname(file));
+      const base = root && (this.codexBases.get(root) || 'HEAD');
+      try { before = root ? git(['show', `${base}:${path.relative(root, file).split(path.sep).join('/')}`], root) : ''; } catch { before = ''; }
+    }
+    this.editCache?.set(file, after);
+    return editDiff({ old_string: before, new_string: after });
   }
 
   control(actionId, response) {
@@ -538,6 +986,20 @@ class StreamEngine extends EventEmitter {
   respondToApproval(actionId, approved, { always = false } = {}) {
     const pending = this.approvals.get(actionId);
     if (!pending) return false;
+    if (pending.appServer) {
+      this.approvals.delete(actionId);
+      try {
+        const method = pending.appServer.method;
+        let result;
+        if (method === 'mcpServer/elicitation/request') result = { action: approved ? 'accept' : 'decline' };
+        else if (method === 'item/permissions/requestApproval') result = { permissions: approved ? pending.input?.permissions || {} : {}, scope: always ? 'session' : 'turn' };
+        else if (method === 'execCommandApproval' || method === 'applyPatchApproval') {
+          result = { decision: approved ? (always ? 'approved_for_session' : 'approved') : { denied: { rejection: 'The user declined this action in the chat window.' } } };
+        } else result = { decision: approved ? (always ? 'acceptForSession' : 'accept') : 'decline' };
+        this.codexServer?.respond(pending.appServer.id, result);
+        return true;
+      } catch { return false; }
+    }
     if (!approved) return this.control(actionId, { behavior: 'deny', message: 'The user declined this action in the chat window.' });
     return this.control(actionId, { behavior: 'allow', updatedInput: pending.input || {}, ...(always && pending.suggestions.length ? { updatedPermissions: pending.suggestions } : {}) });
   }
@@ -546,6 +1008,16 @@ class StreamEngine extends EventEmitter {
   respondToQuestion(actionId, answers) {
     const pending = this.approvals.get(actionId);
     if (!pending) return false;
+    if (pending.appServer) {
+      this.approvals.delete(actionId);
+      const byId = {};
+      for (const question of pending.questions) {
+        const value = answers?.[question.question] ?? answers?.[question.id] ?? '';
+        byId[question.id] = { answers: Array.isArray(value) ? value.map(String) : String(value).split(',').map((entry) => entry.trim()).filter(Boolean) };
+      }
+      try { this.codexServer?.respond(pending.appServer.id, { answers: byId }); return true; }
+      catch { return false; }
+    }
     return this.control(actionId, { behavior: 'allow', updatedInput: { ...(pending.input || {}), answers: answers || {} } });
   }
 
@@ -568,12 +1040,63 @@ class StreamEngine extends EventEmitter {
     clearTimeout(this.retryTimer);
     this.retryTimer = null;
     this.approvals.clear();
+    if (this.codexActive) {
+      const threadId = this.codexThreadId;
+      const turnId = this.codexTurnId;
+      this.retireCodexTurn(turnId);
+      this.codexActive = false;
+      this.codexAcceptEvents = false;
+      this.codexTurnId = null;
+      this.codexGeneration += 1;
+      if (threadId && turnId && this.codexServer) {
+        const interrupting = this.codexServer.request('turn/interrupt', { threadId, turnId }).catch(() => {});
+        const barrier = interrupting.finally(() => { if (this.codexInterrupting === barrier) this.codexInterrupting = null; });
+        this.codexInterrupting = barrier;
+      }
+    }
+    if (this.child && this.child === this.live) return; // the Remote Control process outlives turns
     killTree(this.child);
     this.child = null;
   }
 
+  /** Extension shutdown: the live process goes too. */
+  dispose() {
+    this.cancel();
+    if (this.live) killTree(this.live);
+    this.live = null;
+    this.codexServer?.dispose();
+    this.codexServer = null;
+    this.codexThreadId = null;
+  }
+
   /** P17-F: the user's Stop / Steer Now. Ends the running turn now and says so, unlike a silent cancel(). */
   interrupt() {
+    if (this.codexActive) {
+      const threadId = this.codexThreadId;
+      const turnId = this.codexTurnId;
+      this.retireCodexTurn(turnId);
+      this.codexActive = false;
+      this.codexAcceptEvents = false;
+      this.codexTurnId = null;
+      this.codexGeneration += 1;
+      this.approvals.clear();
+      if (threadId && turnId && this.codexServer) {
+        const interrupting = this.codexServer.request('turn/interrupt', { threadId, turnId }).catch(() => {});
+        const barrier = interrupting.finally(() => { if (this.codexInterrupting === barrier) this.codexInterrupting = null; });
+        this.codexInterrupting = barrier;
+      }
+      this.emit('event', { type: 'turn_complete', interrupted: true, agent: 'codex' });
+      return true;
+    }
+    // Live Remote Control: ask Claude to stop the turn; the process (and the phone link) stays.
+    if (this.live && this.child === this.live) {
+      if (this.live.turnCompleted) return false;
+      this.sendControl({ subtype: 'interrupt' }).catch(() => {});
+      this.live.turnCompleted = true;
+      this.approvals.clear();
+      this.emit('event', { type: 'turn_complete', interrupted: true });
+      return true;
+    }
     const child = this.child;
     if (!child && !this.retryTimer) return false;
     this.cancel();
