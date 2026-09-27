@@ -79,39 +79,9 @@ body {
   transition: background 0.15s var(--eo-ease), color 0.15s var(--eo-ease), transform 0.15s var(--eo-ease);
 }
 
-.launcher-tab:hover {
+.launcher-tab:hover:not([aria-selected='true']) {
   background: rgba(255, 255, 255, 0.06);
   color: var(--text-primary);
-}
-
-.launcher-tab[aria-selected='true'] {
-  background: var(--eo-surface-raised);
-  color: var(--text-primary);
-  transform: scale(1.02);
-}
-
-/* The selection pill is one ::before anchored to the selected tab, so it
-   springs across instead of jumping. Older engines keep the static fill above. */
-@supports (anchor-name: --tab) {
-  .launcher-tabs { position: relative; isolation: isolate; }
-  .launcher-tabs::before {
-    content: '';
-    position: absolute;
-    z-index: -1;
-    position-anchor: --launcher-tab;
-    inset: anchor(top) anchor(right) anchor(bottom) anchor(left);
-    border-radius: var(--pill);
-    background: var(--eo-surface-raised);
-    transition: inset 0.5s cubic-bezier(0.34, 1.36, 0.64, 1);
-  }
-  .launcher-tab[aria-selected='true'] {
-    anchor-name: --launcher-tab;
-    background: transparent;
-    transform: none;
-  }
-}
-@media (prefers-reduced-motion: reduce) {
-  .launcher-tabs::before { transition: none; }
 }
 
 .launcher-panel {
@@ -686,8 +656,4 @@ body {
   color: var(--text-secondary);
   font: 500 10px var(--font-text);
   cursor: pointer;
-}
-.format-pill.active {
-  background: var(--eo-surface-raised);
-  color: var(--text-primary);
 }
