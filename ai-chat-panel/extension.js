@@ -28,7 +28,9 @@ const { ChatStore, markActive, ACTIVE_WINDOW_MS } = require('./lib/chat-store.js
 const { route } = require('./lib/auto-router.js');
 const { MODEL_CATALOG, modelOption, resolveModel } = require('./lib/model-catalog.js');
 const { SchedulerQueue, ACTIVE_STATUSES } = require('./lib/scheduler-queue.js');
-const { TelegramBridge } = require('./lib/telegram-bridge.js');
+const { TelegramBridge, DOCK_KEYBOARD } = require('./lib/telegram-bridge.js');
+const { configureTelegram: setupTelegram, TOKEN_KEY, CHAT_KEY } = require('./lib/telegram-setup.js');
+const { forwardRequest, bindTelegramControls } = require('./lib/telegram-control.js');
 const { resolveEditorTheme } = require('./lib/editor-theme.js');
 const { buildHandoff, buildCompactionHandoff, checkpointStart, estimateTokens, COMPACT_DIRECTIVE, COMPACT_TARGET_TOKENS } = require('./lib/chat-handoff.js');
 const { CodexCommandCatalog } = require('./lib/codex-commands.js');
@@ -163,7 +165,10 @@ class SchedulerWatchdog {
     }
     if (event.type === 'binary_missing') this.failed = `Agent binary not found: "${event.agent}"`;
     if (event.type === 'upstream_error') this.failed = `Upstream unavailable (${event.agent}): ${event.detail}`;
-    if (event.type === 'approval_required') { await this.telegram?.sendApprovalRequest(event.description, event.actionId); return; }
+    if (event.type === 'approval_required' || event.type === 'question_required') {
+      await forwardRequest(this.telegram, event, { engine: this.engine, title: `Scheduled task ${this.activeTaskId}`, respond: (_id, callback) => callback(this.engine) });
+      return;
+    }
     if (event.type !== 'turn_complete') return;
     const taskId = this.activeTaskId; this.activeTaskId = null;
     if (this.chat) { this.chatStore.save(this.chat); this.chat = null; this.reply = null; this.onHistoryChange(); }
@@ -526,9 +531,11 @@ class ChatRun {
   }
 
   respond(actionId, reply) {
+    const result = reply(this.streamEngine);
+    if (result === false) return false;
     this.pending.delete(actionId);
-    reply(this.streamEngine);
     if (!this.pending.size) this.deps.notifyHistory();
+    return result;
   }
 
   /**
@@ -566,6 +573,7 @@ class ChatRun {
   }
 
   handleStreamEvent(event) {
+    this.deps.onTelegramEvent?.(this, event);
     if (event.type === 'rate_limits' && event.agent === 'claude') recordClaudeUsage(event.windows);
     if (event.type === 'remote_prompt') { this.beginRemoteTurn(event.text); return; }
     if (event.type === 'remote_state') {
@@ -1628,7 +1636,7 @@ function activate(context) {
   }).then((subscription) => context.subscriptions.push(subscription));
 
   chatWindowManager = new ChatWindowManager(context.extensionUri, {
-    sessionManager, chatStore, voiceCapture, workspaceDir, sessionDir: ASTRO_SESSION_DIR, attachmentsDir, getModels, codexCommands, slashCommands, schedulerQueue, notifySchedulerQueue, renameChat, getEditorTheme: () => editorTheme, notify, notifyHistory,
+    sessionManager, chatStore, voiceCapture, workspaceDir, sessionDir: ASTRO_SESSION_DIR, attachmentsDir, getModels, codexCommands, slashCommands, schedulerQueue, notifySchedulerQueue, renameChat, getEditorTheme: () => editorTheme, notify, notifyHistory, onTelegramEvent,
   });
   // Chat windows come back after a restart in the tab spot they had, showing the same chat
   // (the webview keeps its chat id in its saved state; activation event onWebviewPanel:aiChatPanel.chatWindow).
@@ -1671,32 +1679,53 @@ function activate(context) {
   }
   const watchdog = new SchedulerWatchdog({ queue: schedulerQueue, workspaceDir, getModels, telegram: null, onQueueChange: notifySchedulerQueue, chatStore, onHistoryChange: notifyHistory, notify, resumeInChat: (task) => chatWindowManager?.resumeChat(task) });
 
-  function bindTelegram(bridge) {
-    bridge.onApproval(async (actionId, approved) => { watchdog.engine.respondToApproval(actionId, approved); });
-    bridge.onCommand('status', async (_args, reply) => {
-      const quotas = await readQuotas();
-      const rendered = ['claude', 'codex', 'gemini'].map((model) => `${model}: ${typeof quotas[model]?.remaining === 'number' ? `${quotas[model].remaining}%` : quotas[model]?.label || 'unavailable'}`).join('\n');
-      await reply(`${rendered}\nactive PID: ${watchdog.engine.child?.pid || 'idle'}`);
-    });
-    bridge.onCommand('queue', async (_args, reply) => {
-      const tasks = (await schedulerQueue.getQueue()).filter((task) => ACTIVE_STATUSES.includes(task.status));
-      await reply(tasks.length ? tasks.map((task) => `� \`${task.id}\` � ${task.model}, ${task.status}, ${task.dispatchTime || task.createdAt}`).join('\n') : 'Queue is empty.');
-    });
-    bridge.onCommand('cancel', async ([taskId], reply) => { await reply(await schedulerQueue.dequeue(taskId) ? `Cancelled \`${taskId}\`.` : 'Task not found.'); });
-    bridge.onCommand('prompt', async ([model, ...prompt], reply) => {
-      const target = injectTarget(model);
-      if (!target || !prompt.length) { await reply('Usage: /prompt <claude|codex|gemini|opus> <text>'); return; }
-      chatWindowManager.getOrCreateActive().revealAndInject(target.agentId, prompt.join(' '), true, target.modelId);
-      await reply(`Dispatched to ${model}.`);
-    });
+  function onTelegramEvent(run, event) {
+    const bridge = telegram;
+    if (!bridge?.running) return;
+    const title = `${run.chat.title || 'Chat'} (${run.chat.id})`;
+    void forwardRequest(bridge, event, {
+      engine: run.streamEngine, title,
+      respond: (id, callback) => {
+        const result = run.respond(id, callback);
+        if (result !== false) run.post({ type: 'approval_cancelled', actionId: id });
+        return result;
+      },
+    }).catch(() => {});
+    if (event.type === 'turn_complete' && run.activeAssistantMessage && !run.activeAssistantMessage.compact) {
+      const statusIcon = event.interrupted ? '⏹' : '✅';
+      const statusText = event.interrupted ? 'Turn stopped' : 'Turn completed';
+      const agentName = event.agent ? event.agent.toUpperCase() : 'AGENT';
+      const replyText = `${statusIcon} <b>${agentName} — ${statusText}</b>\n📁 <code>${title}</code>\n\n${run.activeAssistantMessage.text || 'No text response.'}`;
+      const reply_markup = {
+        inline_keyboard: [
+          [
+            { text: '💬 Select This Chat', callback_data: `chat:use:${run.chat.id}` },
+            { text: '📊 Cockpit', callback_data: 'nav:cockpit' }
+          ]
+        ]
+      };
+      void bridge.sendMessage(replyText, { reply_markup, parse_mode: 'HTML' }).then((ok) => {
+        if (!ok) void bridge.sendMessage(`${title}\n${event.agent || 'Agent'} ${event.interrupted ? 'stopped' : 'replied'}\n\n${run.activeAssistantMessage.text || 'No text response.'}`);
+      }).catch(() => {});
+    }
   }
 
   async function startTelegram(token, chatId, webhookPublicUrl = '') {
-    if (telegram) await telegram.stop();
-    telegram = new TelegramBridge({ botToken: token, chatId, webhookPublicUrl });
-    watchdog.telegram = telegram;
-    bindTelegram(telegram);
-    await telegram.start();
+    const previous = telegram;
+    await previous?.stop();
+    const next = new TelegramBridge({ botToken: token, chatId, webhookPublicUrl });
+    bindTelegramControls(next, { manager: chatWindowManager, watchdog, queue: schedulerQueue, readQuotas, models: MODEL_CATALOG, resolveTarget: injectTarget, notifyQueue: notifySchedulerQueue });
+    try { await next.start(); }
+    catch (error) {
+      await next.stop();
+      try { await previous?.start(); } catch { /* the caller shows the startup error */ }
+      throw error;
+    }
+    telegram = next;
+    watchdog.telegram = next;
+    void next.sendMessage('🖥️ <b>Workstation Online & Ready!</b>\nTap any button in the dock below, or send a prompt directly to your active chat.', { reply_markup: DOCK_KEYBOARD, parse_mode: 'HTML' });
+    for (const run of chatWindowManager.runs.values()) for (const event of run.pending.values()) onTelegramEvent(run, event);
+    return next;
   }
 
   const tunnel = new TunnelManager({
@@ -1711,17 +1740,37 @@ function activate(context) {
     },
   });
 
-  async function configureTelegram() {
-    const token = await vscode.window.showInputBox({ prompt: 'Telegram bot token', password: true, ignoreFocusOut: true }) || await context.secrets.get('aiChatPanel.telegramBotToken');
-    const chatId = await vscode.window.showInputBox({ prompt: 'Allowed Telegram chat ID', ignoreFocusOut: true }) || await context.secrets.get('aiChatPanel.telegramChatId');
-    if (!token || !chatId) { vscode.window.showWarningMessage('AI Chat Panel: Telegram configuration requires both bot token and chat ID.'); return; }
-    await context.secrets.store('aiChatPanel.telegramBotToken', token);
-    await context.secrets.store('aiChatPanel.telegramChatId', chatId);
-    await startTelegram(token, chatId);
-    vscode.window.showInformationMessage('AI Chat Panel: Telegram bridge started in secure single-user mode.');
+  let telegramSetup = null;
+  function configureTelegram() {
+    if (telegramSetup) return telegramSetup;
+    telegramSetup = setupTelegram({
+      vscode, secrets: context.secrets, getCurrent: () => telegram,
+      onRestored: () => { for (const run of chatWindowManager.runs.values()) for (const event of run.pending.values()) onTelegramEvent(run, event); },
+      connect: async (token, chatId) => {
+        const previous = telegram;
+        const oldToken = await context.secrets.get(TOKEN_KEY);
+        const oldChat = await context.secrets.get(CHAT_KEY);
+        const next = await startTelegram(token, chatId);
+        try {
+          await context.secrets.store(TOKEN_KEY, token);
+          await context.secrets.store(CHAT_KEY, chatId);
+        } catch (error) {
+          await next.stop();
+          telegram = previous;
+          watchdog.telegram = previous;
+          for (const [key, value] of [[TOKEN_KEY, oldToken], [CHAT_KEY, oldChat]]) {
+            if (value) await context.secrets.store(key, value);
+            else await context.secrets.delete(key);
+          }
+          throw error;
+        }
+      },
+    }).finally(() => { telegramSetup = null; });
+    return telegramSetup;
   }
 
   async function disconnectTelegram() {
+    if (telegramSetup) { vscode.window.showInformationMessage('Finish or cancel Telegram setup before disconnecting.'); return; }
     await context.secrets.delete('aiChatPanel.telegramBotToken');
     await context.secrets.delete('aiChatPanel.telegramChatId');
     if (telegram) { await telegram.stop(); telegram = null; watchdog.telegram = null; }
@@ -1732,7 +1781,7 @@ function activate(context) {
     const token = await context.secrets.get('aiChatPanel.telegramBotToken');
     const chatId = await context.secrets.get('aiChatPanel.telegramChatId');
     if (token && chatId) await startTelegram(token, chatId);
-  })();
+  })().catch((error) => vscode.window.showWarningMessage(`Telegram could not reconnect: ${error.message}. Use Configure to check the connection.`));
   watchdog.start();
 
   context.subscriptions.push(
