@@ -1072,6 +1072,18 @@ body {
 .msg-clamp-toggle:active { transform: scale(0.96); }
 .msg-user.is-clamped.is-expanded { padding-bottom: 36px; } /* room for "Show less" under the full text */
 
+/* A prompt the scheduler sent: the same bubble, with a quiet clock tag above it. */
+.msg-scheduled-tag {
+  display: inline-flex;
+  align-items: center;
+  align-self: flex-end;
+  gap: 5px;
+  margin: 0 12px 4px 0;
+  color: var(--text-tertiary);
+  font: 500 10.5px var(--font-text);
+}
+.msg-scheduled-tag svg { width: 12px; height: 12px; color: #64d2ff; }
+
 /* P17-P: inline file badges. */
 .file-badge {
   display: inline-flex;

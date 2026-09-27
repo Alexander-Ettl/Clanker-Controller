@@ -389,7 +389,7 @@ async function planTurn(run, message, deps) {
     rerouted,
     begin: {
       agent: dispatch.agent,
-      user: { role: 'user', text, at: new Date().toISOString(), agent: dispatch.agent, attachments: Array.isArray(message.attachments) ? message.attachments : [] },
+      user: { role: 'user', text, at: new Date().toISOString(), agent: dispatch.agent, attachments: Array.isArray(message.attachments) ? message.attachments : [], ...(message.scheduled ? { scheduled: true } : {}) },
       reply: { role: 'assistant', text: '', agent: dispatch.agent, modelLabel: used?.label, roleName: session?.id ? undefined : dispatch.roleName, routing: dispatch.split ? 'contract-lock' : undefined },
       routing: { agentId: dispatch.agent, modelLabel: used?.label, roleName: session?.id ? null : dispatch.roleName, auto: requested === 'auto', split: dispatch.split },
       run: { agent: dispatch.agent, prompt, freshPrompt, resume: session?.id || null, codexCommand: codexCommand?.name || null, codexCommandArgs: codexCommand?.args || [], attachments: safeAttachmentPaths(deps, message.attachments), model: used?.model, effort: used?.effort },
@@ -446,6 +446,9 @@ class ChatRun {
     this.chat.messages.push(reply);
     this.chat.lastRunAt = new Date().toISOString();
     this.save();
+    // The composer draws what you type itself; a scheduled prompt arrives from the queue, so the
+    // window is told to draw it as your bubble, the same as if you had just sent it.
+    if (user.scheduled) this.post({ type: 'userMessage', text: user.text, at: user.at, scheduled: true });
     this.turn = { ...routing, startedAt: Date.now() };
     this.post({ type: 'routing', ...routing });
     if (contextEstimate) this.post({ type: 'usage', agent, contextTokens: contextEstimate.tokens, estimated: true });
@@ -497,7 +500,7 @@ class ChatRun {
     this.chat.lastRunAt = new Date().toISOString();
     this.save();
     this.turn = { agentId: 'claude', modelLabel: label, startedAt: Date.now(), remote: true };
-    this.post({ type: 'remoteUserMessage', text });
+    this.post({ type: 'userMessage', text, at: user.at });
     this.post({ type: 'routing', agentId: 'claude', modelLabel: label });
     this.deps.notifyHistory();
   }
@@ -1270,7 +1273,7 @@ class ChatWindowManager {
   resumeChat(task) {
     const run = this.runFor(task.chatId);
     if (!run) return false;
-    run.enqueue({ text: task.prompt, modelId: task.modelId || MODEL_CATALOG.find((entry) => entry.agent === task.model)?.id || 'auto' });
+    run.enqueue({ text: task.prompt, modelId: task.modelId || MODEL_CATALOG.find((entry) => entry.agent === task.model)?.id || 'auto', scheduled: true });
     this.deps.notifyHistory();
     return true;
   }

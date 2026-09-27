@@ -366,10 +366,11 @@
     scheduleBud.hidden = true;
     void scheduleBud.offsetWidth; // replay the bud's grow-out animation
     scheduleBud.hidden = false;
-    scheduleBudTimer = setTimeout(hideScheduleBud, 6000);
+    // Long enough to read at a glance after looking back up from the composer: 9s, or more for longer text.
+    scheduleBudTimer = setTimeout(hideScheduleBud, Math.max(9000, text.split(/\s+/).length * 600));
   }
   scheduleBud.addEventListener('mouseenter', () => clearTimeout(scheduleBudTimer));
-  scheduleBud.addEventListener('mouseleave', () => { scheduleBudTimer = setTimeout(hideScheduleBud, 2000); });
+  scheduleBud.addEventListener('mouseleave', () => { scheduleBudTimer = setTimeout(hideScheduleBud, 3500); });
   scheduleBud.addEventListener('click', hideScheduleBud);
 
   function showToast(text, { error } = {}) {
@@ -1749,10 +1750,18 @@
     bubble.appendChild(toggle);
   }
 
-  function appendUserMessage(text, at = new Date().toISOString(), files = []) {
+  function appendUserMessage(text, at = new Date().toISOString(), files = [], { scheduled = false } = {}) {
     clearEmptyState();
     const group = document.createElement('div');
     group.className = 'msg-group msg-group-user';
+    // Sent by the scheduler, not typed just now: the same bubble, with a quiet clock tag above it.
+    if (scheduled) {
+      const tag = document.createElement('div');
+      tag.className = 'msg-scheduled-tag';
+      tag.innerHTML = CLOCK_SVG;
+      tag.append('Scheduled');
+      group.appendChild(tag);
+    }
     const bubble = document.createElement('div');
     bubble.className = 'msg msg-user';
     if (files?.length) {
@@ -2440,7 +2449,7 @@
         flush();
         hiddenCompactTurn = Boolean(message.compact);
         if (hiddenCompactTurn) { appendCompactDivider(message.auto); return; }
-        appendUserMessage(message.text || '', message.at || null, message.files);
+        appendUserMessage(message.text || '', message.at || null, message.files, { scheduled: message.scheduled });
         anchor = currentTurnEl.firstElementChild; startedAt = message.at; endedAt = null;
       }
       else if (hiddenCompactTurn) return;
@@ -2851,6 +2860,11 @@
         schedulerTasks = Array.isArray(message.queue) ? message.queue : [];
         renderQueueButton();
         if (!queueModal.el.hidden && !queueModal.el.querySelector('textarea, .is-dragging')) renderQueue();
+        break;
+      }
+      // A turn that didn't come from this composer (a scheduled prompt, Remote Control): your bubble.
+      case 'userMessage': {
+        appendUserMessage(message.text || '', message.at || undefined, [], { scheduled: message.scheduled });
         break;
       }
       case 'taskScheduled': {
