@@ -254,3 +254,24 @@ test('inline callback navigation updates message in-place and switches models', 
   assert.match(lastEdit.text, /CLAUDE/);
 });
 
+test('setWebhook retries upon temporary DNS host resolution failure before trycloudflare propagates', async () => {
+  const { bridge, calls } = fixture();
+  bridge.webhookPublicUrl = 'https://delayed-dns-tunnel.trycloudflare.com';
+  let attempts = 0;
+  bridge.api = async (method, payload) => {
+    calls.push({ method, payload });
+    if (method === 'getMe') return { id: 1, is_bot: true, username: 'test_bot' };
+    if (method === 'setWebhook') {
+      attempts++;
+      if (attempts < 2) throw new Error('Bad Request: bad webhook: Failed to resolve host: Name or service not known');
+      return true;
+    }
+    return true;
+  };
+  await bridge.start();
+  assert.equal(attempts, 2);
+  assert.equal(bridge.running, true);
+  await bridge.stop();
+});
+
+

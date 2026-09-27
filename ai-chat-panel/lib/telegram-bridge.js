@@ -242,7 +242,29 @@ class TelegramBridge {
       this.bot = await this.api('getMe', {});
       if (this.webhookPublicUrl) {
         await this.startWebhookServer();
-        await this.api('setWebhook', { url: this.webhookPublicUrl, secret_token: this.webhookSecret, allowed_updates: ['message', 'callback_query'], drop_pending_updates: true });
+        let registered = false;
+        let lastErr = null;
+        for (let attempt = 0; attempt < 8; attempt++) {
+          if (generation !== this.generation) return;
+          try {
+            await this.api('setWebhook', {
+              url: this.webhookPublicUrl,
+              secret_token: this.webhookSecret,
+              allowed_updates: ['message', 'callback_query'],
+              drop_pending_updates: true
+            });
+            registered = true;
+            break;
+          } catch (err) {
+            lastErr = err;
+            if (/Failed to resolve host|bad webhook|getaddrinfo/i.test(err?.message || '') && attempt < 7) {
+              await delay(2000, null, { ref: false });
+              continue;
+            }
+            throw err;
+          }
+        }
+        if (!registered && lastErr) throw lastErr;
       } else await this.api('deleteWebhook', { drop_pending_updates: true });
       await this.api('setMyCommands', { commands: COMMANDS.map(([command, description]) => ({ command, description })), scope: { type: 'chat', chat_id: this.chatId } });
       if (generation !== this.generation) return;

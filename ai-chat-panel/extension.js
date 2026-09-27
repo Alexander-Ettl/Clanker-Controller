@@ -205,7 +205,16 @@ class TunnelManager {
       child.once('error', (error) => { clearTimeout(timer); reject(error); });
       child.once('exit', (code) => { if (!this.publicUrl) { clearTimeout(timer); reject(new Error(`Cloudflare Tunnel exited (${code}).`)); } });
     }).catch((error) => { this.stop(); throw error; });
-    this.publicUrl = url; this.status = 'live'; this.render(); await this.onLive(url); return url;
+    try {
+      this.publicUrl = url;
+      await this.onLive(url);
+      this.status = 'live';
+      this.render();
+      return url;
+    } catch (error) {
+      await this.stop();
+      throw error;
+    }
   }
   stop() { if (this.childProcess && !this.childProcess.killed) this.childProcess.kill(); this.childProcess = null; this.publicUrl = null; this.status = 'off'; this.render(); return this.onOff(); }
   dispose() { return this.stop(); }
