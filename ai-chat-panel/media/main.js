@@ -346,6 +346,17 @@
     const remaining = lastQuotas[agent]?.remaining;
     return limitHitAgents.has(agent) || (typeof remaining === 'number' && remaining < 1);
   }
+  /** The usage display shows real room left for this provider (a few percent, not a rounding leftover). */
+  function hasHeadroom(agent) {
+    const remaining = lastQuotas[agent]?.remaining;
+    return typeof remaining === 'number' && remaining >= 5;
+  }
+  // A reply that *is* the CLI's limit notice (one or two short lines), not an answer that happens to
+  // talk about limits: those used to match too, and put "Continue when … resets" under normal replies.
+  function isLimitNotice(raw) {
+    const text = String(raw || '').trim();
+    return text.length > 0 && text.length <= 400 && LIMIT_RE.test(text);
+  }
   function refreshScheduleDefault() {
     const outOfUsage = isOutOfUsage(scheduleModel());
     setScheduleArmed(scheduleChoice ?? outOfUsage, { outOfUsage: scheduleChoice === null && outOfUsage });
@@ -1877,6 +1888,7 @@
     const btn = document.createElement('button');
     btn.type = 'button';
     btn.className = 'continue-at-reset';
+    btn.dataset.resetAgent = agent; // removed again once this provider's usage is back
     btn.innerHTML = `<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="8" cy="8.5" r="5.5"/><path d="M8 5.5v3l2 1.2"/></svg><span>Continue when ${AGENT_LABELS[agent] || agent} resets</span>`;
     btn.title = 'Sends "continue" into this chat automatically once the usage limit resets';
     btn.addEventListener('click', () => {
@@ -1891,10 +1903,12 @@
   function endAssistantTurn(at = new Date().toISOString()) {
     const last = turnBubbles[turnBubbles.length - 1];
     if (last && !last.querySelector('.msg-actions')) last.append(messageActions(at, () => last.dataset.raw.trim()));
-    const limitHit = limitHitThisTurn || Boolean(last && LIMIT_RE.test((last.dataset.raw || '').slice(-600)));
-    if (!restoringHistory && limitHit) offerContinueAtReset(last || turnHost());
-    // The model's own answer is the freshest word on its usage: a limit reply turns scheduling on, a normal one off.
+    const limitHit = limitHitThisTurn || isLimitNotice(last?.dataset.raw);
     const replied = turnRoutedAgent || lastReplyAgent();
+    // Only when there is something to continue (the turn was cut off by the limit) and a reason to
+    // wait: the usage display doesn't show headroom for that provider.
+    if (!restoringHistory && limitHit && !hasHeadroom(replied)) offerContinueAtReset(last || turnHost());
+    // The model's own answer is the freshest word on its usage: a limit reply turns scheduling on, a normal one off.
     if (!restoringHistory && AGENT_IDS.includes(replied)) {
       if (limitHit) limitHitAgents.add(replied); else limitHitAgents.delete(replied);
       refreshScheduleDefault();
@@ -2514,7 +2528,7 @@
       turnAnchor = null;
       // Reopened after the limit hit (reload, restart, next morning): the last reply still offers the button.
       const lastMessage = messages.findLast((message) => message.role !== 'tool');
-      if (lastMessage?.role === 'assistant' && LIMIT_RE.test(String(lastMessage.text || '').slice(-600))) {
+      if (lastMessage?.role === 'assistant' && isLimitNotice(lastMessage.text) && !hasHeadroom(lastMessage.agent)) {
         turnRoutedAgent = lastMessage.agent || null;
         offerContinueAtReset([...transcriptEl.querySelectorAll('.msg-assistant')].pop());
       }
@@ -2683,6 +2697,13 @@
         for (const quota of modelMenu.querySelectorAll('.model-group-head')) {
           const agent = quota.parentElement.querySelector('.model-option')?.dataset.agent;
           quota.querySelector('.model-group-quota').textContent = quotaText(agent);
+        }
+        // Usage is back: a limit this session no longer holds, and an unused "Continue when … resets"
+        // has nothing left to wait for.
+        for (const agent of AGENT_IDS) {
+          if (!hasHeadroom(agent)) continue;
+          limitHitAgents.delete(agent);
+          transcriptEl.querySelectorAll(`.continue-at-reset[data-reset-agent="${agent}"]:not(:disabled)`).forEach((btn) => btn.remove());
         }
         refreshScheduleDefault();
         break;
