@@ -2,11 +2,24 @@
 
 const clip = (text, limit = 3500) => String(text).slice(0, limit).replace(/[\uD800-\uDBFF]$/, '');
 
-function makeBar(percent, length = 10) {
-  if (typeof percent !== 'number' || Number.isNaN(percent)) return '░'.repeat(length);
+function makeBar(percent, length = 5) {
+  if (typeof percent !== 'number' || Number.isNaN(percent)) return '▱'.repeat(length);
   const clamped = Math.max(0, Math.min(100, Math.round(percent)));
   const filled = Math.round((clamped / 100) * length);
-  return '█'.repeat(filled) + '░'.repeat(length - filled);
+  return '▰'.repeat(filled) + '▱'.repeat(length - filled);
+}
+
+function formatCompactReset(resetsAtSeconds, nowMs = Date.now()) {
+  const resetsAt = Number(resetsAtSeconds);
+  if (!Number.isFinite(resetsAt) || resetsAt <= 0) return '';
+  const remainingMinutes = Math.max(0, Math.ceil((resetsAt * 1000 - nowMs) / 60000));
+  if (remainingMinutes === 0) return 'now';
+  const days = Math.floor(remainingMinutes / 1440);
+  const hours = Math.floor((remainingMinutes % 1440) / 60);
+  const minutes = remainingMinutes % 60;
+  if (days > 0) return `${days}d${hours > 0 ? `${hours}h` : ''}`;
+  if (hours > 0) return `${hours}h${minutes > 0 ? `${minutes}m` : ''}`;
+  return `${minutes}m`;
 }
 
 function timeAgo(isoString) {
@@ -52,13 +65,17 @@ function bindTelegramControls(bridge, { manager, watchdog, queue, readQuotas, mo
   async function buildCockpitCard() {
     let quotas = {};
     try { quotas = await readQuotas() || {}; } catch {}
-    const quotaLines = ['claude', 'codex', 'gemini'].map((agent) => {
+    const agents = ['claude', 'codex', 'gemini'];
+    if (quotas.claudeOpus && typeof quotas.claudeOpus.remaining === 'number') agents.push('opus');
+    const quotaLines = agents.map((agent) => {
       const q = quotas[agent];
       const pct = typeof q?.remaining === 'number' ? q.remaining : null;
-      const bar = makeBar(pct);
+      const bar = makeBar(pct, 5);
       const val = pct !== null ? `${pct}%` : q?.label || 'ready';
-      const name = agent === 'claude' ? 'Claude' : agent === 'codex' ? 'Codex ' : 'Gemini';
-      return `• ${name} : [${bar}] ${val}`;
+      const reset = formatCompactReset(q?.resetsAt);
+      const resetStr = reset ? ` ⤾ ${reset}` : '';
+      const name = agent === 'claude' ? 'Claude' : agent === 'codex' ? 'Codex ' : agent === 'opus' ? 'Opus  ' : 'Gemini';
+      return `• ${name} : ${bar} ${val}${resetStr}`;
     }).join('\n');
 
     const runs = [...manager.runs.values()];
