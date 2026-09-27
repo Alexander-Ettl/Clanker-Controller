@@ -242,9 +242,10 @@ class TelegramBridge {
       this.bot = await this.api('getMe', {});
       if (this.webhookPublicUrl) {
         await this.startWebhookServer();
+        await this.api('deleteWebhook', { drop_pending_updates: true }).catch(() => {});
         let registered = false;
         let lastErr = null;
-        for (let attempt = 0; attempt < 8; attempt++) {
+        for (let attempt = 0; attempt < 10; attempt++) {
           if (generation !== this.generation) return;
           try {
             await this.api('setWebhook', {
@@ -257,8 +258,8 @@ class TelegramBridge {
             break;
           } catch (err) {
             lastErr = err;
-            if (/Failed to resolve host|bad webhook|getaddrinfo/i.test(err?.message || '') && attempt < 7) {
-              await delay(2000, null, { ref: false });
+            if (/Failed to resolve host|bad webhook|getaddrinfo/i.test(err?.message || '') && attempt < 9) {
+              await delay(2500, null, { ref: false });
               continue;
             }
             throw err;
@@ -422,6 +423,11 @@ class TelegramBridge {
     if (request.method === 'GET' && (request.url === '/app' || request.url === '/app/')) {
       response.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
       response.end(MINI_APP_HTML);
+      return;
+    }
+    if (request.method === 'GET' || request.method === 'HEAD') {
+      response.writeHead(200, { 'content-type': 'text/plain; charset=utf-8' });
+      response.end('OK');
       return;
     }
     if (request.method !== 'POST') { response.writeHead(405).end(); return; }
