@@ -36,26 +36,49 @@ function timeAgo(isoString) {
 }
 
 /** Capture the engine's exact request, so reused IDs across chats/turns cannot approve other work. */
-async function forwardRequest(bridge, event, { engine, title, respond }) {
+async function forwardRequest(bridge, event, { engine, title, respond, threadId }) {
   if (!bridge?.running || !['approval_required', 'question_required'].includes(event.type)) return;
   const pending = engine.approvals.get(event.actionId);
   if (!pending) return;
   const isPending = () => engine.approvals.get(event.actionId) === pending;
   const answer = (callback) => isPending() ? respond(event.actionId, callback) : false;
+  const options = threadId ? { message_thread_id: threadId } : {};
   if (event.type === 'approval_required') {
     const desc = event.description || event.command || event.tool || 'Review the pending action.';
-    const text = `⚠️ ACTION APPROVAL REQUIRED\n\n📁 ${title}\n🤖 ${event.agent || 'Agent'} needs approval:\n\n${desc}`;
+    const text = `⚠️ <b>ACTION APPROVAL REQUIRED</b>\n\n📁 ${title}\n🤖 <b>${event.agent ? event.agent.toUpperCase() : 'Agent'}</b> needs approval:\n\n<code>${clip(desc, 500)}</code>`;
+    if (bridge.isForum && threadId) {
+      void bridge.editForumTopic(threadId, { name: `🟡 ${clip(title.split('(')[0].trim(), 26)}` }).catch(() => {});
+    }
     return bridge.sendApprovalRequest(text, event.actionId,
-      (_id, approved) => answer((target) => target.respondToApproval(event.actionId, approved)), isPending);
+      async (_id, approved) => {
+        const res = await answer((target) => target.respondToApproval(event.actionId, approved));
+        if (bridge.isForum && threadId) {
+          void bridge.editForumTopic(threadId, { name: `🟢 ${clip(title.split('(')[0].trim(), 26)}` }).catch(() => {});
+        }
+        return res;
+      }, isPending, options);
   }
-  return bridge.sendQuestionRequest(event, (answers) => answer((target) => target.respondToQuestion(event.actionId, answers)), isPending, title);
+  return bridge.sendQuestionRequest(event, (answers) => answer((target) => target.respondToQuestion(event.actionId, answers)), isPending, title, options);
 }
 
 function bindTelegramControls(bridge, { manager, watchdog, queue, readQuotas, models, resolveTarget, notifyQueue }) {
   let selected = null;
   let selectedModel = 'codex';
   let isNewChat = false;
+  const topicToChat = new Map();
+  const chatToTopic = new Map();
+
   const chats = () => manager.listChats();
+
+  try {
+    for (const c of chats()) {
+      if (c.telegramTopicId) {
+        topicToChat.set(Number(c.telegramTopicId), c.id);
+        chatToTopic.set(c.id, Number(c.telegramTopicId));
+      }
+    }
+  } catch {}
+
   const findChat = (id) => {
     const all = chats();
     const exact = all.find((chat) => chat.id === id);
@@ -120,22 +143,42 @@ function bindTelegramControls(bridge, { manager, watchdog, queue, readQuotas, mo
       queuedCount = allTasks.filter((t) => t.status === 'pending').length;
     } catch {}
 
+    let projectsSection = '';
+    const all = chats().slice(0, 5);
+    if (bridge.isForum && all.length > 0) {
+      const pLines = all.map((c) => {
+        const threadId = chatToTopic.get(c.id) || c.telegramTopicId;
+        const dot = c.state === 'running' ? '🟢' : c.state === 'waiting' ? '🟡' : '⚪';
+        const tStr = threadId ? ` #${threadId}` : '';
+        return `• ${dot} <i>${clip(c.preview || c.id, 24)}</i>${tStr}`;
+      }).join('\n');
+      projectsSection = `\n\n<b>📂 Project Topics</b>\n${pLines}`;
+    }
+
     const text = `🖥️ <b>HOME WORKSTATION COCKPIT</b>\n${statusLine}\n\n` +
       `<b>📊 Quotas & Limits</b>\n<code>${quotaLines}</code>\n\n` +
       `<b>🎯 Remote Session</b>\n` +
-      `• Active Chat: <i>${clip(chatTitle, 35)}</i>\n` +
+      `• Active: <i>${clip(chatTitle, 35)}</i>\n` +
       `• Default Model: <b>${selectedModel.toUpperCase()}</b>\n` +
-      `• Pending Tasks: ${queuedCount}`;
+      `• Pending Tasks: ${queuedCount}` +
+      projectsSection;
+
+    const row2 = bridge.isForum
+      ? [
+          { text: '➕ New Topic', callback_data: 'topic:new' },
+          { text: `⚙️ Model: ${selectedModel.toUpperCase()}`, callback_data: 'nav:models' }
+        ]
+      : [
+          { text: '💬 Chats', callback_data: 'nav:chats' },
+          { text: `⚙️ Model: ${selectedModel.toUpperCase()}`, callback_data: 'nav:models' }
+        ];
 
     const inline_keyboard = [
       [
         { text: '🔄 Refresh', callback_data: 'nav:cockpit' },
         { text: '⚡ Active Task', callback_data: 'nav:active' }
       ],
-      [
-        { text: '💬 Chats', callback_data: 'nav:chats' },
-        { text: `⚙️ Model: ${selectedModel.toUpperCase()}`, callback_data: 'nav:models' }
-      ],
+      row2,
       [
         { text: '⏳ Task Queue', callback_data: 'nav:queue' },
         { text: '⏹ Stop Turn', callback_data: 'act:stop' }
@@ -487,9 +530,120 @@ function bindTelegramControls(bridge, { manager, watchdog, queue, readQuotas, mo
     }
   });
 
+  bridge.onCallback('topic', async (_cb, data, { reply, answer }) => {
+    const action = data.split(':')[1];
+    if (action === 'new') {
+      const allChats = chats();
+      const title = `Project ${allChats.length + 1}`;
+      const run = manager.runFor(null);
+      if (run) {
+        run.chat.title = title;
+        if (manager.deps?.chatStore) manager.deps.chatStore.save(run.chat);
+        selected = run.chat.id;
+        let threadId = null;
+        if (bridge.isForum) {
+          const topic = await bridge.createForumTopic(`⚪ ${clip(title, 26)}`, { icon_color: 7322096 });
+          if (topic?.message_thread_id) {
+            threadId = topic.message_thread_id;
+            run.chat.telegramTopicId = threadId;
+            topicToChat.set(threadId, run.chat.id);
+            chatToTopic.set(run.chat.id, threadId);
+            if (manager.deps?.chatStore) manager.deps.chatStore.save(run.chat);
+            await bridge.sendMessage(
+              `📁 <b>${clip(title, 35).toUpperCase()}</b>\n` +
+              `🤖 Model: <b>${selectedModel.toUpperCase()}</b> • Workstation linked\n\n` +
+              `<i>Type naturally in this thread. All diffs and tools stay here.</i>`,
+              { parse_mode: 'HTML', message_thread_id: threadId }
+            );
+          }
+        }
+        await answer('Created new project topic!');
+        await reply(
+          `✨ <b>Created Project Topic:</b> <i>${title}</i>\n` +
+          (threadId ? `Tap into the <b>${title}</b> topic to begin chatting.` : `Ready for prompts.`),
+          { parse_mode: 'HTML' }
+        );
+      }
+    }
+  });
+
   // Direct conversational input & bottom dock dispatch
-  bridge.onRawMessage(async (text, _msg, reply) => {
+  bridge.onRawMessage(async (text, message, reply) => {
     const trimmed = text.trim();
+    const threadId = message?.message_thread_id || null;
+
+    // 0. FORUM TOPIC CONVERSATIONAL ROUTING
+    if (bridge.isForum && threadId && threadId > 1) {
+      let chatId = topicToChat.get(threadId);
+      if (!chatId) {
+        const found = chats().find((c) => c.telegramTopicId === threadId);
+        if (found) {
+          chatId = found.id;
+          topicToChat.set(threadId, chatId);
+          chatToTopic.set(chatId, threadId);
+        }
+      }
+
+      let run = chatId ? manager.runFor(chatId) : null;
+      if (!run) {
+        run = manager.runFor(null);
+        run.chat.title = message.reply_to_message?.forum_topic_created?.name || `Project ${threadId}`;
+        run.chat.telegramTopicId = threadId;
+        chatId = run.chat.id;
+        topicToChat.set(threadId, chatId);
+        chatToTopic.set(chatId, threadId);
+        if (manager.deps?.chatStore) manager.deps.chatStore.save(run.chat);
+      }
+
+      selected = run.chat.id;
+
+      // In-topic quick controls
+      if (/^(?:📊\s*)?cockpit$/i.test(trimmed)) {
+        const card = await buildCockpitCard();
+        await reply(card.text, card);
+        return;
+      }
+      if (/^(?:⚙️\s*)?models?$/i.test(trimmed)) {
+        const card = buildModelsCard();
+        await reply(card.text, card);
+        return;
+      }
+      if (/^(?:⏹\s*)?stop$/i.test(trimmed)) {
+        if (run.streamEngine) {
+          run.streamEngine.interrupt();
+          await reply('⏹ Stopped turn.');
+        } else {
+          await reply('No turn running.');
+        }
+        return;
+      }
+
+      // Conversational prompt directly inside this project topic
+      const target = resolveTarget(selectedModel) || resolveTarget('codex');
+      const modelId = target?.modelId || models.find((m) => m.agent === target?.agentId)?.id || 'auto';
+      const queued = Boolean(run.turn || run.starting);
+      run.enqueue({ text: trimmed, modelId });
+
+      // Update topic status to 🟢
+      void bridge.editForumTopic(threadId, { name: `🟢 ${clip(run.chat.title || run.chat.id, 26)}` }).catch(() => {});
+
+      const statusBadge = queued ? '⏳ Queued behind current turn' : '⚡ Executing turn';
+      const confirmText = `${statusBadge}\n` +
+        `<code>${clip(trimmed, 120)}</code>`;
+
+      await reply(confirmText, {
+        parse_mode: 'HTML',
+        reply_markup: {
+          inline_keyboard: [
+            [
+              { text: '⏹ Stop Turn', callback_data: `act:stop:${run.chat.id}` },
+              { text: '📊 Cockpit', callback_data: 'nav:cockpit' }
+            ]
+          ]
+        }
+      });
+      return;
+    }
 
     // 1. Cockpit Anchor
     if (/^(?:📊\s*)?cockpit$/i.test(trimmed)) {
@@ -519,7 +673,7 @@ function bindTelegramControls(bridge, { manager, watchdog, queue, readQuotas, mo
       return;
     }
 
-    // 5. Direct Conversational Prompt
+    // 5. Direct Conversational Prompt (General topic or 1-on-1 private chat)
     let run = null;
     if (isNewChat) {
       run = manager.runFor(null);
@@ -565,6 +719,56 @@ function bindTelegramControls(bridge, { manager, watchdog, queue, readQuotas, mo
         ]
       }
     });
+  });
+
+  // Standard slash commands
+  bridge.onCommand('new', async (args, reply) => {
+    const title = args.join(' ').trim() || `Project ${chats().length + 1}`;
+    const run = manager.runFor(null);
+    if (!run) {
+      await reply('Could not create project session.');
+      return;
+    }
+    run.chat.title = title;
+    if (manager.deps?.chatStore) manager.deps.chatStore.save(run.chat);
+    selected = run.chat.id;
+    let threadId = null;
+    if (bridge.isForum) {
+      const topic = await bridge.createForumTopic(`⚪ ${clip(title, 26)}`, { icon_color: 7322096 });
+      if (topic?.message_thread_id) {
+        threadId = topic.message_thread_id;
+        run.chat.telegramTopicId = threadId;
+        topicToChat.set(threadId, run.chat.id);
+        chatToTopic.set(run.chat.id, threadId);
+        if (manager.deps?.chatStore) manager.deps.chatStore.save(run.chat);
+        await bridge.sendMessage(
+          `📁 <b>${clip(title, 35).toUpperCase()}</b>\n` +
+          `🤖 Model: <b>${selectedModel.toUpperCase()}</b> • Workstation linked\n\n` +
+          `<i>Type naturally in this thread. All diffs and tools stay here.</i>`,
+          { parse_mode: 'HTML', message_thread_id: threadId }
+        );
+      }
+    }
+    await reply(
+      `✨ <b>Created Project Topic:</b> <i>${title}</i>\n` +
+      (threadId ? `Tap into the <b>${title}</b> topic channel to chat.` : `Ready for prompts.`),
+      { parse_mode: 'HTML' }
+    );
+  });
+
+  bridge.onCommand('topics', async (_args, reply) => {
+    const all = chats();
+    if (!all.length) {
+      await reply('No projects found. Use /new <title> to create one.');
+      return;
+    }
+    const lines = all.map((c) => {
+      const threadId = chatToTopic.get(c.id) || c.telegramTopicId;
+      const statusIcon = c.state === 'running' ? '🟢' : c.state === 'waiting' ? '🟡' : '⚪';
+      const topicStr = threadId ? ` [Topic #${threadId}]` : '';
+      return `${statusIcon} <b>${clip(c.preview || c.id, 28)}</b>${topicStr}`;
+    }).join('\n');
+    await reply(`📁 <b>PROJECT TOPICS</b>\n\n${lines}`, { parse_mode: 'HTML' });
   });
 
   // Standard slash commands

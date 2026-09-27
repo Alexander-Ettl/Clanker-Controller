@@ -49,7 +49,8 @@ const COMMANDS = [
   ['prompt', 'Send a prompt'],
   ['stop', 'Stop the selected chat'],
   ['queue', 'Scheduled tasks'],
-  ['cancel', 'Cancel a scheduled task'],
+  ['new', 'Create a new project topic'],
+  ['topics', 'List all project topics'],
   ['help', 'Commands and examples']
 ];
 
@@ -229,6 +230,7 @@ class TelegramBridge {
   constructor({ botToken, chatId, webhookPort = 57321, webhookPublicUrl = '', apiBaseUrl = 'https://api.telegram.org' } = {}) {
     this.botToken = String(botToken || '');
     this.chatId = String(chatId || '');
+    this.isForum = String(this.chatId).startsWith('-100');
     this.webhookPort = webhookPort;
     this.webhookPublicUrl = webhookPublicUrl;
     this.apiBaseUrl = apiBaseUrl.replace(/\/$/, '');
@@ -264,6 +266,11 @@ class TelegramBridge {
     const generation = ++this.generation;
     try {
       this.bot = await this.api('getMe', {});
+      try {
+        const chatInfo = await this.api('getChat', { chat_id: this.chatId });
+        this.chatInfo = chatInfo;
+        if (chatInfo?.is_forum || chatInfo?.type === 'supergroup') this.isForum = true;
+      } catch {}
       if (this.webhookPublicUrl) {
         await this.startWebhookServer();
         await this.api('deleteWebhook', { drop_pending_updates: true }).catch(() => {});
@@ -389,32 +396,103 @@ class TelegramBridge {
     } catch { return false; }
   }
 
-  // Arbitrary agent output can contain incomplete Markdown; send it losslessly as plain text.
-  async sendMarkdown(text) { return this.sendMessage(text); }
+  async createForumTopic(name, options = {}) {
+    if (!this.isConfigured()) return null;
+    try {
+      const payload = {
+        chat_id: this.chatId,
+        name: clip(name, 128),
+        ...(options.icon_color ? { icon_color: options.icon_color } : {}),
+        ...(options.icon_custom_emoji_id ? { icon_custom_emoji_id: options.icon_custom_emoji_id } : {})
+      };
+      return await this.api('createForumTopic', payload);
+    } catch (error) {
+      this.lastError = error.message;
+      return null;
+    }
+  }
 
-  async sendApprovalRequest(description, taskId, respond = this.approvalHandler, isPending = () => true) {
+  async editForumTopic(threadId, options = {}) {
+    if (!this.isConfigured() || !threadId) return false;
+    try {
+      const payload = {
+        chat_id: this.chatId,
+        message_thread_id: threadId,
+        ...(options.name ? { name: clip(options.name, 128) } : {}),
+        ...(options.icon_custom_emoji_id ? { icon_custom_emoji_id: options.icon_custom_emoji_id } : {})
+      };
+      await this.api('editForumTopic', payload);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  async closeForumTopic(threadId) {
+    if (!this.isConfigured() || !threadId) return false;
+    try {
+      await this.api('closeForumTopic', { chat_id: this.chatId, message_thread_id: threadId });
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  async reopenForumTopic(threadId) {
+    if (!this.isConfigured() || !threadId) return false;
+    try {
+      await this.api('reopenForumTopic', { chat_id: this.chatId, message_thread_id: threadId });
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  async deleteForumTopic(threadId) {
+    if (!this.isConfigured() || !threadId) return false;
+    try {
+      await this.api('deleteForumTopic', { chat_id: this.chatId, message_thread_id: threadId });
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  // Arbitrary agent output can contain incomplete Markdown; send it losslessly as plain text.
+  async sendMarkdown(text, options = {}) { return this.sendMessage(text, options); }
+
+  async sendApprovalRequest(description, taskId, respond = this.approvalHandler, isPending = () => true, options = {}) {
     this.pruneActions();
     const id = crypto.randomBytes(12).toString('hex');
     this.actions.set(id, { respond: (approved) => respond?.(taskId, approved), isPending, created: Date.now() });
     try {
-      await this.api('sendMessage', {
-        chat_id: this.chatId, text: clip(description || 'Approve this action?'),
+      const payload = {
+        chat_id: this.chatId,
+        text: clip(description || 'Approve this action?'),
         reply_markup: { inline_keyboard: [[{ text: 'Approve once', callback_data: `approve:${id}` }, { text: 'Reject', callback_data: `reject:${id}` }]] },
-      });
+        ...(options.message_thread_id ? { message_thread_id: options.message_thread_id } : {})
+      };
+      await this.api('sendMessage', payload);
       return true;
     } catch (error) { this.actions.delete(id); this.lastError = error.message; return false; }
   }
 
-  async sendQuestionRequest(event, respond, isPending = () => true, title = '') {
+  async sendQuestionRequest(event, respond, isPending = () => true, title = '', options = {}) {
     const questions = event.questions || [];
-    if (!questions.length) return this.sendMessage(`${title}\nThis request needs input in the editor.`);
+    if (!questions.length) return this.sendMessage(`${title}\nThis request needs input in the editor.`, options);
     const answers = {};
     for (const [index, question] of questions.entries()) {
       if (!isPending()) break;
-      const options = (question.options || []).map((o) => `${o.label}${o.description ? `: ${o.description}` : ''}`).join('\n');
-      const text = `${title}\nQuestion ${index + 1}/${questions.length}: ${question.question}\n${options}\n\nReply to this message with your answer.${question.multiSelect ? ' Separate multiple choices with commas.' : ''}`;
+      const optLines = (question.options || []).map((o) => `${o.label}${o.description ? `: ${o.description}` : ''}`).join('\n');
+      const text = `${title}\nQuestion ${index + 1}/${questions.length}: ${question.question}\n${optLines}\n\nReply to this message with your answer.${question.multiSelect ? ' Separate multiple choices with commas.' : ''}`;
       try {
-        const message = await this.api('sendMessage', { chat_id: this.chatId, text: clip(text), reply_markup: { force_reply: true, selective: true } });
+        const payload = {
+          chat_id: this.chatId,
+          text: clip(text),
+          reply_markup: { force_reply: true, selective: true },
+          ...(options.message_thread_id ? { message_thread_id: options.message_thread_id } : {})
+        };
+        const message = await this.api('sendMessage', payload);
         this.questionMessages.set(message.message_id, {
           created: Date.now(), isPending,
           respond: (answer) => {
@@ -494,8 +572,8 @@ class TelegramBridge {
     const message = callback?.message || update?.message;
     const sender = callback?.from || message?.from;
     if (!sender || !message?.chat) return;
-    const isPrivate = message.chat.type === 'private';
-    const isSupergroup = message.chat.type === 'supergroup';
+    const isSupergroup = message.chat.type === 'supergroup' || message.chat.type === 'group';
+    const isPrivate = message.chat.type === 'private' || !message.chat.type;
     if (isPrivate) {
       if (String(sender.id) !== this.chatId || String(message.chat.id) !== this.chatId) return;
     } else if (isSupergroup) {
@@ -521,6 +599,7 @@ class TelegramBridge {
 
       // Check registered callback handlers
       let handled = false;
+      const threadId = message?.message_thread_id || null;
       for (const [prefix, handler] of this.callbackHandlers) {
         if (data === prefix || data.startsWith(prefix + ':')) {
           handled = true;
@@ -528,7 +607,7 @@ class TelegramBridge {
             await handler(callback, data, {
               answer: (text, opts) => this.answerCallback(callback.id, text, opts),
               edit: (text, opts) => this.editMessage(message.message_id, text, opts),
-              reply: (text, opts) => this.sendMessage(text, opts),
+              reply: (text, opts) => this.sendMarkdown(text, { ...(threadId ? { message_thread_id: threadId } : {}), ...opts }),
               message,
             });
           } catch (err) {
@@ -542,6 +621,8 @@ class TelegramBridge {
       }
       return;
     }
+    const threadId = message?.message_thread_id || null;
+    const sendReply = (text, opts = {}) => this.sendMarkdown(text, { ...(threadId ? { message_thread_id: threadId } : {}), ...opts });
     const text = String(message.text || '').trim();
     if (message.reply_to_message) {
       const id = message.reply_to_message.message_id;
@@ -549,31 +630,31 @@ class TelegramBridge {
       if (question && text) {
         this.questionMessages.delete(id);
         const result = question.isPending() ? await question.respond(text) : false;
-        await this.sendMessage(result === false ? 'This question was already answered or cancelled.' : typeof result === 'string' ? result : 'Answer sent.');
+        await sendReply(result === false ? 'This question was already answered or cancelled.' : typeof result === 'string' ? result : 'Answer saved.');
         return;
       }
-      if (message.reply_to_message.from?.is_bot) { await this.sendMessage('That question is no longer pending. Use /status to check your chats.'); return; }
+      if (message.reply_to_message.from?.is_bot) { await sendReply('That question is no longer pending. Use /status to check your chats.'); return; }
     }
     const match = text.match(/^\/([\w-]+)(?:@\w+)?(?:\s+([\s\S]+))?$/);
     const handler = match && this.commands.get(match[1].toLowerCase());
     if (handler) {
-      try { await handler((match[2] || '').trim().split(/\s+/).filter(Boolean), (reply, opts) => this.sendMessage(reply, opts), match[2] || ''); }
-      catch (error) { await this.sendMessage(`Could not complete that command: ${this.safeError(error.message)}`); }
+      try { await handler((match[2] || '').trim().split(/\s+/).filter(Boolean), sendReply, match[2] || ''); }
+      catch (error) { await sendReply(`Could not complete that command: ${this.safeError(error.message)}`); }
       return;
     }
 
     // Check rawHandler for conversational prompts or dock buttons
     if (this.rawHandler) {
       try {
-        await this.rawHandler(text, message, (reply, opts) => this.sendMessage(reply, opts));
+        await this.rawHandler(text, message, sendReply);
         return;
       } catch (error) {
-        await this.sendMessage(`Could not complete that message: ${this.safeError(error.message)}`);
+        await sendReply(`Could not complete that message: ${this.safeError(error.message)}`);
         return;
       }
     }
 
-    await this.sendMessage('Use /help for commands. To send work: /prompt codex <your message>');
+    await sendReply('Use /help for commands. To send work: /prompt codex <your message>');
   }
 
   safeError(message) { return String(message || 'Telegram request failed.').split(this.botToken || '\0').join('[token]').slice(0, 300); }

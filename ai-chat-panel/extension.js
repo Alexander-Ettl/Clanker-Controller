@@ -1715,8 +1715,9 @@ function activate(context) {
     const bridge = telegram;
     if (!bridge?.running) return;
     const title = `${run.chat.title || 'Chat'} (${run.chat.id})`;
+    const threadId = run.chat.telegramTopicId || null;
     void forwardRequest(bridge, event, {
-      engine: run.streamEngine, title,
+      engine: run.streamEngine, title, threadId,
       respond: (id, callback) => {
         const result = run.respond(id, callback);
         if (result !== false) run.post({ type: 'approval_cancelled', actionId: id });
@@ -1724,6 +1725,10 @@ function activate(context) {
       },
     }).catch(() => {});
     if (event.type === 'turn_complete' && run.activeAssistantMessage && !run.activeAssistantMessage.compact) {
+      if (bridge.isForum && threadId) {
+        const cleanTitle = (run.chat.title || run.chat.id || 'Project').split('(')[0].trim();
+        void bridge.editForumTopic(threadId, { name: `⚪ ${cleanTitle.slice(0, 26)}` }).catch(() => {});
+      }
       const statusIcon = event.interrupted ? '⏹' : '✅';
       const statusText = event.interrupted ? 'Turn stopped' : 'Turn completed';
       const agentName = event.agent ? event.agent.toUpperCase() : 'AGENT';
@@ -1736,8 +1741,10 @@ function activate(context) {
           ]
         ]
       };
-      void bridge.sendMessage(replyText, { reply_markup, parse_mode: 'HTML' }).then((ok) => {
-        if (!ok) void bridge.sendMessage(`${title}\n${event.agent || 'Agent'} ${event.interrupted ? 'stopped' : 'replied'}\n\n${run.activeAssistantMessage.text || 'No text response.'}`);
+      const options = { reply_markup, parse_mode: 'HTML' };
+      if (threadId) options.message_thread_id = threadId;
+      void bridge.sendMessage(replyText, options).then((ok) => {
+        if (!ok) void bridge.sendMessage(`${title}\n${event.agent || 'Agent'} ${event.interrupted ? 'stopped' : 'replied'}\n\n${run.activeAssistantMessage.text || 'No text response.'}`, threadId ? { message_thread_id: threadId } : {});
       }).catch(() => {});
     }
   }
