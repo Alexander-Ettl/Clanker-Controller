@@ -1,5 +1,6 @@
 'use strict';
 
+const { makeDockKeyboard } = require('./telegram-bridge.js');
 const clip = (text, limit = 3500) => String(text).slice(0, limit).replace(/[\uD800-\uDBFF]$/, '');
 
 function makeBar(percent, length = 5) {
@@ -53,6 +54,7 @@ async function forwardRequest(bridge, event, { engine, title, respond }) {
 function bindTelegramControls(bridge, { manager, watchdog, queue, readQuotas, models, resolveTarget, notifyQueue }) {
   let selected = null;
   let selectedModel = 'codex';
+  let isNewChat = false;
   const chats = () => manager.listChats();
   const findChat = (id) => {
     const all = chats();
@@ -61,6 +63,26 @@ function bindTelegramControls(bridge, { manager, watchdog, queue, readQuotas, mo
     const matches = String(id || '').length >= 6 ? all.filter((chat) => chat.id.startsWith(id)) : [];
     return matches.length === 1 ? matches[0] : null;
   };
+
+  function getActiveChat() {
+    return selected ? findChat(selected) : null;
+  }
+
+  function currentDock() {
+    const cur = getActiveChat();
+    return makeDockKeyboard({
+      chatTitle: cur ? (cur.preview || cur.id) : null,
+      isNewChat: isNewChat || !cur,
+      model: selectedModel
+    });
+  }
+
+  function formatDivider(title, subtitle = '', icon = '📁') {
+    return `━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n` +
+      `${icon} <b>${title}</b>\n` +
+      (subtitle ? `${subtitle}\n` : '') +
+      `━━━━━━━━━━━━━━━━━━━━━━━━━━━━`;
+  }
 
   async function buildCockpitCard() {
     let quotas = {};
@@ -226,6 +248,39 @@ function bindTelegramControls(bridge, { manager, watchdog, queue, readQuotas, mo
     return { text, reply_markup: { inline_keyboard: buttons }, parse_mode: 'HTML' };
   }
 
+  function buildFastChatSwitcherCard() {
+    const cur = getActiveChat();
+    const curTitle = cur ? (cur.preview || cur.id) : 'None (Fresh Chat)';
+    const text = `💬 <b>SELECT CHAT TARGET</b>\n\n` +
+      `Currently active: <i>${clip(curTitle, 35)}</i>\n` +
+      `Default model: <b>${selectedModel.toUpperCase()}</b>\n\n` +
+      `Tap an action below to switch targets:`;
+
+    const all = chats().slice(0, 5);
+    const inline_keyboard = [
+      [
+        { text: isNewChat ? '✨ Active: Fresh New Chat' : '✨ Start Fresh Chat (Clean Slate)', callback_data: 'chat:new' }
+      ]
+    ];
+
+    for (const c of all) {
+      const isCur = !isNewChat && selected === c.id;
+      const statusIcon = c.state === 'running' ? '🟢' : c.state === 'waiting' ? '🟡' : '⚪';
+      inline_keyboard.push([
+        {
+          text: `${isCur ? '• ' : ''}${statusIcon} ${clip(c.preview || c.id, 24)}${isCur ? ' •' : ''}`,
+          callback_data: `chat:use:${c.id}`
+        }
+      ]);
+    }
+
+    inline_keyboard.push([
+      { text: '‹ Back to Cockpit', callback_data: 'nav:cockpit' }
+    ]);
+
+    return { text, reply_markup: { inline_keyboard }, parse_mode: 'HTML' };
+  }
+
   function buildChatDetailsCard(chatId) {
     const chat = findChat(chatId);
     if (!chat) return buildChatsCard();
@@ -342,28 +397,57 @@ function bindTelegramControls(bridge, { manager, watchdog, queue, readQuotas, mo
     }
   });
 
-  bridge.onCallback('chat', async (_cb, data, { edit, answer }) => {
+  bridge.onCallback('chat', async (_cb, data, { edit, answer, reply }) => {
     const parts = data.split(':');
     const action = parts[1];
     const id = parts[2];
-    if (action === 'select') {
-      const card = buildChatDetailsCard(id);
-      await edit(card.text, card);
-    } else if (action === 'use') {
+    if (action === 'new') {
+      isNewChat = true;
+      selected = null;
+      await answer('Switched to Fresh Chat mode');
+      const divider = formatDivider(
+        'NEW CHAT SESSION (Clean Slate)',
+        `🤖 Model: ${selectedModel.toUpperCase()}\n💡 Type any message below to start a fresh workstation chat.`,
+        '✨'
+      );
+      await reply(divider, { parse_mode: 'HTML', reply_markup: currentDock() });
+      const card = buildFastChatSwitcherCard();
+      await edit(card.text, card).catch(() => {});
+      return;
+    }
+    if (action === 'use') {
       selected = id;
-      await answer('Selected chat for direct prompts!');
+      isNewChat = false;
+      const cur = findChat(id);
+      const title = cur ? (cur.preview || cur.id) : id;
+      await answer(`Selected ${clip(title, 20)}`);
+      const divider = formatDivider(
+        `CONNECTED TO: "${clip(title, 30)}"`,
+        `🤖 Model: ${selectedModel.toUpperCase()}\n💡 Prompts you type now will continue this session.`,
+        '📁'
+      );
+      await reply(divider, { parse_mode: 'HTML', reply_markup: currentDock() });
+      const card = buildFastChatSwitcherCard();
+      await edit(card.text, card).catch(() => {});
+      return;
+    }
+    if (action === 'select') {
       const card = buildChatDetailsCard(id);
       await edit(card.text, card);
     }
   });
 
-  bridge.onCallback('model', async (_cb, data, { edit, answer }) => {
+  bridge.onCallback('model', async (_cb, data, { edit, answer, reply }) => {
     const model = data.split(':')[2];
     if (model) {
       selectedModel = model;
       await answer(`Default switched to ${model.toUpperCase()}`);
+      const cur = getActiveChat();
+      const title = cur ? (cur.preview || cur.id) : 'Fresh Chat';
+      const toast = `⚙️ <b>Default Model Changed</b>\nNow using <b>${model.toUpperCase()}</b> for <i>${clip(title, 25)}</i>.`;
+      await reply(toast, { parse_mode: 'HTML', reply_markup: currentDock() });
       const card = buildModelsCard();
-      await edit(card.text, card);
+      await edit(card.text, card).catch(() => {});
     }
   });
 
@@ -407,37 +491,53 @@ function bindTelegramControls(bridge, { manager, watchdog, queue, readQuotas, mo
   bridge.onRawMessage(async (text, _msg, reply) => {
     const trimmed = text.trim();
 
-    // Check bottom dock buttons:
+    // 1. Cockpit Anchor
     if (/^(?:📊\s*)?cockpit$/i.test(trimmed)) {
       const card = await buildCockpitCard();
       await reply(card.text, card);
       return;
     }
-    if (/^(?:💬\s*)?chats$/i.test(trimmed)) {
-      const card = buildChatsCard();
+
+    // 2. Chat Switcher Button (Dynamic match: 💬 ... or ➕ New Chat)
+    if (/^(?:💬|➕|📁)/i.test(trimmed) || /^(?:chats?|new\s*chat)$/i.test(trimmed)) {
+      const card = buildFastChatSwitcherCard();
       await reply(card.text, card);
       return;
     }
-    if (/^(?:⚡\s*)?active(?:\s*task)?$/i.test(trimmed)) {
-      const card = await buildActiveTaskCard();
-      await reply(card.text, card);
-      return;
-    }
-    if (/^(?:⚙️\s*)?models?$/i.test(trimmed)) {
+
+    // 3. Model Switcher Button (Dynamic match: 🤖 ... or 🧠 ... or ⚡ ... or 🎭 ...)
+    if (/^(?:🤖|🧠|⚡|🎭|⚙️)/i.test(trimmed) || /^models?$/i.test(trimmed)) {
       const card = buildModelsCard();
       await reply(card.text, card);
       return;
     }
 
-    // Direct conversational prompt
-    let run = selected ? manager.runFor(selected) : null;
-    if (!run) {
-      const all = chats();
-      if (all.length > 0) run = manager.runFor(all[0].id);
-      if (!run) run = manager.runFor(null);
+    // 4. Active Task Button (Backward compatibility)
+    if (/^(?:⚡\s*)?active(?:\s*task)?$/i.test(trimmed)) {
+      const card = await buildActiveTaskCard();
+      await reply(card.text, card);
+      return;
     }
+
+    // 5. Direct Conversational Prompt
+    let run = null;
+    if (isNewChat) {
+      run = manager.runFor(null);
+      if (run) {
+        selected = run.chat.id;
+        isNewChat = false;
+      }
+    } else {
+      run = selected ? manager.runFor(selected) : null;
+      if (!run) {
+        const all = chats();
+        if (all.length > 0) run = manager.runFor(all[0].id);
+        if (!run) run = manager.runFor(null);
+      }
+    }
+
     if (!run) {
-      await reply('Could not open a chat session. Use 💬 Chats to choose or create one.');
+      await reply('Could not open a chat session. Tap ➕ New Chat to create one.', { reply_markup: currentDock() });
       return;
     }
 
@@ -449,8 +549,8 @@ function bindTelegramControls(bridge, { manager, watchdog, queue, readQuotas, mo
 
     const statusBadge = queued ? '⏳ Queued behind current turn' : '⚡ Dispatched to workstation';
     const confirmText = `${statusBadge}\n\n` +
-      `🤖 <b>Model:</b> ${selectedModel.toUpperCase()}\n` +
-      `📁 <b>Chat:</b> <i>${clip(run.chat.title || run.chat.id, 35)}</i>\n\n` +
+      `📁 <b>Chat:</b> <i>${clip(run.chat.title || run.chat.id, 35)}</i>\n` +
+      `🤖 <b>Model:</b> ${selectedModel.toUpperCase()}\n\n` +
       `<code>${clip(trimmed, 120)}</code>`;
 
     await reply(confirmText, {
@@ -480,7 +580,13 @@ function bindTelegramControls(bridge, { manager, watchdog, queue, readQuotas, mo
     const chat = findChat(id);
     if (!chat) return reply('Chat not found or ID is ambiguous. Use /chats, then /use <chat ID>.');
     selected = chat.id;
-    await reply(`Selected: ${chat.preview}\n${chat.id}`);
+    isNewChat = false;
+    const divider = formatDivider(
+      `CONNECTED TO: "${clip(chat.preview || chat.id, 30)}"`,
+      `🤖 Model: ${selectedModel.toUpperCase()}\n💡 Prompts you type now will continue this session.`,
+      '📁'
+    );
+    await reply(divider, { parse_mode: 'HTML', reply_markup: currentDock() });
   });
   bridge.onCommand('prompt', async (_args, reply, raw) => {
     const match = /^(\S+)\s+([\s\S]+)$/.exec(raw.trim());
