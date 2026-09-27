@@ -10,6 +10,8 @@ const path = require('node:path');
 
 const SOUND = path.join(process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), 'Nextcloud', 'ClaudeConfig'), 'sounds', 'universfield-new-notification-07-210334.mp3');
 const NAMES = { claude: 'Claude', codex: 'Codex', gemini: 'Gemini' };
+// The panel's three-circle mark on a dark tile (media/icon.svg), which Windows shows beside "AI Chat Panel".
+const TOAST_ICON = path.join(__dirname, '..', 'media', 'icon-toast.png');
 
 /** Plain first sentence (or first ~140 chars) of a Markdown reply. */
 function firstSentence(markdown) {
@@ -28,7 +30,7 @@ function firstSentence(markdown) {
 /** Fire and forget; never throws. `toast` is { agent, text, chatTitle } or null. */
 function notifyReply({ toast = null, appName = '' } = {}) {
   if (process.platform !== 'win32') return;
-  const env = { ...process.env, CHAT_SOUND: SOUND, CHAT_APP_NAME: appName };
+  const env = { ...process.env, CHAT_SOUND: SOUND, CHAT_APP_NAME: appName, CHAT_TOAST_ICON: TOAST_ICON };
   if (toast) {
     env.CHAT_TOAST_TITLE = `${NAMES[toast.agent] || 'Your AI'} replied${toast.chatTitle ? ` · ${toast.chatTitle}` : ''}`;
     env.CHAT_TOAST_BODY = firstSentence(toast.text) || 'Your response is ready.';
