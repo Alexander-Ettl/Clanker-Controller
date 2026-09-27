@@ -98,7 +98,7 @@ test('startup validates credentials, replaces webhooks, registers commands and r
   const { bridge, calls } = fixture();
   bridge.poll = async () => {};
   await bridge.start();
-  assert.deepEqual(calls.map((c) => c.method), ['getMe', 'deleteWebhook', 'setMyCommands']);
+  assert.deepEqual(calls.map((c) => c.method), ['getMe', 'getChat', 'deleteWebhook', 'setMyCommands']);
   assert.equal(bridge.running, true);
   await bridge.stop();
   bridge.api = async () => { throw new Error('Unauthorized'); };
@@ -338,5 +338,150 @@ test('clean-slate new chat mode spawns fresh session on next conversational prom
   assert.equal(created, 1);
   assert.match(calls.at(-1).text, /Dispatched to workstation/);
 });
+
+test('supergroup topic messages auto-route to mapped chat session and update topic title to 🟢', async () => {
+  const bridge = new TelegramBridge({ botToken: '123:token', chatId: '-1009999999' });
+  bridge.isForum = true;
+  const calls = [];
+  bridge.api = async (method, payload) => {
+    calls.push({ method, ...payload });
+    return { ok: true, message_id: calls.length };
+  };
+
+  const enqueued = [];
+  const run1 = {
+    chat: { id: 'c-topic-1', title: 'Header Redesign', telegramTopicId: 101 },
+    turn: null,
+    enqueue: (msg) => enqueued.push(msg)
+  };
+  const manager = {
+    listChats: () => [run1.chat],
+    runs: new Map([['c-topic-1', run1]]),
+    runFor: (id) => (id === 'c-topic-1' ? run1 : null),
+    deps: { chatStore: { save: (c) => c } }
+  };
+
+  bindTelegramControls(bridge, {
+    manager, watchdog: {}, queue: { getQueue: async () => [] },
+    readQuotas: async () => ({}), models: [{ id: 'codex', agent: 'codex' }], resolveTarget: () => ({ agentId: 'codex', modelId: 'codex' }), notifyQueue() {}
+  });
+
+  const topicMsg = {
+    message: {
+      message_id: 1,
+      from: { id: 42 },
+      chat: { id: -1009999999, type: 'supergroup' },
+      message_thread_id: 101,
+      text: 'Make the logo clickable'
+    }
+  };
+
+  await bridge.handleUpdate(topicMsg);
+
+  assert.equal(enqueued.length, 1);
+  assert.equal(enqueued[0].text, 'Make the logo clickable');
+
+  const editCall = calls.find((c) => c.method === 'editForumTopic');
+  assert.ok(editCall);
+  assert.equal(editCall.message_thread_id, 101);
+  assert.match(editCall.name, /🟢 Header Redesign/);
+
+  const replyCall = calls.findLast((c) => c.method === 'sendMessage');
+  assert.equal(replyCall.message_thread_id, 101);
+  assert.match(replyCall.text, /Executing turn/);
+});
+
+test('/new creates workstation chat and provisions forum topic via createForumTopic', async () => {
+  const bridge = new TelegramBridge({ botToken: '123:token', chatId: '-1009999999' });
+  bridge.isForum = true;
+  const calls = [];
+  bridge.api = async (method, payload) => {
+    calls.push({ method, ...payload });
+    if (method === 'createForumTopic') return { message_thread_id: 202, name: payload.name };
+    return { ok: true, message_id: calls.length };
+  };
+
+  let createdRun = null;
+  const manager = {
+    listChats: () => [],
+    runs: new Map(),
+    runFor: (id) => {
+      if (id === null) {
+        createdRun = { chat: { id: 'c-new', title: '' }, turn: null, enqueue: () => {} };
+        return createdRun;
+      }
+      return null;
+    },
+    deps: { chatStore: { save: (c) => c } }
+  };
+
+  bindTelegramControls(bridge, {
+    manager, watchdog: {}, queue: { getQueue: async () => [] },
+    readQuotas: async () => ({}), models: [{ id: 'codex', agent: 'codex' }], resolveTarget: () => ({ agentId: 'codex' }), notifyQueue() {}
+  });
+
+  const cmdMsg = {
+    message: {
+      message_id: 2,
+      from: { id: 42 },
+      chat: { id: -1009999999, type: 'supergroup' },
+      text: '/new Portfolio V2'
+    }
+  };
+
+  await bridge.handleUpdate(cmdMsg);
+
+  assert.ok(createdRun);
+  assert.equal(createdRun.chat.title, 'Portfolio V2');
+  assert.equal(createdRun.chat.telegramTopicId, 202);
+
+  const topicCall = calls.find((c) => c.method === 'createForumTopic');
+  assert.ok(topicCall);
+  assert.match(topicCall.name, /Portfolio V2/);
+
+  const introCall = calls.find((c) => c.method === 'sendMessage' && c.message_thread_id === 202);
+  assert.ok(introCall);
+  assert.match(introCall.text, /PORTFOLIO V2/);
+});
+
+test('forwardRequest dispatches approval directly into project topic thread and renames topic to 🟡', async () => {
+  const bridge = new TelegramBridge({ botToken: '123:token', chatId: '-1009999999' });
+  bridge.isForum = true;
+  bridge.running = true;
+  const calls = [];
+  bridge.api = async (method, payload) => {
+    calls.push({ method, ...payload });
+    return { ok: true, message_id: calls.length };
+  };
+
+  const engine = {
+    approvals: new Map([['act-1', {}]]),
+    respondToApproval: () => true
+  };
+  const event = {
+    type: 'approval_required',
+    actionId: 'act-1',
+    agent: 'codex',
+    description: 'npm install lodash'
+  };
+
+  await forwardRequest(bridge, event, {
+    engine,
+    title: 'Landing Page',
+    threadId: 303,
+    respond: (_id, cb) => cb(engine)
+  });
+
+  const editCall = calls.find((c) => c.method === 'editForumTopic');
+  assert.ok(editCall);
+  assert.equal(editCall.message_thread_id, 303);
+  assert.match(editCall.name, /🟡 Landing Page/);
+
+  const sendCall = calls.find((c) => c.method === 'sendMessage');
+  assert.ok(sendCall);
+  assert.equal(sendCall.message_thread_id, 303);
+  assert.match(sendCall.text, /ACTION APPROVAL REQUIRED/);
+});
+
 
 
