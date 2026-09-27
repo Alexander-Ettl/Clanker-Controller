@@ -732,6 +732,8 @@ test('P17-A: Opus 5.5 is a branded Claude model, and family names resolve to cat
   assert.equal(resolveModel('Claude Opus 5.5').id, 'claude-opus-5-5-medium');
   assert.equal(resolveModel('SONNET').id, 'claude-sonnet-5-high');
   assert.equal(resolveModel('sol').agent, 'codex');
+  assert.equal(resolveModel('Astra').id, 'gpt-6-astra-high');
+  assert.equal(resolveModel('gpt-6-luna').id, 'gpt-6-luna-high');
   assert.equal(resolveModel('gemini-3.8-flash-high').agent, 'gemini');
   assert.equal(resolveModel('haiku'), null);
 });
