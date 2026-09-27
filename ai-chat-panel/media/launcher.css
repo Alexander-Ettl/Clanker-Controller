@@ -90,6 +90,30 @@ body {
   transform: scale(1.02);
 }
 
+/* The selection pill is one ::before anchored to the selected tab, so it
+   springs across instead of jumping. Older engines keep the static fill above. */
+@supports (anchor-name: --tab) {
+  .launcher-tabs { position: relative; isolation: isolate; }
+  .launcher-tabs::before {
+    content: '';
+    position: absolute;
+    z-index: -1;
+    position-anchor: --launcher-tab;
+    inset: anchor(top) anchor(right) anchor(bottom) anchor(left);
+    border-radius: var(--pill);
+    background: var(--eo-surface-raised);
+    transition: inset 0.5s cubic-bezier(0.34, 1.36, 0.64, 1);
+  }
+  .launcher-tab[aria-selected='true'] {
+    anchor-name: --launcher-tab;
+    background: transparent;
+    transform: none;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .launcher-tabs::before { transition: none; }
+}
+
 .launcher-panel {
   display: flex;
   flex-direction: column;
