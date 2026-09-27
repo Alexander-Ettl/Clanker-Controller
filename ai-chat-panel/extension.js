@@ -183,6 +183,23 @@ class SchedulerWatchdog {
   }
 }
 
+async function waitForDns(hostname, { timeoutMs = 30000 } = {}) {
+  try {
+    const dns = require('node:dns').promises;
+    const resolver = new dns.Resolver();
+    resolver.setServers(['1.1.1.1', '8.8.8.8']);
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      try {
+        const addrs = await resolver.resolve4(hostname);
+        if (addrs && addrs.length > 0) return true;
+      } catch {}
+      await new Promise((r) => setTimeout(r, 1000));
+    }
+  } catch {}
+  return false;
+}
+
 class TunnelManager {
   constructor({ statusItem, onLive, onOff }) {
     this.statusItem = statusItem; this.onLive = onLive; this.onOff = onOff;
@@ -199,7 +216,7 @@ class TunnelManager {
     const child = spawn('cloudflared', ['tunnel', '--url', 'http://localhost:57321'], { windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
     this.childProcess = child;
     const url = await new Promise((resolve, reject) => {
-      const timer = setTimeout(() => reject(new Error('Cloudflare Tunnel did not provide a public URL.')), 20000);
+      const timer = setTimeout(() => reject(new Error('Cloudflare Tunnel did not provide a public URL.')), 30000);
       const consume = (chunk) => { const match = String(chunk).match(/https:\/\/[\w-]+\.trycloudflare\.com/); if (match) { clearTimeout(timer); resolve(match[0]); } };
       child.stdout.on('data', consume); child.stderr.on('data', consume);
       child.once('error', (error) => { clearTimeout(timer); reject(error); });
@@ -207,6 +224,12 @@ class TunnelManager {
     }).catch((error) => { this.stop(); throw error; });
     try {
       this.publicUrl = url;
+      try {
+        const host = new URL(url).hostname;
+        this.statusItem.text = '$(sync~spin) Tunnel: Propagating DNS...';
+        await waitForDns(host, { timeoutMs: 30000 });
+        await new Promise((r) => setTimeout(r, 2000));
+      } catch {}
       await this.onLive(url);
       this.status = 'live';
       this.render();
