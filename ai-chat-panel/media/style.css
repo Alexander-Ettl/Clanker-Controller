@@ -71,6 +71,32 @@ body {
   box-shadow: 0 8px 32px rgba(0, 0, 0, 0.35), inset 0 1px 0 rgba(255, 255, 255, 0.06);
 }
 
+/* Segmented pills: a .pill-track's selection is one ::before anchored to the
+   selected child, so it glides over instead of jumping. No overshoot: it lands
+   and stops. Engines without anchor-scope keep the static fill. */
+.pill-track > :is([aria-selected='true'], [aria-checked='true'], .active) {
+  background: var(--eo-surface-raised);
+  color: var(--text-primary);
+}
+@supports (anchor-scope: --pill) {
+  .pill-track { position: relative; isolation: isolate; anchor-scope: --pill; }
+  .pill-track::before {
+    content: '';
+    position: absolute;
+    z-index: -1;
+    position-anchor: --pill;
+    inset: anchor(top) anchor(right) anchor(bottom) anchor(left);
+    border-radius: var(--pill);
+    background: var(--eo-surface-raised);
+    transition: inset 0.4s var(--eo-ease);
+  }
+  .pill-track > :is([aria-selected='true'], [aria-checked='true'], .active) {
+    anchor-name: --pill;
+    background: transparent;
+  }
+}
+@media (prefers-reduced-motion: reduce) { .pill-track::before { transition: none; } }
+
 /* Agent color dots (history/queue badges fall back to these). */
 .dot {
   width: 8px;
@@ -216,10 +242,41 @@ body {
   animation: queue-pill-saved 0.9s cubic-bezier(0.16, 1, 0.3, 1);
 }
 
+/* While "Saved" shows, button and tag are one opaque charcoal body fused by the goo (#tip-goo):
+   the tag grows out of the button through a liquid neck and sinks back into it. */
+.round-btn-queue.is-saved {
+  filter: url(#tip-goo) drop-shadow(0 6px 16px rgba(0, 0, 0, 0.35));
+  background: rgb(26, 28, 34);
+  border-color: transparent;
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+}
+
 .round-btn-queue.is-saved .round-btn-tip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  top: calc(100% + 6px);
+  padding: 6px 11px 6px 9px;
+  border: 0;
+  background: rgb(26, 28, 34);
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+  box-shadow: none;
+  font-size: 11.5px;
   opacity: 1;
   transform: none;
-  transition-delay: 0s;
+  transform-origin: top right;
+  animation: tip-bud 0.55s cubic-bezier(0.34, 1.36, 0.64, 1) both;
+}
+
+.round-btn-queue.is-saved .round-btn-tip svg { width: 12px; height: 12px; color: #30d158; flex-shrink: 0; }
+
+/* Out of the button: sunk into its bottom edge and squashed, then springing down to size. */
+@keyframes tip-bud {
+  0% { opacity: 0; transform: translateY(-70%) scale(0.3, 0.2); }
+  40% { opacity: 1; }
+  100% { transform: none; }
 }
 
 @keyframes queue-pill-saved {
@@ -229,7 +286,7 @@ body {
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .round-btn-queue.is-saved { animation: none; }
+  .round-btn-queue.is-saved, .round-btn-queue.is-saved .round-btn-tip { animation: none; }
 }
 
 .queue-badge {
@@ -1147,6 +1204,39 @@ body {
   100% { transform: none; }
 }
 @media (prefers-reduced-motion: reduce) { .compose-row > .island-bud { animation: none; } }
+
+/* "Scheduled" confirmation: a bud of the pill; retracts into it when it leaves. */
+.compose-row > .schedule-bud {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 9px 14px 9px 12px;
+  border-radius: 18px;
+  color: var(--text-primary);
+  font: 500 12.5px/1.35 var(--font-text);
+  cursor: default;
+}
+.compose-row > .schedule-bud[hidden] { display: none; }
+.schedule-bud svg { width: 15px; height: 15px; flex-shrink: 0; color: #64d2ff; }
+.compose-row > .schedule-bud.is-leaving { animation: island-bud-out 0.28s cubic-bezier(0.5, 0, 0.75, 0) both; }
+@keyframes island-bud-out {
+  to { opacity: 0; transform: translateY(60%) scale(0.7, 0.2); }
+}
+
+/* The "/" command list as a bud: in the row's flow above the pill, not a floating panel. */
+.compose-row > .slash-bud {
+  position: static;
+  max-height: 280px;
+  padding: 5px;
+  border-radius: 18px;
+}
+.slash-bud .model-option-hint {
+  white-space: normal;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
 
 /* Where a compaction happened: the history above stays, the summary follows. */
 .compact-divider {

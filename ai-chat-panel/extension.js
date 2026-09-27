@@ -1465,7 +1465,7 @@ class LauncherViewProvider {
 <title>AI Chat Launcher</title>
 </head>
 <body>
-  <div class="launcher-tabs glass" role="tablist">
+  <div class="launcher-tabs pill-track glass" role="tablist">
     <button class="launcher-tab" data-tab="recent" role="tab" aria-selected="true">
       <svg viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M2.75 3.75A1.75 1.75 0 0 1 4.5 2h7a1.75 1.75 0 0 1 1.75 1.75v5.5A1.75 1.75 0 0 1 11.5 11H7l-3.25 2.5V11h.75-.5A1.75 1.75 0 0 1 2.75 9.25z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/></svg><span>Recent</span>
     </button>
@@ -1563,7 +1563,7 @@ class LauncherViewProvider {
           <span class="settings-title">Time Format</span>
           <span class="settings-desc">Timestamp style across chat cards and queue items.</span>
         </div>
-        <div class="time-format-picker" role="radiogroup">
+        <div class="time-format-picker pill-track" role="radiogroup">
           <button class="format-pill" data-format="24h" type="button">24h</button>
           <button class="format-pill" data-format="12h" type="button">12h</button>
           <button class="format-pill" data-format="auto" type="button">Auto</button>
