@@ -41,6 +41,7 @@ const { SlashCommandCatalog } = require('./lib/slash-commands.js');
 // while Claude Code and Codex auto-compact natively (both on by default).
 const CONTEXT_LIMITS = { claude: 1000000, codex: 1000000, gemini: 1048576 };
 const AUTO_COMPACT_RATIO = 0.90;
+const SUBAGENT_LOG_LIMIT = 3000; // subagent events kept per chat for the agents viewer
 const { notifyReply } = require('./lib/notify.js');
 
 // P17-X: clock locale + format shared by both webviews ('24h' default, 'auto' follows vscode.env.language).
@@ -449,7 +450,8 @@ class ChatRun {
     this.pending = new Map(); // unanswered approval/question cards, replayed the same way
     this.queue = []; // routed messages waiting for this chat's current turn (site-edit chats)
     this.starting = false; // a queued message is being planned; its turn hasn't begun yet
-    this.streamEngine = new StreamEngine({ cwd: deps.workspaceDir, models: deps.getModels(), interactive: true });
+    this.subagentLog = []; // this chat's subagent events, for the agents viewer (not saved to disk)
+    this.streamEngine =new StreamEngine({ cwd: deps.workspaceDir, models: deps.getModels(), interactive: true });
     this.streamEngine.on('event', (event) => this.handleStreamEvent(event));
   }
 
@@ -605,6 +607,17 @@ class ChatRun {
   }
 
   handleStreamEvent(event) {
+    // Subagents live in the agents viewer, not the reply: kept here (in memory) so a
+    // window that attaches later, or switches back to this chat, can replay them.
+    if (event.type.startsWith('subagent_')) {
+      const stamped = { ...event, at: Date.now() };
+      this.subagentLog.push(stamped);
+      if (this.subagentLog.length > SUBAGENT_LOG_LIMIT) this.subagentLog.splice(0, this.subagentLog.length - SUBAGENT_LOG_LIMIT);
+      this.post(stamped);
+      return;
+    }
+    // Replays need the turn's end too, or its foreground agents would read as working forever.
+    if (event.type === 'turn_complete' && this.subagentLog.length) this.subagentLog.push({ type: 'subagent_settle', interrupted: Boolean(event.interrupted) });
     this.deps.onTelegramEvent?.(this, event);
     if (event.type === 'rate_limits' && event.agent === 'claude') recordClaudeUsage(event.windows);
     if (event.type === 'remote_prompt') { this.beginRemoteTurn(event.text); return; }
@@ -864,6 +877,7 @@ class ChatWindowHost {
     }
     this.panel.webview.postMessage({ type: 'chatLoaded', chat: this.webviewChat(run.chat), running: run.turn });
     for (const event of run.pending.values()) this.panel.webview.postMessage(event);
+    if (run.subagentLog.length) this.panel.webview.postMessage({ type: 'subagentReplay', events: run.subagentLog });
   }
 
   resetToFreshChat() {
@@ -1154,6 +1168,10 @@ class ChatWindowHost {
     <div class="composer glass">
       <textarea id="promptInput" rows="1" placeholder="Ask anything, @ to mention, / for actions"></textarea>
       <div class="composer-actions">
+        <button class="agents-chip" id="agentsBtn" type="button" hidden aria-haspopup="dialog">
+          <svg viewBox="0 0 16 16" fill="none" aria-hidden="true"><rect x="3" y="5" width="10" height="8" rx="2.5" stroke="currentColor" stroke-width="1.3"/><path d="M8 5V2.75" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/><circle cx="8" cy="2.25" r="0.9" fill="currentColor"/><circle cx="6.1" cy="8.75" r="1" fill="currentColor"/><circle cx="9.9" cy="8.75" r="1" fill="currentColor"/><path d="M1.75 8.25v2M14.25 8.25v2" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>
+          <span class="agents-chip-count">0</span>
+        </button>
         <button class="model-picker" id="modelPill" type="button" aria-haspopup="listbox" aria-expanded="false" aria-controls="modelMenu">
           <span class="model-picker-icon" aria-hidden="true"></span><span class="model-picker-label"></span>
           <svg class="model-picker-chevron" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M4.5 10 8 6.5l3.5 3.5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>

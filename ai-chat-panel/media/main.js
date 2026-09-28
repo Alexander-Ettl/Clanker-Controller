@@ -1666,6 +1666,195 @@
     return frag;
   }
 
+  // ---------- Agents viewer: Claude's subagents, apart from the reply ----------
+  // The engine tags every subagent message with the call that spawned it; they collect here
+  // instead of in the transcript. The robot chip counts the ones still working; its sheet
+  // shows each one's task, reply and steps, and how long ago it last did anything.
+  const AGENT_QUIET_MS = 90000; // a working agent silent this long reads as "quiet", worth a look
+  const AGENT_STATUS = { running: 'Working', background: 'Working in the background', done: 'Done', failed: 'Failed', stopped: 'Stopped', ended: 'Ended with the session' };
+  const agentsBtn = document.getElementById('agentsBtn');
+  const agentsModal = createModal('agentsModal', 'Agents');
+  agentsModal.body.classList.add('agents-body');
+  agentsModal.body.innerHTML = '<div class="agents-tabs pill-track" role="tablist" aria-label="Agents"></div><div class="agents-pane" role="tabpanel"></div>';
+  const agentTabs = agentsModal.body.querySelector('.agents-tabs');
+  const agentPane = agentsModal.body.querySelector('.agents-pane');
+  const subagents = new Map(); // tool_use id -> { id, description, subagentType, status, lastAt, events }
+  let shownAgentId = null;
+  let agentLog = null; // the shown agent's log: { el, bubble, cards }
+  let agentsTicker = null;
+
+  const agentWorking = (agent) => agent.status === 'running' || agent.status === 'background';
+  function sinceText(ms) {
+    const s = Math.max(0, Math.round((Date.now() - ms) / 1000));
+    return s < 5 ? 'just now' : s < 60 ? `${s}s ago` : s < 3600 ? `${Math.floor(s / 60)}m ago` : `${Math.floor(s / 3600)}h ago`;
+  }
+  function agentState(agent) {
+    if (!agentWorking(agent)) return { cls: `is-${agent.status}`, text: `${AGENT_STATUS[agent.status]} · ${sinceText(agent.lastAt)}` };
+    const quiet = Date.now() - agent.lastAt > AGENT_QUIET_MS;
+    return { cls: quiet ? 'is-quiet' : 'is-running', text: `${AGENT_STATUS[agent.status]} · last activity ${sinceText(agent.lastAt)}` };
+  }
+  function agentFor(id, at) {
+    if (!subagents.has(id)) subagents.set(id, { id, description: '', subagentType: 'agent', status: 'running', lastAt: at, events: [] });
+    return subagents.get(id);
+  }
+
+  function applySubagent(message) {
+    if (message.type === 'subagent_settle') { settleAgents(message.interrupted); return; } // a replayed turn end
+    const at = message.at || Date.now();
+    const agent = agentFor(message.id, at);
+    agent.lastAt = at;
+    if (message.type === 'subagent_start') {
+      Object.assign(agent, { description: message.description, subagentType: message.subagentType, status: 'running' });
+      if (message.prompt && !agent.events.some((e) => e.type === 'task')) pushAgentEvent(agent, { type: 'task', text: message.prompt });
+    } else if (message.type === 'subagent_event') {
+      if (message.event.type !== 'task' || !agent.events.some((e) => e.type === 'task')) pushAgentEvent(agent, message.event);
+    } else if (message.type === 'subagent_end') {
+      agent.status = message.launched ? 'background' : message.error ? 'failed' : 'done';
+    } else if (message.type === 'subagent_status') {
+      const settled = { completed: 'done', failed: 'failed', stopped: 'stopped', killed: 'stopped', ended: 'ended' }[message.status];
+      if (settled) agent.status = settled;
+    }
+    refreshAgents();
+  }
+  function pushAgentEvent(agent, event) {
+    agent.events.push(event);
+    if (agent.id === shownAgentId) renderAgentEvent(event, true);
+  }
+  // A turn that ends takes its foreground agents with it; background ones keep going.
+  function settleAgents(interrupted) {
+    for (const agent of subagents.values()) if (agent.status === 'running') agent.status = interrupted ? 'stopped' : 'done';
+    refreshAgents();
+  }
+  function resetAgents() {
+    subagents.clear();
+    shownAgentId = null;
+    agentLog = null;
+    agentPane.textContent = '';
+    closeModal(agentsModal.el);
+    refreshAgents();
+  }
+
+  function refreshAgents() {
+    const all = [...subagents.values()];
+    const working = all.filter(agentWorking);
+    agentsBtn.hidden = !all.length;
+    agentsBtn.classList.toggle('is-idle', !working.length);
+    agentsBtn.classList.toggle('is-quiet', working.some((agent) => agentState(agent).cls === 'is-quiet'));
+    agentsBtn.querySelector('.agents-chip-count').textContent = String(working.length || all.length);
+    const label = working.length ? `${working.length} ${working.length === 1 ? 'agent' : 'agents'} working` : `${all.length} ${all.length === 1 ? 'agent' : 'agents'} finished`;
+    agentsBtn.title = `${label}: click to watch`;
+    agentsBtn.setAttribute('aria-label', label);
+    agentsModal.count.textContent = working.length ? `${working.length} working` : String(all.length);
+    // The "last activity" clocks tick while anything works or the sheet is open.
+    const tick = working.length || !agentsModal.el.hidden;
+    if (tick && !agentsTicker) agentsTicker = setInterval(refreshAgents, 1000);
+    if (!tick && agentsTicker) { clearInterval(agentsTicker); agentsTicker = null; }
+    if (!agentsModal.el.hidden) renderAgentTabs();
+  }
+
+  function renderAgentTabs() {
+    const all = [...subagents.values()];
+    if (agentTabs.children.length !== all.length) {
+      agentTabs.textContent = '';
+      for (const agent of all) {
+        const tab = document.createElement('button');
+        tab.type = 'button';
+        tab.className = 'agents-tab';
+        tab.setAttribute('role', 'tab');
+        tab.innerHTML = '<span class="agents-dot"></span><span class="agents-tab-name"></span>';
+        tab.addEventListener('click', () => showAgent(agent.id));
+        agentTabs.appendChild(tab);
+      }
+    }
+    all.forEach((agent, index) => {
+      const tab = agentTabs.children[index];
+      const state = agentState(agent);
+      tab.setAttribute('aria-selected', String(agent.id === shownAgentId));
+      tab.title = state.text;
+      tab.querySelector('.agents-dot').className = `agents-dot ${state.cls}`;
+      tab.querySelector('.agents-tab-name').textContent = agent.description || agent.subagentType;
+    });
+    const shown = subagents.get(shownAgentId);
+    const head = agentPane.querySelector('.agents-head');
+    if (shown && head) {
+      const state = agentState(shown);
+      head.querySelector('.agents-dot').className = `agents-dot ${state.cls}`;
+      head.querySelector('.agents-status').textContent = state.text;
+      const steps = shown.events.filter((e) => e.type === 'tool_start').length;
+      head.querySelector('.agents-steps').textContent = `${steps} ${steps === 1 ? 'step' : 'steps'}`;
+    }
+  }
+
+  function showAgent(id) {
+    const agent = subagents.get(id);
+    if (!agent) return;
+    shownAgentId = id;
+    agentPane.textContent = '';
+    const head = document.createElement('div');
+    head.className = 'agents-head';
+    head.innerHTML = '<span class="agents-dot"></span><span class="agents-type"></span><span class="agents-status"></span><span class="agents-steps"></span>';
+    head.querySelector('.agents-type').textContent = agent.subagentType;
+    const log = document.createElement('div');
+    log.className = 'agents-log';
+    agentPane.append(head, log);
+    agentLog = { el: log, bubble: null, cards: new Map() };
+    for (const event of agent.events) renderAgentEvent(event, false);
+    log.scrollTop = log.scrollHeight;
+    renderAgentTabs();
+  }
+
+  function renderAgentEvent(event, follow) {
+    if (!agentLog) return;
+    const log = agentLog.el;
+    const pinned = log.scrollHeight - log.scrollTop - log.clientHeight < 48;
+    if (event.type === 'task') {
+      const task = document.createElement('div');
+      task.className = 'agents-task';
+      const label = document.createElement('div');
+      label.className = 'agents-task-label';
+      label.textContent = 'Task';
+      const body = document.createElement('div');
+      body.className = 'msg-body';
+      body.appendChild(buildMessageBody(event.text || ''));
+      task.append(label, body);
+      log.appendChild(task);
+    } else if (event.type === 'delta' && event.text) {
+      // Text blocks in a row read as one reply; a step in between starts a new one.
+      if (!agentLog.bubble || log.lastElementChild !== agentLog.bubble) {
+        agentLog.bubble = document.createElement('div');
+        agentLog.bubble.className = 'msg msg-assistant';
+        agentLog.bubble.dataset.raw = '';
+        agentLog.bubble.innerHTML = '<div class="msg-body"></div>';
+        log.appendChild(agentLog.bubble);
+      }
+      const bubble = agentLog.bubble;
+      bubble.dataset.raw += (bubble.dataset.raw ? '\n\n' : '') + event.text.trim();
+      const body = bubble.querySelector('.msg-body');
+      body.textContent = '';
+      body.appendChild(buildMessageBody(bubble.dataset.raw));
+    } else if (event.type === 'thought' && event.text) {
+      const thought = document.createElement('details');
+      thought.className = 'agents-thought';
+      thought.innerHTML = '<summary>Thinking</summary><div class="agents-thought-text"></div>';
+      thought.querySelector('.agents-thought-text').textContent = event.text;
+      log.appendChild(thought);
+    } else if (event.type === 'tool_start') {
+      const card = appendToolCard({ name: event.name, command: event.command || event.file, output: { text: '' }, done: event.done, diff: event.diff, host: log });
+      if (event.toolId) agentLog.cards.set(event.toolId, card);
+    } else if (event.type === 'tool_end') {
+      finishToolCard(agentLog.cards.get(event.toolId), { output: event.output, error: event.error });
+    }
+    if (follow && pinned) log.scrollTop = log.scrollHeight;
+  }
+
+  agentsBtn.addEventListener('click', () => {
+    const all = [...subagents.values()];
+    if (!subagents.has(shownAgentId)) shownAgentId = (all.find(agentWorking) || all[all.length - 1])?.id || null;
+    openModal(agentsModal);
+    if (shownAgentId) showAgent(shownAgentId);
+    refreshAgents();
+  });
+
   // ---------- Transcript ----------
 
   function clearEmptyState() {
@@ -1990,8 +2179,9 @@
     read: '<svg viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M1.75 8S4.25 3.5 8 3.5 14.25 8 14.25 8 11.75 12.5 8 12.5 1.75 8 1.75 8z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/><circle cx="8" cy="8" r="2" stroke="currentColor" stroke-width="1.5"/></svg>',
     other: '<svg viewBox="0 0 16 16" fill="none" aria-hidden="true"><circle cx="8" cy="8" r="5.5" stroke="currentColor" stroke-width="1.5"/><path d="M8 5.5v3l2 1.2" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>',
   };
-  function appendToolCard({ name, command, output, toolId, done, error, diff }) {
-    clearEmptyState();
+  // `host`: where the card goes (the agents viewer passes its own pane); default, the running turn.
+  function appendToolCard({ name, command, output, toolId, done, error, diff, host = null }) {
+    if (!host) clearEmptyState();
     const kind = toolKind(name);
     // An edit's own "-"/"+" lines become its body and its +N -N count.
     const diffLines = kind === 'edit' && diff ? diff.split('\n') : null;
@@ -2058,6 +2248,7 @@
       body.textContent = (output && output.text) || '';
     }
     details.appendChild(body);
+    if (host) { host.appendChild(details); return details; }
     turnHost().appendChild(details);
     if (toolId) toolCards.set(toolId, details);
     scrollTranscriptToEnd();
@@ -2677,6 +2868,7 @@
         renderTurnQueue();
         busy = false;
         resetThought();
+        resetAgents(); // the new chat's own agents follow in a subagentReplay
         restoreChat(message.chat, message.running);
         setBusy(Boolean(message.running));
         break;
@@ -2789,6 +2981,11 @@
         if (!isCompacting) appendThought(message.text || '');
         break;
       }
+      case 'subagent_start':
+      case 'subagent_event':
+      case 'subagent_end':
+      case 'subagent_status': applySubagent(message); break;
+      case 'subagentReplay': for (const event of message.events || []) applySubagent(event); break;
       case 'delta': {
         if (isCompacting) {
           if (/^(Gemini|Codex) error:/i.test(message.text || '')) appendNotice(message.text);
@@ -2868,6 +3065,7 @@
         break;
       }
       case 'turn_complete': {
+        settleAgents(Boolean(message.interrupted));
         if (awaitingInterruptAck) { awaitingInterruptAck = false; isCompacting = false; break; } // already closed out by Stop / Steer Now
         const completedCompaction = isCompacting;
         isCompacting = false;

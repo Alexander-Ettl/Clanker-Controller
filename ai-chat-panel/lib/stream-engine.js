@@ -31,6 +31,10 @@ const FIRST_OUTPUT_TIMEOUT_MS = 30000;
  * cumulative work across the turn and can exceed the context window many
  * times over, so ChatRun maintains an explicit context estimate instead.
  */
+/** Claude's subagent-spawning tool: "Task" in older CLIs, "Agent" in newer ones. */
+const SUBAGENT_TOOLS = new Set(['Agent', 'Task']);
+const at = (x) => (typeof x === 'string' ? x : '');
+
 /** What a Claude tool call acts on, for its card: the command, a search's pattern and scope, a URL, a query. */
 function toolTarget(input = {}) {
   const s = (x) => (typeof x === 'string' ? x : '');
@@ -351,6 +355,7 @@ class StreamEngine extends EventEmitter {
     this.agyEdits = new Map(); // toolId -> { event, file, before }: a Gemini edit waiting for its diff
     this.codexBases = new Map(); // repo root -> snapshot, for Codex's per-edit diffs
     this.tokens = { input: 0, output: 0, lastId: null };
+    this.subagentIds = new Set(); // Agent/Task tool_use ids still running (background ones outlive their call)
     this.codexServerFactory = codexServerFactory;
     this.codexServer = null;
     this.codexThreadId = null;
@@ -755,6 +760,9 @@ class StreamEngine extends EventEmitter {
       if (this.child !== child) return;
       if (stdoutBuffer.trim()) this.consumeLine(stdoutBuffer, agent);
       if (stderrBuffer.trim()) { diagnostics.push(stderrBuffer); this.consumeStderrLine(stderrBuffer, agent); }
+      // Subagents run inside this process: whatever it didn't report finished ended with it.
+      for (const id of this.subagentIds) this.emit('event', { type: 'subagent_status', id, status: code ? 'failed' : 'ended', agent });
+      this.subagentIds.clear();
       if (code && !child.turnCompleted && !this.sawOutput && !child.reportedError) {
         const detail = diagnostics.findLast((line) => line.trim() && !/^WARNING:/i.test(line.trim()))?.trim();
         this.emit('event', { type: 'delta', text: detail || `${agent} exited with code ${code}.`, model: agent, agent });
@@ -865,6 +873,7 @@ class StreamEngine extends EventEmitter {
       return;
     }
     if (agent === 'codex' && raw?.type === 'turn.started') this.codexBases = repoSnapshots(this.cwd);
+    if (this.consumeSubagentLine(raw, agent)) return;
     if (raw !== undefined) {
       const contextTokens = contextTokensOf(raw);
       if (contextTokens) this.emit('event', { type: 'usage', agent, contextTokens });
@@ -958,6 +967,61 @@ class StreamEngine extends EventEmitter {
       delete event.changes;
     }
     this.emit('event', event);
+  }
+
+  /**
+   * Claude's subagents (the Agent/Task tool) stream through the same stdout, each message tagged
+   * with the parent_tool_use_id of the call that spawned it. They get their own events, so the
+   * panel shows them in the agents viewer instead of mixing them into the main reply.
+   * Returns true when the line belonged to a subagent and needs nothing else.
+   */
+  consumeSubagentLine(raw, agent) {
+    if (!raw || typeof raw !== 'object') return false;
+    const parentId = typeof raw.parent_tool_use_id === 'string' ? raw.parent_tool_use_id : null;
+    if (parentId && (raw.type === 'assistant' || raw.type === 'user')) {
+      let event = null;
+      try { event = normalizeEvent(raw, agent); } catch { /* not a shape we render */ }
+      if (event && event.type !== 'user_message') {
+        if (event.type === 'tool_start') for (const key of ['file', 'command']) if (event[key]) event[key] = this.relative(event[key]);
+        this.emit('event', { type: 'subagent_event', id: parentId, event, agent });
+      } else if (event?.type === 'user_message') {
+        // The task text the subagent was handed arrives as its first user message.
+        this.emit('event', { type: 'subagent_event', id: parentId, event: { type: 'task', text: event.text }, agent });
+      }
+      return true;
+    }
+    const blocks = Array.isArray(raw.message?.content) ? raw.message.content : [];
+    if (raw.type === 'assistant') {
+      for (const block of blocks) {
+        if (block?.type !== 'tool_use' || !SUBAGENT_TOOLS.has(block.name)) continue;
+        const input = block.input || {};
+        this.subagentIds.add(block.id);
+        this.emit('event', {
+          type: 'subagent_start', id: at(block.id), agent,
+          description: at(input.description), subagentType: at(input.subagent_type) || 'general-purpose',
+          prompt: at(input.prompt), background: input.run_in_background === true,
+        });
+      }
+    }
+    if (raw.type === 'user') {
+      for (const block of blocks) {
+        if (block?.type !== 'tool_result' || !this.subagentIds.has(block.tool_use_id)) continue;
+        const output = Array.isArray(block.content) ? block.content.map((c) => at(c?.text)).join('') : at(block.content);
+        // A background agent's call returns at once with a launch note; it keeps working after that.
+        const launched = /async agent launched|running in the background|agent is working in the background/i.test(output);
+        if (!launched) this.subagentIds.delete(block.tool_use_id);
+        this.emit('event', { type: 'subagent_end', id: at(block.tool_use_id), output, error: block.is_error === true, launched, agent });
+      }
+    }
+    // Background task lifecycle (task_started / task_progress / task_notification), when the CLI reports it.
+    if (raw.type === 'system' && /^task_/.test(String(raw.subtype || '')) && (raw.tool_use_id || raw.task_id)) {
+      this.emit('event', {
+        type: 'subagent_status', id: at(raw.tool_use_id || raw.task_id), agent,
+        status: at(raw.status) || (raw.subtype === 'task_started' ? 'running' : ''), summary: at(raw.summary) || at(raw.description),
+      });
+      return true;
+    }
+    return false;
   }
 
   /**
