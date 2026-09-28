@@ -452,6 +452,12 @@ body {
   flex-shrink: 0;
 }
 
+/* Too narrow for the labels: icons only, the tab's title carries the name. */
+@media (max-width: 320px) {
+  .launcher-tab span { display: none; }
+  .launcher-tab svg { width: 16px; height: 16px; }
+}
+
 .history-label {
   font: 600 11px var(--font-text);
   text-transform: uppercase;

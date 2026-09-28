@@ -1509,13 +1509,13 @@ class LauncherViewProvider {
 </head>
 <body>
   <div class="launcher-tabs pill-track glass" role="tablist">
-    <button class="launcher-tab" data-tab="recent" role="tab" aria-selected="true">
+    <button class="launcher-tab" data-tab="recent" role="tab" aria-selected="true" title="Recent">
       <svg viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M2.75 3.75A1.75 1.75 0 0 1 4.5 2h7a1.75 1.75 0 0 1 1.75 1.75v5.5A1.75 1.75 0 0 1 11.5 11H7l-3.25 2.5V11h.75-.5A1.75 1.75 0 0 1 2.75 9.25z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/></svg><span>Recent</span>
     </button>
-    <button class="launcher-tab" data-tab="scheduled" role="tab" aria-selected="false">
+    <button class="launcher-tab" data-tab="scheduled" role="tab" aria-selected="false" title="Scheduled">
       <svg viewBox="0 0 16 16" fill="none" aria-hidden="true"><circle cx="8" cy="8.5" r="5.75" stroke="currentColor" stroke-width="1.5"/><path d="M8 5.5v3.25l2 1.25" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg><span>Scheduled</span>
     </button>
-    <button class="launcher-tab" data-tab="settings" role="tab" aria-selected="false">
+    <button class="launcher-tab" data-tab="settings" role="tab" aria-selected="false" title="Settings">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
         <path d="M9.671 4.136a2.34 2.34 0 0 1 4.659 0 2.34 2.34 0 0 0 3.319 1.915 2.34 2.34 0 0 1 2.33 4.033 2.34 2.34 0 0 0 0 3.831 2.34 2.34 0 0 1-2.33 4.033 2.34 2.34 0 0 0-3.319 1.915 2.34 2.34 0 0 1-4.659 0 2.34 2.34 0 0 0-3.32-1.915 2.34 2.34 0 0 1-2.33-4.033 2.34 2.34 0 0 0 0-3.831A2.34 2.34 0 0 1 6.35 6.051a2.34 2.34 0 0 0 3.319-1.915"/>
         <circle cx="12" cy="12" r="3"/>
