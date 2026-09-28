@@ -732,7 +732,7 @@ test('P17-A: Opus 5.5 is a branded Claude model, and family names resolve to cat
   assert.equal(opus.hint, undefined, 'no benchmark line under Opus in the picker');
   assert.equal(resolveModel('opus').id, 'claude-opus-5-5-medium');
   assert.equal(resolveModel('Claude Opus 5.5').id, 'claude-opus-5-5-medium');
-  assert.equal(resolveModel('SONNET').id, 'claude-sonnet-5-high');
+  assert.equal(resolveModel('SONNET').id, 'claude-sonnet-5-5-high');
   assert.equal(resolveModel('sol').agent, 'codex');
   assert.equal(resolveModel('Astra').id, 'gpt-6-astra-high');
   assert.equal(resolveModel('gpt-6-luna').id, 'gpt-6-luna-high');
@@ -751,7 +751,7 @@ test('P17-D: a claude CLI that rejects Opus 5.5 reruns the turn once on Sonnet, 
   e.fallback = { agent: 'claude', prompt: 'refactor', attachments: [] };
   e.sawOutput = false;
   e.consumeLine("error: unknown option '--effort'", 'claude');
-  assert.deepEqual(starts, [{ agent: 'claude', prompt: 'refactor', attachments: [], model: 'claude-sonnet-5', effort: 'high' }]);
+  assert.deepEqual(starts, [{ agent: 'claude', prompt: 'refactor', attachments: [], model: 'claude-sonnet-5-5', effort: 'high' }]);
   assert.equal(events[0].type, 'notice');
   assert.match(events[0].text, /Opus 5\.5/);
 
@@ -761,7 +761,7 @@ test('P17-D: a claude CLI that rejects Opus 5.5 reruns the turn once on Sonnet, 
 
   const sonnet = new StreamEngine({});
   sonnet.commandFor = () => ({ command: null }); // no spawn: only the fallback bookkeeping matters
-  sonnet.start({ agent: 'claude', prompt: 'x', model: 'claude-sonnet-5' });
+  sonnet.start({ agent: 'claude', prompt: 'x', model: 'claude-sonnet-5-5' });
   assert.equal(sonnet.fallback, null, 'only an Opus turn has a fallback');
 });
 

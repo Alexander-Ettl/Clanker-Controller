@@ -316,6 +316,8 @@
   const DEFAULT_PLACEHOLDER = promptInput.placeholder;
   let scheduleArmed = false;
   let pendingScheduleLabel = null;
+  // Declared before selectModel() first runs at startup: lastReplyAgent() reads it.
+  let turnRoutedAgent = null; // who ran the current turn (set by 'routing')
   // 'auto' has no quota of its own to wait for; scheduling needs a real model.
   // The picked provider; on Auto, whoever answered last in this chat (a "continue" must reach the same agent).
   function lastReplyAgent() {
@@ -2078,7 +2080,6 @@
   // Claude: "You've hit your session limit"; Codex: "You've hit your usage limit"; Gemini: "Quota exceeded" /
   // "You have exhausted your daily quota" / RESOURCE_EXHAUSTED.
   const LIMIT_RE = /\b(usage|session|weekly|daily|rate)\s+limit\b|hit your .{0,24}limit|limit (reached|exceeded)|quota (exceeded|exhausted)|exhausted (your|the) .{0,24}(quota|limit)|RESOURCE_EXHAUSTED|out of (usage|credits)/i;
-  let turnRoutedAgent = null; // who ran the current turn (set by 'routing')
   let limitHitThisTurn = false; // an upstream_error card already said so
   let restoringHistory = false; // old limit replies in a restored transcript get no button; only the last may
   function offerContinueAtReset(host) {
@@ -2626,7 +2627,7 @@
   // ---------- P17-R: context window, one number ----------
   // How full the context window is right now. It shows in the Thinking pill
   // while the agent works, and as a warning above the composer from 75% on.
-  // Every model in the picker runs a 1M-token window (Opus 5.5 and Sonnet 5 per Anthropic's model table; Gemini's is 2^20).
+  // Every model in the picker runs a 1M-token window (Opus 5.5 and Sonnet 5.5 per Anthropic's model table; Gemini's is 2^20).
   const CONTEXT_LIMITS = { claude: 1000000, codex: 1000000, gemini: 1048576 };
   const CONTEXT_WARN_PCT = 75;
   const contextWarning = document.createElement('div');
