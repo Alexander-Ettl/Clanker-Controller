@@ -2187,6 +2187,7 @@
     if (EDIT_TOOLS.test(name || '')) return 'edit';
     if (/^(glob|grep|grep_search|find_by_name)$/i.test(name || '')) return 'search';
     if (/^(read|view_file|list_dir)$/i.test(name || '')) return 'read';
+    if (/^(agent|task)$/i.test(name || '')) return 'agent'; // Claude spawning a subagent
     return 'other';
   }
   const TOOL_ICONS = {
@@ -2195,6 +2196,8 @@
     search: '<svg viewBox="0 0 16 16" fill="none" aria-hidden="true"><circle cx="7" cy="7" r="4.25" stroke="currentColor" stroke-width="1.5"/><path d="m10.2 10.2 3.3 3.3" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>',
     read: '<svg viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M1.75 8S4.25 3.5 8 3.5 14.25 8 14.25 8 11.75 12.5 8 12.5 1.75 8 1.75 8z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/><circle cx="8" cy="8" r="2" stroke="currentColor" stroke-width="1.5"/></svg>',
     other: '<svg viewBox="0 0 16 16" fill="none" aria-hidden="true"><circle cx="8" cy="8" r="5.5" stroke="currentColor" stroke-width="1.5"/><path d="M8 5.5v3l2 1.2" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>',
+    // The composer's agents chip robot (extension.js #agentsBtn), so the step and the chip read as one thing.
+    agent: '<svg viewBox="0 0 16 16" fill="none" aria-hidden="true"><rect x="3" y="5" width="10" height="8" rx="2.5" stroke="currentColor" stroke-width="1.3"/><path d="M8 5V2.75" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/><circle cx="8" cy="2.25" r="0.9" fill="currentColor"/><circle cx="6.1" cy="8.75" r="1" fill="currentColor"/><circle cx="9.9" cy="8.75" r="1" fill="currentColor"/><path d="M1.75 8.25v2M14.25 8.25v2" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>',
   };
   // `host`: where the card goes (the agents viewer passes its own pane); default, the running turn.
   function appendToolCard({ name, command, output, toolId, done, error, diff, host = null }) {
