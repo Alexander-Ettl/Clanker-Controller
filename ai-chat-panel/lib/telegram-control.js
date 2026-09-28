@@ -1,6 +1,6 @@
 'use strict';
 
-const { makeDockKeyboard } = require('./telegram-bridge.js');
+const { makeDockKeyboard, escapeHtml } = require('./telegram-bridge.js');
 const clip = (text, limit = 3500) => String(text).slice(0, limit).replace(/[\uD800-\uDBFF]$/, '');
 
 function makeBar(percent, length = 5) {
@@ -49,7 +49,9 @@ async function forwardRequest(bridge, event, { engine, title, respond, threadId 
     const warning = isTruncated
       ? `\n\n⚠️ <i>[TRUNCATED: ${rawDesc.length} chars total. Review full command in editor before approving.]</i>`
       : '';
-    const text = `⚠️ <b>ACTION APPROVAL REQUIRED</b>\n\n📁 ${title}\n🤖 <b>${event.agent ? event.agent.toUpperCase() : 'Agent'}</b> needs approval:\n\n<code>${clip(rawDesc, 500)}</code>${warning}`;
+    const agent = event.agent ? event.agent[0].toUpperCase() + event.agent.slice(1) : 'Agent';
+    const text = `⚠️ <b>${escapeHtml(agent)} needs approval</b>\n📁 ${escapeHtml(title)}\n\n<pre>${escapeHtml(clip(rawDesc, 500))}</pre>${warning}`;
+    options.parse_mode = 'HTML';
     if (bridge.isForum && threadId) {
       void bridge.editForumTopic(threadId, { name: `🟡 ${clip(title.split('(')[0].trim(), 26)}` }).catch(() => {});
     }
