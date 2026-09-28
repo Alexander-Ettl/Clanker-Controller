@@ -247,6 +247,7 @@ class TelegramBridge {
     this.requests = new Set();
     this.actions = new Map();
     this.questionMessages = new Map();
+    this.pastQuestionIds = new Set();
     this.webhookSecret = crypto.randomBytes(24).toString('hex');
     this.lastError = '';
     this.generation = 0;
@@ -318,6 +319,7 @@ class TelegramBridge {
     for (const request of this.requests) request.destroy(new Error('Telegram request cancelled.'));
     this.actions.clear();
     this.questionMessages.clear();
+    this.pastQuestionIds.clear();
     if (this.server) await new Promise((resolve) => { this.server.close(resolve); this.server.closeAllConnections?.(); });
     this.server = null;
   }
@@ -495,6 +497,7 @@ class TelegramBridge {
           ...(options.message_thread_id ? { message_thread_id: options.message_thread_id } : {})
         };
         const message = await this.api('sendMessage', payload);
+        this.pastQuestionIds.add(message.message_id);
         this.questionMessages.set(message.message_id, {
           created: Date.now(), isPending,
           respond: (answer) => {
@@ -512,6 +515,9 @@ class TelegramBridge {
     for (const map of [this.actions, this.questionMessages]) {
       for (const [key, value] of map) if (Date.now() - value.created > 86400000 || !value.isPending()) map.delete(key);
       while (map.size > 200) map.delete(map.keys().next().value);
+    }
+    while (this.pastQuestionIds && this.pastQuestionIds.size > 500) {
+      this.pastQuestionIds.delete(this.pastQuestionIds.values().next().value);
     }
   }
 
@@ -658,7 +664,7 @@ class TelegramBridge {
     const threadId = message?.message_thread_id || null;
     const sendReply = (text, opts = {}) => this.sendMarkdown(text, { ...(threadId ? { message_thread_id: threadId } : {}), ...opts });
     const text = String(message.text || '').trim();
-    if (message.reply_to_message) {
+    if (message.reply_to_message && !text.startsWith('/')) {
       const id = message.reply_to_message.message_id;
       const question = this.questionMessages.get(id);
       if (question && text) {
@@ -667,7 +673,10 @@ class TelegramBridge {
         await sendReply(result === false ? 'This question was already answered or cancelled.' : typeof result === 'string' ? result : 'Answer saved.');
         return;
       }
-      if (message.reply_to_message.from?.is_bot) { await sendReply('That question is no longer pending. Use /status to check your chats.'); return; }
+      if (this.pastQuestionIds && this.pastQuestionIds.has(id)) {
+        await sendReply('That question is no longer pending. Use /status to check your chats.');
+        return;
+      }
     }
     const match = text.match(/^\/([\w-]+)(?:@\w+)?(?:\s+([\s\S]+))?$/);
     const handler = match && this.commands.get(match[1].toLowerCase());

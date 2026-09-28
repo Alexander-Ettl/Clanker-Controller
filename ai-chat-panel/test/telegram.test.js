@@ -537,5 +537,70 @@ test('/status from owner in supergroup dynamically adopts supergroup and updates
   assert.match(cockpitCall.text, /HOME WORKSTATION COCKPIT/);
 });
 
+test('replies to bot topic welcome messages or slash commands are not rejected as expired questions', async () => {
+  const bridge = new TelegramBridge({ botToken: '123:token', chatId: '-1008888888', ownerId: '42' });
+  bridge.isForum = true;
+  bridge.running = true;
+  const calls = [];
+  bridge.api = async (method, payload) => {
+    calls.push({ method, ...payload });
+    return { ok: true, message_id: calls.length };
+  };
+
+  let enqueued = null;
+  const manager = {
+    listChats: () => [],
+    runs: new Map(),
+    runFor: () => ({
+      chat: { id: 'c-36', title: 'Project 36', telegramTopicId: 36 },
+      turn: null,
+      enqueue: (msg) => { enqueued = msg; }
+    }),
+    deps: { chatStore: { save: (c) => c } }
+  };
+
+  bindTelegramControls(bridge, {
+    manager,
+    watchdog: {},
+    queue: { getQueue: async () => [] },
+    readQuotas: async () => ({}),
+    models: [{ id: 'codex', agent: 'codex' }],
+    resolveTarget: () => ({ agentId: 'codex' }),
+    notifyQueue() {}
+  });
+
+  // Message in topic 36 that replies to the bot's topic intro message (message_id: 100, is_bot: true)
+  await bridge.handleUpdate({
+    message: {
+      message_id: 101,
+      message_thread_id: 36,
+      from: { id: 42 },
+      chat: { id: -1008888888, type: 'supergroup' },
+      reply_to_message: { message_id: 100, from: { is_bot: true } },
+      text: '/antigravity-code-review'
+    }
+  });
+
+  // Must not have sent "That question is no longer pending"
+  assert.ok(!calls.some((c) => /no longer pending/i.test(c.text)));
+  // Must have enqueued prompt in the topic chat
+  assert.ok(enqueued);
+  assert.equal(enqueued.text, '/antigravity-code-review');
+
+  // Also sending /status as a reply to bot must render cockpit
+  await bridge.handleUpdate({
+    message: {
+      message_id: 102,
+      message_thread_id: 36,
+      from: { id: 42 },
+      chat: { id: -1008888888, type: 'supergroup' },
+      reply_to_message: { message_id: 100, from: { is_bot: true } },
+      text: '/status'
+    }
+  });
+  const cockpitCall = calls.find((c) => /HOME WORKSTATION COCKPIT/i.test(c.text));
+  assert.ok(cockpitCall);
+});
+
 
 
