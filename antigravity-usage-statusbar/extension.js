@@ -33,7 +33,9 @@ const CLAUDE_CREDENTIALS_PATH = path.join(CLAUDE_CONFIG_PATH, '.credentials.json
 const CLAUDE_USAGE_URL = 'https://api.anthropic.com/api/oauth/usage';
 const CLAUDE_FETCH_MS = 60_000;
 const CLAUDE_BACKOFF_MS = 5 * 60_000;
-const CODEX_SESSIONS_PATH = path.join(os.homedir(), '.codex', 'sessions');
+// Same default as ai-chat-panel's lib/quota-bridge.js cacheFile().
+const PANEL_QUOTA_CACHE_PATH = process.env.AI_CHAT_PANEL_QUOTA_CACHE || path.join(os.tmpdir(), 'ai-chat-panel-quota-resets.json');
+const CODEX_SESSIONS_PATH =path.join(os.homedir(), '.codex', 'sessions');
 
 let timer;
 let refreshInProgress = false;
@@ -91,18 +93,39 @@ async function fetchLiveClaudeUsage(now = Date.now()) {
   return liveClaudeUsage;
 }
 
+// The usage endpoint throttles hard (429s), so the AI chat panel's readings are the
+// fresher source: it records every turn's exact rate-limit event to this file.
+async function readPanelClaudeUsage(now = Date.now()) {
+  try {
+    const live = JSON.parse(await fs.promises.readFile(PANEL_QUOTA_CACHE_PATH, 'utf8')).claudeLive;
+    const window = (w) => w && w.resetsAt * 1000 > now
+      ? { utilization: w.used, resets_at: new Date(w.resetsAt * 1000).toISOString() } : undefined;
+    const utilization = { five_hour: window(live?.fiveHour), seven_day: window(live?.sevenDay) };
+    return live?.at && (utilization.five_hour || utilization.seven_day) ? { fetchedAtMs: live.at, utilization } : null;
+  } catch {
+    return null;
+  }
+}
+
 async function readClaudeState() {
-  const [state, live] = await Promise.all([
+  const [state, live, panel] = await Promise.all([
     fs.promises.readFile(CLAUDE_STATE_PATH, 'utf8')
       .then((content) => JSON.parse(content.replace(/^\uFEFF/, '')))
       .catch(() => null),
     fetchLiveClaudeUsage(),
+    readPanelClaudeUsage(),
   ]);
-  // Whichever is newer wins: our fetch, or one Claude Code just made itself.
-  if (live && !(state?.cachedUsageUtilization?.fetchedAtMs >= live.fetchedAtMs)) {
-    return { ...state, cachedUsageUtilization: live };
+  // Newest reading wins per window: our fetch, Claude Code's own, or the panel's. Older
+  // readings still fill windows the newer one lacks (the panel never reports Opus).
+  const readings = [state?.cachedUsageUtilization, live, panel]
+    .filter((r) => r?.utilization && Number.isFinite(r.fetchedAtMs))
+    .sort((a, b) => a.fetchedAtMs - b.fetchedAtMs);
+  if (!readings.length) return state;
+  const utilization = {};
+  for (const r of readings) {
+    for (const [key, w] of Object.entries(r.utilization)) if (w) utilization[key] = w;
   }
-  return state;
+  return { ...state, cachedUsageUtilization: { fetchedAtMs: readings.at(-1).fetchedAtMs, utilization } };
 }
 
 async function readClaudeUsage(claudeState) {
