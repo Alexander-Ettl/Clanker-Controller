@@ -143,6 +143,63 @@ async function probeAndConnect(discovery) {
   return null;
 }
 
+async function getAntigravityConnection() {
+  if (cachedConnection) return cachedConnection;
+  if (discoveryInProgress) return null;
+  discoveryInProgress = true;
+  try {
+    const discovery = discoverLanguageServer();
+    if (!discovery || !discovery.candidatePorts || discovery.candidatePorts.length === 0) return null;
+
+    const connection = await probeAndConnect(discovery);
+    if (!connection) return null;
+
+    cachedConnection = {
+      port: connection.port,
+      csrfToken: connection.csrfToken,
+      pid: connection.pid,
+      initialData: connection.initialData,
+    };
+    return cachedConnection;
+  } finally {
+    discoveryInProgress = false;
+  }
+}
+
+async function fetchAntigravitySlashCommands(options = 1500) {
+  const timeoutMs = typeof options === 'number' ? options : (options && typeof options.timeoutMs === 'number' ? options.timeoutMs : 1500);
+  const connection = await getAntigravityConnection();
+  if (!connection) return null;
+  try {
+    const payload = JSON.stringify({
+      cascadeConfig: {
+        plannerConfig: {
+          planModel: 'MODEL_PLACEHOLDER_M16',
+        },
+      },
+    });
+    const res = await postConnectRpc(
+      connection.port,
+      '/exa.language_server_pb.LanguageServerService/GetSlashCommands',
+      connection.csrfToken,
+      payload,
+      timeoutMs,
+    );
+    if (res && Array.isArray(res.commands)) {
+      return res.commands
+        .map((c) => ({
+          name: c.name || c.info?.name,
+          description: c.description || c.title || '',
+          type: c.type || c.info?.type || '',
+        }))
+        .filter((c) => c.name);
+    }
+  } catch {
+    cachedConnection = null;
+  }
+  return null;
+}
+
 async function fetchQuotaSummary() {
   if (cachedConnection) {
     try {
@@ -160,29 +217,14 @@ async function fetchQuotaSummary() {
     }
   }
 
-  if (discoveryInProgress) return null;
-  discoveryInProgress = true;
-  try {
-    const discovery = discoverLanguageServer();
-    if (!discovery || discovery.candidatePorts.length === 0) return null;
+  const connection = await getAntigravityConnection();
+  if (!connection) return null;
 
-    const connection = await probeAndConnect(discovery);
-    if (!connection) return null;
-
-    cachedConnection = {
-      port: connection.port,
-      csrfToken: connection.csrfToken,
-      pid: connection.pid,
-    };
-
-    return {
-      data: connection.initialData,
-      port: connection.port,
-      pid: connection.pid,
-    };
-  } finally {
-    discoveryInProgress = false;
-  }
+  return {
+    data: connection.initialData,
+    port: connection.port,
+    pid: connection.pid,
+  };
 }
 
 function clearCachedConnection() {
@@ -192,6 +234,9 @@ function clearCachedConnection() {
 module.exports = {
   clearCachedConnection,
   discoverLanguageServer,
+  fetchAntigravitySlashCommands,
   fetchQuotaSummary,
+  getAntigravityConnection,
   postConnectRpc,
 };
+

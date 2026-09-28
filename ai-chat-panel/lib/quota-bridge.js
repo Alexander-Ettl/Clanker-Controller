@@ -70,6 +70,35 @@ function remember(key, window) {
 const resetPassed = (window) => typeof window?.resetsAt === 'number' && window.resetsAt * 1000 <= Date.now();
 const fresh = (window) => ({ ...window, remaining: 100, used: 0, resetsAt: null, assumedReset: true });
 
+/**
+ * Claude's own numbers (lib/claude-usage.js: each turn's rate-limit event, or the free
+ * `/usage` probe), remembered on disk with when they were read. While their window is
+ * still running they beat the status bar's cache, which only refreshes when Claude
+ * Code's /usage screen runs and so often reads stale after a restart.
+ */
+function recordClaudeUsage(windows, at = Date.now()) {
+  if (!windows?.fiveHour && !windows?.sevenDay) return;
+  cache().claudeLive = { ...cache().claudeLive, ...Object.fromEntries(Object.entries(windows).filter(([, w]) => w)), at };
+  try { fs.writeFileSync(resetCacheFile, JSON.stringify(resetCache)); } catch { /* best effort */ }
+}
+/** Last real reading's age in ms (Infinity if none): the extension probes /usage when it's old or a window has rolled over. */
+function claudeUsageAge() {
+  const live = cache().claudeLive;
+  if (!live?.at) return Infinity;
+  const rolled = [live.fiveHour, live.sevenDay].some((w) => w && w.resetsAt * 1000 <= Date.now() && live.at < w.resetsAt * 1000);
+  return rolled ? Infinity : Date.now() - live.at;
+}
+function withClaudeLive(quotas) {
+  const live = cache().claudeLive;
+  if (!live) return quotas;
+  const asWindow = (w, windowMinutes) => w && w.resetsAt * 1000 > Date.now() ? { used: w.used, remaining: 100 - w.used, resetsAt: w.resetsAt, windowMinutes } : null;
+  return {
+    ...quotas,
+    claude: asWindow(live.fiveHour, 300) || quotas.claude,
+    claudeWeekly: asWindow(live.sevenDay, 10080) || quotas.claudeWeekly,
+  };
+}
+
 // P16-M: the full window objects (used, remaining, resetsAt, windowMinutes),
 // not just a percentage, so the launcher can draw 5h and 7d gauges with
 // reset countdowns. `remaining`/`windowLabel` stay for the chat header.
@@ -87,7 +116,8 @@ function windowOf(raw, windowLabel, key) {
 // P17-B: Opus runs on the same Anthropic account, so its 5h window is
 // Claude's; its 7d gauge is the account's Opus-only weekly cap when one is
 // reported, else the all-models week.
-function shapeQuotas(quotas) {
+function shapeQuotas(raw) {
+  const quotas = withClaudeLive(raw || {});
   const claude = windowOf(quotas.claude, '5h', 'claude');
   // Remembered only for the 5h windows that gate scheduled tasks; a missing weekly/Opus cap means "none on this plan".
   const claudeWeekly = windowOf(quotas.claudeWeekly, '7d');
@@ -106,8 +136,10 @@ function shapeQuotas(quotas) {
 
 /** Snapshot for the panel header: Claude 5h/7d, Codex 5h/7d, Antigravity 5h/7d (live language-server quota). */
 async function readQuotas() {
+  const remembered = Boolean(cache().claudeLive); // read before any await
   const reader = await getCanonicalQuotaReader();
-  if (!reader) return NO_QUOTAS;
+  // Without the status-bar extension, Claude's own remembered numbers still count.
+  if (!reader) return remembered ? { ...NO_QUOTAS, ...shapeQuotas({}) } : NO_QUOTAS;
   return shapeQuotas(await reader.getQuotas());
 }
 
@@ -123,4 +155,4 @@ async function quotaBridgeConnected() {
   try { return Boolean(await getCanonicalQuotaReader()); } catch { return false; }
 }
 
-module.exports = { readQuotas, onDidChangeQuotas, shapeQuotas, quotaBridgeConnected };
+module.exports = { readQuotas, onDidChangeQuotas, shapeQuotas, quotaBridgeConnected, recordClaudeUsage, claudeUsageAge };

@@ -778,7 +778,11 @@ class StreamEngine extends EventEmitter {
     this.child = child;
     this.turn = { agent, prompt, attachments, model, effort, attempt: 0 };
     this.beginLiveTurn();
-    this.expectEcho = JSON.parse(spec.input).message.content; // its replay is ours, not the phone's
+    try {
+      this.expectEcho = JSON.parse(spec.input)?.message?.content ?? null; // its replay is ours, not the phone's
+    } catch {
+      this.expectEcho = null;
+    }
     child.stdin.write(spec.input);
     return child;
   }
