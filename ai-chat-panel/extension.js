@@ -29,7 +29,7 @@ const { route } = require('./lib/auto-router.js');
 const { MODEL_CATALOG, modelOption, resolveModel } = require('./lib/model-catalog.js');
 const { SchedulerQueue, ACTIVE_STATUSES } = require('./lib/scheduler-queue.js');
 const { TelegramBridge, DOCK_KEYBOARD } = require('./lib/telegram-bridge.js');
-const { configureTelegram: setupTelegram, TOKEN_KEY, CHAT_KEY } = require('./lib/telegram-setup.js');
+const { configureTelegram: setupTelegram, TOKEN_KEY, CHAT_KEY, OWNER_KEY } = require('./lib/telegram-setup.js');
 const { forwardRequest, bindTelegramControls } = require('./lib/telegram-control.js');
 const { resolveEditorTheme } = require('./lib/editor-theme.js');
 const { buildHandoff, buildCompactionHandoff, checkpointStart, estimateTokens, COMPACT_DIRECTIVE, COMPACT_TARGET_TOKENS } = require('./lib/chat-handoff.js');
@@ -1749,10 +1749,22 @@ function activate(context) {
     }
   }
 
-  async function startTelegram(token, chatId, webhookPublicUrl = '') {
+  async function startTelegram(token, chatId, webhookPublicUrl = '', ownerId = '') {
     const previous = telegram;
     await previous?.stop();
-    const next = new TelegramBridge({ botToken: token, chatId, webhookPublicUrl });
+    const storedOwner = ownerId || await context.secrets.get(OWNER_KEY);
+    const effectiveOwner = storedOwner || (chatId && !chatId.startsWith('-') ? chatId : '');
+    if (effectiveOwner && !storedOwner) {
+      void context.secrets.store(OWNER_KEY, effectiveOwner).catch(() => {});
+    }
+    const next = new TelegramBridge({ botToken: token, chatId, ownerId: effectiveOwner, webhookPublicUrl });
+    next.onChatIdChange = async (newChatId) => {
+      try {
+        await context.secrets.store(CHAT_KEY, newChatId);
+      } catch (err) {
+        console.error('[ai-chat-panel] failed to persist new telegram chat ID:', err);
+      }
+    };
     bindTelegramControls(next, { manager: chatWindowManager, watchdog, queue: schedulerQueue, readQuotas, models: MODEL_CATALOG, resolveTarget: injectTarget, notifyQueue: notifySchedulerQueue });
     try { await next.start(); }
     catch (error) {
@@ -1771,11 +1783,11 @@ function activate(context) {
     statusItem: tunnelStatus,
     onLive: async (url) => {
       if (!telegram) throw new Error('Configure Telegram before starting the tunnel.');
-      const { botToken, chatId } = telegram;
-      await startTelegram(botToken, chatId, url);
+      const { botToken, chatId, ownerId } = telegram;
+      await startTelegram(botToken, chatId, url, ownerId);
     },
     onOff: async () => {
-      if (telegram?.webhookPublicUrl) await startTelegram(telegram.botToken, telegram.chatId);
+      if (telegram?.webhookPublicUrl) await startTelegram(telegram.botToken, telegram.chatId, '', telegram.ownerId);
     },
   });
 
@@ -1789,15 +1801,17 @@ function activate(context) {
         const previous = telegram;
         const oldToken = await context.secrets.get(TOKEN_KEY);
         const oldChat = await context.secrets.get(CHAT_KEY);
-        const next = await startTelegram(token, chatId);
+        const oldOwner = await context.secrets.get(OWNER_KEY);
+        const next = await startTelegram(token, chatId, '', chatId);
         try {
           await context.secrets.store(TOKEN_KEY, token);
           await context.secrets.store(CHAT_KEY, chatId);
+          await context.secrets.store(OWNER_KEY, chatId);
         } catch (error) {
           await next.stop();
           telegram = previous;
           watchdog.telegram = previous;
-          for (const [key, value] of [[TOKEN_KEY, oldToken], [CHAT_KEY, oldChat]]) {
+          for (const [key, value] of [[TOKEN_KEY, oldToken], [CHAT_KEY, oldChat], [OWNER_KEY, oldOwner]]) {
             if (value) await context.secrets.store(key, value);
             else await context.secrets.delete(key);
           }
@@ -1810,16 +1824,18 @@ function activate(context) {
 
   async function disconnectTelegram() {
     if (telegramSetup) { vscode.window.showInformationMessage('Finish or cancel Telegram setup before disconnecting.'); return; }
-    await context.secrets.delete('aiChatPanel.telegramBotToken');
-    await context.secrets.delete('aiChatPanel.telegramChatId');
+    await context.secrets.delete(TOKEN_KEY);
+    await context.secrets.delete(CHAT_KEY);
+    await context.secrets.delete(OWNER_KEY);
     if (telegram) { await telegram.stop(); telegram = null; watchdog.telegram = null; }
     vscode.window.showInformationMessage('AI Chat Panel: Telegram bridge disconnected.');
   }
 
   void (async () => {
-    const token = await context.secrets.get('aiChatPanel.telegramBotToken');
-    const chatId = await context.secrets.get('aiChatPanel.telegramChatId');
-    if (token && chatId) await startTelegram(token, chatId);
+    const token = await context.secrets.get(TOKEN_KEY);
+    const chatId = await context.secrets.get(CHAT_KEY);
+    const ownerId = await context.secrets.get(OWNER_KEY);
+    if (token && chatId) await startTelegram(token, chatId, '', ownerId);
   })().catch((error) => vscode.window.showWarningMessage(`Telegram could not reconnect: ${error.message}. Use Configure to check the connection.`));
   watchdog.start();
 

@@ -227,9 +227,11 @@ const MINI_APP_HTML = `<!DOCTYPE html>
 </html>`;
 
 class TelegramBridge {
-  constructor({ botToken, chatId, webhookPort = 57321, webhookPublicUrl = '', apiBaseUrl = 'https://api.telegram.org' } = {}) {
+  constructor({ botToken, chatId, ownerId, webhookPort = 57321, webhookPublicUrl = '', apiBaseUrl = 'https://api.telegram.org' } = {}) {
     this.botToken = String(botToken || '');
     this.chatId = String(chatId || '');
+    this.ownerId = String(ownerId || (this.chatId && !this.chatId.startsWith('-') ? this.chatId : ''));
+    this.onChatIdChange = null;
     this.isForum = String(this.chatId).startsWith('-100');
     this.webhookPort = webhookPort;
     this.webhookPublicUrl = webhookPublicUrl;
@@ -572,14 +574,46 @@ class TelegramBridge {
     const message = callback?.message || update?.message;
     const sender = callback?.from || message?.from;
     if (!sender || !message?.chat) return;
-    const isSupergroup = message.chat.type === 'supergroup' || message.chat.type === 'group';
-    const isPrivate = message.chat.type === 'private' || !message.chat.type;
-    if (isPrivate) {
-      if (String(sender.id) !== this.chatId || String(message.chat.id) !== this.chatId) return;
-    } else if (isSupergroup) {
-      if (String(message.chat.id) !== this.chatId) return;
+    const chatType = message.chat.type || 'private';
+    const isSupergroup = chatType === 'supergroup' || chatType === 'group';
+    const isPrivate = chatType === 'private';
+    const senderId = String(sender.id);
+    const incomingChatId = String(message.chat.id);
+
+    if (!this.ownerId && isPrivate) {
+      this.ownerId = senderId;
+    }
+
+    const isOwner = !this.ownerId || senderId === this.ownerId || senderId === this.chatId;
+
+    if (incomingChatId !== this.chatId) {
+      if (callback) return;
+      const text = String(message?.text || '').trim();
+      const isActivation = /^\/(?:status|cockpit|start|connect)(?:@\w+)?/i.test(text);
+      if (!isActivation) return;
+
+      if (isPrivate && isOwner && senderId === incomingChatId) {
+        this.chatId = incomingChatId;
+        this.isForum = false;
+        if (typeof this.onChatIdChange === 'function') {
+          try { void this.onChatIdChange(this.chatId); } catch {}
+        }
+      } else if (isSupergroup && isOwner) {
+        this.chatId = incomingChatId;
+        this.isForum = Boolean(message.chat.is_forum || incomingChatId.startsWith('-100'));
+        if (typeof this.onChatIdChange === 'function') {
+          try { void this.onChatIdChange(this.chatId); } catch {}
+        }
+        try {
+          void this.api('getChat', { chat_id: this.chatId }).then((chatInfo) => {
+            if (chatInfo?.is_forum) this.isForum = true;
+          }).catch(() => {});
+        } catch {}
+      } else {
+        return;
+      }
     } else {
-      return;
+      if (!isOwner) return;
     }
     this.pruneActions();
     if (callback) {

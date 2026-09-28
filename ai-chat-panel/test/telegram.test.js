@@ -483,5 +483,59 @@ test('forwardRequest dispatches approval directly into project topic thread and 
   assert.match(sendCall.text, /ACTION APPROVAL REQUIRED/);
 });
 
+test('/status from owner in supergroup dynamically adopts supergroup and updates target chat', async () => {
+  const bridge = new TelegramBridge({ botToken: '123:token', chatId: '42', ownerId: '42' });
+  bridge.running = true;
+  const calls = [];
+  let adoptedChatId = null;
+  bridge.onChatIdChange = (id) => { adoptedChatId = id; };
+  bridge.api = async (method, payload) => {
+    calls.push({ method, ...payload });
+    if (method === 'getChat') return { id: payload.chat_id, type: 'supergroup', is_forum: true };
+    return { ok: true, message_id: calls.length };
+  };
+
+  bindTelegramControls(bridge, {
+    manager: { listChats: () => [], runs: new Map(), deps: {} },
+    watchdog: {},
+    queue: { getQueue: async () => [] },
+    readQuotas: async () => ({}),
+    models: [{ id: 'codex', agent: 'codex' }],
+    resolveTarget: () => ({ agentId: 'codex' }),
+    notifyQueue() {}
+  });
+
+  // 1. Stranger in supergroup sends /status -> ignored
+  await bridge.handleUpdate({
+    message: {
+      message_id: 1,
+      from: { id: 999 },
+      chat: { id: -1008888888, type: 'supergroup' },
+      text: '/status'
+    }
+  });
+  assert.equal(bridge.chatId, '42');
+  assert.equal(calls.length, 0);
+
+  // 2. Verified owner sends /status in supergroup -> auto-adopts
+  await bridge.handleUpdate({
+    message: {
+      message_id: 2,
+      from: { id: 42 },
+      chat: { id: -1008888888, type: 'supergroup' },
+      text: '/status'
+    }
+  });
+
+  assert.equal(bridge.chatId, '-1008888888');
+  assert.equal(bridge.isForum, true);
+  assert.equal(adoptedChatId, '-1008888888');
+
+  // Verify cockpit reply was sent to the new supergroup
+  const cockpitCall = calls.find((c) => c.method === 'sendMessage' && c.chat_id === '-1008888888');
+  assert.ok(cockpitCall);
+  assert.match(cockpitCall.text, /HOME WORKSTATION COCKPIT/);
+});
+
 
 
