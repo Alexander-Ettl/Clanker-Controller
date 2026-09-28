@@ -44,8 +44,12 @@ async function forwardRequest(bridge, event, { engine, title, respond, threadId 
   const answer = (callback) => isPending() ? respond(event.actionId, callback) : false;
   const options = threadId ? { message_thread_id: threadId } : {};
   if (event.type === 'approval_required') {
-    const desc = event.description || event.command || event.tool || 'Review the pending action.';
-    const text = `⚠️ <b>ACTION APPROVAL REQUIRED</b>\n\n📁 ${title}\n🤖 <b>${event.agent ? event.agent.toUpperCase() : 'Agent'}</b> needs approval:\n\n<code>${clip(desc, 500)}</code>`;
+    const rawDesc = String(event.description || event.command || event.tool || 'Review the pending action.').trim();
+    const isTruncated = rawDesc.length > 500;
+    const warning = isTruncated
+      ? `\n\n⚠️ <i>[TRUNCATED: ${rawDesc.length} chars total. Review full command in editor before approving.]</i>`
+      : '';
+    const text = `⚠️ <b>ACTION APPROVAL REQUIRED</b>\n\n📁 ${title}\n🤖 <b>${event.agent ? event.agent.toUpperCase() : 'Agent'}</b> needs approval:\n\n<code>${clip(rawDesc, 500)}</code>${warning}`;
     if (bridge.isForum && threadId) {
       void bridge.editForumTopic(threadId, { name: `🟡 ${clip(title.split('(')[0].trim(), 26)}` }).catch(() => {});
     }

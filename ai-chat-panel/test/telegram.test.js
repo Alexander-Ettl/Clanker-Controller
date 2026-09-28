@@ -653,3 +653,88 @@ test('replies to bot topic welcome messages or slash commands are not rejected a
   assert.ok(cockpitCall);
 });
 
+test('unauthenticated or non-owner sender in group or private is strictly dropped when ownerId is configured', async () => {
+  const bridge = new TelegramBridge({ botToken: '123:token', chatId: '-1008888888', ownerId: '42' });
+  bridge.isForum = true;
+  bridge.running = true;
+  const enqueued = [];
+  const run = { chat: { id: 'chat-1', telegramTopicId: 10 }, turn: null, enqueue: (msg) => enqueued.push(msg) };
+  const manager = { listChats: () => [run.chat], runs: new Map([[run.chat.id, run]]), runFor: () => run };
+  bindTelegramControls(bridge, {
+    manager, watchdog: {}, queue: { getQueue: async () => [] },
+    readQuotas: async () => ({}), models: [{ id: 'codex', agent: 'codex' }], resolveTarget: () => ({ agentId: 'codex' }), notifyQueue() {}
+  });
+
+  // Message from non-owner (user ID 999 instead of 42)
+  await bridge.handleUpdate({
+    message: {
+      message_id: 201,
+      message_thread_id: 10,
+      from: { id: 999 },
+      chat: { id: -1008888888, type: 'supergroup' },
+      text: 'rm -rf /'
+    }
+  });
+
+  // Non-owner message must not be enqueued
+  assert.equal(enqueued.length, 0);
+
+  // Message from verified owner (user ID 42)
+  await bridge.handleUpdate({
+    message: {
+      message_id: 202,
+      message_thread_id: 10,
+      from: { id: 42 },
+      chat: { id: -1008888888, type: 'supergroup' },
+      text: 'Check project status'
+    }
+  });
+
+  assert.equal(enqueued.length, 1);
+  assert.equal(enqueued[0].text, 'Check project status');
+});
+
+test('forwardRequest appends explicit truncation warning when command exceeds 500 characters', async () => {
+  const bridge = new TelegramBridge({ botToken: '123:token', chatId: '42', ownerId: '42' });
+  bridge.running = true;
+  const calls = [];
+  bridge.api = async (method, payload) => {
+    calls.push({ method, ...payload });
+    return { ok: true, message_id: 1 };
+  };
+
+  const longCommand = 'npm test -- --filter ' + 'x'.repeat(600);
+  const engine = { approvals: new Map([['act-1', {}]]) };
+  await forwardRequest(bridge, {
+    type: 'approval_required',
+    actionId: 'act-1',
+    command: longCommand,
+    agent: 'codex'
+  }, {
+    engine,
+    title: 'Security Task',
+    respond: () => true
+  });
+
+  const sendCall = calls.find((c) => c.method === 'sendMessage');
+  assert.ok(sendCall);
+  assert.match(sendCall.text, /⚠️ <i>\[TRUNCATED: \d+ chars total\. Review full command in editor before approving\.\]<\/i>/);
+});
+
+test('GET /app returns security headers preventing clickjacking, sniffing and insecure caching', async (t) => {
+  const bridge = new TelegramBridge({ botToken: '123:token', chatId: '42', ownerId: '42' });
+  bridge.webhookPort = 0;
+  bridge.running = true;
+  await bridge.startWebhookServer();
+  t.after(() => bridge.stop());
+
+  const port = bridge.server.address().port;
+  const res = await fetch(`http://127.0.0.1:${port}/app`);
+  assert.equal(res.status, 200);
+  assert.equal(res.headers.get('x-content-type-options'), 'nosniff');
+  assert.equal(res.headers.get('x-frame-options'), 'SAMEORIGIN');
+  assert.match(res.headers.get('content-security-policy'), /default-src 'self'/);
+  assert.match(res.headers.get('cache-control'), /no-store/);
+});
+
+

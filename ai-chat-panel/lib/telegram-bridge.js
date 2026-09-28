@@ -532,7 +532,13 @@ class TelegramBridge {
 
   handleWebhook(request, response) {
     if (request.method === 'GET' && (request.url === '/app' || request.url === '/app/')) {
-      response.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
+      response.writeHead(200, {
+        'content-type': 'text/html; charset=utf-8',
+        'x-content-type-options': 'nosniff',
+        'x-frame-options': 'SAMEORIGIN',
+        'content-security-policy': "default-src 'self' 'unsafe-inline' https://telegram.org;",
+        'cache-control': 'no-store, no-cache, must-revalidate, private'
+      });
       response.end(MINI_APP_HTML);
       return;
     }
@@ -586,11 +592,11 @@ class TelegramBridge {
     const senderId = String(sender.id);
     const incomingChatId = String(message.chat.id);
 
-    if (!this.ownerId && isPrivate) {
+    if (!this.ownerId) {
       this.ownerId = senderId;
     }
 
-    const isOwner = !this.ownerId || senderId === this.ownerId || senderId === this.chatId;
+    const isOwner = Boolean(this.ownerId && senderId === this.ownerId);
 
     if (incomingChatId !== this.chatId) {
       if (callback) return;
