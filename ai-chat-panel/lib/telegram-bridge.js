@@ -5,6 +5,23 @@ const https = require('node:https');
 const crypto = require('node:crypto');
 const { setTimeout: delay } = require('node:timers/promises');
 const clip = (text, limit = 3500) => String(text).slice(0, limit).replace(/[\uD800-\uDBFF]$/, '');
+const escapeHtml = (text) => String(text).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+const htmlToPlain = (html) => String(html).replace(/<[^>]+>/g, '').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&amp;/g, '&');
+
+/** An agent's Markdown reply -> the small HTML subset Telegram renders (b, i, code, pre, a). */
+function markdownToTelegramHtml(markdown) {
+  const stash = [];
+  const keep = (html) => `\u0000${stash.push(html) - 1}\u0000`;
+  return escapeHtml(String(markdown)
+    .replace(/```[^\n]*\n?([\s\S]*?)```/g, (_, code) => keep(`<pre>${escapeHtml(code.replace(/\n$/, ''))}</pre>`))
+    .replace(/`([^`\n]+)`/g, (_, code) => keep(`<code>${escapeHtml(code)}</code>`)))
+    .replace(/^#{1,6}\s+(.+)$/gm, '<b>$1</b>')
+    .replace(/^(\s*)[-*]\s+/gm, '$1• ')
+    .replace(/\*\*(.+?)\*\*/g, '<b>$1</b>')
+    .replace(/(^|[^*\w])\*([^*\n]+)\*(?!\w)/g, '$1<i>$2</i>')
+    .replace(/\[([^\]\n]+)\]\((https?:\/\/[^\s)]+)\)/g, '<a href="$2">$1</a>')
+    .replace(/\u0000(\d+)\u0000/g, (_, i) => stash[i]);
+}
 
 function makeDockKeyboard({ chatTitle = null, isNewChat = false, model = 'codex' } = {}) {
   const modelIcons = {
@@ -354,7 +371,13 @@ class TelegramBridge {
           ...(options.parse_mode ? { parse_mode: options.parse_mode } : {}),
         };
         try {
-          const res = await this.api('sendMessage', payload);
+          const res = await this.api('sendMessage', payload).catch((error) => {
+            // A chunk split mid-tag (or markup Telegram rejects) still arrives, as readable plain text.
+            if (!payload.parse_mode || !/can't parse entities/i.test(error.message)) throw error;
+            delete payload.parse_mode;
+            payload.text = htmlToPlain(part);
+            return this.api('sendMessage', payload);
+          });
           if (res?.message_id) this.lastMessageId = res.message_id;
         } catch (error) {
           if (!(error.retryAfter > 0 && error.retryAfter <= 30)) throw error;
@@ -474,6 +497,7 @@ class TelegramBridge {
         chat_id: this.chatId,
         text: clip(description || 'Approve this action?'),
         reply_markup: { inline_keyboard: [[{ text: 'Approve once', callback_data: `approve:${id}` }, { text: 'Reject', callback_data: `reject:${id}` }]] },
+        ...(options.parse_mode ? { parse_mode: options.parse_mode } : {}),
         ...(options.message_thread_id ? { message_thread_id: options.message_thread_id } : {})
       };
       await this.api('sendMessage', payload);
@@ -741,4 +765,4 @@ class TelegramBridge {
   }
 }
 
-module.exports = { TelegramBridge, HELP, DOCK_KEYBOARD, makeDockKeyboard };
+module.exports = { TelegramBridge, HELP, DOCK_KEYBOARD, makeDockKeyboard, escapeHtml, markdownToTelegramHtml };

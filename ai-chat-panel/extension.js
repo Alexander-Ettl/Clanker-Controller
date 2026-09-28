@@ -28,7 +28,7 @@ const { ChatStore, markActive, ACTIVE_WINDOW_MS } = require('./lib/chat-store.js
 const { route } = require('./lib/auto-router.js');
 const { MODEL_CATALOG, modelOption, resolveModel } = require('./lib/model-catalog.js');
 const { SchedulerQueue, ACTIVE_STATUSES } = require('./lib/scheduler-queue.js');
-const { TelegramBridge, DOCK_KEYBOARD } = require('./lib/telegram-bridge.js');
+const { TelegramBridge, DOCK_KEYBOARD, escapeHtml, markdownToTelegramHtml } = require('./lib/telegram-bridge.js');
 const { configureTelegram: setupTelegram, TOKEN_KEY, CHAT_KEY, OWNER_KEY } = require('./lib/telegram-setup.js');
 const { forwardRequest, bindTelegramControls } = require('./lib/telegram-control.js');
 const { resolveEditorTheme } = require('./lib/editor-theme.js');
@@ -1714,7 +1714,8 @@ function activate(context) {
   function onTelegramEvent(run, event) {
     const bridge = telegram;
     if (!bridge?.running) return;
-    const title = `${run.chat.title || 'Chat'} (${run.chat.id})`;
+    // Short id only to tell same-named chats apart; forum topic names cut at the '('.
+    const title = `${run.chat.title || 'Chat'} (${String(run.chat.id).slice(0, 8)})`;
     const threadId = run.chat.telegramTopicId && (!run.chat.telegramChatId || String(run.chat.telegramChatId) === String(bridge.chatId))
       ? run.chat.telegramTopicId : null;
     void forwardRequest(bridge, event, {
@@ -1731,9 +1732,10 @@ function activate(context) {
         void bridge.editForumTopic(threadId, { name: `⚪ ${cleanTitle.slice(0, 26)}` }).catch(() => {});
       }
       const statusIcon = event.interrupted ? '⏹' : '✅';
-      const statusText = event.interrupted ? 'Turn stopped' : 'Turn completed';
-      const agentName = event.agent ? event.agent.toUpperCase() : 'AGENT';
-      const replyText = `${statusIcon} <b>${agentName} — ${statusText}</b>\n📁 <code>${title}</code>\n\n${run.activeAssistantMessage.text || 'No text response.'}`;
+      const agentName = event.agent ? event.agent[0].toUpperCase() + event.agent.slice(1) : 'Agent';
+      const statusText = event.interrupted ? 'stopped' : 'replied';
+      const body = run.activeAssistantMessage.text ? markdownToTelegramHtml(run.activeAssistantMessage.text) : '<i>No text response.</i>';
+      const replyText = `${statusIcon} <b>${escapeHtml(agentName)} ${statusText}</b>\n📁 ${escapeHtml(title)}\n\n${body}`;
       const reply_markup = {
         inline_keyboard: [
           [
@@ -1744,9 +1746,7 @@ function activate(context) {
       };
       const options = { reply_markup, parse_mode: 'HTML' };
       if (threadId) options.message_thread_id = threadId;
-      void bridge.sendMessage(replyText, options).then((ok) => {
-        if (!ok) void bridge.sendMessage(`${title}\n${event.agent || 'Agent'} ${event.interrupted ? 'stopped' : 'replied'}\n\n${run.activeAssistantMessage.text || 'No text response.'}`, threadId ? { message_thread_id: threadId } : {});
-      }).catch(() => {});
+      void bridge.sendMessage(replyText, options).catch(() => {});
     }
   }
 

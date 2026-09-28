@@ -6,7 +6,15 @@ const http = require('node:http');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const { TelegramBridge } = require('../lib/telegram-bridge.js');
+const { TelegramBridge, markdownToTelegramHtml } = require('../lib/telegram-bridge.js');
+
+test('agent Markdown becomes Telegram HTML with everything else escaped', () => {
+  assert.equal(
+    markdownToTelegramHtml('## Done\n- **fixed** `a<b` in *x* & [docs](https://e.com/?a=1&b=2)\n```js\nif (a < b) {}\n```'),
+    '<b>Done</b>\n• <b>fixed</b> <code>a&lt;b</code> in <i>x</i> &amp; <a href="https://e.com/?a=1&amp;b=2">docs</a>\n<pre>if (a &lt; b) {}</pre>',
+  );
+  assert.equal(markdownToTelegramHtml('<script>'), '&lt;script&gt;');
+});
 const { forwardRequest, bindTelegramControls } = require('../lib/telegram-control.js');
 const { configureTelegram } = require('../lib/telegram-setup.js');
 const { ChatStore } = require('../lib/chat-store.js');
@@ -531,7 +539,8 @@ test('forwardRequest dispatches approval directly into project topic thread and 
   const sendCall = calls.find((c) => c.method === 'sendMessage');
   assert.ok(sendCall);
   assert.equal(sendCall.message_thread_id, 303);
-  assert.match(sendCall.text, /ACTION APPROVAL REQUIRED/);
+  assert.match(sendCall.text, /needs approval/);
+  assert.equal(sendCall.parse_mode, 'HTML');
 });
 
 test('/status from owner in supergroup dynamically adopts supergroup and updates target chat', async () => {
