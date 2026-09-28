@@ -1715,7 +1715,8 @@ function activate(context) {
     const bridge = telegram;
     if (!bridge?.running) return;
     const title = `${run.chat.title || 'Chat'} (${run.chat.id})`;
-    const threadId = run.chat.telegramTopicId || null;
+    const threadId = run.chat.telegramTopicId && (!run.chat.telegramChatId || String(run.chat.telegramChatId) === String(bridge.chatId))
+      ? run.chat.telegramTopicId : null;
     void forwardRequest(bridge, event, {
       engine: run.streamEngine, title, threadId,
       respond: (id, callback) => {

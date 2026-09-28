@@ -65,19 +65,9 @@ function bindTelegramControls(bridge, { manager, watchdog, queue, readQuotas, mo
   let selected = null;
   let selectedModel = 'codex';
   let isNewChat = false;
-  const topicToChat = new Map();
-  const chatToTopic = new Map();
-
   const chats = () => manager.listChats();
-
-  try {
-    for (const c of chats()) {
-      if (c.telegramTopicId) {
-        topicToChat.set(Number(c.telegramTopicId), c.id);
-        chatToTopic.set(c.id, Number(c.telegramTopicId));
-      }
-    }
-  } catch {}
+  const initialChatId = String(bridge.chatId);
+  const belongsToGroup = (chat) => String(chat.telegramChatId || initialChatId) === String(bridge.chatId);
 
   const findChat = (id) => {
     const all = chats();
@@ -147,7 +137,7 @@ function bindTelegramControls(bridge, { manager, watchdog, queue, readQuotas, mo
     const all = chats().slice(0, 5);
     if (bridge.isForum && all.length > 0) {
       const pLines = all.map((c) => {
-        const threadId = chatToTopic.get(c.id) || c.telegramTopicId;
+        const threadId = belongsToGroup(c) ? c.telegramTopicId : null;
         const dot = c.state === 'running' ? '🟢' : c.state === 'waiting' ? '🟡' : '⚪';
         const tStr = threadId ? ` #${threadId}` : '';
         return `• ${dot} <i>${clip(c.preview || c.id, 24)}</i>${tStr}`;
@@ -546,8 +536,7 @@ function bindTelegramControls(bridge, { manager, watchdog, queue, readQuotas, mo
           if (topic?.message_thread_id) {
             threadId = topic.message_thread_id;
             run.chat.telegramTopicId = threadId;
-            topicToChat.set(threadId, run.chat.id);
-            chatToTopic.set(run.chat.id, threadId);
+            run.chat.telegramChatId = bridge.chatId;
             if (manager.deps?.chatStore) manager.deps.chatStore.save(run.chat);
             await bridge.sendMessage(
               `📁 <b>${clip(title, 35).toUpperCase()}</b>\n` +
@@ -574,24 +563,14 @@ function bindTelegramControls(bridge, { manager, watchdog, queue, readQuotas, mo
 
     // 0. FORUM TOPIC CONVERSATIONAL ROUTING
     if (bridge.isForum && threadId && threadId > 1) {
-      let chatId = topicToChat.get(threadId);
-      if (!chatId) {
-        const found = chats().find((c) => c.telegramTopicId === threadId);
-        if (found) {
-          chatId = found.id;
-          topicToChat.set(threadId, chatId);
-          chatToTopic.set(chatId, threadId);
-        }
-      }
+      const chatId = chats().find((c) => Number(c.telegramTopicId) === Number(threadId) && belongsToGroup(c))?.id;
 
       let run = chatId ? manager.runFor(chatId) : null;
       if (!run) {
         run = manager.runFor(null);
         run.chat.title = message.reply_to_message?.forum_topic_created?.name || `Project ${threadId}`;
         run.chat.telegramTopicId = threadId;
-        chatId = run.chat.id;
-        topicToChat.set(threadId, chatId);
-        chatToTopic.set(chatId, threadId);
+        run.chat.telegramChatId = bridge.chatId;
         if (manager.deps?.chatStore) manager.deps.chatStore.save(run.chat);
       }
 
@@ -738,8 +717,7 @@ function bindTelegramControls(bridge, { manager, watchdog, queue, readQuotas, mo
       if (topic?.message_thread_id) {
         threadId = topic.message_thread_id;
         run.chat.telegramTopicId = threadId;
-        topicToChat.set(threadId, run.chat.id);
-        chatToTopic.set(run.chat.id, threadId);
+        run.chat.telegramChatId = bridge.chatId;
         if (manager.deps?.chatStore) manager.deps.chatStore.save(run.chat);
         await bridge.sendMessage(
           `📁 <b>${clip(title, 35).toUpperCase()}</b>\n` +
@@ -763,7 +741,7 @@ function bindTelegramControls(bridge, { manager, watchdog, queue, readQuotas, mo
       return;
     }
     const lines = all.map((c) => {
-      const threadId = chatToTopic.get(c.id) || c.telegramTopicId;
+      const threadId = belongsToGroup(c) ? c.telegramTopicId : null;
       const statusIcon = c.state === 'running' ? '🟢' : c.state === 'waiting' ? '🟡' : '⚪';
       const topicStr = threadId ? ` [Topic #${threadId}]` : '';
       return `${statusIcon} <b>${clip(c.preview || c.id, 28)}</b>${topicStr}`;

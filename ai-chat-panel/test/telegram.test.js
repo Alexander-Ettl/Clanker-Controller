@@ -3,9 +3,13 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const http = require('node:http');
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
 const { TelegramBridge } = require('../lib/telegram-bridge.js');
 const { forwardRequest, bindTelegramControls } = require('../lib/telegram-control.js');
 const { configureTelegram } = require('../lib/telegram-setup.js');
+const { ChatStore } = require('../lib/chat-store.js');
 
 function fixture() {
   const bridge = new TelegramBridge({ botToken: '123:fake-secret-token', chatId: '42' });
@@ -391,6 +395,53 @@ test('supergroup topic messages auto-route to mapped chat session and update top
   assert.match(replyCall.text, /Executing turn/);
 });
 
+test('forum topic resumes its saved chat after restart and ignores the same topic ID in another group', async (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'telegram-topic-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const store = new ChatStore(dir);
+  for (const [id, group] of [['wrong-group', '-100111'], ['right-group', '-100222']]) {
+    store.save({ id, title: id, telegramTopicId: 36, telegramChatId: group, messages: [] });
+  }
+  store.save({ id: 'legacy-chat', title: 'Legacy', telegramTopicId: 37, messages: [] });
+
+  const bridge = new TelegramBridge({ botToken: '123:token', chatId: '-100222', ownerId: '42' });
+  bridge.isForum = true;
+  bridge.api = async () => ({ message_id: 1 });
+  const enqueued = [];
+  let created = 0;
+  const manager = {
+    listChats: () => store.list(),
+    runs: new Map(),
+    runFor: (id) => {
+      if (!id) { created++; return null; }
+      const chat = store.load(id);
+      return chat && { chat, enqueue: (message) => enqueued.push([id, message]) };
+    },
+    deps: { chatStore: store }
+  };
+  bindTelegramControls(bridge, {
+    manager, watchdog: {}, queue: { getQueue: async () => [] },
+    readQuotas: async () => ({}), models: [{ id: 'codex', agent: 'codex' }],
+    resolveTarget: () => ({ agentId: 'codex' }), notifyQueue() {}
+  });
+
+  await bridge.handleUpdate({ message: {
+    message_id: 7, message_thread_id: 36, from: { id: 42 },
+    chat: { id: -100222, type: 'supergroup' }, text: 'Continue this work'
+  } });
+  assert.equal(created, 0);
+  assert.equal(enqueued.length, 1);
+  assert.equal(enqueued[0][0], 'right-group');
+  assert.equal(enqueued[0][1].text, 'Continue this work');
+
+  await bridge.handleUpdate({ message: {
+    message_id: 8, message_thread_id: 37, from: { id: 42 },
+    chat: { id: -100222, type: 'supergroup' }, text: 'Continue old topic'
+  } });
+  assert.equal(created, 0);
+  assert.equal(enqueued[1][0], 'legacy-chat');
+});
+
 test('/new creates workstation chat and provisions forum topic via createForumTopic', async () => {
   const bridge = new TelegramBridge({ botToken: '123:token', chatId: '-1009999999' });
   bridge.isForum = true;
@@ -601,6 +652,4 @@ test('replies to bot topic welcome messages or slash commands are not rejected a
   const cockpitCall = calls.find((c) => /HOME WORKSTATION COCKPIT/i.test(c.text));
   assert.ok(cockpitCall);
 });
-
-
 
