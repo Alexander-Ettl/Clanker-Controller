@@ -1516,9 +1516,9 @@ class LauncherViewProvider {
       <svg viewBox="0 0 16 16" fill="none" aria-hidden="true"><circle cx="8" cy="8.5" r="5.75" stroke="currentColor" stroke-width="1.5"/><path d="M8 5.5v3.25l2 1.25" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg><span>Scheduled</span>
     </button>
     <button class="launcher-tab" data-tab="settings" role="tab" aria-selected="false">
-      <svg viewBox="0 0 16 16" fill="none" aria-hidden="true">
-        <circle cx="8" cy="8" r="2.2" stroke="currentColor" stroke-width="1.4"/>
-        <path d="M6.8 1.5h2.4l.35 1.45c.4.15.75.35 1.1.6l1.35-.55 1.7 1.7-.55 1.35c.25.35.45.7.6 1.1l1.45.35v2.4l-1.45.35c-.15.4-.35.75-.6 1.1l.55 1.35-1.7 1.7-1.35-.55c-.35.25-.7.45-1.1.6l-.35 1.45H6.8l-.35-1.45c-.4-.15-.75-.35-1.1-.6l-1.35.55-1.7-1.7.55-1.35c-.25-.35-.45-.7-.6-1.1L1.5 9.2V6.8l1.45-.35c.15-.4.35-.75.6-1.1L3 4l1.7-1.7 1.35.55c.35-.25.7-.45 1.1-.6L6.8 1.5z" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/>
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <path d="M9.671 4.136a2.34 2.34 0 0 1 4.659 0 2.34 2.34 0 0 0 3.319 1.915 2.34 2.34 0 0 1 2.33 4.033 2.34 2.34 0 0 0 0 3.831 2.34 2.34 0 0 1-2.33 4.033 2.34 2.34 0 0 0-3.319 1.915 2.34 2.34 0 0 1-4.659 0 2.34 2.34 0 0 0-3.32-1.915 2.34 2.34 0 0 1-2.33-4.033 2.34 2.34 0 0 0 0-3.831A2.34 2.34 0 0 1 6.35 6.051a2.34 2.34 0 0 0 3.319-1.915"/>
+        <circle cx="12" cy="12" r="3"/>
       </svg>
       <span>Settings</span>
     </button>
