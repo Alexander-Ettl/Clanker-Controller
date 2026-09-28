@@ -434,7 +434,7 @@
     label.className = 'image-lightbox-caption'; label.textContent = caption;
     box.append(frame, label);
     const close = () => { box.classList.remove('is-open'); document.removeEventListener('keydown', onKey, true); setTimeout(() => box.remove(), 220); };
-    // Capture phase + preventDefault: Esc closes the preview, never also stops the running turn.
+    // Capture phase: Esc closes the preview before anything else sees it.
     const onKey = (event) => { if (event.key === 'Escape') { event.preventDefault(); close(); } };
     box.addEventListener('click', (event) => { if (event.target !== image) close(); });
     document.addEventListener('keydown', onKey, true);
@@ -897,14 +897,14 @@
 
   // ---------- P17-F: Stop, in-session turn queue, Steer Now ----------
   // Idle: send arrow. Busy + empty composer: the arrow gives way to a crimson
-  // Stop (Esc). Busy + text: Stop plus a Queue button; Enter queues the turn,
+  // Stop: only this button stops a turn, never a key. Busy + text: Stop plus a Queue button; Enter queues the turn,
   // Ctrl+Enter steers (interrupts and sends now). Queued turns dispatch FIFO
   // when a turn ends on its own; a Stop pauses the queue instead.
   const SEND_SVG = sendBtn.innerHTML;
   const QUEUE_SVG = '<svg viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><path d="M6.5 13V4.5M3 8l3.5-3.5L10 8" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/><path d="M12.5 9.5v4M10.5 11.5h4" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>';
   const STOP_SVG = '<svg viewBox="0 0 16 16" aria-hidden="true"><rect x="4.25" y="4.25" width="7.5" height="7.5" rx="1.75" fill="currentColor"/></svg>';
   const stopBtn = document.createElement('button');
-  stopBtn.type = 'button'; stopBtn.id = 'stopBtn'; stopBtn.className = 'composer-icon-btn stop-btn'; stopBtn.title = 'Stop (Esc)'; stopBtn.hidden = true;
+  stopBtn.type = 'button'; stopBtn.id = 'stopBtn'; stopBtn.className = 'composer-icon-btn stop-btn'; stopBtn.title = 'Stop'; stopBtn.hidden = true;
   stopBtn.setAttribute('aria-label', 'Stop the running turn');
   stopBtn.innerHTML = STOP_SVG;
   composerActions.insertBefore(stopBtn, sendBtn);
@@ -1235,13 +1235,6 @@
       event.preventDefault();
       sendPrompt({ steer: event.ctrlKey || event.metaKey });
     }
-  });
-  // Esc stops the turn, unless something closer (a modal, the model menu, an
-  // approval card, a queue edit) already claimed it.
-  document.addEventListener('keydown', (event) => {
-    if (event.key !== 'Escape' || event.defaultPrevented || !busy || document.querySelector('.fs-modal:not([hidden])')) return;
-    event.preventDefault();
-    stopTurn();
   });
 
   micBtn.addEventListener('click', () => {
