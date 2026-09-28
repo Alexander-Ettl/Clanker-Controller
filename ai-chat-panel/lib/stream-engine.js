@@ -33,6 +33,9 @@ const FIRST_OUTPUT_TIMEOUT_MS = 30000;
  */
 /** Claude's subagent-spawning tool: "Task" in older CLIs, "Agent" in newer ones. */
 const SUBAGENT_TOOLS = new Set(['Agent', 'Task']);
+/** Main-thread output that, after a kept-open process's turn ended, means Claude started a new one. */
+const SELF_STARTED = new Set(['delta', 'tool_start', 'thought', 'approval_required', 'question_required']);
+const SETTLED_TASK = new Set(['completed', 'failed', 'stopped', 'killed']);
 const at = (x) => (typeof x === 'string' ? x : '');
 
 /** What a Claude tool call acts on, for its card: the command, a search's pattern and scope, a URL, a query. */
@@ -672,6 +675,9 @@ class StreamEngine extends EventEmitter {
   start({ agent, prompt, attachments = [], model, effort, resume = null, freshPrompt = null, codexCommand = null, codexCommandArgs = [], attempt = 0, live = false }) {
     // A live Remote Control process takes the turn as a message instead of a new process.
     if (agent === 'claude' && this.live && !live) return this.sendToLive({ agent, prompt, attachments, model, effort });
+    // So does a process kept open for its background agents (on the model it started with):
+    // a new process would kill them.
+    if (agent === 'claude' && this.lingering && !live) return this.sendToLive({ agent, prompt, attachments, model, effort }, this.lingering);
     // Codex and agy don't send the edited text: their +/- come from each file against these snapshots.
     this.editCache = new Map();
     if (agent !== 'claude' && !attempt) this.codexBases = repoSnapshots(this.cwd);
@@ -757,6 +763,7 @@ class StreamEngine extends EventEmitter {
         this.pendingControls.clear();
         this.emit('event', { type: 'remote_state', state: 'ended', agent });
       }
+      if (this.lingering === child) this.lingering = null;
       if (this.child !== child) return;
       if (stdoutBuffer.trim()) this.consumeLine(stdoutBuffer, agent);
       if (stderrBuffer.trim()) { diagnostics.push(stderrBuffer); this.consumeStderrLine(stderrBuffer, agent); }
@@ -780,14 +787,14 @@ class StreamEngine extends EventEmitter {
   }
 
   /** A panel turn into the live process: same message shape a fresh process would get. */
-  sendToLive({ agent, prompt, attachments, model, effort }) {
-    const child = this.live;
+  sendToLive({ agent, prompt, attachments, model, effort }, child = this.live) {
     const spec = this.commandFor(agent, prompt, attachments, { model, effort });
     this.child = child;
     this.turn = { agent, prompt, attachments, model, effort, attempt: 0 };
     this.beginLiveTurn();
     try {
-      this.expectEcho = JSON.parse(spec.input)?.message?.content ?? null; // its replay is ours, not the phone's
+      // Only the Remote Control process replays user messages; its replay is ours, not the phone's.
+      this.expectEcho = child === this.live ? JSON.parse(spec.input)?.message?.content ?? null : null;
     } catch {
       this.expectEcho = null;
     }
@@ -804,7 +811,7 @@ class StreamEngine extends EventEmitter {
     this.sawOutput = false;
     this.resumeRetry = null;
     this.fallback = null;
-    if (this.live) this.live.turnCompleted = false;
+    if (this.child) this.child.turnCompleted = false; // the live or kept-open process this turn runs in
   }
 
   relative(text) {
@@ -902,6 +909,13 @@ class StreamEngine extends EventEmitter {
       this.emit('event', { type: 'remote_prompt', text: event.text, agent });
       return;
     }
+    // A kept-open process can start a turn by itself: Claude answers its background agents'
+    // reports as they arrive. That output opens a turn of its own, like a prompt from the phone.
+    if (this.child && this.child === this.lingering && this.child.turnCompleted && SELF_STARTED.has(event.type)) {
+      this.turn = { agent, prompt: '', attachments: [], attempt: 0 };
+      this.beginLiveTurn();
+      this.emit('event', { type: 'remote_prompt', text: 'Background agents reported back', agent });
+    }
     if (event.type === 'delta' || event.type === 'tool_start' || event.type === 'thought') this.sawOutput = true;
     if (event.type === 'turn_complete' && 'response' in event) {
       // Final answer text only in the result event: show it, unless it already streamed.
@@ -920,7 +934,13 @@ class StreamEngine extends EventEmitter {
       this.approvals.clear();
       // Interactive Claude keeps stdin open for answers; the turn is over now.
       // The live Remote Control process stays open for the next message (unless it was just switched off).
-      if (this.child?.stdin?.writable && this.child !== this.live) this.child.stdin.end();
+      // So does one whose background agents are still working: they run inside it, and closing
+      // stdin ends the process and kills them mid-task. It takes the next message instead.
+      if (this.child?.stdin?.writable && this.child !== this.live) {
+        if (agent === 'claude' && this.subagentIds.size) this.lingering = this.child;
+        else if (this.child === this.lingering) this.releaseLingering();
+        else this.child.stdin.end();
+      }
     }
     // agy's edit steps carry only the target path, never the text, so the lines come from the
     // file itself: read when the edit starts, compared when it's done. The card is held until
@@ -1015,13 +1035,21 @@ class StreamEngine extends EventEmitter {
     }
     // Background task lifecycle (task_started / task_progress / task_notification), when the CLI reports it.
     if (raw.type === 'system' && /^task_/.test(String(raw.subtype || '')) && (raw.tool_use_id || raw.task_id)) {
-      this.emit('event', {
-        type: 'subagent_status', id: at(raw.tool_use_id || raw.task_id), agent,
-        status: at(raw.status) || (raw.subtype === 'task_started' ? 'running' : ''), summary: at(raw.summary) || at(raw.description),
-      });
+      const id = at(raw.tool_use_id || raw.task_id);
+      const status = at(raw.status) || (raw.subtype === 'task_started' ? 'running' : '');
+      this.emit('event', { type: 'subagent_status', id, agent, status, summary: at(raw.summary) || at(raw.description) });
+      if (SETTLED_TASK.has(status)) { this.subagentIds.delete(id); this.releaseLingering(); }
       return true;
     }
     return false;
+  }
+
+  /** The kept-open process closes once its turn is over and no background agent is left in it. */
+  releaseLingering() {
+    const child = this.lingering;
+    if (!child || this.subagentIds.size || !child.turnCompleted) return;
+    this.lingering = null;
+    if (child !== this.live && child.stdin?.writable) child.stdin.end();
   }
 
   /**

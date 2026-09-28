@@ -944,3 +944,31 @@ test('Claude subagent lines become subagent events, never part of the main reply
   line({ type: 'system', subtype: 'task_notification', tool_use_id: 'call2', status: 'completed', summary: 'Done' });
   assert.deepEqual([events.at(-1).type, events.at(-1).status], ['subagent_status', 'completed']);
 });
+
+test('A turn that ends with background agents running keeps its Claude process until they finish', () => {
+  const { StreamEngine } = require('../lib/stream-engine.js');
+  const e = new StreamEngine({ cwd: os.tmpdir(), interactive: true });
+  const written = [];
+  let ended = 0;
+  e.child = { stdin: { writable: true, write: (s) => written.push(JSON.parse(s)), end() { ended += 1; } } };
+  const events = [];
+  e.on('event', (ev) => events.push(ev));
+  const line = (raw) => e.consumeLine(JSON.stringify(raw), 'claude');
+  line({ type: 'assistant', message: { content: [{ type: 'tool_use', id: 'bg1', name: 'Agent', input: { description: 'Research', run_in_background: true } }] } });
+  line({ type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 'bg1', content: 'Async agent launched successfully.' }] } });
+  line({ type: 'result', session_id: 's1' });
+  assert.equal(ended, 0, 'closing stdin would kill the background agent');
+  assert.equal(e.lingering, e.child);
+
+  // The next message goes into the same process instead of spawning (and killing) anew.
+  const child = e.child;
+  assert.equal(e.start({ agent: 'claude', prompt: 'next' }), child);
+  assert.equal(written.at(-1).message.content, 'next');
+  line({ type: 'result', session_id: 's1' });
+  assert.equal(ended, 0);
+
+  // The agent finishing lets the process go.
+  line({ type: 'system', subtype: 'task_notification', tool_use_id: 'bg1', status: 'completed' });
+  assert.equal(ended, 1, 'no agents left and the turn is over: the process may close');
+  assert.equal(e.lingering, null);
+});
