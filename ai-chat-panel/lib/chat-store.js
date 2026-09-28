@@ -39,6 +39,8 @@ class ChatStore {
           createdAt: chat.createdAt,
           updatedAt: chat.updatedAt,
           lastRunAt: chat.lastRunAt,
+          telegramTopicId: chat.telegramTopicId,
+          telegramChatId: chat.telegramChatId,
           preview: chat.title || messages.find((message) => message.role === 'user')?.text?.slice(0, 400) || 'New chat',
           // P16-K/M: which agents answered, for model badges on history cards.
           models: [...new Set(messages.map((message) => message.agent).filter((agent) => ['claude', 'codex', 'gemini'].includes(agent)))],
