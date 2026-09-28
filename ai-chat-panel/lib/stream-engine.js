@@ -13,7 +13,7 @@ const { fromRateLimitEvent } = require('./claude-usage.js');
 // P17-D: how an older claude CLI / API rejects the Opus 5.5 model id or the
 // --effort flag. Only checked before a turn has produced any output.
 const MODEL_UNAVAILABLE = /unknown option '--(model|effort)'|not_found_error|invalid model|model[^"\n]{0,40}(not found|does not exist|not available)/i;
-const OPUS_FALLBACK_ID = 'claude-sonnet-5-high';
+const OPUS_FALLBACK_ID = 'claude-sonnet-5-5-high';
 // P17-I: upstream outages (Gemini's "Eligibility check failed ... UNAVAILABLE
 // (code 503)"). Before any output the turn reruns after 2s, then 4s; after
 // that it ends with one upstream_error card instead of raw error text.

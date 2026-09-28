@@ -291,7 +291,7 @@ function claudeLaunch(modelId) {
   return terminalCommand('claude', `--model ${option.model}${option.effort ? ` --effort ${option.effort}` : ''}`);
 }
 function opusTerminalCommand() {
-  return `$t = Get-Date; ${claudeLaunch('claude-opus-5-5-medium')}; if ($LASTEXITCODE -and ((Get-Date) - $t).TotalSeconds -lt 15) { Write-Host 'This claude CLI cannot run Opus 5.5 yet. Starting Sonnet.'; ${claudeLaunch('claude-sonnet-5-high')} }`;
+  return `$t = Get-Date; ${claudeLaunch('claude-opus-5-5-medium')}; if ($LASTEXITCODE -and ((Get-Date) - $t).TotalSeconds -lt 15) { Write-Host 'This claude CLI cannot run Opus 5.5 yet. Starting Sonnet.'; ${claudeLaunch('claude-sonnet-5-5-high')} }`;
 }
 
 // P17-D: an injectPrompt / Telegram target is an agent id or any model name
