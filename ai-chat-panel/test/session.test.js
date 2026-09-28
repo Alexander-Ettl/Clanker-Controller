@@ -913,3 +913,34 @@ test('quota bridge: Claude\'s own recorded numbers beat a stale status-bar readi
   assert.equal(shaped.claude.remaining, 23);
   assert.equal(shaped.claude.secondary.remaining, 35);
 });
+
+test('Claude subagent lines become subagent events, never part of the main reply', () => {
+  const { StreamEngine } = require('../lib/stream-engine.js');
+  const e = new StreamEngine({ cwd: os.tmpdir(), interactive: true });
+  const events = [];
+  e.on('event', (ev) => events.push(ev));
+  const line = (raw) => e.consumeLine(JSON.stringify(raw), 'claude');
+  line({ type: 'assistant', parent_tool_use_id: null, message: { content: [{ type: 'tool_use', id: 'call1', name: 'Agent', input: { description: 'Audit the site', subagent_type: 'Explore', prompt: 'Find X' } }] } });
+  line({ type: 'user', parent_tool_use_id: 'call1', message: { content: 'Find X' } });
+  line({ type: 'assistant', parent_tool_use_id: 'call1', message: { content: [{ type: 'text', text: 'Looking.' }] } });
+  line({ type: 'assistant', parent_tool_use_id: 'call1', message: { content: [{ type: 'tool_use', id: 't1', name: 'Read', input: { file_path: 'a.md' } }] } });
+  line({ type: 'user', parent_tool_use_id: null, message: { content: [{ type: 'tool_result', tool_use_id: 'call1', content: 'Found X.' }] } });
+
+  const start = events.find((ev) => ev.type === 'subagent_start');
+  assert.deepEqual([start.id, start.description, start.subagentType, start.prompt], ['call1', 'Audit the site', 'Explore', 'Find X']);
+  // The Agent call itself still shows as a step in the main chat.
+  assert.ok(events.some((ev) => ev.type === 'tool_start' && ev.toolId === 'call1'));
+  const inner = events.filter((ev) => ev.type === 'subagent_event').map((ev) => ev.event.type);
+  assert.deepEqual(inner, ['task', 'delta', 'tool_start']);
+  assert.ok(!events.some((ev) => ev.type === 'delta'), 'subagent text stays out of the main reply');
+  assert.deepEqual(events.find((ev) => ev.type === 'subagent_end'), { type: 'subagent_end', id: 'call1', output: 'Found X.', error: false, launched: false, agent: 'claude' });
+  assert.equal(e.subagentIds.size, 0);
+
+  // A background launch keeps it working until the CLI says otherwise.
+  line({ type: 'assistant', message: { content: [{ type: 'tool_use', id: 'call2', name: 'Task', input: { description: 'Long job', run_in_background: true } }] } });
+  line({ type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 'call2', content: 'Async agent launched successfully.' }] } });
+  assert.equal(events.find((ev) => ev.type === 'subagent_end' && ev.id === 'call2').launched, true);
+  assert.ok(e.subagentIds.has('call2'));
+  line({ type: 'system', subtype: 'task_notification', tool_use_id: 'call2', status: 'completed', summary: 'Done' });
+  assert.deepEqual([events.at(-1).type, events.at(-1).status], ['subagent_status', 'completed']);
+});
