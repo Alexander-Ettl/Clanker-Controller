@@ -445,8 +445,10 @@ test('P15-I: TelegramBridge accepts only the configured user and routes commands
   await bridge.handleUpdate({ message: { from: { id: 42 }, chat: { id: 42 }, text: '/status' } });
   assert.equal(statusCalls, 1);
   assert.deepEqual(replies, ['all clear']);
-  bridge.api = async () => true;
-  await bridge.handleUpdate({ callback_query: { id: 'callback-1', from: { id: 42 }, data: 'approve:sched_123' } });
+  let buttons;
+  bridge.api = async (method, payload) => { if (method === 'sendMessage') buttons = payload.reply_markup; return true; };
+  await bridge.sendApprovalRequest('Approve this task?', 'sched_123');
+  await bridge.handleUpdate({ callback_query: { id: 'callback-1', from: { id: 42 }, message: { chat: { id: 42, type: 'private' }, message_id: 1 }, data: buttons.inline_keyboard[0][0].callback_data } });
   assert.deepEqual(approval, { taskId: 'sched_123', approved: true });
   assert.equal(bridge.isConfigured(), true);
 });
@@ -894,6 +896,13 @@ test('Claude usage: rate-limit events and /usage text both yield the 5h and week
   assert.equal(parsed.sevenDay.used, 65);
   assert.equal(parsed.sevenDay.resetsAt, new Date(2026, 8, 25, 14, 59).getTime() / 1000);
   assert.equal(parseUsageText('Unknown command', now), null);
+
+  const text24h = 'Current session: 80% used · resets Sep 25, 17:45 (Europe/Berlin)\nCurrent week (all models): 50% used · resets Sep 25, 22:00';
+  const parsed24h = parseUsageText(text24h, now);
+  assert.equal(parsed24h.fiveHour.used, 80);
+  assert.equal(parsed24h.fiveHour.resetsAt, new Date(2026, 8, 25, 17, 45).getTime() / 1000);
+  assert.equal(parsed24h.sevenDay.used, 50);
+  assert.equal(parsed24h.sevenDay.resetsAt, new Date(2026, 8, 25, 22, 0).getTime() / 1000);
 });
 
 test('quota bridge: Claude\'s own recorded numbers beat a stale status-bar reading until their window ends', () => {

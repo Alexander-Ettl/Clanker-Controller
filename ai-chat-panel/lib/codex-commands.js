@@ -1,7 +1,11 @@
 'use strict';
 
 const { execFile } = require('node:child_process');
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
 const { locate, resolveShim } = require('./binary-locator.js');
+const { commandsForMethods } = require('./codex-app-server.js');
 
 /** Commands advertised by `codex exec`; the installed CLI remains the source of truth. */
 function parseCommandTable(help) {
@@ -37,6 +41,30 @@ function supportsComposerCommand(help, name) {
     && /read from stdin/i.test(help);
 }
 
+/** Native exec commands may require a target when no prompt was supplied. */
+function defaultArgsFromHelp(help) {
+  return /(?:^|\s)--uncommitted\b/m.test(String(help || '')) ? ['--uncommitted'] : [];
+}
+
+function methodNamesFromSchema(schema) {
+  const names = new Set();
+  for (const request of Array.isArray(schema?.oneOf) ? schema.oneOf : []) {
+    for (const name of request?.properties?.method?.enum || []) names.add(name);
+  }
+  return names;
+}
+
+/** App Server has no slash-command-list RPC; its generated request schema is its native capability list. */
+async function discoverAppServerMethods(binary, runImpl = run) {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'ai-chat-panel-codex-schema-'));
+  try {
+    await runImpl(binary, ['app-server', 'generate-json-schema', '--out', directory]);
+    return methodNamesFromSchema(JSON.parse(fs.readFileSync(path.join(directory, 'ClientRequest.json'), 'utf8')));
+  } finally {
+    try { fs.rmSync(directory, { recursive: true, force: true }); } catch { /* temporary capability cache */ }
+  }
+}
+
 function parseInvocation(text, commands) {
   const match = /^\/([^\s]+)(?:\s+([\s\S]*))?$/.exec(String(text || '').trim());
   if (!match) return null;
@@ -45,9 +73,10 @@ function parseInvocation(text, commands) {
 }
 
 class CodexCommandCatalog {
-  constructor({ locateImpl = locate, runImpl = run } = {}) {
+  constructor({ locateImpl = locate, runImpl = run, discoverMethodsImpl = discoverAppServerMethods } = {}) {
     this.locate = locateImpl;
     this.run = runImpl;
+    this.discoverMethods = discoverMethodsImpl;
     this.binary = null;
     this.promise = null;
   }
@@ -64,16 +93,7 @@ class CodexCommandCatalog {
   }
 
   async discover(binary) {
-    const advertised = parseCommandTable(await this.run(binary, ['exec', '--help']));
-    const details = await Promise.all(advertised.map(async (command) => {
-      try {
-        const help = await this.run(binary, ['exec', command.name, '--help']);
-        return supportsComposerCommand(help, command.name)
-          ? { name: command.name, description: help.trim().split(/\r?\n/, 1)[0] || command.description }
-          : null;
-      } catch { return null; }
-    }));
-    return details.filter(Boolean);
+    return commandsForMethods(await this.discoverMethods(binary, this.run));
   }
 
   async resolve(text) {
@@ -82,4 +102,4 @@ class CodexCommandCatalog {
   }
 }
 
-module.exports = { CodexCommandCatalog, parseCommandTable, parseInvocation, supportsComposerCommand };
+module.exports = { CodexCommandCatalog, discoverAppServerMethods, methodNamesFromSchema, parseCommandTable, parseInvocation, supportsComposerCommand, defaultArgsFromHelp };
