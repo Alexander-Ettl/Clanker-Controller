@@ -1693,6 +1693,11 @@
     const quiet = Date.now() - agent.lastAt > AGENT_QUIET_MS;
     return { cls: quiet ? 'is-quiet' : 'is-running', text: `${AGENT_STATUS[agent.status]} · last activity ${sinceText(agent.lastAt)}` };
   }
+  // Its description, else the first line of its task (agents replayed without a start event).
+  function agentName(agent) {
+    const task = agent.events.find((e) => e.type === 'task')?.text || '';
+    return agent.description || task.split('\n').find((line) => line.trim())?.trim().slice(0, 80) || agent.subagentType;
+  }
   function agentFor(id, at) {
     if (!subagents.has(id)) subagents.set(id, { id, description: '', subagentType: 'agent', status: 'running', lastAt: at, events: [] });
     return subagents.get(id);
@@ -1772,7 +1777,7 @@
       tab.setAttribute('aria-selected', String(agent.id === shownAgentId));
       tab.title = state.text;
       tab.querySelector('.agents-dot').className = `agents-dot ${state.cls}`;
-      tab.querySelector('.agents-tab-name').textContent = agent.description || agent.subagentType;
+      tab.querySelector('.agents-tab-name').textContent = agentName(agent);
     });
     const shown = subagents.get(shownAgentId);
     const head = agentPane.querySelector('.agents-head');
@@ -1794,9 +1799,13 @@
     head.className = 'agents-head';
     head.innerHTML = '<span class="agents-dot"></span><span class="agents-type"></span><span class="agents-status"></span><span class="agents-steps"></span>';
     head.querySelector('.agents-type').textContent = agent.subagentType;
+    // The tab truncates its name; here it reads in full.
+    const title = document.createElement('div');
+    title.className = 'agents-title';
+    title.textContent = agentName(agent);
     const log = document.createElement('div');
     log.className = 'agents-log';
-    agentPane.append(head, log);
+    agentPane.append(title, head, log);
     agentLog = { el: log, bubble: null, cards: new Map() };
     for (const event of agent.events) renderAgentEvent(event, false);
     log.scrollTop = log.scrollHeight;
@@ -1839,7 +1848,15 @@
       thought.querySelector('.agents-thought-text').textContent = event.text;
       log.appendChild(thought);
     } else if (event.type === 'tool_start') {
-      const card = appendToolCard({ name: event.name, command: event.command || event.file, output: { text: '' }, done: event.done, diff: event.diff, host: log });
+      const command = event.command || event.file;
+      const card = appendToolCard({ name: event.name, command, output: { text: '' }, done: event.done, diff: event.diff, host: log });
+      // The summary line truncates; opening the step shows the whole command above its output.
+      if (command) {
+        const full = document.createElement('div');
+        full.className = 'agents-tool-command';
+        full.textContent = command;
+        card.insertBefore(full, card.querySelector('.tool-body'));
+      }
       if (event.toolId) agentLog.cards.set(event.toolId, card);
     } else if (event.type === 'tool_end') {
       finishToolCard(agentLog.cards.get(event.toolId), { output: event.output, error: event.error });

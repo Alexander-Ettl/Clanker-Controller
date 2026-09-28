@@ -371,7 +371,7 @@ body {
 @keyframes agents-bob { 50% { transform: translateY(-1.5px); } }
 
 /* The agents sheet: one tab per agent (a sliding pill track), its log below. */
-.fs-modal-body.agents-body { display: flex; flex-direction: column; gap: 10px; padding: 12px 14px 14px; }
+.fs-modal-body.agents-body { display: flex; flex-direction: column; gap: 10px; min-width: 0; padding: 12px 14px 14px; }
 .agents-tabs {
   flex-shrink: 0;
   display: flex;
@@ -407,7 +407,13 @@ body {
 .agents-dot.is-stopped, .agents-dot.is-ended { background: rgba(255, 255, 255, 0.3); }
 @keyframes agents-pulse { 50% { box-shadow: 0 0 0 5px rgba(100, 210, 255, 0.05); } }
 
-.agents-pane { flex: 1; min-height: 0; display: flex; flex-direction: column; gap: 8px; }
+.agents-pane { flex: 1; min-height: 0; min-width: 0; display: flex; flex-direction: column; gap: 8px; }
+.agents-title {
+  padding: 0 4px;
+  font: 600 13px/1.35 var(--font-text);
+  color: var(--text-primary);
+  overflow-wrap: anywhere;
+}
 .agents-head {
   display: flex;
   align-items: center;
@@ -425,7 +431,22 @@ body {
   font-weight: 600;
 }
 .agents-steps { margin-left: auto; font-variant-numeric: tabular-nums; }
-.agents-log { flex: 1; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; gap: 10px; padding: 2px 2px 8px; }
+.agents-log { flex: 1; min-height: 0; min-width: 0; overflow-x: hidden; overflow-y: auto; display: flex; flex-direction: column; gap: 10px; padding: 2px 2px 8px; }
+.agents-log > * { min-width: 0; max-width: 100%; }
+/* Steps: one truncated line each; open one to read its full command and output. */
+.agents-log .tool-card summary .tool-label { flex: 1; min-width: 0; }
+.agents-log .tool-body { overflow-wrap: anywhere; }
+.agents-tool-command {
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--eo-border);
+  font: 11.5px/1.5 var(--font-mono);
+  color: var(--text-primary);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  user-select: text;
+}
+/* The task and replies always wrap, down to long paths and URLs. */
+.agents-log .msg-body { min-width: 0; overflow-wrap: anywhere; }
 .agents-task {
   padding: 10px 12px;
   border-radius: 14px;
@@ -646,6 +667,7 @@ body {
 .fs-modal-sheet {
   flex: 1;
   min-height: 0;
+  min-width: 0; /* never wider than the panel, whatever a long line inside wants */
   display: flex;
   flex-direction: column;
   border-radius: 20px;
