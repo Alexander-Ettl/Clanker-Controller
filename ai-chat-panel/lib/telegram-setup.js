@@ -6,6 +6,7 @@ const { TelegramBridge } = require('./telegram-bridge.js');
 const BOT_FATHER = 'https://t.me/BotFather';
 const TOKEN_KEY = 'aiChatPanel.telegramBotToken';
 const CHAT_KEY = 'aiChatPanel.telegramChatId';
+const OWNER_KEY = 'aiChatPanel.telegramOwnerId';
 
 /** Native editor steps keep credentials out of the webview and retain Configure's existing IPC. */
 async function configureTelegram({ vscode, secrets, getCurrent, connect, onRestored = () => {}, createBridge = (options) => new TelegramBridge(options) }) {
@@ -105,4 +106,4 @@ async function configureTelegram({ vscode, secrets, getCurrent, connect, onResto
   }
 }
 
-module.exports = { configureTelegram, TOKEN_KEY, CHAT_KEY, BOT_FATHER };
+module.exports = { configureTelegram, TOKEN_KEY, CHAT_KEY, OWNER_KEY, BOT_FATHER };
