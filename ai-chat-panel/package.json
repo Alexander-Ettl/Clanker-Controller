@@ -12,7 +12,7 @@
         "Other"
     ],
     "activationEvents": [
-        "onStartupFinished",
+        "*",
         "onWebviewPanel:aiChatPanel.chatWindow"
     ],
     "main": "./extension.js",
@@ -24,6 +24,13 @@
                     "title": "AI Chat Panel",
                     "icon": "media/icon.svg"
                 }
+            ],
+            "secondarySidebar": [
+                {
+                    "id": "aiChatPanelChat",
+                    "title": "AI Chat",
+                    "icon": "media/icon.svg"
+                }
             ]
         },
         "views": {
@@ -32,6 +39,13 @@
                     "type": "webview",
                     "id": "aiChatPanel.mainView",
                     "name": "Launcher"
+                }
+            ],
+            "aiChatPanelChat": [
+                {
+                    "type": "webview",
+                    "id": "aiChatPanel.chatView",
+                    "name": "Chat"
                 }
             ]
         },
