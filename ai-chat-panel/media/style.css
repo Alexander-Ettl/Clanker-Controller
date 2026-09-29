@@ -351,10 +351,10 @@ body {
   align-items: center;
   gap: 5px;
   padding: 0 10px 0 8px;
-  border: 1px solid rgba(100, 210, 255, 0.28);
+  border: 1px solid transparent;
   border-radius: var(--pill);
-  background: rgba(100, 210, 255, 0.1);
-  color: #64d2ff;
+  background: transparent;
+  color: var(--text-secondary);
   font: 600 12px var(--font-text);
   font-variant-numeric: tabular-nums;
   cursor: pointer;
@@ -363,11 +363,10 @@ body {
 .agents-chip[hidden] { display: none; }
 .agents-chip svg { width: 15px; height: 15px; }
 .agents-chip:not(.is-idle) svg { animation: agents-bob 1.6s var(--eo-ease) infinite; }
-.agents-chip:hover { background: rgba(100, 210, 255, 0.18); }
+.agents-chip:hover { background: rgba(255, 255, 255, 0.12); color: var(--text-primary); }
 .agents-chip:active { transform: scale(0.96); }
 .agents-chip:focus-visible { outline: none; box-shadow: 0 0 0 2px var(--accent); }
-.agents-chip.is-quiet { color: #ffb340; border-color: rgba(255, 179, 64, 0.3); background: rgba(255, 179, 64, 0.1); }
-.agents-chip.is-idle { color: var(--text-secondary); border-color: transparent; background: rgba(255, 255, 255, 0.06); }
+.agents-chip.is-quiet { color: #ffb340; }
 @keyframes agents-bob { 50% { transform: translateY(-1.5px); } }
 
 /* The agents sheet: one tab per agent (a sliding pill track), its log below. */
@@ -376,12 +375,17 @@ body {
   flex-shrink: 0;
   display: flex;
   gap: 2px;
-  padding: 3px;
+  padding: 3px 3px 1px;
   overflow-x: auto;
   border-radius: var(--pill);
   background: rgba(255, 255, 255, 0.05);
-  scrollbar-width: none;
 }
+/* A hairline rail under the tabs that shows on hover and drags like any scrollbar. */
+.agents-tabs::-webkit-scrollbar { height: 5px; }
+.agents-tabs::-webkit-scrollbar-track { background: transparent; margin: 0 12px; }
+.agents-tabs::-webkit-scrollbar-thumb { border-radius: 3px; background: transparent; transition: background 0.2s; }
+.agents-tabs:hover::-webkit-scrollbar-thumb { background: rgba(255, 255, 255, 0.22); }
+.agents-tabs::-webkit-scrollbar-thumb:hover { background: rgba(255, 255, 255, 0.4); }
 .agents-tab {
   flex-shrink: 0;
   max-width: 220px;
@@ -399,13 +403,22 @@ body {
 }
 .agents-tab:hover { color: var(--text-primary); }
 .agents-tab-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.agents-dot { flex-shrink: 0; width: 7px; height: 7px; border-radius: 50%; background: var(--text-tertiary); }
-.agents-dot.is-running { background: #64d2ff; box-shadow: 0 0 0 3px rgba(100, 210, 255, 0.18); animation: agents-pulse 1.4s ease-in-out infinite; }
-.agents-dot.is-quiet { background: #ffb340; box-shadow: 0 0 0 3px rgba(255, 179, 64, 0.18); }
-.agents-dot.is-done { background: #34d399; }
-.agents-dot.is-failed { background: #ff453a; }
-.agents-dot.is-stopped, .agents-dot.is-ended { background: rgba(255, 255, 255, 0.3); }
-@keyframes agents-pulse { 50% { box-shadow: 0 0 0 5px rgba(100, 210, 255, 0.05); } }
+/* Each agent is a little robot in its provider's colour (--bot, set per agent); its state shows in motion and dimming. */
+.agents-bot { flex-shrink: 0; display: inline-flex; color: var(--bot, var(--text-tertiary)); transition: opacity 0.2s var(--eo-ease); }
+.agents-bot svg { width: 16px; height: 16px; }
+.agents-bot.is-running svg { animation: agents-bob 1.6s var(--eo-ease) infinite; }
+.agents-bot.is-quiet { opacity: 0.6; }
+.agents-bot.is-quiet svg { animation: agents-bob 3.2s var(--eo-ease) infinite; }
+.agents-bot.is-failed { color: #ff453a; }
+.agents-bot.is-stopped, .agents-bot.is-ended { opacity: 0.4; }
+/* The shown agent's pill glides between tabs (see .pill-track) and takes that agent's colour. */
+@supports (anchor-scope: --pill) {
+  .agents-tabs::before {
+    background: color-mix(in srgb, var(--pill-tint, transparent) 24%, var(--eo-surface-raised));
+    box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--pill-tint, transparent) 40%, transparent);
+    transition: inset 0.4s var(--eo-ease), background 0.3s var(--eo-ease), box-shadow 0.3s var(--eo-ease);
+  }
+}
 
 .agents-pane { flex: 1; min-height: 0; min-width: 0; display: flex; flex-direction: column; gap: 8px; }
 .agents-title {
@@ -456,7 +469,7 @@ body {
 .agents-task-label { margin-bottom: 4px; font: 600 10px var(--font-text); letter-spacing: 0.06em; text-transform: uppercase; color: #64d2ff; }
 .agents-thought summary { cursor: pointer; font: 500 12px var(--font-text); color: var(--text-tertiary); }
 .agents-thought-text { margin-top: 4px; padding-left: 10px; border-left: 2px solid var(--eo-border); white-space: pre-wrap; font: italic 12px/1.5 var(--font-text); color: var(--text-secondary); }
-@media (prefers-reduced-motion: reduce) { .agents-chip svg, .agents-dot.is-running { animation: none; } }
+@media (prefers-reduced-motion: reduce) { .agents-chip svg, .agents-bot svg { animation: none !important; } .agents-tabs::before { transition: none; } }
 
 .model-picker-icon,
 .model-option-icon {
