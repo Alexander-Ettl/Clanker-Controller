@@ -1204,10 +1204,30 @@ class ChatWindowHost {
 
 /** Tracks every currently-open floating chat window, keyed by ChatStore id,
  * and every ChatRun that is on screen or still has a turn going. */
+const SIDEBAR_CHAT_KEY = 'aiChatPanel.sidebarChatId';
+
+/** Gives a sidebar WebviewView the few WebviewPanel members a ChatWindowHost uses, so a chat can live in the secondary sidebar. */
+function viewAsPanel(view) {
+  const panel = {
+    sidebar: true,
+    webview: view.webview,
+    get title() { return view.title || ''; },
+    set title(value) { view.title = value; },
+    set iconPath(_) { /* a view takes its icon from its container */ },
+    get active() { return view.visible; },
+    reveal: (_column, preserveFocus) => view.show(preserveFocus),
+    onDidDispose: (listener) => view.onDidDispose(listener),
+    onDidChangeViewState: (listener) => view.onDidChangeVisibility(() => listener({ webviewPanel: panel })),
+    dispose() { /* the sidebar owns the view */ },
+  };
+  return panel;
+}
+
 class ChatWindowManager {
   constructor(extensionUri, deps) {
     this.extensionUri = extensionUri;
     this.deps = deps;
+    this.sidebar = null; // the ChatWindowHost in the secondary sidebar, while that view exists
     this.hosts = new Map(); // chatId -> { panel, host }
     this.runs = new Map(); // chatId -> ChatRun
     this.activeChatId = null;
@@ -1250,12 +1270,29 @@ class ChatWindowManager {
     this.deps.notifyHistory();
   }
 
+  /**
+   * The chat in the secondary sidebar (aiChatPanel.chatView): the default home for chats, so they
+   * sit beside the code instead of in an editor tab. It shows one chat at a time, remembered per
+   * workspace; extra chats still open as editor windows (`detached`).
+   */
+  attachSidebar(view) {
+    const panel = viewAsPanel(view);
+    const run = this.runFor(this.deps.sidebarState.get(SIDEBAR_CHAT_KEY)) || this.runFor(null);
+    this.sidebar = this.wire(panel, run);
+    view.onDidDispose(() => { if (this.sidebar?.panel === panel) this.sidebar = null; });
+  }
+
   /** Opens (or reveals, if already open) the chat window for `chatId`. Omit chatId to start a fresh thread. */
-  open(chatId, { viewColumn = vscode.ViewColumn.Beside, preserveFocus = false } = {}) {
+  open(chatId, { viewColumn = vscode.ViewColumn.Beside, preserveFocus = false, detached = false } = {}) {
     const existing = chatId && this.hosts.get(chatId);
     if (existing) {
       existing.panel.reveal(viewColumn, preserveFocus);
       return existing.host;
+    }
+    if (this.sidebar && !detached) {
+      if (chatId) this.sidebar.restoreChat(chatId); else this.sidebar.resetToFreshChat();
+      this.sidebar.panel.reveal(undefined, preserveFocus);
+      return this.sidebar;
     }
 
     const run = this.runFor(chatId) || this.runFor(null);
@@ -1299,6 +1336,7 @@ class ChatWindowManager {
     if (oldChatId && this.hosts.get(oldChatId)?.host === host) this.hosts.delete(oldChatId);
     this.hosts.set(newChatId, { panel: host.panel, host });
     this.activeChatId = newChatId;
+    if (host.panel.sidebar) void this.deps.sidebarState.update(SIDEBAR_CHAT_KEY, newChatId);
   }
 
   /**
@@ -1687,6 +1725,7 @@ function activate(context) {
 
   chatWindowManager = new ChatWindowManager(context.extensionUri, {
     sessionManager, chatStore, voiceCapture, workspaceDir, sessionDir: ASTRO_SESSION_DIR, attachmentsDir, getModels, codexCommands, slashCommands, schedulerQueue, notifySchedulerQueue, renameChat, getEditorTheme: () => editorTheme, notify, notifyHistory, onTelegramEvent,
+    sidebarState: context.workspaceState,
   });
   // Chat windows come back after a restart in the tab spot they had, showing the same chat
   // (the webview keeps its chat id in its saved state; activation event onWebviewPanel:aiChatPanel.chatWindow).
@@ -1882,13 +1921,22 @@ function activate(context) {
     getTelegramBridge: () => telegram, sessionManager,
   });
   context.subscriptions.push(vscode.window.registerWebviewViewProvider('aiChatPanel.mainView', launcher));
+  // The chat itself lives in the secondary sidebar. Kept alive while hidden so a streaming reply survives a toggle.
+  context.subscriptions.push(vscode.window.registerWebviewViewProvider('aiChatPanel.chatView', { resolveWebviewView: (view) => chatWindowManager.attachSidebar(view) }, { webviewOptions: { retainContextWhenHidden: true } }));
+  // Antigravity restores its own Agent panel into that sidebar on every start, so the chat claims it each time
+  // (and once more a moment later, in case the built-in panel comes up after this extension).
+  const showSidebarChat = () => void vscode.commands.executeCommand('aiChatPanel.chatView.focus');
+  showSidebarChat();
+  const sidebarRetry = setTimeout(showSidebarChat, 4000);
+  context.subscriptions.push({ dispose: () => clearTimeout(sidebarRetry) });
 
   context.subscriptions.push(
     vscode.commands.registerCommand('aiChatPanel.open', () => {
       void vscode.commands.executeCommand('workbench.view.extension.aiChatPanel');
     }),
+    // The palette command keeps its name: an extra chat in its own editor window, beside the sidebar chat.
     vscode.commands.registerCommand('aiChatPanel.newChatWindow', () => {
-      chatWindowManager.open();
+      chatWindowManager.open(undefined, { detached: true });
     }),
     // Explorer right-click: the selection lands as @-mentions in the focused chat window.
     vscode.commands.registerCommand('aiChatPanel.addToChat', (uri, uris) => {
