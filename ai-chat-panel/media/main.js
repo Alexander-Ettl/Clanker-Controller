@@ -1701,14 +1701,16 @@
     return agent.description || task.split('\n').find((line) => line.trim())?.trim().slice(0, 80) || agent.subagentType;
   }
   function agentFor(id, at) {
-    if (!subagents.has(id)) subagents.set(id, { id, description: '', subagentType: 'agent', status: 'running', lastAt: at, events: [] });
+    if (!subagents.has(id)) subagents.set(id, { id, provider: 'claude', description: '', subagentType: 'agent', status: 'running', lastAt: at, events: [] });
     return subagents.get(id);
   }
 
   function applySubagent(message) {
     if (message.type === 'subagent_settle') { settleAgents(message.interrupted); return; } // a replayed turn end
+    if (message.type === 'subagent_status' && !subagents.has(message.id)) return; // a status for an id no start event opened is not an agent
     const at = message.at || Date.now();
     const agent = agentFor(message.id, at);
+    if (message.agent) agent.provider = message.agent;
     agent.lastAt = at;
     if (message.type === 'subagent_start') {
       Object.assign(agent, { description: message.description, subagentType: message.subagentType, status: 'running' });
@@ -1735,16 +1737,47 @@
   function resetAgents() {
     subagents.clear();
     shownAgentId = null;
+    delete agentTabs.dataset.shown;
     agentLog = null;
     agentPane.textContent = '';
     closeModal(agentsModal.el);
     refreshAgents();
   }
 
+  // The host keeps subagent events in memory only, so a window reload used to hide the chip and
+  // lose the history. Each chat's agents are also kept in the webview state and restored with the chat.
+  const AGENT_SAVED_CHATS = 6;
+  const AGENT_SAVED_EVENTS = 150;
+  let agentsSaveTimer = null;
+  function saveAgents() {
+    if (agentsSaveTimer || !currentChatId || !subagents.size) return;
+    agentsSaveTimer = setTimeout(() => {
+      agentsSaveTimer = null;
+      try {
+        const state = vscode.getState() || {};
+        const saved = { ...(state.agents || {}) };
+        delete saved[currentChatId]; // re-added last, so it counts as the most recent
+        saved[currentChatId] = [...subagents.values()].map((agent) => ({ ...agent, events: agent.events.slice(-AGENT_SAVED_EVENTS) }));
+        for (const id of Object.keys(saved).slice(0, -AGENT_SAVED_CHATS)) delete saved[id];
+        vscode.setState({ ...state, agents: saved });
+      } catch {}
+    }, 800);
+  }
+  // Whatever was still working when the window went away has ended with it.
+  function restoreAgents() {
+    let saved;
+    try { saved = vscode.getState()?.agents?.[currentChatId]; } catch {}
+    for (const agent of saved || []) {
+      subagents.set(agent.id, { ...agent, status: agentWorking(agent) ? 'ended' : agent.status });
+    }
+    if (subagents.size) refreshAgents();
+  }
+
   function refreshAgents() {
     const all = [...subagents.values()];
     const working = all.filter(agentWorking);
     agentsBtn.hidden = !all.length;
+    saveAgents();
     agentsBtn.classList.toggle('is-idle', !working.length);
     agentsBtn.classList.toggle('is-quiet', working.some((agent) => agentState(agent).cls === 'is-quiet'));
     agentsBtn.querySelector('.agents-chip-count').textContent = String(working.length || all.length);
@@ -1759,33 +1792,70 @@
     if (!agentsModal.el.hidden) renderAgentTabs();
   }
 
-  function renderAgentTabs() {
+  // Five robot characters in the 16px line style. An agent's robot steps through the set by its
+  // order (offset by the first agent's id), so up to five agents never share one; its colour is a
+  // shade of its provider's (Claude orange, Antigravity blue, Codex purple), one shade per sibling.
+  const BOTS = [
+    '<rect x="3" y="5" width="10" height="8" rx="2.5"/><path d="M8 5V2.75M1.75 8.25v2M14.25 8.25v2"/><circle cx="8" cy="2.25" r="0.9" fill="currentColor"/><circle cx="6.1" cy="8.75" r="1" fill="currentColor"/><circle cx="9.9" cy="8.75" r="1" fill="currentColor"/>',
+    '<rect x="2.5" y="4.5" width="11" height="8.5" rx="4"/><path d="M8 4.5V2M6 2h4"/><circle cx="8" cy="8.75" r="2.1"/><circle cx="8" cy="8.75" r="0.8" fill="currentColor"/>',
+    '<path d="M3 13V9a5 5 0 0 1 10 0v4z"/><path d="M5.5 4.2 4.5 2M10.5 4.2 11.5 2M6.5 11.2h3"/><circle cx="6" cy="8.6" r="0.95" fill="currentColor"/><circle cx="10" cy="8.6" r="0.95" fill="currentColor"/>',
+    '<rect x="3.5" y="4" width="9" height="9" rx="1.5"/><rect x="5" y="6" width="6" height="2.4" rx="1.2"/><path d="M8 4V2M6 10.5v1.75M8 10.5v1.75M10 10.5v1.75"/>',
+    '<circle cx="8" cy="8.75" r="5.25"/><path d="M8 3.5V1.75M6 7.5v2M10 7.5v2M6.6 11.5q1.4 0.9 2.8 0"/>',
+  ];
+  const BOT_HUES = { claude: 24, gemini: 212, codex: 268 };
+  const BOT_SHADES = [[0, 90, 60], [-8, 85, 72], [8, 95, 50], [-14, 80, 80], [14, 100, 66]]; // hue shift, saturation, lightness
+  function paintBot(el, agent, stateCls) {
     const all = [...subagents.values()];
-    if (agentTabs.children.length !== all.length) {
-      agentTabs.textContent = '';
-      for (const agent of all) {
-        const tab = document.createElement('button');
-        tab.type = 'button';
-        tab.className = 'agents-tab';
-        tab.setAttribute('role', 'tab');
-        tab.innerHTML = '<span class="agents-dot"></span><span class="agents-tab-name"></span>';
-        tab.addEventListener('click', () => showAgent(agent.id));
-        agentTabs.appendChild(tab);
-      }
+    const seed = [...String(all[0].id)].reduce((sum, ch) => sum + ch.charCodeAt(0), 0);
+    const index = (all.indexOf(agent) * 3 + seed) % BOTS.length;
+    const [shift, sat, light] = BOT_SHADES[all.filter((a) => a.provider === agent.provider).indexOf(agent) % BOT_SHADES.length];
+    const color = `hsl(${(BOT_HUES[agent.provider] ?? BOT_HUES.claude) + shift} ${sat}% ${light}%)`;
+    // Swapped only when it changes, so the running bob isn't restarted by the once-a-second refresh.
+    if (el.dataset.bot !== String(index)) { el.dataset.bot = index; el.innerHTML = `<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${BOTS[index]}</svg>`; }
+    el.className = `agents-bot ${stateCls}`;
+    el.style.setProperty('--bot', color);
+    return color;
+  }
+
+  // Tabs run newest activity first (ties: newest agent first), so the latest one is never off-screen.
+  // Robots and shades follow creation order instead, so an agent keeps its look as the tabs reorder.
+  const agentsByRecent = () => [...subagents.values()].reverse().sort((a, b) => b.lastAt - a.lastAt);
+
+  // A wheel over the strip scrolls it sideways; the scrollbar is hidden.
+  agentTabs.addEventListener('wheel', (event) => {
+    if (event.deltaX || !event.deltaY) return;
+    agentTabs.scrollLeft += event.deltaY;
+    event.preventDefault();
+  }, { passive: false });
+
+  function renderAgentTabs() {
+    const all = agentsByRecent();
+    while (agentTabs.children.length < all.length) {
+      const tab = document.createElement('button');
+      tab.type = 'button';
+      tab.className = 'agents-tab';
+      tab.setAttribute('role', 'tab');
+      tab.innerHTML = '<span class="agents-bot"></span><span class="agents-tab-name"></span>';
+      tab.addEventListener('click', () => showAgent(tab.dataset.id));
+      agentTabs.appendChild(tab);
     }
+    while (agentTabs.children.length > all.length) agentTabs.lastChild.remove();
     all.forEach((agent, index) => {
       const tab = agentTabs.children[index];
       const state = agentState(agent);
+      tab.dataset.id = agent.id;
       tab.setAttribute('aria-selected', String(agent.id === shownAgentId));
+      if (agent.id === shownAgentId && agentTabs.dataset.shown !== agent.id) { agentTabs.dataset.shown = agent.id; tab.scrollIntoView({ inline: 'nearest', block: 'nearest' }); }
       tab.title = state.text;
-      tab.querySelector('.agents-dot').className = `agents-dot ${state.cls}`;
+      const color = paintBot(tab.querySelector('.agents-bot'), agent, state.cls);
+      if (agent.id === shownAgentId) agentTabs.style.setProperty('--pill-tint', color); // the sliding pill takes the shown agent's colour
       tab.querySelector('.agents-tab-name').textContent = agentName(agent);
     });
     const shown = subagents.get(shownAgentId);
     const head = agentPane.querySelector('.agents-head');
     if (shown && head) {
       const state = agentState(shown);
-      head.querySelector('.agents-dot').className = `agents-dot ${state.cls}`;
+      paintBot(head.querySelector('.agents-bot'), shown, state.cls);
       head.querySelector('.agents-status').textContent = state.text;
       const steps = shown.events.filter((e) => e.type === 'tool_start').length;
       head.querySelector('.agents-steps').textContent = `${steps} ${steps === 1 ? 'step' : 'steps'}`;
@@ -1799,7 +1869,7 @@
     agentPane.textContent = '';
     const head = document.createElement('div');
     head.className = 'agents-head';
-    head.innerHTML = '<span class="agents-dot"></span><span class="agents-type"></span><span class="agents-status"></span><span class="agents-steps"></span>';
+    head.innerHTML = '<span class="agents-bot"></span><span class="agents-type"></span><span class="agents-status"></span><span class="agents-steps"></span>';
     head.querySelector('.agents-type').textContent = agent.subagentType;
     // The tab truncates its name; here it reads in full.
     const title = document.createElement('div');
@@ -1867,8 +1937,8 @@
   }
 
   agentsBtn.addEventListener('click', () => {
-    const all = [...subagents.values()];
-    if (!subagents.has(shownAgentId)) shownAgentId = (all.find(agentWorking) || all[all.length - 1])?.id || null;
+    const all = agentsByRecent();
+    if (!subagents.has(shownAgentId)) shownAgentId = (all.find(agentWorking) || all[0])?.id || null;
     openModal(agentsModal);
     if (shownAgentId) showAgent(shownAgentId);
     refreshAgents();
@@ -2189,8 +2259,25 @@
     if (/^(glob|grep|grep_search|find_by_name)$/i.test(name || '')) return 'search';
     if (/^(read|view_file|list_dir)$/i.test(name || '')) return 'read';
     if (/^(agent|task)$/i.test(name || '')) return 'agent'; // Claude spawning a subagent
+    // The rarer tools each get a glyph; anything still unknown keeps the clock.
+    for (const [kind, pattern] of TOOL_PATTERNS) if (pattern.test(name || '')) return kind;
     return 'other';
   }
+  const TOOL_PATTERNS = [
+    ['handback', /^subagenthandback$/i],
+    ['message', /^(sendmessage|pushnotification)$/i],
+    ['web', /^web(fetch|search)$/i],
+    ['todo', /^(todowrite|task(create|update|list|get)|update_plan)$/i],
+    ['plan', /^(enter|exit)planmode$/i],
+    ['skill', /^skill$/i],
+    ['schedule', /^(cron(create|delete|list)|schedulewakeup)$/i],
+    ['monitor', /^(monitor|bashoutput|taskoutput)$/i],
+    ['stop', /^(taskstop|killshell|kill_bash)$/i],
+    ['plug', /^(mcp__|toolsearch$|listmcpresources$|readmcpresource$)/i],
+    ['worktree', /^(enter|exit)worktree$/i],
+    ['remote', /^remotetrigger$/i],
+  ];
+  const lineIcon = (body) => `<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${body}</svg>`;
   const TOOL_ICONS = {
     shell: '<svg viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M3 4.5 6.5 8 3 11.5M8 11.5h5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>',
     edit: PENCIL_SVG,
@@ -2199,6 +2286,18 @@
     other: '<svg viewBox="0 0 16 16" fill="none" aria-hidden="true"><circle cx="8" cy="8" r="5.5" stroke="currentColor" stroke-width="1.5"/><path d="M8 5.5v3l2 1.2" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>',
     // The composer's agents chip robot (extension.js #agentsBtn), so the step and the chip read as one thing.
     agent: '<svg viewBox="0 0 16 16" fill="none" aria-hidden="true"><rect x="3" y="5" width="10" height="8" rx="2.5" stroke="currentColor" stroke-width="1.3"/><path d="M8 5V2.75" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/><circle cx="8" cy="2.25" r="0.9" fill="currentColor"/><circle cx="6.1" cy="8.75" r="1" fill="currentColor"/><circle cx="9.9" cy="8.75" r="1" fill="currentColor"/><path d="M1.75 8.25v2M14.25 8.25v2" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>',
+    handback: lineIcon('<path d="M6.25 3.75 2.5 7.5l3.75 3.75"/><path d="M2.5 7.5h6.75a4.25 4.25 0 0 1 4.25 4.25v.75"/>'), // a reply arrow: the subagent's answer coming back
+    message: lineIcon('<path d="M14 2 2 6.8l4.6 2 2 4.6z"/><path d="M6.6 8.8 14 2"/>'),
+    web: lineIcon('<circle cx="8" cy="8" r="5.5"/><ellipse cx="8" cy="8" rx="2.4" ry="5.5"/><path d="M2.5 8h11"/>'),
+    todo: lineIcon('<path d="m2.5 4.5 1.2 1.2 2-2.4M2.5 10.5l1.2 1.2 2-2.4M8 5h5.5M8 11h5.5"/>'),
+    plan: lineIcon('<rect x="3.5" y="3" width="9" height="10.5" rx="1.5"/><rect x="6" y="1.75" width="4" height="2.5" rx="0.8"/><path d="M6 8h4M6 10.5h2.5"/>'),
+    skill: lineIcon('<path d="M8 2c.4 3 1.4 4.6 6 6-4.6 1.4-5.6 3-6 6-.4-3-1.4-4.6-6-6 4.6-1.4 5.6-3 6-6z"/>'),
+    schedule: lineIcon('<rect x="2.5" y="3.5" width="11" height="10" rx="2"/><path d="M2.5 7h11M5.5 2v3M10.5 2v3"/>'),
+    monitor: lineIcon('<path d="M1.75 8h3l1.5-4 3 8 1.5-4h3.5"/>'),
+    stop: lineIcon('<circle cx="8" cy="8" r="5.5"/><rect x="6" y="6" width="4" height="4" rx="0.8" fill="currentColor"/>'),
+    plug: lineIcon('<path d="M6 2.5v3M10 2.5v3M4.5 5.5h7V8a3.5 3.5 0 0 1-7 0zM8 11.5V14"/>'),
+    worktree: lineIcon('<circle cx="4.5" cy="4" r="1.5"/><circle cx="4.5" cy="12" r="1.5"/><circle cx="11.5" cy="6" r="1.5"/><path d="M4.5 5.5v5M11.5 7.5c0 2.5-3 2-7 3.5"/>'),
+    remote: lineIcon('<path d="M9 2 3.5 9H7.5L7 14l5.5-7h-4z"/>'),
   };
   // `host`: where the card goes (the agents viewer passes its own pane); default, the running turn.
   function appendToolCard({ name, command, output, toolId, done, error, diff, host = null }) {
@@ -2891,6 +2990,7 @@
         resetThought();
         resetAgents(); // the new chat's own agents follow in a subagentReplay
         restoreChat(message.chat, message.running);
+        restoreAgents();
         setBusy(Boolean(message.running));
         break;
       }
@@ -3006,7 +3106,10 @@
       case 'subagent_event':
       case 'subagent_end':
       case 'subagent_status': applySubagent(message); break;
-      case 'subagentReplay': for (const event of message.events || []) applySubagent(event); break;
+      case 'subagentReplay': // the host's log is the complete one; it replaces the restored copy
+        if (message.events?.length) resetAgents();
+        for (const event of message.events || []) applySubagent(event);
+        break;
       case 'delta': {
         if (isCompacting) {
           if (/^(Gemini|Codex) error:/i.test(message.text || '')) appendNotice(message.text);
