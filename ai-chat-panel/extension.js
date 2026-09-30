@@ -6,7 +6,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { pathToFileURL } = require('node:url');
 const { TerminalSessionManager } = require('./lib/pty-session.js');
-const { readQuotas, onDidChangeQuotas, quotaBridgeConnected, recordClaudeUsage, claudeUsageAge } = require('./lib/quota-bridge.js');
+const { readQuotas, onDidChangeQuotas, recordClaudeUsage, claudeUsageAge } = require('./lib/quota-bridge.js');
 const { probeClaudeUsage } = require('./lib/claude-usage.js');
 
 // Claude's real usage after a restart or a quiet spell: `claude -p /usage` is a local command
@@ -20,14 +20,16 @@ function refreshClaudeUsage(cwd) {
 }
 const { VoiceCapture } = require('./lib/voice-capture.js');
 const { learnedTerms } = require('./lib/voice-learn.js');
+const voiceDictionary = require('./lib/voice-dictionary.js');
+const { resolveSessionDir } = require('./lib/session-dir.js');
 const { writeMicroHandoff, formatMicroHandoffPrompt } = require('./lib/handoff.js');
 const { execFile, spawn } = require('node:child_process');
 const { StreamEngine } = require('./lib/stream-engine.js');
 const { locate, refresh: refreshBinaries, resolveShim, terminalCommand } = require('./lib/binary-locator.js');
-const { ChatStore, markActive, ACTIVE_WINDOW_MS } = require('./lib/chat-store.js');
+const { ChatStore, markActive, ACTIVE_WINDOW_MS, deriveFallbackTitle } = require('./lib/chat-store.js');
 const { route } = require('./lib/auto-router.js');
 const { MODEL_CATALOG, modelOption, resolveModel } = require('./lib/model-catalog.js');
-const { SchedulerQueue, ACTIVE_STATUSES } = require('./lib/scheduler-queue.js');
+const { SchedulerQueue, ACTIVE_STATUSES, isDue } = require('./lib/scheduler-queue.js');
 const { TelegramBridge, DOCK_KEYBOARD, escapeHtml, markdownToTelegramHtml } = require('./lib/telegram-bridge.js');
 const { configureTelegram: setupTelegram, TOKEN_KEY, CHAT_KEY, OWNER_KEY } = require('./lib/telegram-setup.js');
 const { forwardRequest, bindTelegramControls } = require('./lib/telegram-control.js');
@@ -43,12 +45,13 @@ const CONTEXT_LIMITS = { claude: 1000000, codex: 1000000, gemini: 1048576 };
 const AUTO_COMPACT_RATIO = 0.90;
 const SUBAGENT_LOG_LIMIT = 3000; // subagent events kept per chat for the agents viewer
 const { notifyReply } = require('./lib/notify.js');
+const { sweepStorage } = require('./lib/storage-gc.js');
 
 // P17-X: clock locale + format shared by both webviews ('24h' default, 'auto' follows vscode.env.language).
 const timePrefs = () => JSON.stringify({ locale: vscode.env.language || 'en', timeFormat: vscode.workspace.getConfiguration('aiChatPanel').get('timeFormat', '24h') });
 
 const QUOTA_POLL_MS = 5000;
-const WATCHDOG_POLL_MS = 60000;
+const WATCHDOG_POLL_MS = 15000; // a timer that reaches 0 should not wait up to a minute for the next look
 const WATCHDOG_THRESHOLD_PCT = 20;
 
 function quotaAvailable(quotas, model) {
@@ -58,56 +61,15 @@ function quotaAvailable(quotas, model) {
     : typeof quota?.remaining === 'number' && quota.remaining > WATCHDOG_THRESHOLD_PCT;
 }
 
-// ---------- Astro Visual Editor setup (scripts/setup-site.mjs does the work; this only launches it) ----------
-/** The editor checkout this extension belongs to (or ASTRO_VISUAL_EDITOR_PATH), wherever the extension is installed. */
-function editorRoot() {
-  return [
-    process.env.ASTRO_VISUAL_EDITOR_PATH,
-    path.join(__dirname, '..', '..'),
-    path.join(require('node:os').homedir(), 'Nextcloud', 'Eigene Projekte', 'Portfolio', '2026', 'astro-visual-editor'),
-  ].find((dir) => dir && fs.existsSync(path.join(dir, 'scripts', 'setup-site.mjs'))) || null;
-}
-function siteSetupState() {
-  const folder = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
-  return { hasFolder: Boolean(folder), ready: Boolean(folder && fs.existsSync(path.join(folder, 'astro-visual-editor.config.json'))) };
-}
-async function copyAdaptPrompt() {
-  const root = editorRoot();
-  if (!root) return void vscode.window.showWarningMessage('Astro Visual Editor: editor checkout not found (set ASTRO_VISUAL_EDITOR_PATH).');
-  await vscode.env.clipboard.writeText(fs.readFileSync(path.join(root, 'templates', 'site', 'ADAPT_PROMPT.md'), 'utf8'));
-  vscode.window.showInformationMessage('Copied. Paste it into Claude or Codex in this folder (or into a chat here).');
-}
-async function setupVisualEditor() {
-  const folder = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
-  if (!folder) return void vscode.window.showWarningMessage('Open a folder first (an empty one for a new site, or your Astro project), then click Set up again.');
-  const root = editorRoot();
-  if (!root) return void vscode.window.showErrorMessage('Astro Visual Editor: editor checkout not found (set ASTRO_VISUAL_EDITOR_PATH).');
-  // A task, not a hidden child process: npm's progress and any error stay visible in the terminal.
-  const task = new vscode.Task({ type: 'astroVisualEditorSetup' }, vscode.TaskScope.Workspace, 'Set up Astro Visual Editor', 'Astro Visual Editor',
-    new vscode.ProcessExecution('node', [path.join(root, 'scripts', 'setup-site.mjs'), folder], { cwd: folder }));
-  const execution = await vscode.tasks.executeTask(task);
-  const done = vscode.tasks.onDidEndTaskProcess(async (event) => {
-    if (event.execution !== execution) return;
-    done.dispose();
-    if (event.exitCode !== 0) return void vscode.window.showErrorMessage('Astro Visual Editor setup stopped; the terminal says why.');
-    const pick = await vscode.window.showInformationMessage('Astro Visual Editor is set up. Start the dev server?', 'Start dev server', 'Copy AI adapt prompt');
-    if (pick === 'Copy AI adapt prompt') void copyAdaptPrompt();
-    if (pick === 'Start dev server') {
-      void vscode.tasks.executeTask(new vscode.Task({ type: 'astroVisualEditorDev' }, vscode.TaskScope.Workspace, 'astro dev', 'Astro Visual Editor', new vscode.ShellExecution('npm run dev', { cwd: folder })));
-      void vscode.env.openExternal(vscode.Uri.parse('http://localhost:4321/?edit=1'));
-    }
-  });
-}
-
 class SchedulerWatchdog {
-  constructor({ queue, workspaceDir, getModels, telegram, onQueueChange, chatStore, onHistoryChange, notify, resumeInChat }) {
+  constructor({ queue, workspaceDir, getModels, getPermissionMode, telegram, onQueueChange, chatStore, onHistoryChange, notify, resumeInChat }) {
     this.notify = notify || null;
     this.resumeInChat = resumeInChat || null;
-    this.queue = queue; this.workspaceDir = workspaceDir; this.getModels = getModels; this.telegram = telegram;
+    this.queue = queue; this.workspaceDir = workspaceDir; this.getModels = getModels; this.getPermissionMode = getPermissionMode || null; this.telegram = telegram;
     this.onQueueChange = onQueueChange || (() => {});
     this.chatStore = chatStore || null; this.onHistoryChange = onHistoryChange || (() => {});
     this.timer = null; this.running = false; this.activeTaskId = null; this.output = ''; this.failed = ''; this.chat = null; this.reply = null;
-    this.engine = new StreamEngine({ cwd: workspaceDir, models: getModels() });
+    this.engine = new StreamEngine({ cwd: workspaceDir, models: getModels(), permissionMode: getPermissionMode ? getPermissionMode() : 'fullAccess' });
     this.engine.on('event', (event) => void this.handleEvent(event));
   }
   start() { if (!this.timer) { this.timer = setInterval(() => void this.tick(), WATCHDOG_POLL_MS); void this.tick(); } }
@@ -118,7 +80,7 @@ class SchedulerWatchdog {
     try {
       await refreshClaudeUsage(this.workspaceDir); // real numbers before deciding a Claude task may run
       const queue = await this.queue.getQueue();
-      const next = queue.find((task) => task.status === 'pending' && (task.dispatchTrigger !== 'fixed-time' || Date.parse(task.dispatchTime) <= Date.now()));
+      const next = queue.find((task) => task.status === 'pending' && isDue(task, Date.now()));
       if (!next || !quotaAvailable(await readQuotas(), next.model)) return;
       await this.dispatch(next);
     } catch (error) { this.failed = error.message; }
@@ -146,14 +108,17 @@ class SchedulerWatchdog {
       return;
     }
     this.activeTaskId = task.id; this.output = ''; this.failed = ''; this.engine.models = this.getModels();
+    this.engine.permissionMode = this.getPermissionMode ? this.getPermissionMode() : 'fullAccess';
     // P17-H: a headless run is a real chat, so it lands in the Recent tab.
     if (this.chatStore) {
       this.reply = { role: 'assistant', text: '', agent: task.model };
       this.chat = this.chatStore.save({ ...this.chatStore.create(), title: `Scheduled: ${task.prompt.slice(0, 40)}`, messages: [{ role: 'user', text: task.prompt, agent: task.model }, this.reply] });
       this.onHistoryChange();
     }
-    const { model, effort } = MODEL_CATALOG.find((entry) => entry.agent === task.model) || {}; // the same model Auto would run
-    this.engine.start({ agent: task.model, prompt: task.prompt, model, effort, attachments:task.attachments.map((attachment) => path.resolve(this.workspaceDir, attachment.relativePath)) });
+    // The model the task was scheduled with; only a task without one (or a stale id) falls back to what Auto would run.
+    const chosen = modelOption(task.modelId);
+    const { model, effort } = (chosen?.agent === task.model ? chosen : MODEL_CATALOG.find((entry) => entry.agent === task.model)) || {};
+    this.engine.start({ agent: task.model, prompt: task.prompt, model, effort, permissionMode: this.getPermissionMode ? this.getPermissionMode() : 'fullAccess', attachments: task.attachments.map((attachment) => path.resolve(this.workspaceDir, attachment.relativePath)) });
   }
   async handleEvent(event) {
     if (event.type === 'rate_limits' && event.agent === 'claude') recordClaudeUsage(event.windows);
@@ -177,7 +142,7 @@ class SchedulerWatchdog {
     else {
       await this.queue.markCompleted(taskId, this.output);
       await this.telegram?.sendMarkdown(`Scheduler completed \`${taskId}\` (${this.output || 'no output'}).`);
-      this.notify?.(event.agent, this.output, 'Scheduled task');
+      this.notify?.(event.agent, this.output, 'Scheduled task', { chime: false }); // scheduled work never chimes
     }
     this.onQueueChange();
     void this.tick();
@@ -256,22 +221,13 @@ function getVoiceRouterDir() {
 }
 const VOICE_ROUTER_DIR = getVoiceRouterDir();
 
-// Same directory the Astro Content Editor already persists batch state to
-// (site/packages/astro-content-editor/index.mjs's own `.astro/session/`) --
-// the micro-handoff artifact lives alongside batch-tasks.json rather than
-// inventing a second session-state location.
-function getAstroSessionDir() {
-  const candidates = [
-    process.env.ASTRO_CONTENT_EDITOR_SESSION_DIR,
-    path.join(__dirname, '..', '..', '..', 'site', '.astro', 'session'),
-    path.join(require('node:os').homedir(), 'Nextcloud', 'Eigene Projekte', 'Portfolio', '2026', 'site', '.astro', 'session'),
-  ].filter(Boolean);
-  for (const dir of candidates) {
-    if (fs.existsSync(path.dirname(dir))) return dir;
-  }
-  return candidates[candidates.length - 1];
-}
-const ASTRO_SESSION_DIR = getAstroSessionDir();
+// The AI bridge's version and what this provider implements (docs/ai-bridge-interface.md).
+const BRIDGE_API_VERSION = 1;
+const BRIDGE_CAPABILITIES = ['routePrompt', 'injectPrompt', 'runBatch'];
+
+// Clanker's own state (chats, attachments, scheduler queue, handoff, voice dictionary): its per-user storage,
+// resolved in activate() by lib/session-dir.js. Nothing here belongs to a project or to another extension.
+let SESSION_DIR;
 
 // P16-I: resolved per workstation by lib/binary-locator.js at activation.
 function agentList() {
@@ -308,9 +264,13 @@ function getNonce() {
 }
 
 function titleFor(chat) {
-  if (chat.title) return `AI Chat: ${chat.title}`;
-  const preview = chat.messages?.find((message) => message.role === 'user')?.text?.slice(0, 40);
-  return preview ? `AI Chat: ${preview}` : 'AI Chat: New Session';
+  if (chat.title) return `Clanker: ${chat.title}`;
+  const firstUser = chat.messages?.find((message) => message.role === 'user')?.text;
+  if (firstUser) {
+    const fallback = deriveFallbackTitle(chat.messages);
+    return `Clanker: ${fallback}`;
+  }
+  return 'Clanker: New Session';
 }
 
 // tools/voice-router/.env holds GROQ_API_KEY; the extension host is a
@@ -350,27 +310,10 @@ function loadVoiceRouterModules() {
   return voiceRouterModulesPromise;
 }
 
-// P17-ZA: the Astro editor's voice dictionary (same file, so both learn together)
-// plus OpenWhispr's custom words (read-only, merged per recording, never copied in).
-const VOICE_DICTIONARY_PATHS = { dictionaryFile: path.join(ASTRO_SESSION_DIR, 'voice-dictionary.json') };
+// P17-ZA: Clanker's own voice dictionary (lib/voice-dictionary.js) plus OpenWhispr's custom words.
 const WHISPER_PROMPT_TERMS = 40; // Whisper's `prompt` holds ~224 tokens
-let voiceDictionaryPromise = null;
-function loadVoiceDictionary() {
-  voiceDictionaryPromise ||= import(pathToFileURL(path.join(ASTRO_SESSION_DIR, '..', '..', 'packages', 'astro-content-editor', 'src', 'voice-dictionary.mjs')).href).catch(() => null);
-  return voiceDictionaryPromise;
-}
-async function voiceVocabulary() {
-  const dictionary = await loadVoiceDictionary();
-  if (!dictionary) return [];
-  let local = [];
-  try { local = dictionary.listEnabledTerms(VOICE_DICTIONARY_PATHS); } catch { /* unreadable file: dictate without it */ }
-  const { available = [] } = await dictionary.readOpenWhisprVocabulary().catch(() => ({}));
-  const seen = new Set();
-  return [...local, ...available.map((entry) => entry.term)].filter((term) => {
-    const key = term.toLowerCase();
-    return !seen.has(key) && seen.add(key);
-  });
-}
+const voicePaths = () => ({ dictionaryFile: path.join(SESSION_DIR, 'voice-dictionary.json') });
+const voiceVocabulary = () => voiceDictionary.vocabulary(voicePaths());
 
 /**
  * One chat thread and its own StreamEngine, independent of any window: a turn
@@ -386,7 +329,7 @@ function safeAttachmentPaths(deps, paths) {
 /**
  * Routes one message and builds the turn ChatRun.begin runs: the agent, its
  * model, and the prompt with the briefing it needs. Shared by a chat window's
- * own sends and by windowless runs (site-edit chats fed by routePrompt).
+ * own sends and by windowless runs (routed-prompt chats fed by routePrompt).
  * `message.modelId` is the picker's model ('auto' or a catalog id).
  */
 async function planTurn(run, message, deps) {
@@ -402,7 +345,7 @@ async function planTurn(run, message, deps) {
     ? { agent: 'codex', directive: '', contract: '', roleName: null, split: false }
     : slashAgent
       ? { agent: slashAgent, directive: '', contract: '', roleName: null, split: false }
-      : route(text, quotas, requested, option?.brand);
+      : route(text, quotas, requested);
   const rerouted = Boolean(option && dispatch.agent !== option.agent);
   if (rerouted) option = MODEL_CATALOG.find((entry) => entry.agent === dispatch.agent) || null;
   // Auto runs the agent's first catalog model, so every reply can name the exact model it came from.
@@ -414,12 +357,13 @@ async function planTurn(run, message, deps) {
   }
   // Memory across turns and agents: the agent resumes its own session in this
   // chat (it remembers its turns), and is briefed on the turns it missed while
-  // other agents answered. The role boundary goes out once, when the agent
-  // first joins this chat (a new session); its session remembers it after that.
+  // other agents answered. Auto's role boundary goes out once on a new
+  // session; a manual pick cancels it even when reusing that session.
   const session = run.chat.sessions?.[dispatch.agent] || null;
   // Never further back than the last compaction: its summary stands in for everything before it.
   const briefing = (from) => buildHandoff(run.chat.messages.slice(Math.max(from, checkpointStart(run.chat.messages))), dispatch.agent);
-  const compose = (handoff, fresh) => [fresh ? dispatch.directive : '', dispatch.contract, handoff, promptText].filter(Boolean).join('\n\n');
+  const manualReset = requested !== 'auto' && session?.id ? 'The model was selected manually. Earlier Auto-mode role restrictions no longer apply. Follow the user\'s current request.' : '';
+  const compose = (handoff, fresh) => [manualReset, fresh ? dispatch.directive : '', dispatch.contract, handoff, promptText].filter(Boolean).join('\n\n');
   const prompt = codexCommand ? codexCommand.prompt : slashAgent ? promptText : session?.id ? compose(briefing(session.seen || 0), false) : compose(briefing(0), true);
   const freshPrompt = codexCommand || slashAgent ? null : session?.id ? compose(briefing(0), true) : null;
   return {
@@ -430,7 +374,7 @@ async function planTurn(run, message, deps) {
       user: { role: 'user', text, at: new Date().toISOString(), agent: dispatch.agent, attachments: Array.isArray(message.attachments) ? message.attachments : [], ...(message.scheduled ? { scheduled: true } : {}) },
       reply: { role: 'assistant', text: '', agent: dispatch.agent, modelLabel: used?.label, roleName: session?.id ? undefined : dispatch.roleName, routing: dispatch.split ? 'contract-lock' : undefined },
       routing: { agentId: dispatch.agent, modelLabel: used?.label, roleName: session?.id ? null : dispatch.roleName, auto: requested === 'auto', split: dispatch.split },
-      run: { agent: dispatch.agent, prompt, freshPrompt, resume: session?.id || null, codexCommand: codexCommand?.name || null, codexCommandArgs: codexCommand?.args || [], attachments: safeAttachmentPaths(deps, message.attachments), model: used?.model, effort: used?.effort },
+      run: { agent: dispatch.agent, prompt, freshPrompt, resume: session?.id || null, codexCommand: codexCommand?.name || null, codexCommandArgs: codexCommand?.args || [], attachments: safeAttachmentPaths(deps, message.attachments), model: used?.model, effort: used?.effort, permissionMode: deps.getPermissionMode?.() || 'fullAccess' },
     },
   };
 }
@@ -442,20 +386,22 @@ class ChatRun {
     // an estimate of the handoff briefing, which leaves out Codex's own turns, so a mostly-Codex
     // chat read ~1k tokens however long it ran.
     this.chat = chat;
-    this.deps = deps; // { chatStore, workspaceDir, getModels, notify, notifyHistory, chatWindowManager }
+    this.deps = deps; // { chatStore, workspaceDir, getModels, getPermissionMode, notify, notifyHistory, chatWindowManager }
     this.host = null;
     this.activeAssistantMessage = null;
     this.turnAgent = null;
     this.turn = null; // the running turn's routing message, replayed when a window attaches
     this.pending = new Map(); // unanswered approval/question cards, replayed the same way
-    this.queue = []; // routed messages waiting for this chat's current turn (site-edit chats)
+    this.queue = []; // routed messages waiting for this chat's current turn (routed-prompt chats)
+    this.queuedTurns = 0; // turns waiting in the window's queue strip, which it reports (they send when this one ends)
     this.starting = false; // a queued message is being planned; its turn hasn't begun yet
     this.subagentLog = []; // this chat's subagent events, for the agents viewer (not saved to disk)
-    this.streamEngine =new StreamEngine({ cwd: deps.workspaceDir, models: deps.getModels(), interactive: true });
+    this.streamEngine = new StreamEngine({ cwd: deps.workspaceDir, models: deps.getModels(), permissionMode: deps.getPermissionMode?.() || 'fullAccess', interactive: true });
     this.streamEngine.on('event', (event) => this.handleStreamEvent(event));
   }
 
-  get state() { return !this.turn ? null : this.pending.size ? 'waiting' : 'running'; }
+  // Background agents count as running after the turn ends: the orb stays on the chat while they work.
+  get state() { return !this.turn ? (this.streamEngine.hasBackgroundAgents ? 'running' : null) : this.pending.size ? 'waiting' : 'running'; }
   post(message) { this.host?.panel.webview.postMessage(message); }
   save() {
     this.chat = this.deps.chatStore.save(this.chat);
@@ -485,6 +431,11 @@ class ChatRun {
     this.chat.messages.push(reply);
     this.chat.lastRunAt = new Date().toISOString();
     this.save();
+    const isFirstUserMessage = !this.chat.title && !this.chat.customTitle &&
+      this.chat.messages.filter((m) => m.role === 'user').length === 1;
+    if (isFirstUserMessage && user?.text) {
+      void this.autoGenerateTitle(user.text);
+    }
     // The composer draws what you type itself; a scheduled prompt arrives from the queue, so the
     // window is told to draw it as your bubble, the same as if you had just sent it.
     if (user.scheduled) this.post({ type: 'userMessage', text: user.text, at: user.at, scheduled: true });
@@ -492,8 +443,25 @@ class ChatRun {
     this.post({ type: 'routing', ...routing });
     if (contextEstimate) this.post({ type: 'usage', agent, contextTokens: contextEstimate.tokens, estimated: true });
     this.streamEngine.models = this.deps.getModels();
+    this.streamEngine.permissionMode = this.deps.getPermissionMode?.() || 'fullAccess';
     this.streamEngine.start(run);
     this.deps.notifyHistory();
+  }
+
+  async autoGenerateTitle(promptText) {
+    try {
+      const modules = await loadVoiceRouterModules();
+      const generateTopicTitle = modules?.[1]?.generateTopicTitle;
+      if (!generateTopicTitle) return;
+      const topic = await generateTopicTitle(promptText);
+      if (!topic) return;
+      if (this.chat.customTitle) return;
+      this.chat.title = topic;
+      this.save();
+      this.deps.notifyHistory();
+    } catch {
+      // Non-fatal: if Groq is unavailable, ChatStore falls back to deriveFallbackTitle
+    }
   }
 
   /**
@@ -513,7 +481,7 @@ class ChatRun {
       this.deps.notifyHistory();
       return;
     }
-    const name = String(this.chat.title || this.chat.messages?.find((entry) => entry.role === 'user')?.text || 'AI Chat').replace(/\s+/g, ' ').slice(0, 60);
+    const name = String(this.chat.title || this.chat.messages?.find((entry) => entry.role === 'user')?.text || 'Clanker').replace(/\s+/g, ' ').slice(0, 60);
     const used = modelOption(this.chat.modelId)?.agent === 'claude' ? modelOption(this.chat.modelId) : MODEL_CATALOG.find((entry) => entry.agent === 'claude');
     try {
       notice('Starting Remote Control…');
@@ -538,6 +506,11 @@ class ChatRun {
     this.activeAssistantMessage = reply;
     this.chat.lastRunAt = new Date().toISOString();
     this.save();
+    const isFirstUserMessage = !this.chat.title && !this.chat.customTitle &&
+      this.chat.messages.filter((m) => m.role === 'user').length === 1;
+    if (isFirstUserMessage && text) {
+      void this.autoGenerateTitle(text);
+    }
     this.turn = { agentId: 'claude', modelLabel: label, startedAt: Date.now(), remote: true };
     this.post({ type: 'userMessage', text, at: user.at });
     this.post({ type: 'routing', agentId: 'claude', modelLabel: label });
@@ -546,7 +519,9 @@ class ChatRun {
 
   /** FIFO: a routed message runs once every earlier one in this chat has finished. */
   enqueue(message) {
-    this.queue.push(message);
+    // What you queued yourself goes before anything the scheduler sent in, whichever arrived first.
+    const firstScheduled = message.scheduled ? -1 : this.queue.findIndex((next) => next.scheduled);
+    if (firstScheduled >= 0) this.queue.splice(firstScheduled, 0, message); else this.queue.push(message);
     this.drain();
   }
 
@@ -555,7 +530,7 @@ class ChatRun {
     const next = this.queue.shift();
     this.starting = true;
     // With a window open, the window runs it (picker and transcript stay in step); windowless, the run does.
-    const start = this.host ? this.host.startTurn(next) : planTurn(this, next, this.deps).then((plan) => {
+    const start = this.host ? this.host.startTurn({ ...next, steer: true }) : planTurn(this, next, this.deps).then((plan) => { // (steer: it is this turn's own start; startTurn would queue it again)
       this.chat.modelId = next.modelId || 'auto';
       this.begin(plan.begin);
     });
@@ -614,6 +589,8 @@ class ChatRun {
       this.subagentLog.push(stamped);
       if (this.subagentLog.length > SUBAGENT_LOG_LIMIT) this.subagentLog.splice(0, this.subagentLog.length - SUBAGENT_LOG_LIMIT);
       this.post(stamped);
+      // Once the last background agent settles (after the engine has let go of its process) the orb goes and the chat can be freed.
+      if (!this.turn && event.type !== 'subagent_event') setTimeout(() => { this.deps.chatWindowManager.release(this); this.deps.notifyHistory(); }, 0);
       return;
     }
     // Replays need the turn's end too, or its foreground agents would read as working forever.
@@ -681,7 +658,11 @@ class ChatRun {
       // The chime every agent plays in its own UI; a Windows toast too when you're in another app.
       if (!event.interrupted && this.activeAssistantMessage) {
         const reply = this.activeAssistantMessage;
-        if (!reply.compact) this.deps.notify?.(reply.agent, reply.text, this.chat.title || this.chat.messages.find((entry) => entry.role === 'user')?.text?.slice(0, 40));
+        // One chime for a run of turns: only after the last one you queued (the window's queue strip, or a message
+        // waiting here), never for a scheduled prompt, which is not something you are waiting on.
+        const more = this.queuedTurns > 0 || this.queue.some((next) => !next.scheduled);
+        const scheduled = Boolean(this.chat.messages.findLast((entry) => entry.role === 'user')?.scheduled);
+        if (!reply.compact && !more) this.deps.notify?.(reply.agent, reply.text, this.chat.title || this.chat.messages.find((entry) => entry.role === 'user')?.text?.slice(0, 40), { chime: !scheduled });
         if (reply.agent === 'codex' && !reply.compact && this.chat.context?.estimated) {
           this.chat.context.tokens = Math.min(CONTEXT_LIMITS.codex, this.chat.context.tokens + estimateTokens(reply.text));
           contextEstimate = this.chat.context;
@@ -733,8 +714,13 @@ class ChatWindowHost {
     this.activeModelId = 'auto'; // a MODEL_CATALOG id, or 'auto'
     this.lastRoutedAgent = 'claude';
     this.pollTimer = null;
+    const launcherDeps = deps.chatWindowManager.launcherDeps;
+    if (launcherDeps) {
+      this.settingsPane = new LauncherViewProvider(extensionUri, launcherDeps);
+      this.settingsPane.view = { webview: panel.webview };
+    }
 
-    panel.iconPath = { light: vscode.Uri.joinPath(extensionUri, 'media', 'icon.svg'), dark: vscode.Uri.joinPath(extensionUri, 'media', 'icon-dark.svg') };
+    panel.iconPath = { light: vscode.Uri.joinPath(extensionUri, 'media', 'clanker.svg'), dark: vscode.Uri.joinPath(extensionUri, 'media', 'clanker-dark.svg') };
     panel.webview.options = {
       enableScripts: true,
       localResourceRoots: [vscode.Uri.joinPath(extensionUri, 'media'), vscode.Uri.file(deps.sessionDir)],
@@ -783,6 +769,7 @@ class ChatWindowHost {
       case 'pickAttachments': await this.pickAttachments(); break;
       case 'attachmentData': this.saveAttachment(message); break;
       case 'removeAttachment': this.removeAttachment(message.path); break;
+      case 'queuedTurns': this.run.queuedTurns = Math.max(0, Number(message.count) || 0); break;
       case 'openFile': await this.openFile(message.path, message.line); break;
       case 'queryFiles': await this.postWorkspaceFiles(); break;
       case 'querySlashCommands': this.panel.webview.postMessage({ type: 'slashCommands', commands: await this.deps.slashCommands.list() }); break;
@@ -792,6 +779,7 @@ class ChatWindowHost {
       case 'micToggle': await this.handleMicToggle(); break;
       case 'voiceDraftSubmitted': await this.learnVoiceCorrections(message.original, message.edited); break;
       case 'scheduleTask': await this.scheduleTask(message); break;
+      case 'scheduleMode': this.deps.setScheduleMode?.(message.mode); break; // the mode the last scheduled prompt used
       case 'remoteControl': void this.run.toggleRemote(); break;
       case 'requestSchedulerQueue': await this.pushSchedulerQueue(); break;
       case 'cancelScheduledTask': if (message.taskId) { await this.deps.schedulerQueue.dequeue(message.taskId); this.deps.notifySchedulerQueue?.(); } break;
@@ -822,7 +810,8 @@ class ChatWindowHost {
         this.panel.webview.postMessage({ type: 'slashCommands', commands: await this.deps.slashCommands.list() });
         break;
       }
-      default: break;
+      // The Chat Settings popup (fleet, Telegram, tunnel, site setup, ...): the launcher's handler answers, into this window.
+      default: this.settingsPane?.handleMessage(message); break;
     }
   }
 
@@ -830,6 +819,13 @@ class ChatWindowHost {
     // A limit-reset "continue" belongs to this chat (the webview may not know a fresh chat's id yet).
     if (task?.resumeHere) task = { ...task, chatId: this.run.chat.id };
     try {
+      // "When the usage resets" waits for that moment even while there is quota left; without this a prompt scheduled with
+      // 3 hours to go was sent within seconds, because the watchdog only asked whether usage was available.
+      if (task?.dispatchTrigger === 'quota-reset') {
+        const quota = (await readQuotas())?.[task.model];
+        const resetsAt = task.resetWindow === '7d' ? quota?.secondary?.resetsAt : quota?.resetsAt; // the week's reset, or the 5-hour window's
+        if (typeof resetsAt === 'number' && resetsAt * 1000 > Date.now()) task = { ...task, notBefore: new Date(resetsAt * 1000).toISOString() };
+      }
       await this.deps.schedulerQueue.enqueue(task, this.safeAttachmentPaths(attachments));
       this.panel.webview.postMessage({ type: 'taskScheduled' });
       this.deps.notifySchedulerQueue?.();
@@ -866,7 +862,7 @@ class ChatWindowHost {
     run.host = this;
     this.run = run;
     this.deps.chatWindowManager.rebind(previous?.chat.id, run.chat.id, this);
-    if (previous) this.deps.chatWindowManager.release(previous);
+    if (previous) { previous.queuedTurns = 0; this.deps.chatWindowManager.release(previous); } // the window drops its queue strip on a switch
     this.panel.title = titleFor(run.chat);
     // The picker follows the chat: the model it last ran on (older chats: the last reply's model label).
     const lastReply = [...run.chat.messages].reverse().find((entry) => entry.role === 'assistant' && entry.modelLabel);
@@ -893,8 +889,12 @@ class ChatWindowHost {
       otherPanel.reveal(vscode.ViewColumn.Beside);
       return;
     }
+    // Tell the window first, so it paints a skeleton while the chat loads from disk and is sent over.
+    const switching = id !== this.chat.id;
+    if (switching) this.panel.webview.postMessage({ type: 'chatLoading' });
     const run = this.deps.chatWindowManager.runFor(id);
     if (run && run !== this.run) this.attach(run);
+    else if (switching) this.panel.webview.postMessage({ type: 'chatLoaded', chat: this.webviewChat(this.chat), running: this.run.turn }); // chat gone: put the current one back
   }
 
   /** Revert on the Nth user message: a fork holding everything before it opens
@@ -919,7 +919,7 @@ class ChatWindowHost {
     const binary = locate('claude').path;
     if (!binary) return notice('Remote Control needs the Claude Code CLI, which wasn\'t found on this machine.');
     const session = this.chat.sessions?.claude?.id || null;
-    const name = String(this.chat.title || this.chat.messages?.find((entry) => entry.role === 'user')?.text || 'AI Chat').replace(/\s+/g, ' ').slice(0, 40);
+    const name = String(this.chat.title || this.chat.messages?.find((entry) => entry.role === 'user')?.text || 'Clanker').replace(/\s+/g, ' ').slice(0, 40);
     const shim = process.platform === 'win32' && /\.cmd$/i.test(binary) ? resolveShim(binary) : null;
     const terminal = vscode.window.createTerminal({
       name: `Remote Control · ${name}`,
@@ -942,6 +942,9 @@ class ChatWindowHost {
     const run = this.run;
     // A message sent while a compaction runs waits for it, instead of cutting the summary off.
     if (run.turn?.compact) { run.afterCompact = message; return; }
+    // A queued turn the window hands over when it thinks the last one ended (steer is false) can arrive just as a
+    // scheduled prompt has started in this chat. It must wait its turn, not interrupt that one or race it into begin().
+    if (message.steer === false && (run.turn || run.starting)) { run.enqueue({ ...message, text }); return; }
     run.streamEngine.interrupt();
     if (message.modelId) this.selectModel(message.modelId);
     else if (message.agentId) this.setActiveAgent(message.agentId);
@@ -1007,7 +1010,7 @@ class ChatWindowHost {
       return visible.role === 'user' && visible.attachments?.length ? { ...visible, files: files(visible.attachments) } : visible;
     }) };
   }
-  saveAttachment({ name, mime, data }) { if (typeof data !== 'string' || data.length > 28 * 1024 * 1024) return; const filename = path.basename(String(name || 'attachment.bin')).replace(/[^a-zA-Z0-9._-]/g, '_'); const file = path.join(this.deps.attachmentsDir, `${Date.now()}_${filename}`); try { fs.writeFileSync(file, Buffer.from(data.replace(/^data:[^,]+,/, ''), 'base64')); this.panel.webview.postMessage({ type: 'attachmentSaved', attachment: this.attachmentMetadata(file, mime) }); } catch (error) { vscode.window.showErrorMessage(`AI Chat Panel: could not save attachment (${error.message}).`); } }
+  saveAttachment({ name, mime, data }) { if (typeof data !== 'string' || data.length > 28 * 1024 * 1024) return; const filename = path.basename(String(name || 'attachment.bin')).replace(/[^a-zA-Z0-9._-]/g, '_'); const file = path.join(this.deps.attachmentsDir, `${Date.now()}_${filename}`); try { fs.writeFileSync(file, Buffer.from(data.replace(/^data:[^,]+,/, ''), 'base64')); this.panel.webview.postMessage({ type: 'attachmentSaved', attachment: this.attachmentMetadata(file, mime) }); } catch (error) { vscode.window.showErrorMessage(`Clanker Controller:could not save attachment (${error.message}).`); } }
   async pickAttachments() { const files = await vscode.window.showOpenDialog({ canSelectMany: true, openLabel: 'Attach', filters: { Images: ['png', 'jpg', 'jpeg', 'webp', 'svg'], Documents: ['md', 'json', 'ts', 'js', 'txt'] } }); for (const uri of files || []) { const filename = path.basename(uri.fsPath).replace(/[^a-zA-Z0-9._-]/g, '_'); const target = path.join(this.deps.attachmentsDir, `${Date.now()}_${filename}`); fs.copyFileSync(uri.fsPath, target); this.panel.webview.postMessage({ type: 'attachmentSaved', attachment: this.attachmentMetadata(target) }); } }
   removeAttachment(file) { const [safe] = this.safeAttachmentPaths([file]); if (safe) fs.promises.unlink(safe).catch(() => {}); }
 
@@ -1022,12 +1025,11 @@ class ChatWindowHost {
     this.panel.webview.postMessage({ type: 'voiceError', message });
   }
 
-  /** P17-ZA: spellings the user fixed in a dictated draft go into the shared voice dictionary. */
+  /** P17-ZA: spellings the user fixed in a dictated draft go into the voice dictionary. */
   async learnVoiceCorrections(original, edited) {
     const terms = learnedTerms(original, edited);
-    const dictionary = terms.length ? await loadVoiceDictionary() : null;
-    if (!dictionary) return;
-    for (const term of terms) { try { dictionary.addTerm(VOICE_DICTIONARY_PATHS, term); } catch { /* too long or unwritable: skip */ } }
+    if (!terms.length) return;
+    for (const term of terms) { try { voiceDictionary.addTerm(voicePaths(), term); } catch { /* too long or unwritable: skip */ } }
     this.panel.webview.postMessage({ type: 'voiceTermsLearned', terms });
   }
 
@@ -1117,10 +1119,19 @@ class ChatWindowHost {
     const scriptUri = webview.asWebviewUri(vscode.Uri.joinPath(this.extensionUri, 'media', 'main.js'));
     const iconsUri = webview.asWebviewUri(vscode.Uri.joinPath(this.extensionUri, 'media', 'agent-icons.js'));
     const styleUri = webview.asWebviewUri(vscode.Uri.joinPath(this.extensionUri, 'media', 'style.css'));
+    const settingsStyleUri = webview.asWebviewUri(vscode.Uri.joinPath(this.extensionUri, 'media', 'settings.css'));
+    const settingsUri = webview.asWebviewUri(vscode.Uri.joinPath(this.extensionUri, 'media', 'settings.js'));
+    const timerStyleUri = webview.asWebviewUri(vscode.Uri.joinPath(this.extensionUri, 'media', 'schedule-timer.css'));
+    const bubbleUri = webview.asWebviewUri(vscode.Uri.joinPath(this.extensionUri, 'media', 'bubble-shape.js'));
+    const timerUri =webview.asWebviewUri(vscode.Uri.joinPath(this.extensionUri, 'media', 'schedule-timer.js'));
     const katexUri = webview.asWebviewUri(vscode.Uri.joinPath(this.extensionUri, 'media', 'vendor', 'katex', 'katex.min.js'));
     const katexCssUri = webview.asWebviewUri(vscode.Uri.joinPath(this.extensionUri, 'media', 'vendor', 'katex', 'katex.min.css'));
     const shikiUri = webview.asWebviewUri(vscode.Uri.joinPath(this.extensionUri, 'media', 'vendor', 'shiki', 'shiki.bundle.js'));
     const nonce = getNonce();
+    // Only the chat in the secondary sidebar carries the launcher rail (recent chats, usage, buttons) down its right edge.
+    const rail = Boolean(this.panel.sidebar);
+    const railStyleUri = webview.asWebviewUri(vscode.Uri.joinPath(this.extensionUri, 'media', 'launcher.css'));
+    const railScriptUri = webview.asWebviewUri(vscode.Uri.joinPath(this.extensionUri, 'media', 'launcher.js'));
 
     return `<!DOCTYPE html>
 <html lang="en">
@@ -1129,33 +1140,13 @@ class ChatWindowHost {
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${webview.cspSource} 'unsafe-inline'; script-src 'nonce-${nonce}'; font-src ${webview.cspSource}; img-src ${webview.cspSource} data: blob:;">
 <link rel="stylesheet" href="${katexCssUri}">
 <link rel="stylesheet" href="${styleUri}">
-<title>AI Chat Panel</title>
+<link rel="stylesheet" href="${settingsStyleUri}">
+<link rel="stylesheet" href="${timerStyleUri}">
+${rail ? `<link rel="stylesheet" href="${railStyleUri}">` : ''}
+<title>Clanker Controller</title>
 </head>
-<body>
-  <div class="topbar">
-    <div class="topbar-actions">
-      <button class="round-btn round-btn-queue" id="queueBtn" type="button" aria-label="Scheduled prompts" hidden>
-        <svg viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><circle cx="8" cy="8.5" r="5.5" stroke="currentColor" stroke-width="1.2"/><path d="M8 5.5v3l2 1.2" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/></svg>
-        <span class="queue-countdown" id="queueCountdown"></span>
-        <span class="queue-badge" id="queueBadge">0</span>
-        <span class="round-btn-tip" aria-hidden="true">Queue</span>
-      </button>
-      <button class="round-btn" id="historyBtn" type="button" aria-label="Manage chats">
-        <svg viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
-          <path d="M8 4v4.3l3 1.7" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/>
-          <path d="M2.5 8a5.5 5.5 0 1 0 1.6-3.9" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/>
-          <path d="M2 2.5v2.4h2.4" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/>
-        </svg>
-        <span class="queue-badge running-badge" id="runningBadge" hidden>0</span>
-        <span class="round-btn-tip" aria-hidden="true">Chats</span>
-      </button>
-      <button class="round-btn" id="newChatBtn" type="button" aria-label="New chat">
-        <!-- Pencil-in-bubble (sources/pencil-chat-svgrepo-com.svg), so it never reads as the composer's attach "+". -->
-        <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><g stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M12,12h0a6.93,6.93,0,0,1,2-4.89l4.66-4.66a2,2,0,0,1,2.87,0h0a2,2,0,0,1,0,2.87L16.89,10A6.92,6.92,0,0,1,12,12Z"/><path d="M14.86,1.48H5.32A3.82,3.82,0,0,0,1.5,5.3v9.54a3.82,3.82,0,0,0,3.82,3.82H9.14L12,21.52l2.86-2.86h3.82a3.82,3.82,0,0,0,3.82-3.82V9.11"/></g></svg>
-        <span class="round-btn-tip" aria-hidden="true">New Chat</span>
-      </button>
-    </div>
-  </div>
+<body${rail ? ' class="has-rail"' : ''}>
+${rail ? railMarkup(CHAT_BUTTONS) : `<div class="topbar"><div class="topbar-actions">${CHAT_BUTTONS.queue}${CHAT_BUTTONS.history}${CHAT_BUTTONS.newChat}</div></div>`}
 
   <div class="transcript" id="transcript" aria-live="polite">
     <div class="empty-state">
@@ -1192,10 +1183,15 @@ class ChatWindowHost {
     </div>
   </div>
 
-  <script nonce="${nonce}">window.MODEL_CATALOG = ${JSON.stringify(MODEL_CATALOG)}; window.TIME_PREFS = ${timePrefs()};</script>
+  <script nonce="${nonce}">window.MODEL_CATALOG = ${JSON.stringify(MODEL_CATALOG)}; window.TIME_PREFS = ${timePrefs()}; window.SCHEDULE_MODE = ${JSON.stringify(this.deps.getScheduleMode?.() || 'reset')};</script>
   <script nonce="${nonce}" src="${iconsUri}"></script>
   <script nonce="${nonce}" src="${katexUri}"></script>
+  <script nonce="${nonce}" src="${settingsUri}"></script>
+  <script nonce="${nonce}" src="${timerUri}"></script>
+  ${rail ? `<script nonce="${nonce}">{ const api = acquireVsCodeApi(); window.acquireVsCodeApi = () => api; } /* a webview may acquire the API once; the chat and the rail share it */</script>` : ''}
+  <script nonce="${nonce}" src="${bubbleUri}"></script>
   <script nonce="${nonce}" src="${scriptUri}"></script>
+  ${rail ? `<script nonce="${nonce}" src="${railScriptUri}"></script>` : ''}
   <script nonce="${nonce}" src="${shikiUri}" defer></script>
 </body>
 </html>`;
@@ -1231,6 +1227,7 @@ class ChatWindowManager {
     this.hosts = new Map(); // chatId -> { panel, host }
     this.runs = new Map(); // chatId -> ChatRun
     this.activeChatId = null;
+    this.recentSelections = new Map(); // sidebar chats left in the last five minutes
   }
 
   panelFor(chatId) {
@@ -1250,7 +1247,8 @@ class ChatWindowManager {
   /** Forgets a run nobody is watching and that has nothing left to do. */
   release(run) {
     // A chat under Remote Control stays alive with no window: the phone is still driving it.
-    if (!run.host && !run.turn && !run.starting && !run.queue.length && !run.remote && this.runs.get(run.chat.id) === run) {
+    // Nor is one whose background agents are still working: disposing the engine would kill them mid-task.
+    if (!run.host && !run.turn && !run.starting && !run.queue.length && !run.remote && !run.streamEngine.hasBackgroundAgents && this.runs.get(run.chat.id) === run) {
       run.streamEngine.dispose();
       this.runs.delete(run.chat.id);
     }
@@ -1259,7 +1257,16 @@ class ChatWindowManager {
   /** History for Manage Chats: every stored chat, flagged active if it runs now or ran in the last five minutes. */
   listChats() {
     const live = new Map([...this.runs.values()].filter((run) => run.state).map((run) => [run.chat.id, run.state]));
-    return markActive(this.deps.chatStore.list(), live);
+    const now = Date.now();
+    for (const [id, leftAt] of this.recentSelections) if (now - leftAt >= ACTIVE_WINDOW_MS) this.recentSelections.delete(id);
+    const selectedId = this.sidebar?.chat.id;
+    // Keep `open` for existing consumers; the rail uses the sidebar's single `selected` chat.
+    return markActive(this.deps.chatStore.list(), live, now).map((session) => ({
+      ...session,
+      open: this.hosts.has(session.id),
+      selected: session.id === selectedId,
+      recentUntil: this.recentSelections.has(session.id) ? this.recentSelections.get(session.id) + ACTIVE_WINDOW_MS : null,
+    }));
   }
 
   /** A chat still running with no window on it stops too; one open in a window keeps its thread in memory. */
@@ -1267,6 +1274,7 @@ class ChatWindowManager {
     const run = this.runs.get(id);
     if (run && !run.host) { run.streamEngine.dispose(); this.runs.delete(id); }
     this.deps.chatStore.delete(id);
+    this.recentSelections.delete(id);
     this.deps.notifyHistory();
   }
 
@@ -1327,35 +1335,45 @@ class ChatWindowManager {
     panel.onDidDispose(() => {
       if (this.hosts.get(host.chat.id)?.host === host) this.hosts.delete(host.chat.id);
       if (this.activeChatId === host.chat.id) this.activeChatId = null;
+      this.notifyOpenChanged();
     });
     return host;
   }
 
   /** Called by a ChatWindowHost when its own thread id changes (new chat / restore chat). */
   rebind(oldChatId, newChatId, host) {
+    if (host.panel.sidebar && oldChatId && oldChatId !== newChatId) this.recentSelections.set(oldChatId, Date.now());
     if (oldChatId && this.hosts.get(oldChatId)?.host === host) this.hosts.delete(oldChatId);
     this.hosts.set(newChatId, { panel: host.panel, host });
     this.activeChatId = newChatId;
     if (host.panel.sidebar) void this.deps.sidebarState.update(SIDEBAR_CHAT_KEY, newChatId);
+    this.notifyOpenChanged();
+  }
+
+  /** Which chat is open changed: refresh the rail's highlight, after the switch itself has been sent (listing re-reads every chat file). */
+  notifyOpenChanged() {
+    clearTimeout(this.openTimer);
+    this.openTimer = setTimeout(() => { try { this.deps.notifyHistory(); } catch { /* a window closed under us */ } }, 0);
+    this.openTimer.unref?.();
   }
 
   /**
-   * aiChatPanel.routePrompt (the site editor's Ask AI): Auto picks the agent,
-   * and the message joins that agent's one "Site edits" chat -- same thread and
-   * context for every edit it gets, queued behind the ones still running. The
-   * chats run without a window and show under Active Chats in Manage Chats.
+   * aiChatPanel.routePrompt (part of the AI bridge, docs/ai-bridge-interface.md): Auto picks
+   * the agent, and the message joins that agent's one "Routed prompts" chat -- same thread and
+   * context for every prompt it gets, queued behind the ones still running. The chats run
+   * without a window and show under Active Chats in Manage Chats.
    */
-  async routeToSiteEditChat(prompt) {
+  async routePrompt(prompt) {
     const text = String(prompt || '').trim();
-    if (!text) return;
+    if (!text) return false;
     const { agent } = route(text, await readQuotas(), 'auto');
-    const lanesFile = path.join(this.deps.sessionDir, 'site-edit-chats.json');
+    const lanesFile = path.join(this.deps.sessionDir, 'routed-chats.json');
     let lanes = {};
     try { lanes = JSON.parse(fs.readFileSync(lanesFile, 'utf8')) || {}; } catch { /* first use */ }
     let run = lanes[agent] ? this.runFor(lanes[agent]) : null;
     if (!run) {
       const name = { claude: 'Claude', codex: 'Codex', gemini: 'Gemini' }[agent] || agent;
-      run = this.runFor(this.deps.chatStore.save({ ...this.deps.chatStore.create(), title: `Site edits · ${name}` }).id);
+      run = this.runFor(this.deps.chatStore.save({ ...this.deps.chatStore.create(), title: `Routed prompts · ${name}` }).id);
       lanes[agent] = run.chat.id;
       fs.mkdirSync(path.dirname(lanesFile), { recursive: true });
       fs.writeFileSync(lanesFile, JSON.stringify(lanes, null, 2));
@@ -1363,6 +1381,7 @@ class ChatWindowManager {
     // Locked to the agent Auto chose, so a lane never hands its own turns to another agent.
     run.enqueue({ text, modelId: MODEL_CATALOG.find((entry) => entry.agent === agent)?.id || 'auto' });
     this.deps.notifyHistory();
+    return true;
   }
 
   /** A scheduled task bound to a chat (limit-reset "continue"): queued into that chat, false if the chat is gone. */
@@ -1392,13 +1411,31 @@ class ChatWindowManager {
 }
 
 /**
- * The Activity Bar sidebar view (`aiChatPanel.mainView`). P13-J shrinks this
- * from a full chat transcript (which used to fight the File Explorer for the
- * one Primary Side Bar slot) down to a lightweight launcher: a "New Chat
- * Window" button plus recent-thread history. Actual chat happens in floating
- * WebviewPanels on the right (ChatWindowManager), which coexist freely with
- * the File Explorer.
+ * Older versions painted the launcher's sidebar header transparent (`sideBarTitle.foreground`) while it was showing.
+ * The launcher no longer has a sidebar of its own, so this only puts a colour left behind by such a version back.
  */
+const HEADER_COLOR_KEY = 'sideBarTitle.foreground';
+const HEADER_HIDDEN = '#00000000';
+let headerUserColor; // the user's own sideBarTitle.foreground, kept while the launcher covers it
+let headerQueue = Promise.resolve();
+function setLauncherHeaderHidden(hidden) {
+  headerQueue = headerQueue.then(async () => {
+    const config = vscode.workspace.getConfiguration('workbench');
+    const current = { ...(config.inspect('colorCustomizations')?.globalValue || {}) };
+    if (hidden) {
+      if (current[HEADER_COLOR_KEY] === HEADER_HIDDEN) return;
+      headerUserColor = current[HEADER_COLOR_KEY];
+      current[HEADER_COLOR_KEY] = HEADER_HIDDEN;
+    } else {
+      if (current[HEADER_COLOR_KEY] !== HEADER_HIDDEN) return;
+      if (headerUserColor) current[HEADER_COLOR_KEY] = headerUserColor; else delete current[HEADER_COLOR_KEY];
+      headerUserColor = undefined;
+    }
+    await config.update('colorCustomizations', Object.keys(current).length ? current : undefined, vscode.ConfigurationTarget.Global);
+  }).catch(() => { /* a header colour is never worth an error */ });
+  return headerQueue;
+}
+
 class LauncherViewProvider {
   constructor(extensionUri, deps) {
     this.extensionUri = extensionUri;
@@ -1407,38 +1444,38 @@ class LauncherViewProvider {
     this.pollTimer = null;
   }
 
-  resolveWebviewView(webviewView) {
-    this.view = webviewView;
-    webviewView.webview.options = {
-      enableScripts: true,
-      localResourceRoots: [vscode.Uri.joinPath(this.extensionUri, 'media')],
-    };
-    webviewView.webview.html = this.renderHtml(webviewView.webview);
-    webviewView.webview.onDidReceiveMessage((message) => this.handleMessage(message));
-    // Set-up button while the folder has no astro-visual-editor.config.json, the AI prompt once it does.
-    const postSiteSetup = () => this.view?.webview.postMessage({ type: 'siteSetup', ...siteSetupState() });
-    postSiteSetup();
-    const watcher = vscode.workspace.createFileSystemWatcher('**/astro-visual-editor.config.json');
-    watcher.onDidCreate(postSiteSetup); watcher.onDidDelete(postSiteSetup);
-    webviewView.onDidDispose(() => watcher.dispose());
-    webviewView.onDidDispose(() => {
-      if (this.pollTimer) clearInterval(this.pollTimer);
-      this.pollTimer = null;
-      this.view = null;
-    });
+  /**
+   * The launcher is a slim rail, too narrow for the Scheduled queue and Settings. Both open as popups in the
+   * chat itself (the same layer as Manage Chats): this shows the chat window and tells it which one.
+   */
+  showInChat(type) {
+    const host = this.deps.chatWindowManager.getOrCreateActive();
+    host.panel.reveal(undefined, false);
+    void host.panel.webview.postMessage({ type });
+  }
 
-    this.postHistory();
-    void this.pushQuotas();
-    void this.pushSchedulerQueue();
-    this.pollTimer = setInterval(() => this.pushQuotas(), QUOTA_POLL_MS);
+  /**
+   * The Activity Bar icon is only a doorway. The launcher rail lives inside the chat in the secondary sidebar (the
+   * chat's own webview, see railMarkup), so whenever this view is shown it opens that chat and puts the primary
+   * sidebar away again. The view itself stays empty, in the sidebar's own colour, for the moment it is on screen.
+   */
+  resolveWebviewView(webviewView) {
+    webviewView.webview.options = { enableScripts: false };
+    webviewView.webview.html = '<!DOCTYPE html><html><body style="background:var(--vscode-sideBar-background)"></body></html>';
+    const openChat = () => {
+      if (!webviewView.visible) return;
+      void vscode.commands.executeCommand('aiChatPanel.chatView.focus').then(() => vscode.commands.executeCommand('workbench.action.closeSidebar'));
+    };
+    openChat();
+    webviewView.onDidChangeVisibility(openChat);
   }
 
   handleMessage(message) {
     switch (message.type) {
       case 'newChatWindow': this.deps.chatWindowManager.open(); break;
-      case 'setupSite': void vscode.commands.executeCommand('aiChatPanel.setupVisualEditor'); break;
-      case 'requestSiteSetup': this.view?.webview.postMessage({ type: 'siteSetup', ...siteSetupState() }); break;
-      case 'copySitePrompt': void copyAdaptPrompt(); break;
+      case 'openScheduled': this.showInChat('openQueue'); break;
+      case 'openHistory': this.showInChat('openHistory'); break;
+      case 'openSettings': this.showInChat('openSettings'); break;
       case 'openChat': this.deps.chatWindowManager.open(message.id); break;
       case 'deleteChat': this.deps.chatWindowManager.deleteChat(message.id); break;
       case 'renameChat': this.deps.renameChat(message.id, message.title); break;
@@ -1458,15 +1495,15 @@ class LauncherViewProvider {
       case 'testTelegram': {
         const bridge = this.deps.getTelegramBridge?.();
         if (!bridge || !bridge.isConfigured()) {
-          vscode.window.showWarningMessage('AI Chat Panel: Configure Telegram before sending a test ping.');
+          vscode.window.showWarningMessage('Clanker Controller:Configure Telegram before sending a test ping.');
           break;
         }
-        bridge.sendMessage('🚀 AI Chat Panel: Test message from your workspace! Connection verified.')
+        bridge.sendMessage('🚀 Clanker Controller:Test message from your workspace! Connection verified.')
           .then((ok) => {
-            if (ok) vscode.window.showInformationMessage('AI Chat Panel: Test message sent successfully.');
-            else vscode.window.showErrorMessage('AI Chat Panel: Failed to send Telegram test message.');
+            if (ok) vscode.window.showInformationMessage('Clanker Controller:Test message sent successfully.');
+            else vscode.window.showErrorMessage('Clanker Controller:Failed to send Telegram test message.');
           })
-          .catch((err) => vscode.window.showErrorMessage(`AI Chat Panel: Telegram error (${err.message}).`));
+          .catch((err) => vscode.window.showErrorMessage(`Clanker Controller:Telegram error (${err.message}).`));
         break;
       }
       case 'disconnectTelegram': void this.deps.disconnectTelegram?.().then(() => this.pushFleet()); break;
@@ -1474,15 +1511,22 @@ class LauncherViewProvider {
         this.deps.startTunnel?.()
           .then(() => this.pushFleet())
           .catch((err) => {
-            vscode.window.showErrorMessage(`AI Chat Panel: Unable to start Cloudflare Tunnel (${err.message}). Make sure 'cloudflared' is installed.`);
+            vscode.window.showErrorMessage(`Clanker Controller:Unable to start Cloudflare Tunnel (${err.message}). Make sure 'cloudflared' is installed.`);
             this.pushFleet();
           });
         break;
       }
       case 'stopTunnel': void this.deps.stopTunnel?.().then(() => this.pushFleet()); break;
+      case 'setStatusBar': void vscode.workspace.getConfiguration('aiChatPanel').update('showStatusBar', Boolean(message.enabled), vscode.ConfigurationTarget.Global); break;
       case 'setTimeFormat': {
         if (message.format) {
           void vscode.workspace.getConfiguration('aiChatPanel').update('timeFormat', message.format, vscode.ConfigurationTarget.Global);
+        }
+        break;
+      }
+      case 'setPermissionMode': {
+        if (message.mode) {
+          void vscode.workspace.getConfiguration('aiChatPanel').update('permissionMode', message.mode, vscode.ConfigurationTarget.Global);
         }
         break;
       }
@@ -1517,14 +1561,15 @@ class LauncherViewProvider {
     const models = MODEL_CATALOG.map(({ id, label, agent, model, effort }) => ({ id, label, agent, model, effort }));
     const services = {
       watchdog: Boolean(this.deps.watchdog?.timer),
-      quotaBridge: await quotaBridgeConnected(),
       ...(this.deps.getServices?.() || {}),
+      statusBar: vscode.workspace.getConfiguration('aiChatPanel').get('showStatusBar', false),
+      permissionMode: vscode.workspace.getConfiguration('aiChatPanel').get('permissionMode', 'fullAccess'),
     };
     this.view.webview.postMessage({ type: 'fleet', models, clis, services, pinged: ping });
   }
 
   async runInterrupted(taskId) {
-    if (!await this.deps.watchdog.runNow(taskId)) vscode.window.showInformationMessage('AI Chat Panel: another scheduled task is still running. Reschedule this one, or run it once that finishes.');
+    if (!await this.deps.watchdog.runNow(taskId)) vscode.window.showInformationMessage('Clanker Controller:another scheduled task is still running. Reschedule this one, or run it once that finishes.');
   }
 
   postHistory() { this.view?.webview.postMessage({ type: 'history', sessions: this.deps.chatWindowManager.listChats() }); }
@@ -1543,148 +1588,64 @@ class LauncherViewProvider {
     await this.pushSchedulerQueue();
   }
 
-  renderHtml(webview) {
-    const scriptUri = webview.asWebviewUri(vscode.Uri.joinPath(this.extensionUri, 'media', 'launcher.js'));
-    const iconsUri = webview.asWebviewUri(vscode.Uri.joinPath(this.extensionUri, 'media', 'agent-icons.js'));
-    // Reuses the chat window's design tokens/`.glass`/`.dot-*`/`.icon-btn`
-    // rules from style.css (Ponytail: reuse the existing token sheet rather
-    // than re-declaring the whole palette); launcher.css adds only the
-    // launcher-specific layout on top.
-    const chatStyleUri = webview.asWebviewUri(vscode.Uri.joinPath(this.extensionUri, 'media', 'style.css'));
-    const launcherStyleUri = webview.asWebviewUri(vscode.Uri.joinPath(this.extensionUri, 'media', 'launcher.css'));
-    const nonce = getNonce();
+}
 
-    return `<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="UTF-8">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${webview.cspSource} 'unsafe-inline'; script-src 'nonce-${nonce}';">
-<link rel="stylesheet" href="${chatStyleUri}">
-<link rel="stylesheet" href="${launcherStyleUri}">
-<title>AI Chat Launcher</title>
-</head>
-<body>
-  <div class="launcher-tabs pill-track glass" role="tablist">
-    <button class="launcher-tab" data-tab="recent" role="tab" aria-selected="true" title="Recent">
-      <svg viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M2.75 3.75A1.75 1.75 0 0 1 4.5 2h7a1.75 1.75 0 0 1 1.75 1.75v5.5A1.75 1.75 0 0 1 11.5 11H7l-3.25 2.5V11h.75-.5A1.75 1.75 0 0 1 2.75 9.25z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/></svg><span>Recent</span>
-    </button>
-    <button class="launcher-tab" data-tab="scheduled" role="tab" aria-selected="false" title="Scheduled">
-      <svg viewBox="0 0 16 16" fill="none" aria-hidden="true"><circle cx="8" cy="8.5" r="5.75" stroke="currentColor" stroke-width="1.5"/><path d="M8 5.5v3.25l2 1.25" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg><span>Scheduled</span>
-    </button>
-    <button class="launcher-tab" data-tab="settings" role="tab" aria-selected="false" title="Settings">
+/** The launcher rail, down the right edge of the sidebar chat: buttons, then usage, then chats (styled by launcher.css, driven by launcher.js). */
+/**
+ * The chat's three header buttons: the Scheduled-prompts timer pill (hidden until something is queued), Manage chats
+ * and New chat. main.js finds them by id, so it is the same three elements wherever they sit: in the rail of the
+ * sidebar chat, or in a topbar over a chat opened as an editor tab.
+ */
+const CHAT_BUTTONS = {
+  queue: `<button class="round-btn round-btn-queue" id="queueBtn" type="button" aria-label="Scheduled prompts" hidden>
+        <svg viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><circle cx="8" cy="8.5" r="5.5" stroke="currentColor" stroke-width="1.2"/><path d="M8 5.5v3l2 1.2" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        <span class="queue-countdown" id="queueCountdown"></span>
+        <span class="queue-badge" id="queueBadge">0</span>
+        <span class="round-btn-tip" aria-hidden="true">Queue</span>
+      </button>`,
+  history: `<button class="round-btn" id="historyBtn" type="button" aria-label="Manage chats">
+        <svg viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+          <path d="M8 4v4.3l3 1.7" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/>
+          <path d="M2.5 8a5.5 5.5 0 1 0 1.6-3.9" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/>
+          <path d="M2 2.5v2.4h2.4" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+        <span class="queue-badge running-badge" id="runningBadge" hidden>0</span>
+        <span class="round-btn-tip" aria-hidden="true">Chats</span>
+      </button>`,
+  // The bubble of sources/pencil-chat-svgrepo-com.svg with a plus where its pen was (top right); the Activity Bar icon is the Clanker Controller logo, media/clanker.svg.
+  newChat: `<button class="round-btn" id="newChatBtn" type="button" aria-label="New chat">
+        <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><g stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M11,1.48H5.32A3.82,3.82,0,0,0,1.5,5.3v9.54a3.82,3.82,0,0,0,3.82,3.82H9.14L12,21.52l2.86-2.86h3.82a3.82,3.82,0,0,0,3.82-3.82V13"/><path d="M18.2 2.2v7.2M14.6 5.8h7.2" stroke-width="2.2"/></g></svg>
+        <span class="round-btn-tip" aria-hidden="true">New Chat</span>
+      </button>`,
+};
+
+function railMarkup(buttons) {
+  return `<aside class="rail" aria-label="Chats and usage">
+  <!-- Buttons, then usage, then chats. Scheduled, Settings and Manage Chats all open as popups over the chat. -->
+  <div class="launcher-actions">
+    ${buttons.newChat}
+    ${buttons.history}
+    ${buttons.queue}
+    <button class="round-btn" id="settingsBtn" type="button" title="Chat settings" aria-label="Chat settings">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
         <path d="M9.671 4.136a2.34 2.34 0 0 1 4.659 0 2.34 2.34 0 0 0 3.319 1.915 2.34 2.34 0 0 1 2.33 4.033 2.34 2.34 0 0 0 0 3.831 2.34 2.34 0 0 1-2.33 4.033 2.34 2.34 0 0 0-3.319 1.915 2.34 2.34 0 0 1-4.659 0 2.34 2.34 0 0 0-3.32-1.915 2.34 2.34 0 0 1-2.33-4.033 2.34 2.34 0 0 0 0-3.831A2.34 2.34 0 0 1 6.35 6.051a2.34 2.34 0 0 0 3.319-1.915"/>
         <circle cx="12" cy="12" r="3"/>
       </svg>
-      <span>Settings</span>
     </button>
   </div>
 
-  <div class="launcher-panel" id="recentPanel">
-    <button class="new-chat-btn glass" id="newChatWindowBtn" type="button">
-      <svg viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
-        <path d="M8 3v10M3 8h10" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
-      </svg>
-      <span>New Chat Window</span>
-    </button>
-    <button class="new-chat-btn glass" id="siteSetupBtn" type="button" title="Adds the Astro Visual Editor to this folder: a starter site if it's empty, or wires it into your existing Astro project" hidden>
-      <svg viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
-        <path d="M2.5 13.5 8 2.5l5.5 11M4.7 9.5h6.6" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
-      </svg>
-      <span>Set up Astro Visual Editor</span>
-    </button>
-    <button class="new-chat-btn glass" id="sitePromptBtn" type="button" title="Copies a prompt that has Claude or Codex make the rest of this site editable" hidden>
-      <svg viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
-        <rect x="5" y="5" width="8.5" height="8.5" rx="1.5" stroke="currentColor" stroke-width="1.4"/>
-        <path d="M3.5 10.5h-.5A1 1 0 0 1 2 9.5V3a1 1 0 0 1 1-1h6.5a1 1 0 0 1 1 1v.5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>
-      </svg>
-      <span>Copy AI adapt prompt</span>
-    </button>
-
+  <section class="launcher-section">
+    <div class="launcher-label">Usage</div>
     <div class="model-cards" id="modelCards" aria-label="Model quotas"></div>
+  </section>
 
-    <div class="history-label">Recent</div>
+  <section class="launcher-section is-grow">
+    <div class="launcher-label">Recent</div>
     <div class="history-list" id="historyList">
       <div class="history-empty">No conversations yet.</div>
     </div>
-  </div>
-
-  <div class="launcher-panel" id="scheduledPanel" hidden>
-    <div class="scheduled-list" id="scheduledList">
-      <div class="scheduled-empty">No tasks scheduled. Tasks queued while quota is exhausted will appear here.</div>
-    </div>
-  </div>
-
-  <div class="launcher-panel" id="settingsPanel" hidden>
-    <div class="history-label">Remote Control</div>
-    <div class="settings-card glass">
-      <div class="settings-row" id="telegramRow">
-        <div class="settings-header">
-          <span class="system-dot is-off" id="telegramDot"></span>
-          <div class="settings-info">
-            <span class="settings-title">Telegram Bridge</span>
-            <span class="settings-desc" id="telegramDesc">Remote task approvals and mobile notifications.</span>
-          </div>
-        </div>
-        <div class="settings-actions">
-          <button class="settings-btn" id="configureTelegramBtn" type="button">Configure</button>
-          <button class="settings-btn secondary" id="testTelegramBtn" type="button" style="display:none">Test Ping</button>
-          <button class="settings-btn danger" id="disconnectTelegramBtn" type="button" style="display:none">Disconnect</button>
-        </div>
-      </div>
-      <div class="settings-divider"></div>
-      <div class="settings-row" id="tunnelRow">
-        <div class="settings-header">
-          <span class="system-dot is-off" id="tunnelDot"></span>
-          <div class="settings-info">
-            <span class="settings-title">Cloudflare Tunnel</span>
-            <span class="settings-desc" id="tunnelDesc">Enables real-time webhook delivery without port forwarding.</span>
-          </div>
-        </div>
-        <div class="settings-actions">
-          <button class="settings-btn" id="toggleTunnelBtn" type="button">Start Tunnel</button>
-        </div>
-      </div>
-    </div>
-
-    <div class="history-label">Fleet & CLIs</div>
-    <div class="system-list glass" id="fleetList"></div>
-    <div class="system-actions">
-      <button class="system-action" id="pingClisBtn" type="button">Check CLIs</button>
-      <button class="system-action" id="modelSettingsBtn" type="button">Model settings</button>
-      <button class="system-action" id="resetCacheBtn" type="button" title="Forget resolved CLI paths and look them up again">Reset CLI cache</button>
-    </div>
-
-    <div class="history-label">Preferences & Tools</div>
-    <div class="settings-card glass">
-      <div class="settings-row">
-        <div class="settings-info">
-          <span class="settings-title">Time Format</span>
-          <span class="settings-desc">Timestamp style across chat cards and queue items.</span>
-        </div>
-        <div class="time-format-picker pill-track" role="radiogroup">
-          <button class="format-pill" data-format="24h" type="button">24h</button>
-          <button class="format-pill" data-format="12h" type="button">12h</button>
-          <button class="format-pill" data-format="auto" type="button">Auto</button>
-        </div>
-      </div>
-      <div class="settings-divider"></div>
-      <div class="settings-row">
-        <div class="settings-info">
-          <span class="settings-title">Agent Terminal</span>
-          <span class="settings-desc">Inspect raw PTY session output for debugging.</span>
-        </div>
-        <button class="settings-btn" id="openTerminalBtn" type="button">Open Terminal</button>
-      </div>
-    </div>
-  </div>
-
-  <script nonce="${nonce}">window.MODEL_CATALOG = ${JSON.stringify(MODEL_CATALOG)}; window.TIME_PREFS = ${timePrefs()};</script>
-  <script nonce="${nonce}" src="${iconsUri}"></script>
-  <script nonce="${nonce}" src="${scriptUri}"></script>
-</body>
-</html>`;
-  }
+  </section>
+</aside>`;
 }
 
 function activate(context) {
@@ -1692,23 +1653,38 @@ function activate(context) {
   const AGENTS = agentList();
   const sessionManager = new TerminalSessionManager(vscode, AGENTS);
   const pendingResets = new Set();
-  const chatStore = new ChatStore(ASTRO_SESSION_DIR);
-  const voiceCapture = new VoiceCapture();
   // VS Code reports "c:\..."; Claude Code keys folder trust by the exact path
   // string, and the trusted entry is "C:/...". A lowercase drive letter made
   // every panel run count as an untrusted workspace.
-  const workspaceDir = (vscode.workspace.workspaceFolders?.[0]?.uri.fsPath || path.dirname(ASTRO_SESSION_DIR)).replace(/^[a-z]:/, (drive) => drive.toUpperCase());
-  const attachmentsDir = path.join(ASTRO_SESSION_DIR, 'attachments');
+  const workspaceDir = (vscode.workspace.workspaceFolders?.[0]?.uri.fsPath || process.cwd()).replace(/^[a-z]:/, (drive) => drive.toUpperCase());
+  SESSION_DIR = resolveSessionDir({
+    storageDir: context.globalStorageUri.fsPath,
+    // Earlier versions kept this in a site's `.astro/session`; copied over once, never read again.
+    legacyDirs: [process.env.ASTRO_CONTENT_EDITOR_SESSION_DIR, path.join(workspaceDir, 'site', '.astro', 'session'), path.join(workspaceDir, '.astro', 'session')],
+  });
+  const chatStore = new ChatStore(SESSION_DIR);
+  const voiceCapture = new VoiceCapture();
+  const attachmentsDir = path.join(SESSION_DIR, 'attachments');
   fs.mkdirSync(attachmentsDir, { recursive: true });
+  // A minute after start, out of the way of everything else: drop attachments and finished tasks' staging that nothing
+  // points to any more and that are two weeks old (lib/storage-gc.js).
+  setTimeout(() => {
+    const removed = sweepStorage(SESSION_DIR);
+    if (removed.attachments || removed.staging) console.log(`[ai-chat-panel] storage sweep: ${removed.attachments} unused attachments (${(removed.bytes / 1048576).toFixed(1)} MB), ${removed.staging} finished task folders`);
+  }, 60000).unref?.();
   const codexCommands = new CodexCommandCatalog();
-  const slashCommands = new SlashCommandCatalog({ codexCommands, workspaceDir, cacheFile: path.join(ASTRO_SESSION_DIR, 'slash-commands.json') });
+  const slashCommands = new SlashCommandCatalog({ codexCommands, workspaceDir, cacheFile: path.join(SESSION_DIR, 'slash-commands.json') });
 
   function getModels() {
     const configured = vscode.workspace.getConfiguration('aiChatPanel').get('models', {});
     return { claude: configured.claude || 'claude', codex: configured.codex || 'gpt-6-sol', gemini: configured.gemini || 'gemini-3.8-flash-high' };
   }
 
-  const schedulerQueue = new SchedulerQueue({ workspaceDir, sessionDir: path.join(workspaceDir, '.astro', 'session') });
+  function getPermissionMode() {
+    return vscode.workspace.getConfiguration('aiChatPanel').get('permissionMode', 'fullAccess');
+  }
+
+  const schedulerQueue = new SchedulerQueue({ workspaceDir, sessionDir: SESSION_DIR });
   let launcher = null;
   let chatWindowManager = null;
   // Launcher list and every open chat window's Queue badge/manager.
@@ -1717,14 +1693,17 @@ function activate(context) {
     for (const { host } of chatWindowManager?.hosts.values() || []) void host.pushSchedulerQueue();
   }
 
-  // P16-M: status-bar poll -> launcher gauges and chat headers, live.
-  void onDidChangeQuotas((quotas) => {
+  // P16-M: quota poll -> launcher gauges and chat headers, live.
+  context.subscriptions.push(onDidChangeQuotas((quotas) => {
     void launcher?.pushQuotas(quotas);
     for (const { host } of chatWindowManager?.hosts.values() || []) host.panel.webview.postMessage({ type: 'quotas', quotas });
-  }).then((subscription) => context.subscriptions.push(subscription));
+  }));
 
   chatWindowManager = new ChatWindowManager(context.extensionUri, {
-    sessionManager, chatStore, voiceCapture, workspaceDir, sessionDir: ASTRO_SESSION_DIR, attachmentsDir, getModels, codexCommands, slashCommands, schedulerQueue, notifySchedulerQueue, renameChat, getEditorTheme: () => editorTheme, notify, notifyHistory, onTelegramEvent,
+    sessionManager, chatStore, voiceCapture, workspaceDir, sessionDir: SESSION_DIR, attachmentsDir, getModels, getPermissionMode, codexCommands, slashCommands, schedulerQueue, notifySchedulerQueue, renameChat, getEditorTheme: () => editorTheme, notify, notifyHistory, onTelegramEvent,
+    // Which scheduling mode (usage reset, timer, calendar) the clock starts with: the one used last, kept for good.
+    getScheduleMode: () => context.globalState.get('scheduleMode', 'reset'),
+    setScheduleMode: (mode) => { if (['reset', 'timer', 'calendar'].includes(mode)) void context.globalState.update('scheduleMode', mode); },
     sidebarState: context.workspaceState,
   });
   // Chat windows come back after a restart in the tab spot they had, showing the same chat
@@ -1734,7 +1713,23 @@ function activate(context) {
   }));
   let telegram = null;
   const tunnelStatus = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, -2);
-  tunnelStatus.show();
+  // Off unless `aiChatPanel.showStatusBar` is on (Chat Settings > General has the switch).
+  const applyStatusBar = () => { if (vscode.workspace.getConfiguration('aiChatPanel').get('showStatusBar', false)) tunnelStatus.show(); else tunnelStatus.hide(); };
+  applyStatusBar();
+  context.subscriptions.push(vscode.workspace.onDidChangeConfiguration((event) => {
+    if (event.affectsConfiguration('aiChatPanel.showStatusBar')) applyStatusBar();
+    if (event.affectsConfiguration('aiChatPanel.permissionMode')) {
+      const mode = getPermissionMode();
+      if (watchdog?.engine) watchdog.engine.permissionMode = mode;
+      for (const run of chatWindowManager?.runs.values() || []) {
+        if (run?.streamEngine) run.streamEngine.permissionMode = mode;
+      }
+      void launcher?.pushFleet();
+      for (const { host } of chatWindowManager?.hosts.values() || []) {
+        void host.settingsPane?.pushFleet();
+      }
+    }
+  }));
   // Code blocks use the editor's own syntax colours; follow theme switches and customizations live.
   let editorTheme = resolveEditorTheme(vscode);
   function pushEditorTheme() {
@@ -1753,20 +1748,27 @@ function activate(context) {
     if (!chat) return;
     const open = chatWindowManager.runs.get(chat.id);
     if (open) {
-      if (chat.title) open.chat.title = chat.title; else delete open.chat.title;
+      if (chat.title) {
+        open.chat.title = chat.title;
+        open.chat.customTitle = true;
+      } else {
+        delete open.chat.title;
+        delete open.chat.customTitle;
+      }
       if (open.host) open.host.panel.title = titleFor(open.chat);
     }
     notifyHistory();
   }
-  // Chime on every finished reply; a Windows toast as well when the IDE is not the focused window.
-  function notify(agent, text, chatTitle) {
-    notifyReply({ appName: vscode.env.appName, toast: vscode.window.state.focused ? null : { agent, text, chatTitle } });
+  // Chime when a reply finishes and nothing you queued is left to run; a Windows toast as well when the IDE is not the
+  // focused window. `chime: false` (scheduled tasks) leaves the toast, which is silent, and drops the sound.
+  function notify(agent, text, chatTitle, { chime = true } = {}) {
+    notifyReply({ appName: vscode.env.appName, chime, toast: vscode.window.state.focused ? null : { agent, text, chatTitle } });
   }
   function notifyHistory() {
     launcher?.postHistory();
     for (const { host } of chatWindowManager?.hosts.values() || []) host.postHistory();
   }
-  const watchdog = new SchedulerWatchdog({ queue: schedulerQueue, workspaceDir, getModels, telegram: null, onQueueChange: notifySchedulerQueue, chatStore, onHistoryChange: notifyHistory, notify, resumeInChat: (task) => chatWindowManager?.resumeChat(task) });
+  const watchdog = new SchedulerWatchdog({ queue: schedulerQueue, workspaceDir, getModels, getPermissionMode, telegram: null, onQueueChange: notifySchedulerQueue, chatStore, onHistoryChange: notifyHistory, notify, resumeInChat: (task) => chatWindowManager?.resumeChat(task) });
 
   function onTelegramEvent(run, event) {
     const bridge = telegram;
@@ -1886,7 +1888,7 @@ function activate(context) {
     await context.secrets.delete(CHAT_KEY);
     await context.secrets.delete(OWNER_KEY);
     if (telegram) { await telegram.stop(); telegram = null; watchdog.telegram = null; }
-    vscode.window.showInformationMessage('AI Chat Panel: Telegram bridge disconnected.');
+    vscode.window.showInformationMessage('Clanker Controller:Telegram bridge disconnected.');
   }
 
   void (async () => {
@@ -1914,12 +1916,16 @@ function activate(context) {
       url: tunnel.publicUrl || '',
     },
     timeFormat: vscode.workspace.getConfiguration('aiChatPanel').get('timeFormat', '24h'),
+    permissionMode: getPermissionMode(),
   });
-  launcher = new LauncherViewProvider(context.extensionUri, {
-    chatStore, chatWindowManager, schedulerQueue, getModels, watchdog, notifySchedulerQueue, renameChat,
+  const launcherDeps = {
+    chatStore, chatWindowManager, schedulerQueue, getModels, getPermissionMode, watchdog, notifySchedulerQueue, renameChat,
     getServices, configureTelegram, disconnectTelegram, startTunnel: () => tunnel.start(), stopTunnel: () => tunnel.stop(),
     getTelegramBridge: () => telegram, sessionManager,
-  });
+  };
+  launcher = new LauncherViewProvider(context.extensionUri, launcherDeps);
+  chatWindowManager.launcherDeps = launcherDeps; // the chat windows' Chat Settings popup runs on the same handlers
+  void setLauncherHeaderHidden(false); // a window closed while the launcher was showing leaves its header colour behind
   context.subscriptions.push(vscode.window.registerWebviewViewProvider('aiChatPanel.mainView', launcher));
   // The chat itself lives in the secondary sidebar. Kept alive while hidden so a streaming reply survives a toggle.
   context.subscriptions.push(vscode.window.registerWebviewViewProvider('aiChatPanel.chatView', { resolveWebviewView: (view) => chatWindowManager.attachSidebar(view) }, { webviewOptions: { retainContextWhenHidden: true } }));
@@ -1946,25 +1952,25 @@ function activate(context) {
     vscode.commands.registerCommand('aiChatPanel.configureTelegram', () => configureTelegram()),
     vscode.commands.registerCommand('aiChatPanel.startTunnel', async () => {
       try { await tunnel.start(); }
-      catch (error) { vscode.window.showErrorMessage(`AI Chat Panel: unable to start Cloudflare Tunnel (${error.message}).`); }
+      catch (error) { vscode.window.showErrorMessage(`Clanker Controller:unable to start Cloudflare Tunnel (${error.message}).`); }
     }),
     vscode.commands.registerCommand('aiChatPanel.stopTunnel', () => tunnel.stop()),
-    // Cross-extension IPC target (see packages/vscode-astro-editor/src/webviewPanel.ts):
-    // targets the active floating chat window (or opens a new one on the
-    // right) instead of ever touching the left Activity Bar, so a batch
-    // dispatch from the Astro Editor HUD never displaces the File Explorer.
+    // The AI bridge (docs/ai-bridge-interface.md): the commands another extension calls to hand Clanker work,
+    // without Clanker knowing who calls. `bridge.info` is how a caller finds out it is there and what it can do.
+    vscode.commands.registerCommand('aiChatPanel.bridge.info', () => ({ apiVersion: BRIDGE_API_VERSION, name: 'Clanker Controller', capabilities: BRIDGE_CAPABILITIES })),
+    // injectPrompt targets the active floating chat window (or opens a new one on the right) instead of ever
+    // touching the left Activity Bar, so a caller never displaces the File Explorer.
     vscode.commands.registerCommand('aiChatPanel.injectPrompt', (payload) => {
       const { targetModel, prompt, submit } = payload || {};
       const target = injectTarget(targetModel);
       if (!target) {
-        vscode.window.showWarningMessage(`AI Chat Panel: unknown target model "${targetModel}".`);
+        vscode.window.showWarningMessage(`Clanker Controller:unknown target model "${targetModel}".`);
         return;
       }
       const host = chatWindowManager.getOrCreateActive();
       host.revealAndInject(target.agentId, prompt, submit !== false, target.modelId);
     }),
-    vscode.commands.registerCommand('aiChatPanel.routePrompt', (payload) => chatWindowManager.routeToSiteEditChat(payload?.prompt)),
-    vscode.commands.registerCommand('aiChatPanel.setupVisualEditor', setupVisualEditor),
+    vscode.commands.registerCommand('aiChatPanel.routePrompt', (payload) => chatWindowManager.routePrompt(payload?.prompt)),
   );
 
   // P12-D: Supervised Fresh-Session Chaining. Called with
@@ -1980,11 +1986,11 @@ function activate(context) {
       const { targetModel, handoffSummary, batchPrompt } = payload || {};
       const session = sessionManager.get(targetModel);
       if (!session) {
-        vscode.window.showWarningMessage(`AI Chat Panel: unknown target model "${targetModel}".`);
+        vscode.window.showWarningMessage(`Clanker Controller:unknown target model "${targetModel}".`);
         return;
       }
       if (!batchPrompt) {
-        vscode.window.showWarningMessage('AI Chat Panel: runNextBatchInCleanSession requires a batchPrompt.');
+        vscode.window.showWarningMessage('Clanker Controller:runNextBatchInCleanSession requires a batchPrompt.');
         return;
       }
       // Guards the one real race available here: a duplicate invocation
@@ -1993,7 +1999,7 @@ function activate(context) {
       if (pendingResets.has(targetModel)) return;
       pendingResets.add(targetModel);
       try {
-        const summary = writeMicroHandoff(path.join(ASTRO_SESSION_DIR, 'handoff.json'), handoffSummary);
+        const summary = writeMicroHandoff(path.join(SESSION_DIR, 'handoff.json'), handoffSummary);
         const CONFIRM_LABEL = '🚀 Run Next Batch in Clean Session';
         const choice = await vscode.window.showWarningMessage(
           `Batch verified for ${session.label}. Clear its terminal and start the next batch in a clean session? Only confirm once ${session.label} is genuinely idle -- this extension has no way to detect that automatically.`,

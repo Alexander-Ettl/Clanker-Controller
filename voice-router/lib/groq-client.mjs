@@ -310,3 +310,53 @@ export async function runPipeline(rawTranscript, { context = {}, quotas }) {
   const { cleanedPrompt, primaryIntent, confidence } = await classify(rawTranscript, context);
   return buildRoutingOutput({ cleanedPrompt, primaryIntent, confidence, quotas });
 }
+
+const TOPIC_SYSTEM_PROMPT = `You generate short, specific topic titles for developer conversations.
+Given the user's initial message or question, return a concise topic title of at most 5 words.
+Strict rules:
+- Maximum 5 words.
+- Return ONLY the plain text title, no punctuation at the end, no quotes, no markdown, and no prefixes like "Topic:" or "Title:".
+- Preserve technical terms and proper casing (e.g. CSS, AST, Groq, VS Code).`;
+
+/**
+ * Turns an initial conversation prompt into a concise topic title (at most 5 words)
+ * using Groq chat completions (default model openai/gpt-oss-120b).
+ */
+export async function generateTopicTitle(promptText) {
+  const apiKey = requireApiKey();
+  const text = String(promptText || '').trim().slice(0, 1500);
+  if (!text) return '';
+
+  const response = await fetch(GROQ_CHAT_URL, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${apiKey}`,
+    },
+    body: JSON.stringify({
+      model: process.env.GROQ_MODEL || DEFAULT_CHAT_MODEL,
+      temperature: 0,
+      max_tokens: 300,
+      messages: [
+        { role: 'system', content: TOPIC_SYSTEM_PROMPT },
+        { role: 'user', content: text },
+      ],
+    }),
+  });
+
+  if (!response.ok) {
+    const body = await response.text().catch(() => '');
+    throw new Error(`Groq API error ${response.status}: ${body}`);
+  }
+
+  const payload = await response.json();
+  let content = payload?.choices?.[0]?.message?.content || '';
+  content = content.replace(/^["'`]|["'`]$/g, '').replace(/^(Topic|Title)\s*:\s*/i, '').trim();
+  content = content.replace(/[.:;!?,]+$/, '').trim();
+  const words = content.split(/\s+/).filter(Boolean);
+  if (words.length > 5) {
+    content = words.slice(0, 5).join(' ');
+  }
+  return content;
+}
+
