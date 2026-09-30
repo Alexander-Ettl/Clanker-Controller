@@ -1,6 +1,6 @@
 {
     "name": "ai-chat-panel",
-    "displayName": "AI Chat Panel",
+    "displayName": "Clanker Controller",
     "description": "Unified Liquid Glass launcher for headless Claude Code, Codex, and Gemini 3.8 chat sessions, opened as movable floating windows alongside the File Explorer.",
     "version": "0.1.0",
     "publisher": "local",
@@ -21,15 +21,15 @@
             "activitybar": [
                 {
                     "id": "aiChatPanel",
-                    "title": "AI Chat Panel",
-                    "icon": "media/icon.svg"
+                    "title": "Clanker Controller",
+                    "icon": "media/clanker.svg"
                 }
             ],
             "secondarySidebar": [
                 {
                     "id": "aiChatPanelChat",
-                    "title": "AI Chat",
-                    "icon": "media/icon.svg"
+                    "title": "Clanker Controller",
+                    "icon": "media/clanker.svg"
                 }
             ]
         },
@@ -38,75 +38,71 @@
                 {
                     "type": "webview",
                     "id": "aiChatPanel.mainView",
-                    "name": "Launcher"
+                    "name": "Clanker Controller"
                 }
             ],
             "aiChatPanelChat": [
                 {
                     "type": "webview",
                     "id": "aiChatPanel.chatView",
-                    "name": "Chat"
+                    "name": "Clanker Controller"
                 }
             ]
         },
         "commands": [
             {
                 "command": "aiChatPanel.open",
-                "title": "AI Chat Panel: Open",
+                "title": "Clanker Controller:Open",
                 "icon": "$(comment-discussion)"
             },
             {
                 "command": "aiChatPanel.newChatWindow",
-                "title": "AI Chat Panel: New Chat Window",
+                "title": "Clanker Controller:New Chat Window",
                 "icon": "$(add)"
             },
             {
                 "command": "aiChatPanel.injectPrompt",
-                "title": "AI Chat Panel: Inject Prompt"
-            },
-            {
-                "command": "aiChatPanel.setupVisualEditor",
-                "title": "Astro Visual Editor: Set Up in This Folder"
+                "title": "Clanker Controller:Inject Prompt"
             },
             {
                 "command": "aiChatPanel.routePrompt",
-                "title": "AI Chat Panel: Route Prompt to a Site-Edit Chat"
+                "title": "Clanker Controller:Route Prompt to a Routed-Prompts Chat"
             },
             {
                 "command": "aiChatPanel.runNextBatchInCleanSession",
-                "title": "AI Chat Panel: Run Next Batch in Clean Session"
+                "title": "Clanker Controller:Run Next Batch in Clean Session"
             },
             {
                 "command": "aiChatPanel.focusClaude",
-                "title": "AI Chat Panel: Focus Claude"
+                "title": "Clanker Controller:Focus Claude"
             },
             {
                 "command": "aiChatPanel.focusCodex",
-                "title": "AI Chat Panel: Focus Codex"
+                "title": "Clanker Controller:Focus Codex"
             },
             {
                 "command": "aiChatPanel.focusGemini",
-                "title": "AI Chat Panel: Focus Gemini 3.8"
+                "title": "Clanker Controller:Focus Gemini 3.8"
             },
             {
                 "command": "aiChatPanel.focusOpus",
-                "title": "AI Chat Panel: Open Claude Opus 5.5 Terminal"
+                "title": "Clanker Controller:Open Claude Opus 5.5 Terminal"
             },
             {
                 "command": "aiChatPanel.configureTelegram",
-                "title": "AI Chat Panel: Configure Telegram Remote Control"
+                "title": "Clanker Controller:Configure Telegram Remote Control"
             },
             {
                 "command": "aiChatPanel.startTunnel",
-                "title": "AI Chat Panel: Start Cloudflare Tunnel"
+                "title": "Clanker Controller:Start Cloudflare Tunnel"
             },
             {
                 "command": "aiChatPanel.stopTunnel",
-                "title": "AI Chat Panel: Stop Cloudflare Tunnel"
+                "title": "Clanker Controller:Stop Cloudflare Tunnel"
             },
             {
                 "command": "aiChatPanel.addToChat",
-                "title": "Add to AI Chat",
+                "title": "Add to Clanker Controller",
                 "icon": "$(comment-discussion)"
             }
         ],
@@ -131,7 +127,7 @@
             ]
         },
         "configuration": {
-            "title": "AI Chat Panel",
+            "title": "Clanker Controller",
             "properties": {
                 "aiChatPanel.timeFormat": {
                     "type": "string",
@@ -139,14 +135,25 @@
                     "default": "24h",
                     "markdownDescription": "Clock format for times in the chat panel and launcher. `auto` follows the editor's display language."
                 },
+                "aiChatPanel.showStatusBar": {
+                    "type": "boolean",
+                    "default": false,
+                    "markdownDescription": "Show Clanker Controller's item (the Cloudflare tunnel state) in the status bar at the bottom of the window."
+                },
+                "aiChatPanel.permissionMode": {
+                    "type": "string",
+                    "enum": ["ask", "auto", "fullAccess"],
+                    "default": "fullAccess",
+                    "markdownDescription": "Permission mode across Claude, Codex, and Gemini: `ask` requests approval where the provider supports prompts, `auto` uses automated risk review where supported, and `fullAccess` allows automatic execution. Headless Gemini skips actions requiring approval in `ask` and `auto`."
+                },
                 "aiChatPanel.models": {
                     "type": "object",
                     "default": {
                         "claude": "claude",
-                        "codex": "gpt-6-sol",
+                        "codex": "gpt-6.1-sol",
                         "gemini": "gemini-3.8-flash-high"
                     },
-                    "description": "CLI model identifiers used by the headless AI Chat Panel."
+                    "description": "CLI model identifiers used by the headless Clanker Controller."
                 }
             }
         }

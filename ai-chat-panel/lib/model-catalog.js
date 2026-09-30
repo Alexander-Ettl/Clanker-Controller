@@ -9,15 +9,15 @@
 // Auto runs each agent's first entry here: Opus for UI, Sol for backend, Flash for docs.
 const MODEL_CATALOG = [
   { id: 'claude-opus-5-5-medium', agent: 'claude', brand: 'opus', model: 'claude-opus-5-5', effort: 'medium', label: 'Claude Opus 5.5 Medium', shortLabel: 'Opus' },
-  { id: 'claude-sonnet-5-5-high', agent: 'claude', model: 'claude-sonnet-5-5', effort: 'high', label: 'Claude Sonnet 5.5 High' },
-  { id: 'gpt-6-sol-high', agent: 'codex', model: 'gpt-6-sol', effort: 'high', label: 'GPT 6 Sol High' },
-  { id: 'gpt-6-astra-high', agent: 'codex', model: 'gpt-6-astra', effort: 'high', label: 'GPT 6 Astra High' },
-  { id: 'gpt-6-luna-high', agent: 'codex', model: 'gpt-6-luna', effort: 'high', label: 'GPT 6 Luna High' },
-  { id: 'gemini-3.8-flash-high', agent: 'gemini', model: 'gemini-3.8-flash-high', effort: null, label: 'Gemini 3.8 Flash High' },
+  { id: 'claude-sonnet-5-5-high', agent: 'claude', model: 'claude-sonnet-5-5', effort: 'high', label: 'Claude Sonnet 5.5 High', shortLabel: 'Sonnet' },
+  { id: 'gpt-6.1-sol-high', agent: 'codex', model: 'gpt-6.1-sol', effort: 'high', label: 'GPT 6.1 Sol High', shortLabel: 'Sol' },
+  { id: 'gpt-6-astra-high', agent: 'codex', model: 'gpt-6-astra', effort: 'high', label: 'GPT 6 Astra High', shortLabel: 'Astra' },
+  { id: 'gpt-6-luna-high', agent: 'codex', model: 'gpt-6-luna', effort: 'high', label: 'GPT 6 Luna High', shortLabel: 'Luna' },
+  { id: 'gemini-3.8-flash-high', agent: 'gemini', model: 'gemini-3.8-flash-high', effort: null, label: 'Gemini 3.8 Flash High', shortLabel: 'Flash' },
 ];
 
 function modelOption(id) {
-  return MODEL_CATALOG.find((option) => option.id === id) || null;
+  return MODEL_CATALOG.find((option) => option.id === id) || (id === 'gpt-6-sol-high' ? MODEL_CATALOG.find((option) => option.id === 'gpt-6.1-sol-high') : null) || null;
 }
 
 // P17-A: a family word anywhere in a name ("opus", "Claude Opus 5.5", a

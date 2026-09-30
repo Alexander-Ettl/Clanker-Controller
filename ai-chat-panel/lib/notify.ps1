@@ -1,5 +1,5 @@
 <#
-  Reply-finished signal for the AI Chat Panel: an optional Windows toast, then
+  Reply-finished signal for the Clanker Controller: an optional Windows toast, then
   the same completion chime the Claude, Codex and Antigravity hooks play
   (claude-config-sync skill). Inputs arrive as environment variables so reply
   text is never spliced into this script: CHAT_TOAST_TITLE, CHAT_TOAST_BODY
@@ -8,6 +8,8 @@
   CHAT_SOUND (mp3 path).
 #>
 $ErrorActionPreference = 'SilentlyContinue'
+
+if ($env:NO_CHIME -eq '1' -or $env:AI_CHAT_PANEL_COMPACT -eq '1') { exit 0 }
 
 if ($env:CHAT_TOAST_TITLE) {
     try {
@@ -18,7 +20,7 @@ if ($env:CHAT_TOAST_TITLE) {
         $key = "HKCU:\Software\Classes\AppUserModelId\$appId"
         try {
             New-Item -Path $key -Force -ErrorAction Stop | Out-Null
-            New-ItemProperty -Path $key -Name DisplayName -Value 'AI Chat Panel' -PropertyType String -Force -ErrorAction Stop | Out-Null
+            New-ItemProperty -Path $key -Name DisplayName -Value 'Clanker Controller' -PropertyType String -Force -ErrorAction Stop | Out-Null
             if ($env:CHAT_TOAST_ICON -and (Test-Path -LiteralPath $env:CHAT_TOAST_ICON)) {
                 New-ItemProperty -Path $key -Name IconUri -Value $env:CHAT_TOAST_ICON -PropertyType String -Force -ErrorAction Stop | Out-Null
             }
@@ -43,6 +45,13 @@ if ($env:CHAT_SOUND -and (Test-Path -LiteralPath $env:CHAT_SOUND)) {
     $player = New-Object System.Windows.Media.MediaPlayer
     $player.Open([Uri]$env:CHAT_SOUND)
     $player.Play()
-    Start-Sleep -Milliseconds 2000
+    # Until the file has played to its end, not for a fixed time: opening it takes over a second (longer while an
+    # agent is starting up), so a fixed wait cut the chime off halfway. The deadline only guards a file that never loads.
+    $deadline = [DateTime]::UtcNow.AddSeconds(10)
+    while ([DateTime]::UtcNow -lt $deadline) {
+        if ($player.NaturalDuration.HasTimeSpan -and $player.Position -ge $player.NaturalDuration.TimeSpan) { break }
+        Start-Sleep -Milliseconds 40
+    }
+    Start-Sleep -Milliseconds 100
     $player.Close()
 }

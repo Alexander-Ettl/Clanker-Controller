@@ -46,6 +46,45 @@ function toolTarget(input = {}) {
   return s(input.url) || s(input.query) || s(input.skill) || s(input.description) || '';
 }
 
+/** What a Gemini / Antigravity tool call acts on: command, file path, query, task action, etc. */
+function geminiToolTarget(toolName, params = {}) {
+  const at = (x) => (typeof x === 'string' ? x : '');
+  const name = String(toolName || '').toLowerCase().replace(/[-_]/g, '');
+
+  if (name === 'runcommand') return at(params.CommandLine);
+  if (name === 'viewfile') return at(params.AbsolutePath) || at(params.TargetFile);
+  if (name === 'writetofile' || name.includes('replacefilecontent')) return at(params.TargetFile);
+  if (name === 'searchweb' || name === 'websearch') return at(params.query) || at(params.Query) || at(params.toolSummary) || at(params.toolAction);
+  if (name === 'readurlcontent' || name === 'webfetch' || name === 'readbrowserpage' || name === 'browserpage') return at(params.Url) || at(params.url);
+  if (name === 'managetask') {
+    const parts = [at(params.Action), at(params.TaskId)].filter(Boolean);
+    return parts.length ? parts.join(' ') : at(params.toolSummary) || at(params.toolAction);
+  }
+  if (name === 'sendmessage') {
+    const parts = [at(params.Recipient), at(params.Message)].filter(Boolean);
+    return parts.join(': ');
+  }
+  if (name === 'schedule') {
+    const time = params.DurationSeconds ? `${params.DurationSeconds}s` : at(params.CronExpression);
+    return [time, at(params.Prompt)].filter(Boolean).join(' ');
+  }
+  if (name === 'invokesubagent') {
+    const subagents = Array.isArray(params.Subagents) ? params.Subagents.map((s) => at(s?.Role) || at(s?.TypeName)).filter(Boolean).join(', ') : '';
+    return subagents || at(params.toolSummary) || at(params.toolAction);
+  }
+  if (name === 'managesubagents') {
+    const ids = Array.isArray(params.ConversationIds) ? params.ConversationIds.join(', ') : '';
+    return [at(params.Action), ids].filter(Boolean).join(' ') || at(params.toolSummary) || at(params.toolAction);
+  }
+  if (name === 'definesubagent') return at(params.name) || at(params.description);
+  if (name === 'generateimage') return [at(params.ImageName), at(params.Prompt)].filter(Boolean).join(': ');
+  if (name === 'askquestion') {
+    const qList = Array.isArray(params.questions) ? params.questions.map((q) => at(q?.question)).filter(Boolean).join('; ') : '';
+    return qList || at(params.toolSummary) || at(params.toolAction);
+  }
+  return at(params.CommandLine) || at(params.TargetFile) || at(params.AbsolutePath) || at(params.query) || at(params.Query) || at(params.Url) || at(params.url) || at(params.toolSummary) || at(params.toolAction) || '';
+}
+
 function contextTokensOf(raw) {
   const n = (x) => (Number.isFinite(x) ? x : 0);
   const u = raw?.type === 'assistant' ? raw.message?.usage
@@ -272,7 +311,7 @@ function vendorEvent(raw, agent) {
     if (step.step_type === 'tool') {
       const params = step.tool_info?.parameters || {};
       const toolId = `step-${step.step_index}`;
-      const command = at(params.CommandLine) || at(params.TargetFile) || at(params.AbsolutePath) || at(params.Query) || at(params.Url);
+      const command = geminiToolTarget(step.tool_name, params);
       // view_file/list_dir keep their own names (read cards); only writes are edits.
       const name = step.tool_name === 'run_command' ? 'bash' : /^(write_to_file|(multi_)?replace_file_content)$/.test(at(step.tool_name)) ? 'edit' : at(step.tool_name) || 'tool';
       if (step.state === 'ACTIVE') return { type: 'tool_start', toolId, name, command, file: at(params.TargetFile), diff: name === 'edit' ? editDiff(params) : '', agent };
@@ -286,11 +325,12 @@ function vendorEvent(raw, agent) {
   }
   if (raw?.event === 'result') {
     const r = raw.result || {};
-    if (r.status === 'ERROR') return { type: 'delta', text: `Gemini error: ${at(r.error)}`, model: agent, agent };
-    // Headless agy can't prompt; anything it wasn't allowed to do is reported here.
-    const denied = (r.denied_actions || []).map((d) => at(d.display_name) || at(d.action)).filter(Boolean);
     // A resumed conversation can answer only here, with no streamed text_delta steps.
     const response = at(r.response);
+    const error = at(r.error);
+    if (r.status === 'ERROR' && !response) return { type: 'delta', text: `Gemini error: ${error || 'turn failed'}`, model: agent, agent };
+    // Headless agy can't prompt; anything it wasn't allowed to do is reported here.
+    const denied = (r.denied_actions || []).map((d) => at(d.display_name) || at(d.action)).filter(Boolean);
     return denied.length ? { type: 'notice', text: `Gemini wasn't allowed to: ${denied.join(', ')}. Headless mode can't ask, so these were skipped.`, agent, then: 'turn_complete', response } : { type: 'turn_complete', agent, response };
   }
   return undefined;
@@ -345,11 +385,12 @@ class StreamEngine extends EventEmitter {
    * question cards to be answered. The scheduler's unattended engine keeps
    * it off (auto mode, never blocks on a click).
    */
-  constructor({ cwd, models = {}, interactive = false, codexServerFactory = (options) => new CodexAppServer(options) } = {}) {
+  constructor({ cwd, models = {}, interactive = false, permissionMode = null, codexServerFactory = (options) => new CodexAppServer(options) } = {}) {
     super();
     this.cwd = cwd || process.cwd();
     this.models = models;
     this.interactive = interactive;
+    this.permissionMode = permissionMode; // 'ask' | 'auto' | 'fullAccess' | null
     this.child = null;
     this.live = null; // the Remote Control process, while one is on
     this.pendingControls = new Map(); // our control_request ids -> { resolve, reject }
@@ -370,38 +411,58 @@ class StreamEngine extends EventEmitter {
     this.codexRetiredTurns = new Set();
   }
 
+  effectivePermissionMode(agent, override = null) {
+    const mode = override || this.permissionMode;
+    if (mode) return mode;
+    if (agent === 'claude') return 'auto';
+    return 'fullAccess';
+  }
+
   /** `choice` = { model, effort } from the composer picker; the configured default otherwise. */
   commandFor(agent, prompt, attachments = [], choice = {}) {
     const effort = choice.effort || null;
     const resume = choice.resume || null;
-    const model = choice.model || this.models[agent] || { claude: 'claude', codex: 'gpt-6-sol', gemini: 'gemini-3.8-flash-high' }[agent];
+    const model = choice.model || this.models[agent] || { claude: 'claude', codex: 'gpt-6.1-sol', gemini: 'gemini-3.8-flash-high' }[agent];
     const pointers = attachments.map((file) => `Attachment available locally: ${file}`).join('\n');
     const fullPrompt = pointers ? `${prompt}\n\n${pointers}` : prompt;
     const command = locate(agent).path;
     // Flags verified against each CLI's own --help (claude 2.1, codex exec,
     // agy). The prompt always goes over stdin, which is then closed.
     if (agent === 'gemini') {
+      const permMode = this.effectivePermissionMode('gemini', choice.permissionMode);
+      const permArgs = permMode === 'fullAccess' ? ['--dangerously-skip-permissions'] : [];
       // agy's stream-json input is {"event":"user","message":{"content":...}}.
       // --add-dir: without it agy runs its shell and resolves relative paths in its own scratch
       // folder (~/.gemini/antigravity-cli/scratch), not the project, even though init reports the cwd.
-      return { command, args: ['--input-format', 'stream-json', '--output-format', 'stream-json', '--model', model, '--dangerously-skip-permissions', '--add-dir', this.cwd, ...(resume ? ['--conversation', resume] : [])], input: JSON.stringify({ event: 'user', message: { content: fullPrompt } }) + '\n' };
+      return { command, args: ['--input-format', 'stream-json', '--output-format', 'stream-json', '--model', model, ...permArgs, '--add-dir', this.cwd, ...(resume ? ['--conversation', resume] : [])], input: JSON.stringify({ event: 'user', message: { content: fullPrompt } }) + '\n' };
     }
     if (agent === 'claude') {
       // -p reads the prompt from stdin; stream-json output needs --verbose.
       // A bare "claude" model setting means "the account default".
+      const permMode = this.effectivePermissionMode('claude', choice.permissionMode);
       const modelArgs = [...(model && model !== 'claude' ? ['--model', model] : []), ...(effort ? ['--effort', effort] : []), ...(resume ? ['--resume', resume] : [])];
+      if (permMode === 'fullAccess') {
+        if (this.interactive) {
+          return {
+            command,
+            args: ['-p', '--input-format', 'stream-json', '--output-format', 'stream-json', '--verbose', '--dangerously-skip-permissions', ...modelArgs],
+            input: JSON.stringify({ type: 'user', message: { role: 'user', content: fullPrompt } }) + '\n',
+            keepStdinOpen: false,
+          };
+        }
+        return { command, args: ['-p', '--output-format', 'stream-json', '--verbose', '--dangerously-skip-permissions', ...modelArgs], input: fullPrompt + '\n' };
+      }
+      const permFlag = permMode === 'ask' ? 'manual' : 'auto';
       if (this.interactive) {
         // Stdin stays open for control_responses until the result event.
         return {
           command,
-          // Auto mode: Claude's own classifier clears routine actions and only
-          // the risky ones reach an approval card.
-          args: ['-p', '--input-format', 'stream-json', '--output-format', 'stream-json', '--verbose', '--permission-mode', 'auto', '--permission-prompt-tool', 'stdio', ...modelArgs],
+          args: ['-p', '--input-format', 'stream-json', '--output-format', 'stream-json', '--verbose', '--permission-mode', permFlag, '--permission-prompt-tool', 'stdio', ...modelArgs],
           input: JSON.stringify({ type: 'user', message: { role: 'user', content: fullPrompt } }) + '\n',
           keepStdinOpen: true,
         };
       }
-      return { command, args: ['-p', '--output-format', 'stream-json', '--verbose', '--permission-mode', 'auto', ...modelArgs], input: fullPrompt + '\n' };
+      return { command, args: ['-p', '--output-format', 'stream-json', '--verbose', '--permission-mode', permFlag, ...modelArgs], input: fullPrompt + '\n' };
     }
     const effortArgs = effort ? ['-c', `model_reasoning_effort="${effort}"`] : [];
     // Composer slash actions are discovered from this installed CLI's own
@@ -413,9 +474,13 @@ class StreamEngine extends EventEmitter {
         input: fullPrompt ? `${fullPrompt}\n` : '',
       };
     }
-    // `exec resume` keeps the sandbox its session started with and takes no --sandbox.
-    if (resume) return { command, args: ['exec', 'resume', resume, '--json', '--skip-git-repo-check', '-m', model, ...effortArgs, '-'], input: fullPrompt + '\n' };
-    return { command, args: ['exec', '--json', '--sandbox', 'workspace-write', '--skip-git-repo-check', '-m', model, ...effortArgs, '-'], input: fullPrompt + '\n' };
+    const permMode = this.effectivePermissionMode('codex', choice.permissionMode);
+    const sandboxArgs = permMode === 'fullAccess' ? ['--sandbox', 'danger-full-access'] : ['--sandbox', 'workspace-write'];
+    const autoArgs = permMode === 'auto' ? ['--approve-for-me'] : [];
+    const approvalArgs = ['-c', `approval_policy="${permMode === 'fullAccess' ? 'never' : 'on-request'}"`, '-c', `approvals_reviewer="${permMode === 'auto' ? 'auto_review' : 'user'}"`];
+    // `exec resume` takes config overrides but has no --sandbox or --approve-for-me flags.
+    if (resume) return { command, args: ['exec', 'resume', resume, '--json', '-c', `sandbox_mode="${permMode === 'fullAccess' ? 'danger-full-access' : 'workspace-write'}"`, ...approvalArgs, '--skip-git-repo-check', '-m', model, ...effortArgs, '-'], input: fullPrompt + '\n' };
+    return { command, args: ['exec', '--json', ...sandboxArgs, ...autoArgs, ...approvalArgs, '--skip-git-repo-check', '-m', model, ...effortArgs, '-'], input: fullPrompt + '\n' };
   }
 
   getCodexServer() {
@@ -448,8 +513,17 @@ class StreamEngine extends EventEmitter {
     this.codexBases = repoSnapshots(this.cwd);
   }
 
-  async ensureCodexThread(server, { resume, model }) {
-    const common = { cwd: this.cwd, model, sandbox: 'workspace-write', approvalPolicy: this.interactive ? 'on-request' : 'never' };
+  async ensureCodexThread(server, { resume, model, permissionMode = null } = {}) {
+    const permMode = this.effectivePermissionMode('codex', permissionMode);
+    const sandbox = permMode === 'fullAccess' ? 'danger-full-access' : 'workspace-write';
+    const approvalPolicy = permMode === 'fullAccess' ? 'never' : (this.interactive ? 'on-request' : 'never');
+    const common = {
+      cwd: this.cwd,
+      model,
+      sandbox,
+      approvalPolicy,
+      ...(permMode === 'auto' ? { approvalsReviewer: 'auto_review' } : (permMode === 'ask' ? { approvalsReviewer: 'user' } : {})),
+    };
     if (resume && this.codexThreadId !== resume) {
       const result = await server.request('thread/resume', { threadId: resume, ...common });
       this.codexThreadId = result?.thread?.id || resume;
@@ -462,11 +536,11 @@ class StreamEngine extends EventEmitter {
     return this.codexThreadId;
   }
 
-  startCodex({ prompt, attachments = [], model, effort, resume = null, freshPrompt = null, codexCommand = null, attempt = 0 }) {
+  startCodex({ prompt, attachments = [], model, effort, resume = null, freshPrompt = null, codexCommand = null, attempt = 0, permissionMode = null, compact = false, autoCompact = false }) {
     this.cancel();
     const interrupting = this.codexInterrupting;
     const generation = ++this.codexGeneration;
-    const turn = { agent: 'codex', prompt, attachments, model, effort, resume, freshPrompt, codexCommand, attempt };
+    const turn = { agent: 'codex', prompt, attachments, model, effort, resume, freshPrompt, codexCommand, attempt, permissionMode, compact: Boolean(compact), autoCompact: Boolean(autoCompact) };
     this.resetCodexTurn(turn);
     const pointers = attachments.map((file) => `Attachment available locally: ${file}`).join('\n');
     const fullPrompt = pointers ? `${prompt}\n\n${pointers}` : prompt;
@@ -478,25 +552,31 @@ class StreamEngine extends EventEmitter {
         this.codexAcceptEvents = true;
         await server.connect();
         if (generation !== this.codexGeneration || !this.codexActive) return;
-        try { await this.ensureCodexThread(server, { resume, model }); }
+        try { await this.ensureCodexThread(server, { resume, model, permissionMode }); }
         catch (error) {
           if (!resume) throw error;
           this.codexThreadId = null;
-          await this.ensureCodexThread(server, { resume: null, model });
+          await this.ensureCodexThread(server, { resume: null, model, permissionMode });
           if (freshPrompt) turn.prompt = freshPrompt;
         }
         if (generation !== this.codexGeneration || !this.codexActive) return;
         if (codexCommand) await this.runCodexCommand(server, codexCommand, turn.prompt, generation);
         else {
           const text = freshPrompt && turn.prompt === freshPrompt ? freshPrompt : fullPrompt;
+          const permMode = this.effectivePermissionMode('codex', permissionMode);
+          const sandboxPolicy = permMode === 'fullAccess'
+            ? { type: 'dangerFullAccess' }
+            : { type: 'workspaceWrite', writableRoots: [this.cwd], networkAccess: false, excludeTmpdirEnvVar: false, excludeSlashTmp: false };
+          const approvalPolicy = permMode === 'fullAccess' ? 'never' : (this.interactive ? 'on-request' : 'never');
           const result = await server.request('turn/start', {
             threadId: this.codexThreadId,
             input: [{ type: 'text', text }],
             cwd: this.cwd,
             model,
             ...(effort ? { effort } : {}),
-            approvalPolicy: this.interactive ? 'on-request' : 'never',
-            sandboxPolicy: { type: 'workspaceWrite', writableRoots: [this.cwd], networkAccess: false },
+            approvalPolicy,
+            sandboxPolicy,
+            ...(permMode === 'auto' ? { approvalsReviewer: 'auto_review' } : (permMode === 'ask' ? { approvalsReviewer: 'user' } : {})),
           });
           if (generation !== this.codexGeneration || !this.codexActive) {
             if (result?.turn?.id) this.codexRetiredTurns.add(result.turn.id);
@@ -672,7 +752,7 @@ class StreamEngine extends EventEmitter {
     });
   }
 
-  start({ agent, prompt, attachments = [], model, effort, resume = null, freshPrompt = null, codexCommand = null, codexCommandArgs = [], attempt = 0, live = false }) {
+  start({ agent, prompt, attachments = [], model, effort, resume = null, freshPrompt = null, codexCommand = null, codexCommandArgs = [], attempt = 0, live = false, permissionMode = null, compact = false, autoCompact = false }) {
     // A live Remote Control process takes the turn as a message instead of a new process.
     if (agent === 'claude' && this.live && !live) return this.sendToLive({ agent, prompt, attachments, model, effort });
     // So does a process kept open for its background agents (on the model it started with):
@@ -681,11 +761,11 @@ class StreamEngine extends EventEmitter {
     // Codex and agy don't send the edited text: their +/- come from each file against these snapshots.
     this.editCache = new Map();
     if (agent !== 'claude' && !attempt) this.codexBases = repoSnapshots(this.cwd);
-    if (agent === 'codex') return this.startCodex({ prompt, attachments, model, effort, resume, freshPrompt, codexCommand, codexCommandArgs, attempt });
+    if (agent === 'codex') return this.startCodex({ prompt, attachments, model, effort, resume, freshPrompt, codexCommand, codexCommandArgs, attempt, permissionMode, compact, autoCompact });
     this.cancel();
-    this.turn = live ? null : { agent, prompt, attachments, model, effort, resume, freshPrompt, codexCommand, codexCommandArgs, attempt };
+    this.turn = live ? null : { agent, prompt, attachments, model, effort, resume, freshPrompt, codexCommand, codexCommandArgs, attempt, permissionMode, compact: Boolean(compact), autoCompact: Boolean(autoCompact) };
     this.tokens = { input: 0, output: 0, lastId: null }; // P17-V: this turn's token draw
-    const spec = this.commandFor(agent, prompt, attachments, { model, effort, resume, codexCommand, codexCommandArgs });
+    const spec = this.commandFor(agent, prompt, attachments, { model, effort, resume, codexCommand, codexCommandArgs, permissionMode });
     if (live && spec.command) spec.args.push('--replay-user-messages');
     // A session that no longer exists (cleared, or made on another machine)
     // reruns the turn once as a new session, with the chat's full handoff.
@@ -710,11 +790,22 @@ class StreamEngine extends EventEmitter {
     const isCmd = process.platform === 'win32' && /\.cmd$/i.test(spec.command);
     const shim = isCmd ? resolveShim(spec.command) : null;
     const useShell = isCmd && !shim;
+    const isCompacting = Boolean(compact || autoCompact);
     const child = spawn(shim ? shim.command : useShell ? `"${spec.command}"` : spec.command, shim ? [...shim.args, ...spec.args] : spec.args, {
       cwd: this.cwd,
       windowsHide: true,
       shell: useShell,
-      env: { ...process.env, CLAUDE_CONFIG_DIR: process.env.CLAUDE_CONFIG_DIR },
+      env: {
+        ...process.env,
+        CLAUDE_CONFIG_DIR: process.env.CLAUDE_CONFIG_DIR,
+        ...(isCompacting ? {
+          NO_CHIME: '1',
+          ANTIGRAVITY_NO_CHIME: '1',
+          CLAUDE_NO_CHIME: '1',
+          CODEX_NO_CHIME: '1',
+          AI_CHAT_PANEL_COMPACT: '1',
+        } : {}),
+      },
       stdio: ['pipe', 'pipe', 'pipe'],
     });
     this.child = child;
@@ -927,6 +1018,17 @@ class StreamEngine extends EventEmitter {
         this.emit('event', { type: 'delta', text: response, model: agent, agent });
       }
     }
+    if (event.type === 'turn_complete' && event.error) {
+      const errorText = event.error;
+      delete event.error;
+      // If the model produced output or an answer, an upstream error (e.g. recovered interruption in
+      // a resumed session) is historical and ignored; if no text was produced at all, report the error.
+      if (!this.hadText && !this.child?.turnCompleted) {
+        this.hadText = true;
+        this.sawOutput = true;
+        this.emit('event', { type: 'delta', text: `Gemini error: ${errorText}`, model: agent, agent });
+      }
+    }
     if (event.type === 'turn_complete') {
       if (this.child?.turnCompleted) return; // the CLI's own result event already ended the turn
       if (this.tokens.input + this.tokens.output) event.totalTokens = this.tokens.input + this.tokens.output;
@@ -969,6 +1071,7 @@ class StreamEngine extends EventEmitter {
     if (event.type === 'approval_cancelled') this.approvals.delete(event.actionId);
     // Whole-message text from separate blocks gets a paragraph break between them.
     if (event.type === 'delta') {
+      if (this.hadText && /^Gemini error: The stream was interrupted/i.test(event.text || '')) return;
       const key = event.block ? `block-${++this.blockCount}` : event.step != null ? `step-${event.step}` : 'stream';
       if (this.lastTextKey && this.lastTextKey !== key && this.hadText) event.text = `\n\n${event.text}`;
       this.lastTextKey = key;
@@ -1043,6 +1146,9 @@ class StreamEngine extends EventEmitter {
     }
     return false;
   }
+
+  /** The turn is over but Claude's background agents are still working in the kept-open process. */
+  get hasBackgroundAgents() { return Boolean(this.lingering) && this.subagentIds.size > 0; }
 
   /** The kept-open process closes once its turn is over and no background agent is left in it. */
   releaseLingering() {
@@ -1215,4 +1321,4 @@ function killTree(child, execFileImpl = execFile) {
   } else child.kill();
 }
 
-module.exports = { StreamEngine, normalizeEvent, killTree, contextTokensOf, toolTarget };
+module.exports = { StreamEngine, normalizeEvent, killTree, contextTokensOf, toolTarget, geminiToolTarget };
