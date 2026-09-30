@@ -2721,6 +2721,23 @@ body.attachment-dragging .drop-overlay-card { transform: scale(1); }
   100% { transform: scale(1); }
 }
 
+/* Auto-Verify: the clock's armed look, in Apple green, so the two standing switches read as a pair. */
+.verify-toggle.is-armed {
+  color: #30d158;
+  background: rgba(48, 209, 88, 0.14);
+  border-color: rgba(48, 209, 88, 0.55);
+  box-shadow: 0 0 0 3px rgba(48, 209, 88, 0.14), 0 0 18px rgba(48, 209, 88, 0.3);
+  animation: schedule-arm 0.42s var(--eo-ease);
+}
+
+@media (prefers-reduced-motion: reduce) { .verify-toggle.is-armed { animation: none; } }
+
+/* What a reply cost: Claude Code's own API-equivalent figure, quiet beside the time. */
+.msg-cost {
+  margin-right: 4px;
+  cursor: help;
+}
+
 /* ---------- P17-ZA: live mic meter over the text field ---------- */
 /* Absolutely placed inside the text column's grid area, so it never takes a grid cell. */
 .voice-overlay {

@@ -316,6 +316,28 @@
   const runningBadge = document.getElementById('runningBadge');
   let currentChatId = null;
 
+  // ---------- Auto-Verify ----------
+  // A standing switch, not a one-shot: while on, every turn also tells the agent to run the project's checks
+  // (the aiChatPanel.verifyCommand setting, or its own test script) after it changes files, and fix what fails.
+  // The agent's own shell tool does the running; this only asks.
+  let autoVerify = Boolean(vscode.getState()?.autoVerify);
+  const verifyBtn = document.createElement('button');
+  verifyBtn.type = 'button'; verifyBtn.id = 'verifyBtn'; verifyBtn.className = 'composer-icon-btn verify-toggle';
+  verifyBtn.innerHTML = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.25" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 1.75 2.75 3.75v4c0 3 2.2 5.2 5.25 6.5 3.05-1.3 5.25-3.5 5.25-6.5v-4z"/><path d="m5.6 8.2 1.7 1.7 3.1-3.4"/></svg>';
+  const renderVerify = () => {
+    verifyBtn.classList.toggle('is-armed', autoVerify);
+    verifyBtn.setAttribute('aria-pressed', String(autoVerify));
+    verifyBtn.title = autoVerify ? 'Auto-Verify is on: after changing files, the agent runs your checks and fixes failures. Click to turn off.' : 'Auto-Verify: have the agent run your checks after it changes files, and fix what fails.';
+  };
+  renderVerify();
+  verifyBtn.addEventListener('click', () => {
+    autoVerify = !autoVerify;
+    try { vscode.setState({ ...(vscode.getState() || {}), autoVerify }); } catch {}
+    renderVerify();
+    promptInput.focus();
+  });
+  document.querySelector('.composer-actions').insertBefore(verifyBtn, sendBtn); // the clock is inserted before send next, so this sits left of it
+
   // ---------- P16-J: inline schedule toggle ----------
   // One input, not two: the composer's clock button arms "schedule instead
   // of send" for the next submit (Enter or the send arrow), queued for the
@@ -653,7 +675,7 @@
     if (slashCommands === null) slashCommands = [];
     if (!match[1] && slashMenu.hidden) vscode.postMessage({ type: 'querySlashCommands' });
     // The picked provider's CLI only; Auto shows every CLI's commands.
-    const pool = activeAgent === 'auto' ? slashCommands : slashCommands.filter((command) => (command.agent || 'codex') === activeAgent);
+    const pool = activeAgent === 'auto' ? slashCommands : slashCommands.filter((command) => command.panel || (command.agent || 'codex') === activeAgent);
     slashHits = pool.map((command) => [command, slashScore(command, match[1])]).filter(([, score]) => score > 0)
       .sort((a, b) => b[1] - a[1]).slice(0, 50).map(([command]) => command);
     slashIndex = Math.min(slashIndex, Math.max(0, slashHits.length - 1));
@@ -662,7 +684,7 @@
       item.className = 'mention-item' + (i === slashIndex ? ' is-active' : '');
       item.setAttribute('role', 'option');
       const name = document.createElement('span'); name.className = 'mention-name'; name.textContent = `/${command.name}`;
-      const description = document.createElement('span'); description.className = 'model-option-hint'; description.textContent = `${AGENT_LABELS[command.agent] || 'Codex'}${command.description ? ` · ${command.description}` : ''}`;
+      const description = document.createElement('span'); description.className = 'model-option-hint'; description.textContent = `${command.panel ? 'Clanker' : AGENT_LABELS[command.agent] || 'Codex'}${command.description ? ` · ${command.description}` : ''}`;
       if (command.description) item.title = command.description; // the hint shows two lines; the rest on hover
       const copy = document.createElement('span'); copy.className = 'model-option-text'; copy.append(name, description);
       item.append(copy);
@@ -1079,7 +1101,8 @@
     if (turn.modelId !== activeModelId) selectModel(turn.modelId);
     appendUserMessage(turn.text, undefined, turn.files);
     setBusy(true);
-    vscode.postMessage({ type: 'send', modelId: turn.modelId, text: turn.text, attachments: turn.attachments, submit: true, steer });
+    dropUndo(); // the last turn's undo is only for the last turn
+    vscode.postMessage({ type: 'send', modelId: turn.modelId, text: turn.text, attachments: turn.attachments, submit: true, steer, verify: Boolean(turn.verify), pipeline: Boolean(turn.pipeline) });
   }
 
   function appendInterruptedPill() {
@@ -1302,8 +1325,20 @@
   }
 
   function sendPrompt({ steer = false } = {}) {
-    const text = promptInput.value.trim();
+    let text = promptInput.value.trim();
     if (!text) return;
+    // /undo is Clanker's own: the host asks, then puts the last turn's file changes back.
+    if (/^\/undo\s*$/i.test(text)) {
+      vscode.postMessage({ type: 'undoTurn' });
+      promptInput.value = '';
+      closeSlashMenu(); autoGrow(); renderComposerState();
+      return;
+    }
+    // /architect <task>: a planning model, then a building one (models: aiChatPanel.architectModel / editorModel).
+    const architect = /^\/architect(?:\s+([\s\S]+))?$/i.exec(text);
+    if (architect && !architect[1]) { appendNotice('Give /architect a task: "/architect move the header links into a menu".'); return; }
+    const pipeline = Boolean(architect);
+    if (pipeline) text = architect[1].trim();
     // A panel command, not a turn: hands this chat's Claude session to the phone (see extension.js).
     if (/^\/(remote-control|rc)(\s|$)/i.test(text)) {
       vscode.postMessage({ type: 'remoteControl' });
@@ -1312,7 +1347,7 @@
       return;
     }
     flushVoiceDraft(text);
-    const turn = { id: `${Date.now()}-${turnQueue.length}`, text, modelId: activeModelId, attachments: attachments.map((attachment) => attachment.path), files: attachments.slice() };
+    const turn = { id: `${Date.now()}-${turnQueue.length}`, text, modelId: activeModelId, attachments: attachments.map((attachment) => attachment.path), files: attachments.slice(), verify: autoVerify, pipeline };
     if (scheduleArmed) {
       schedulePrompt(text);
       scheduleChoice = null;
@@ -2146,15 +2181,62 @@
     }, () => showToast('Could not copy to the clipboard.', { error: true }));
   }
 
-  function messageActions(at, getText, extra = []) {
+  function messageActions(at, getText, extra = [], cost = 0) {
     const row = document.createElement('div');
     row.className = 'msg-actions';
     const time = document.createElement('time');
     time.className = 'msg-time';
     time.textContent = formatTime(at);
     if (at) time.dateTime = new Date(at).toISOString();
-    row.append(time, iconAction(COPY_ICON, 'Copy', (btn) => copyText(btn, getText())), ...extra);
+    row.append(time);
+    // Claude Code's own figure for the reply. Codex and Gemini report none, so theirs show nothing rather than a guess.
+    if (cost > 0) {
+      const price = document.createElement('span');
+      price.className = 'msg-cost';
+      price.textContent = `≈ ${cost < 0.01 ? '<$0.01' : `$${cost.toFixed(2)}`}`;
+      price.title = 'What this reply would cost at API prices, as Claude Code reports it. A subscription is not billed per token.';
+      row.append(price);
+    }
+    row.append(iconAction(COPY_ICON, 'Copy', (btn) => copyText(btn, getText())), ...extra);
     return row;
+  }
+
+  // The droid's voice (aiChatPanel.droidSounds): pitch-bent triangle waves, 600-2400 Hz. A rising chirp for done,
+  // a low falling warble for an error. Nothing is loaded; the notes are drawn here.
+  let droidAudio = null;
+  function playDroid(kind) {
+    try {
+      droidAudio = droidAudio || new AudioContext();
+      if (droidAudio.state === 'suspended') droidAudio.resume();
+      // [from Hz, to Hz, start s, length s]
+      const notes = kind === 'warn' ? [[520, 380, 0, 0.16], [440, 300, 0.14, 0.16], [380, 240, 0.28, 0.22]] : [[900, 1300, 0, 0.09], [1200, 1800, 0.1, 0.09], [1700, 2400, 0.2, 0.16]];
+      const now = droidAudio.currentTime;
+      for (const [from, to, start, length] of notes) {
+        const osc = droidAudio.createOscillator();
+        const gain = droidAudio.createGain();
+        osc.type = 'triangle';
+        osc.frequency.setValueAtTime(from, now + start);
+        osc.frequency.exponentialRampToValueAtTime(to, now + start + length);
+        gain.gain.setValueAtTime(0.0001, now + start);
+        gain.gain.exponentialRampToValueAtTime(0.07, now + start + 0.015);
+        gain.gain.exponentialRampToValueAtTime(0.0001, now + start + length);
+        osc.connect(gain).connect(droidAudio.destination);
+        osc.start(now + start);
+        osc.stop(now + start + length + 0.02);
+      }
+    } catch { /* no audio device: silence is fine */ }
+  }
+
+  // Undo turn: the last reply gets one more action when its turn changed files (lib/turn-undo.js; /undo does the same).
+  const UNDO_ICON = '<svg viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M3 8a5 5 0 1 0 1.6-3.7" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/><path d="M3 2.75v2.5h2.5" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+  function dropUndo() { transcriptEl.querySelectorAll('.undo-action').forEach((el) => el.remove()); }
+  function offerUndo(count) {
+    dropUndo();
+    const row = count ? [...transcriptEl.querySelectorAll('.msg-assistant .msg-actions')].pop() : null;
+    if (!row) return;
+    const undo = iconAction(UNDO_ICON, `Undo this turn: ${count} file${count === 1 ? '' : 's'} go back to how they were before it`, () => vscode.postMessage({ type: 'undoTurn' }));
+    undo.classList.add('undo-action');
+    row.append(undo);
   }
 
   // Your message: hovering shows time, Copy, and Revert. Revert forks the
@@ -2298,9 +2380,9 @@
     host.append(btn);
   }
 
-  function endAssistantTurn(at = new Date().toISOString()) {
+  function endAssistantTurn(at = new Date().toISOString(), cost = 0) {
     const last = turnBubbles[turnBubbles.length - 1];
-    if (last && !last.querySelector('.msg-actions')) last.append(messageActions(at, () => last.dataset.raw.trim()));
+    if (last && !last.querySelector('.msg-actions')) last.append(messageActions(at, () => last.dataset.raw.trim(), [], cost));
     const limitHit = limitHitThisTurn || isLimitNotice(last?.dataset.raw);
     const replied = turnRoutedAgent || lastReplyAgent();
     // Only when there is something to continue (the turn was cut off by the limit) and a reason to
@@ -3015,12 +3097,14 @@
         appendAssistantDelta(text.slice(from), message.agent, message.modelLabel, message.roleName);
         if (index === live) return;
         if (message.interrupted) appendInterruptedPill();
-        endAssistantTurn(message.at || null);
+        endAssistantTurn(message.at || null, message.costUsd);
         endedAt = message.at;
       }
       else if (message.role === 'tool' && !placed.has(index)) storedTool(message);
     });
     restoringHistory = false;
+    const latest = messages.findLastIndex((entry) => entry.role === 'assistant' && !entry.compact);
+    if (!running && messages[latest]?.undo?.count && !messages[latest].undone && !messages.slice(latest).some((entry) => entry.role === 'user' && !entry.compact)) offerUndo(messages[latest].undo.count);
     scheduleChoice = null; // a new chat starts from its own model's usage, not the last chat's clock pick
     scheduleTimer.clear();
     refreshScheduleDefault();
@@ -3461,7 +3545,7 @@
           });
           foldThought();
           if (message.interrupted) appendInterruptedPill(); // interrupted host-side (a voice turn)
-          endAssistantTurn();
+          endAssistantTurn(undefined, message.costUsd);
           collapseTurn(turnAnchor, Date.now() - turnStartedAt);
         } else resetThought();
         turnAnchor = null;
@@ -3496,6 +3580,8 @@
         break;
       }
       // A turn that didn't come from this composer (a scheduled prompt, Remote Control): your bubble.
+      case 'undoOffer': offerUndo(Number(message.count) || 0); break;
+      case 'droid': playDroid(message.kind); break;
       case 'userMessage': {
         appendUserMessage(message.text || '', message.at || undefined, [], { scheduled: message.scheduled });
         break;

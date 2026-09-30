@@ -146,6 +146,28 @@
                     "default": "fullAccess",
                     "markdownDescription": "Permission mode across Claude, Codex, and Gemini: `ask` requests approval where the provider supports prompts, `auto` uses automated risk review where supported, and `fullAccess` allows automatic execution. Headless Gemini skips actions requiring approval in `ask` and `auto`."
                 },
+                "aiChatPanel.verifyCommand": {
+                    "type": "string",
+                    "default": "",
+                    "markdownDescription": "What Auto-Verify (the check-mark button beside the composer's clock) tells the agent to run after it changes files, for example `npm test`. Empty: the agent finds the project's own test or verify command."
+                },
+                "aiChatPanel.architectModel": {
+                    "type": "string",
+                    "enum": ["claude-opus-5-5-medium", "claude-sonnet-5-5-high", "gpt-6.1-sol-high", "gpt-6-astra-high", "gpt-6-luna-high", "gemini-3.8-flash-high"],
+                    "default": "claude-opus-5-5-medium",
+                    "markdownDescription": "The model that plans when you send `/architect <task>`. It reads the code and writes a plan, and edits nothing."
+                },
+                "aiChatPanel.editorModel": {
+                    "type": "string",
+                    "enum": ["claude-opus-5-5-medium", "claude-sonnet-5-5-high", "gpt-6.1-sol-high", "gpt-6-astra-high", "gpt-6-luna-high", "gemini-3.8-flash-high"],
+                    "default": "gpt-6.1-sol-high",
+                    "markdownDescription": "The model that builds the plan after `/architect`. It starts by itself when the plan is done."
+                },
+                "aiChatPanel.droidSounds": {
+                    "type": "boolean",
+                    "default": false,
+                    "markdownDescription": "Clanker's own sound when a turn ends: a rising astromech chirp when it's done, a low warble when the agent reports an error. Synthesized in the chat window (no audio files). Off by default; the completion chime your CLI hooks play is separate."
+                },
                 "aiChatPanel.models": {
                     "type": "object",
                     "default": {
@@ -160,7 +182,7 @@
     },
     "scripts": {
         "check": "node test/check.js",
-        "test": "node test/check.js && node test/session.test.js"
+        "test": "node test/check.js && node test/session.test.js && node test/turn-undo.test.js && node test/turn-extras.test.js"
     },
     "extensionKind": [
         "ui"

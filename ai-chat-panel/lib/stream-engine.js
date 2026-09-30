@@ -272,7 +272,8 @@ function vendorEvent(raw, agent) {
     return { type: 'tool_end', toolId: at(result.tool_use_id), output, error: result.is_error === true, diff: '', agent };
   }
   if (raw?.type === 'control_cancel_request') return { type: 'approval_cancelled', actionId: String(raw.request_id), agent };
-  if (raw?.type === 'result' && 'session_id' in raw) return { type: 'turn_complete', agent };
+  // total_cost_usd is Claude Code's own figure for the turn (API-equivalent: a subscription isn't billed by it).
+  if (raw?.type === 'result' && 'session_id' in raw) return { type: 'turn_complete', agent, ...(raw.total_cost_usd > 0 ? { costUsd: raw.total_cost_usd } : {}) };
   // Session ids, so the agent's next turn in this chat resumes the same session.
   // Claude compacts on its own when the window runs full; say so in the transcript.
   if (raw?.type === 'system' && raw.subtype === 'compact_boundary') return { type: 'notice', text: 'Claude compacted the context automatically.', agent };
@@ -398,6 +399,7 @@ class StreamEngine extends EventEmitter {
     this.approvals = new Map(); // actionId -> { child, input, suggestions, kind }
     this.agyEdits = new Map(); // toolId -> { event, file, before }: a Gemini edit waiting for its diff
     this.codexBases = new Map(); // repo root -> snapshot, for Codex's per-edit diffs
+    this.turnBases = null; // repo root -> snapshot as the turn began, and when (ms): what Undo turn restores
     this.tokens = { input: 0, output: 0, lastId: null };
     this.subagentIds = new Set(); // Agent/Task tool_use ids still running (background ones outlive their call)
     this.codexServerFactory = codexServerFactory;
@@ -759,8 +761,10 @@ class StreamEngine extends EventEmitter {
     // a new process would kill them.
     if (agent === 'claude' && this.lingering && !live) return this.sendToLive({ agent, prompt, attachments, model, effort }, this.lingering);
     // Codex and agy don't send the edited text: their +/- come from each file against these snapshots.
+    // The same snapshots, kept whole, are what "Undo turn" restores (lib/turn-undo.js).
     this.editCache = new Map();
-    if (agent !== 'claude' && !attempt) this.codexBases = repoSnapshots(this.cwd);
+    if (!attempt && !live) { this.turnStartedAt = Date.now(); this.turnBases = repoSnapshots(this.cwd); }
+    if (agent !== 'claude' && !attempt) this.codexBases = new Map(this.turnBases || repoSnapshots(this.cwd));
     if (agent === 'codex') return this.startCodex({ prompt, attachments, model, effort, resume, freshPrompt, codexCommand, codexCommandArgs, attempt, permissionMode, compact, autoCompact });
     this.cancel();
     this.turn = live ? null : { agent, prompt, attachments, model, effort, resume, freshPrompt, codexCommand, codexCommandArgs, attempt, permissionMode, compact: Boolean(compact), autoCompact: Boolean(autoCompact) };
