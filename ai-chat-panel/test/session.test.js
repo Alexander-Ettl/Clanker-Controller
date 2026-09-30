@@ -11,6 +11,8 @@ const fs = require('node:fs');
 const path = require('node:path');
 
 const os = require('node:os');
+const TEST_CWD = fs.mkdtempSync(path.join(os.tmpdir(), 'ai-chat-panel-workspace-'));
+process.on('exit', () => fs.rmdirSync(TEST_CWD));
 const { writeMicroHandoff, readMicroHandoff, formatMicroHandoffPrompt, MAX_CHARS } = require('../lib/handoff.js');
 const { SchedulerQueue, MAX_QUEUE_SIZE, MAX_ATTACHMENT_BYTES } = require('../lib/scheduler-queue.js');
 const { TelegramBridge } = require('../lib/telegram-bridge.js');
@@ -170,7 +172,7 @@ test('Codex turns, native commands, approvals, and questions use one persistent 
     dispose() {}
   }
   const server = new FakeServer();
-  const engine = new StreamEngine({ cwd: os.tmpdir(), interactive: true, codexServerFactory: () => server });
+  const engine = new StreamEngine({ cwd: TEST_CWD, interactive: true, codexServerFactory: () => server });
   const events = [];
   engine.on('event', (event) => events.push(event));
   engine.start({ agent: 'codex', prompt: 'hello', model: 'gpt-test', effort: 'high' });
@@ -178,6 +180,10 @@ test('Codex turns, native commands, approvals, and questions use one persistent 
   assert.deepEqual(server.calls.map((call) => call.method), ['thread/start', 'turn/start']);
   assert.equal(server.calls[1].params.threadId, 'thread-1');
   assert.deepEqual(server.calls[1].params.input, [{ type: 'text', text: 'hello' }]);
+  assert.equal(server.calls[0].params.sandbox, 'danger-full-access');
+  assert.equal(server.calls[0].params.approvalPolicy, 'never');
+  assert.deepEqual(server.calls[1].params.sandboxPolicy, { type: 'dangerFullAccess' });
+  assert.equal(server.calls[1].params.approvalPolicy, 'never');
   assert.equal(events.find((event) => event.type === 'session')?.sessionId, 'thread-1');
 
   server.emit('request', { id: 7, method: 'item/commandExecution/requestApproval', params: { command: 'npm test', reason: 'Run tests' } });
@@ -231,7 +237,7 @@ test('late notifications from an interrupted Codex turn cannot complete its repl
     dispose() {}
   }
   const server = new RacingServer();
-  const engine = new StreamEngine({ cwd: os.tmpdir(), codexServerFactory: () => server });
+  const engine = new StreamEngine({ cwd: TEST_CWD, codexServerFactory: () => server });
   const events = [];
   engine.on('event', (event) => events.push(event));
   engine.start({ agent: 'codex', prompt: 'old', model: 'gpt-test' });
@@ -333,7 +339,7 @@ test('P16-I: StreamEngine turns a missing CLI into a binary_missing event, never
   const real = locator.locate;
   const cached = real('gemini');
   locator.refresh();
-  const engine = new StreamEngine({ cwd: os.tmpdir() });
+  const engine = new StreamEngine({ cwd: TEST_CWD });
   // Force "not found" for this one call without touching the real machine.
   const origCommandFor = engine.commandFor.bind(engine);
   engine.commandFor = (...args) => ({ ...origCommandFor(...args), command: null });
@@ -348,10 +354,68 @@ test('P16-I: StreamEngine turns a missing CLI into a binary_missing event, never
   void cached;
 });
 
-test('readQuotas without the usage extension reports every provider as unknown', async () => {
+test('missing quota readings report every provider as unknown', () => {
   process.env.AI_CHAT_PANEL_QUOTA_CACHE = path.join(os.tmpdir(), `ai-chat-panel-test-unknown-${process.pid}.json`); // nothing remembered either
-  const { readQuotas } = require('../lib/quota-bridge.js');
-  assert.deepEqual(await readQuotas(), { claude: null, claudeWeekly: null, claudeOpus: null, opus: null, codex: null, gemini: null });
+  const { shapeQuotas } = require('../lib/quota-bridge.js');
+  assert.deepEqual(shapeQuotas({}), { claude: null, claudeWeekly: null, claudeOpus: null, opus: null, codex: null, gemini: null });
+});
+
+test('quota-sources reads Codex rate limits from session logs, with no other extension', async () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'ai-chat-panel-quota-codex-'));
+  const now = new Date();
+  const day = path.join(home, 'sessions', String(now.getFullYear()), String(now.getMonth() + 1).padStart(2, '0'), String(now.getDate()).padStart(2, '0'));
+  fs.mkdirSync(day, { recursive: true });
+  const resetsAt = Math.floor(Date.now() / 1000) + 3600;
+  fs.writeFileSync(path.join(day, 'rollout.jsonl'), JSON.stringify({ timestamp: now.toISOString(), payload: { rate_limits: { primary: { used_percent: 29, window_minutes: 300, resets_at: resetsAt } } } }) + '\n');
+  const saved = { claude: process.env.CLAUDE_CONFIG_DIR, codex: process.env.CODEX_HOME };
+  process.env.CLAUDE_CONFIG_DIR = home;
+  process.env.CODEX_HOME = home;
+  try {
+    const { getQuotas } = require('../lib/quota-sources.js');
+    const { codex, gemini, claude } = await getQuotas({ readGemini: async () => null });
+    assert.equal(codex.remaining, 71);
+    assert.equal(codex.resetsAt, resetsAt);
+    assert.equal(gemini, null);
+    assert.equal(claude, null);
+  } finally {
+    for (const [name, key] of [['claude', 'CLAUDE_CONFIG_DIR'], ['codex', 'CODEX_HOME']]) {
+      if (saved[name] === undefined) delete process.env[key]; else process.env[key] = saved[name];
+    }
+  }
+});
+
+test('session dir: Clanker keeps its own storage and copies a legacy session folder once', () => {
+  const { resolveSessionDir } = require('../lib/session-dir.js');
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), 'ai-chat-panel-session-'));
+  const legacy = path.join(base, 'legacy');
+  fs.mkdirSync(path.join(legacy, 'chats'), { recursive: true });
+  fs.writeFileSync(path.join(legacy, 'chats', 'a.json'), '{}');
+  fs.writeFileSync(path.join(legacy, 'batch-tasks.json'), '[]'); // someone else's file: not Clanker's to take
+  const storageDir = path.join(base, 'storage');
+
+  const dir = resolveSessionDir({ storageDir, legacyDirs: [legacy, undefined], override: '' });
+  assert.equal(dir, path.join(storageDir, 'session'));
+  assert.ok(fs.existsSync(path.join(dir, 'chats', 'a.json')), 'chats are carried over');
+  assert.ok(!fs.existsSync(path.join(dir, 'batch-tasks.json')), 'only Clanker\'s own files are copied');
+
+  fs.writeFileSync(path.join(legacy, 'chats', 'b.json'), '{}');
+  resolveSessionDir({ storageDir, legacyDirs: [legacy], override: '' });
+  assert.ok(!fs.existsSync(path.join(dir, 'chats', 'b.json')), 'the legacy folder is never read a second time');
+  assert.equal(resolveSessionDir({ storageDir, override: '/somewhere/else' }), '/somewhere/else');
+});
+
+test('voice dictionary: terms are added once, listed when enabled, and merged without repeats', async () => {
+  const dictionary = require('../lib/voice-dictionary.js');
+  const dictionaryFile = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'ai-chat-panel-dict-')), 'dict.json');
+  assert.deepEqual(dictionary.listEnabledTerms({ dictionaryFile }), [], 'a missing file is an empty dictionary');
+  dictionary.addTerm({ dictionaryFile }, 'Tecnomatix');
+  dictionary.addTerm({ dictionaryFile }, 'tecnomatix ');
+  assert.deepEqual(dictionary.listEnabledTerms({ dictionaryFile }), ['Tecnomatix']);
+  assert.throws(() => dictionary.addTerm({ dictionaryFile }, ''), /empty/);
+  assert.throws(() => dictionary.addTerm({ dictionaryFile }, 'x'.repeat(61)), /60/);
+  process.env.OPENWHISPR_DB_PATH = path.join(os.tmpdir(), 'no-such-openwhispr.db');
+  assert.deepEqual(await dictionary.vocabulary({ dictionaryFile }), ['Tecnomatix']);
+  delete process.env.OPENWHISPR_DB_PATH;
 });
 
 test('P13-E: normalizeEvent maps vendor-shaped NDJSON into the locked webview protocol', () => {
@@ -374,6 +438,56 @@ test('P13-F: ChatStore persists, lists, reloads, and deletes a session', () => {
   assert.equal(store.load(saved.id).messages[0].text, 'Persist this chat');
   assert.equal(store.delete(saved.id), true);
   assert.equal(store.list().length, 0);
+});
+
+test('Manage Chats: ChatStore provides separate title and lastMessage preview, tracking user/assistant', () => {
+  const { ChatStore, deriveFallbackTitle, findLastMessage } = require('../lib/chat-store.js');
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'ai-chat-panel-chat-preview-'));
+  const store = new ChatStore(root);
+
+  // 1. Fallback title derivation
+  assert.equal(deriveFallbackTitle([{ role: 'user', text: 'How do I rework managed chat bubbles cleanly?' }]), 'How do I rework managed');
+  assert.equal(deriveFallbackTitle([{ role: 'user', text: '/review check the diff' }]), 'check the diff');
+  assert.equal(deriveFallbackTitle([]), 'New chat');
+
+  // 2. Chat with user message and assistant reply
+  const chat = store.create();
+  chat.messages.push({ role: 'user', text: 'First user prompt that starts the session' });
+  chat.messages.push({ role: 'tool', event: { toolId: 't1' } });
+  chat.messages.push({ role: 'assistant', text: 'First assistant reply from Codex', agent: 'codex' });
+  const saved = store.save(chat);
+
+  let list = store.list();
+  assert.equal(list.length, 1);
+  assert.equal(list[0].title, 'First user prompt that starts');
+  assert.equal(list[0].customTitle, false);
+  assert.ok(list[0].lastMessage);
+  assert.equal(list[0].lastMessage.role, 'assistant');
+  assert.equal(list[0].lastMessage.agent, 'codex');
+  assert.equal(list[0].lastMessage.text, 'First assistant reply from Codex');
+
+  // 3. User responds next -> lastMessage becomes user
+  chat.messages.push({ role: 'user', text: 'Second user message: sounds good' });
+  store.save(chat);
+  list = store.list();
+  assert.equal(list[0].lastMessage.role, 'user');
+  assert.equal(list[0].lastMessage.text, 'Second user message: sounds good');
+
+  // 4. Renaming sets custom title and customTitle flag
+  store.rename(saved.id, 'Managed Bubble Redesign');
+  list = store.list();
+  assert.equal(list[0].title, 'Managed Bubble Redesign');
+  assert.equal(list[0].customTitle, true);
+  // lastMessage remains untouched
+  assert.equal(list[0].lastMessage.text, 'Second user message: sounds good');
+
+  // 5. Clearing title reverts customTitle
+  store.rename(saved.id, '');
+  list = store.list();
+  assert.equal(list[0].title, 'First user prompt that starts');
+  assert.equal(list[0].customTitle, false);
+
+  fs.rmSync(root, { recursive: true, force: true });
 });
 
 test('Manage Chats: a chat is active while it runs or within five minutes of its last run', () => {
@@ -401,6 +515,14 @@ test('P13-H: auto-router applies role boundaries, quota fallback, and contract l
   const split = route('Connect the UI CSS with the backend IPC parser', {}, 'auto');
   assert.equal(split.split, true);
   assert.match(split.contract, /CONTRACT LOCK/);
+  for (const agent of ['claude', 'codex', 'gemini']) {
+    const manual = route('Change the UI and backend together', {}, agent);
+    assert.equal(manual.agent, agent);
+    assert.equal(manual.prompt, 'Change the UI and backend together');
+    assert.equal(manual.directive, '');
+    assert.equal(manual.contract, '');
+    assert.equal(manual.roleName, null);
+  }
 });
 
 test('P15-F: SchedulerQueue stages attachments, preserves FIFO, and validates limits', async () => {
@@ -411,7 +533,7 @@ test('P15-F: SchedulerQueue stages attachments, preserves FIFO, and validates li
   const task = await queue.enqueue({ model: 'codex', prompt: 'Fix the backend', attachments: [], dispatchTrigger: 'quota-reset' }, [source]);
   assert.match(task.id, /^sched_/);
   assert.equal(task.attachments.length, 1);
-  assert.match(task.attachments[0].relativePath, /^\.astro\/session\/scheduler\//);
+  assert.match(task.attachments[0].relativePath, /^\.clanker\/session\/scheduler\//);
   assert.ok(fs.existsSync(path.join(root, task.attachments[0].relativePath)));
   assert.equal((await queue.getNextPendingForModel('codex')).id, task.id);
   await queue.markDispatched(task.id);
@@ -552,7 +674,7 @@ test('CLI command lines use only flags the real CLIs accept, and stdin payloads 
   assert.ok(claude.args.includes('-p') && claude.args.includes('auto') && !claude.args.includes('--model'));
   assert.ok(!claude.args.includes('accept-non-destructive') && !claude.args.includes('--input-format'));
   const codex = e.commandFor('codex', 'hi');
-  assert.deepEqual(codex.args, ['exec', '--json', '--sandbox', 'workspace-write', '--skip-git-repo-check', '-m', 'gpt-6-sol', '-']);
+  assert.deepEqual(codex.args, ['exec', '--json', '--sandbox', 'danger-full-access', '-c', 'approval_policy="never"', '-c', 'approvals_reviewer="user"', '--skip-git-repo-check', '-m', 'gpt-6-sol', '-']);
   const review = e.commandFor('codex', 'focus on races', [], { codexCommand: 'review' });
   assert.deepEqual(review.args, ['exec', 'review', '--json', '--skip-git-repo-check', '-m', 'gpt-6-sol', '-']);
   assert.equal(review.input, 'focus on races\n');
@@ -697,6 +819,15 @@ test('quota bridge: a window whose reset time has passed counts as fresh, even w
   assert.equal(shapeQuotas({ claude: null }).claude.remaining, 0, 'no reading: the remembered one until its reset');
 });
 
+test('quota bridge: a fresh "0% used" reading with no reset time beats the status bar\'s stale "0% left"', () => {
+  quotaCache('undated');
+  const { shapeQuotas, recordClaudeUsage } = require('../lib/quota-bridge.js');
+  const stale = { claude: { used: 100, remaining: 0, resetsAt: null, windowMinutes: 300 } };
+  assert.equal(shapeQuotas(stale).claude.remaining, 0, 'nothing newer: still 0% left');
+  recordClaudeUsage({ fiveHour: { used: 0, resetsAt: null }, sevenDay: null }); // /usage right after a reset: no "resets ..." yet
+  assert.equal(shapeQuotas(stale).claude.remaining, 100, 'after the probe: the new window, so a waiting task may fire');
+});
+
 test('P17-B: Opus shares Claude\'s 5h window and prefers the Opus-only weekly cap for its 7d gauge', () => {
   quotaCache('opus');
   const { shapeQuotas } = require('../lib/quota-bridge.js');
@@ -720,7 +851,7 @@ test('composer model picker: each catalog entry reaches its CLI as model + effor
   assert.deepEqual(codex.slice(-5), ['-m', 'gpt-6-sol', '-c', 'model_reasoning_effort="high"', '-']);
   const gemini = e.commandFor('gemini', 'hi', [], modelOption('gemini-3.8-flash-high')).args;
   assert.equal(gemini[gemini.indexOf('--model') + 1], 'gemini-3.8-flash-high');
-  assert.ok(!e.commandFor('codex', 'hi').args.includes('-c'), 'no picker choice: the configured default, no effort override');
+  assert.ok(!e.commandFor('codex', 'hi').args.some((arg) => arg.startsWith('model_reasoning_effort=')), 'no picker choice: no effort override');
   assert.equal(new Set(MODEL_CATALOG.map((option) => option.id)).size, MODEL_CATALOG.length, 'ids are unique');
   assert.ok(MODEL_CATALOG.every((option) => ['claude', 'codex', 'gemini'].includes(option.agent) && option.label));
 });
@@ -799,7 +930,7 @@ test('P17-H: a task left "dispatched" by a restart loads as "interrupted", persi
   assert.ok(!Number.isNaN(Date.parse(task.interruptedAt)));
   assert.match(task.interruptedReason, /restart, shutdown, or window reload/);
   assert.equal((await afterRestart.getQueue()).find((item) => item.id === waiting.id).status, 'pending', 'pending tasks are untouched');
-  const onDisk = JSON.parse(fs.readFileSync(path.join(root, '.astro', 'session', 'scheduler-queue.json'), 'utf8'));
+  const onDisk = JSON.parse(fs.readFileSync(path.join(root, '.clanker', 'session', 'scheduler-queue.json'), 'utf8'));
   assert.equal(onDisk.find((item) => item.id === orphan.id).status, 'interrupted', 'reconciled state is written back at once');
 
   assert.equal(await afterRestart.reschedule(waiting.id), false, 'a pending task is not rescheduled');
@@ -916,7 +1047,7 @@ test('quota bridge: Claude\'s own recorded numbers beat a stale status-bar readi
 
 test('Claude subagent lines become subagent events, never part of the main reply', () => {
   const { StreamEngine } = require('../lib/stream-engine.js');
-  const e = new StreamEngine({ cwd: os.tmpdir(), interactive: true });
+  const e = new StreamEngine({ cwd: TEST_CWD, interactive: true });
   const events = [];
   e.on('event', (ev) => events.push(ev));
   const line = (raw) => e.consumeLine(JSON.stringify(raw), 'claude');
@@ -947,7 +1078,7 @@ test('Claude subagent lines become subagent events, never part of the main reply
 
 test('A turn that ends with background agents running keeps its Claude process until they finish', () => {
   const { StreamEngine } = require('../lib/stream-engine.js');
-  const e = new StreamEngine({ cwd: os.tmpdir(), interactive: true });
+  const e = new StreamEngine({ cwd: TEST_CWD, interactive: true });
   const written = [];
   let ended = 0;
   e.child = { stdin: { writable: true, write: (s) => written.push(JSON.parse(s)), end() { ended += 1; } } };
@@ -971,4 +1102,235 @@ test('A turn that ends with background agents running keeps its Claude process u
   line({ type: 'system', subtype: 'task_notification', tool_use_id: 'bg1', status: 'completed' });
   assert.equal(ended, 1, 'no agents left and the turn is over: the process may close');
   assert.equal(e.lingering, null);
+});
+
+test('unified permission selector: effectivePermissionMode, CLI flags, fallback, and resumed chats', () => {
+  const { StreamEngine } = require('../lib/stream-engine.js');
+
+  // 1. effectivePermissionMode logic & defaults
+  const defaultEngine = new StreamEngine();
+  assert.equal(defaultEngine.effectivePermissionMode('claude'), 'auto', 'claude defaults to auto when unset');
+  assert.equal(defaultEngine.effectivePermissionMode('codex'), 'fullAccess', 'codex defaults to fullAccess when unset');
+  assert.equal(defaultEngine.effectivePermissionMode('gemini'), 'fullAccess', 'gemini defaults to fullAccess when unset');
+  assert.equal(defaultEngine.effectivePermissionMode('claude', 'ask'), 'ask', 'explicit override takes precedence');
+
+  const askEngine = new StreamEngine({ permissionMode: 'ask' });
+  assert.equal(askEngine.effectivePermissionMode('claude'), 'ask');
+  assert.equal(askEngine.effectivePermissionMode('codex'), 'ask');
+  assert.equal(askEngine.effectivePermissionMode('gemini'), 'ask');
+
+  const autoEngine = new StreamEngine({ permissionMode: 'auto' });
+  assert.equal(autoEngine.effectivePermissionMode('claude'), 'auto');
+  assert.equal(autoEngine.effectivePermissionMode('codex'), 'auto');
+  assert.equal(autoEngine.effectivePermissionMode('gemini'), 'auto');
+
+  const fullEngine = new StreamEngine({ permissionMode: 'fullAccess' });
+  assert.equal(fullEngine.effectivePermissionMode('claude'), 'fullAccess');
+  assert.equal(fullEngine.effectivePermissionMode('codex'), 'fullAccess');
+  assert.equal(fullEngine.effectivePermissionMode('gemini'), 'fullAccess');
+
+  // 2. Claude command line across modes (interactive and non-interactive)
+  const interactiveAsk = new StreamEngine({ interactive: true, permissionMode: 'ask' });
+  const claudeInteractiveAsk = interactiveAsk.commandFor('claude', 'test prompt');
+  assert.ok(claudeInteractiveAsk.args.includes('--permission-mode'));
+  assert.equal(claudeInteractiveAsk.args[claudeInteractiveAsk.args.indexOf('--permission-mode') + 1], 'manual');
+  assert.ok(claudeInteractiveAsk.args.includes('--permission-prompt-tool'));
+  assert.equal(claudeInteractiveAsk.args[claudeInteractiveAsk.args.indexOf('--permission-prompt-tool') + 1], 'stdio');
+  assert.ok(!claudeInteractiveAsk.args.includes('--dangerously-skip-permissions'));
+  assert.equal(claudeInteractiveAsk.keepStdinOpen, true);
+
+  const interactiveAuto = new StreamEngine({ interactive: true, permissionMode: 'auto' });
+  const claudeInteractiveAuto = interactiveAuto.commandFor('claude', 'test prompt');
+  assert.ok(claudeInteractiveAuto.args.includes('--permission-mode'));
+  assert.equal(claudeInteractiveAuto.args[claudeInteractiveAuto.args.indexOf('--permission-mode') + 1], 'auto');
+  assert.ok(claudeInteractiveAuto.args.includes('--permission-prompt-tool'));
+  assert.equal(claudeInteractiveAuto.args[claudeInteractiveAuto.args.indexOf('--permission-prompt-tool') + 1], 'stdio');
+  assert.ok(!claudeInteractiveAuto.args.includes('--dangerously-skip-permissions'));
+  assert.equal(claudeInteractiveAuto.keepStdinOpen, true);
+
+  const interactiveFull = new StreamEngine({ interactive: true, permissionMode: 'fullAccess' });
+  const claudeInteractiveFull = interactiveFull.commandFor('claude', 'test prompt');
+  assert.ok(claudeInteractiveFull.args.includes('--dangerously-skip-permissions'));
+  assert.ok(!claudeInteractiveFull.args.includes('--permission-mode'));
+  assert.ok(!claudeInteractiveFull.args.includes('--permission-prompt-tool'));
+  assert.equal(claudeInteractiveFull.keepStdinOpen, false);
+
+  // Claude non-interactive
+  const nonInteractiveAsk = new StreamEngine({ interactive: false, permissionMode: 'ask' });
+  const claudeNonInteractiveAsk = nonInteractiveAsk.commandFor('claude', 'test prompt');
+  assert.ok(claudeNonInteractiveAsk.args.includes('--permission-mode'));
+  assert.equal(claudeNonInteractiveAsk.args[claudeNonInteractiveAsk.args.indexOf('--permission-mode') + 1], 'manual');
+  assert.ok(!claudeNonInteractiveAsk.args.includes('--permission-prompt-tool'));
+  assert.ok(!claudeNonInteractiveAsk.args.includes('--dangerously-skip-permissions'));
+
+  const nonInteractiveFull = new StreamEngine({ interactive: false, permissionMode: 'fullAccess' });
+  const claudeNonInteractiveFull = nonInteractiveFull.commandFor('claude', 'test prompt');
+  assert.ok(claudeNonInteractiveFull.args.includes('--dangerously-skip-permissions'));
+
+  // Claude resume across modes
+  const claudeResume = interactiveAsk.commandFor('claude', 'test prompt', [], { resume: 'session-xyz' });
+  assert.ok(claudeResume.args.includes('--resume'));
+  assert.equal(claudeResume.args[claudeResume.args.indexOf('--resume') + 1], 'session-xyz');
+  assert.ok(claudeResume.args.includes('--permission-mode'));
+
+  // 3. Codex command line across modes
+  const codexFull = fullEngine.commandFor('codex', 'test prompt');
+  assert.deepEqual(codexFull.args.slice(1, 4), ['--json', '--sandbox', 'danger-full-access']);
+  assert.ok(!codexFull.args.includes('--approve-for-me'));
+  assert.ok(codexFull.args.includes('approval_policy="never"'));
+
+  const codexAuto = autoEngine.commandFor('codex', 'test prompt');
+  assert.deepEqual(codexAuto.args.slice(1, 5), ['--json', '--sandbox', 'workspace-write', '--approve-for-me']);
+  assert.ok(codexAuto.args.includes('approvals_reviewer="auto_review"'));
+
+  const codexAsk = askEngine.commandFor('codex', 'test prompt');
+  assert.deepEqual(codexAsk.args.slice(1, 4), ['--json', '--sandbox', 'workspace-write']);
+  assert.ok(!codexAsk.args.includes('--approve-for-me'));
+  assert.ok(codexAsk.args.includes('approval_policy="on-request"'));
+  assert.ok(codexAsk.args.includes('approvals_reviewer="user"'));
+
+  // Codex resume
+  const codexResume = askEngine.commandFor('codex', 'test prompt', [], { resume: 'thread-xyz' });
+  assert.equal(codexResume.args[0], 'exec');
+  assert.equal(codexResume.args[1], 'resume');
+  assert.equal(codexResume.args[2], 'thread-xyz');
+  assert.ok(codexResume.args.includes('sandbox_mode="workspace-write"'));
+  assert.ok(codexResume.args.includes('approval_policy="on-request"'));
+  assert.ok(codexResume.args.includes('approvals_reviewer="user"'));
+  const codexAutoResume = autoEngine.commandFor('codex', 'test prompt', [], { resume: 'thread-xyz' });
+  assert.ok(codexAutoResume.args.includes('approvals_reviewer="auto_review"'));
+  const codexFullResume = fullEngine.commandFor('codex', 'test prompt', [], { resume: 'thread-xyz' });
+  assert.ok(codexFullResume.args.includes('sandbox_mode="danger-full-access"'));
+  assert.ok(codexFullResume.args.includes('approval_policy="never"'));
+
+  // 4. Gemini (Antigravity) command line across modes
+  const geminiFull = fullEngine.commandFor('gemini', 'test prompt');
+  assert.ok(geminiFull.args.includes('--dangerously-skip-permissions'), 'fullAccess grants --dangerously-skip-permissions to Gemini');
+
+  const geminiAsk = askEngine.commandFor('gemini', 'test prompt');
+  assert.ok(!geminiAsk.args.includes('--dangerously-skip-permissions'), 'ask mode does not include --dangerously-skip-permissions for Gemini');
+
+  const geminiAuto = autoEngine.commandFor('gemini', 'test prompt');
+  assert.ok(!geminiAuto.args.includes('--dangerously-skip-permissions'), 'auto mode leaves Gemini restricted; headless denied actions are skipped');
+
+  // Gemini resume across modes
+  const geminiResume = autoEngine.commandFor('gemini', 'test prompt', [], { resume: 'conv-123' });
+  assert.ok(geminiResume.args.includes('--conversation'));
+  assert.equal(geminiResume.args[geminiResume.args.indexOf('--conversation') + 1], 'conv-123');
+  assert.ok(!geminiResume.args.includes('--dangerously-skip-permissions'));
+});
+
+test('Codex App Server thread/start, thread/resume, and turn/start follow permissionMode', async () => {
+  const { StreamEngine } = require('../lib/stream-engine.js');
+
+  class MockCodexServer extends EventEmitter {
+    constructor() { super(); this.calls = []; }
+    async connect() {}
+    async request(method, params) {
+      this.calls.push({ method, params });
+      if (method === 'thread/start') return { thread: { id: 'thread-perm-1' } };
+      if (method === 'thread/resume') return { thread: { id: params.threadId } };
+      if (method === 'turn/start') return { turn: { id: 'turn-perm-1' } };
+      return {};
+    }
+    respond() {}
+    dispose() {}
+  }
+
+  // Test Auto mode on Codex App Server
+  const autoServer = new MockCodexServer();
+  const autoEngine = new StreamEngine({ cwd: TEST_CWD, interactive: true, permissionMode: 'auto', codexServerFactory: () => autoServer });
+  autoEngine.start({ agent: 'codex', prompt: 'check code' });
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.equal(autoServer.calls[0].method, 'thread/start');
+  assert.equal(autoServer.calls[0].params.sandbox, 'workspace-write');
+  assert.equal(autoServer.calls[0].params.approvalPolicy, 'on-request');
+  assert.equal(autoServer.calls[0].params.approvalsReviewer, 'auto_review');
+
+  assert.equal(autoServer.calls[1].method, 'turn/start');
+  assert.equal(autoServer.calls[1].params.sandboxPolicy.type, 'workspaceWrite');
+  assert.deepEqual(autoServer.calls[1].params.sandboxPolicy, {
+    type: 'workspaceWrite', writableRoots: [TEST_CWD], networkAccess: false,
+    excludeTmpdirEnvVar: false, excludeSlashTmp: false,
+  });
+  assert.equal(autoServer.calls[1].params.approvalPolicy, 'on-request');
+  assert.equal(autoServer.calls[1].params.approvalsReviewer, 'auto_review');
+
+  // Test Ask mode on Codex App Server (with resume)
+  const askServer = new MockCodexServer();
+  const askEngine = new StreamEngine({ cwd: TEST_CWD, interactive: true, permissionMode: 'ask', codexServerFactory: () => askServer });
+  askEngine.start({ agent: 'codex', prompt: 'edit file', resume: 'existing-thread-99' });
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.equal(askServer.calls[0].method, 'thread/resume');
+  assert.equal(askServer.calls[0].params.threadId, 'existing-thread-99');
+  assert.equal(askServer.calls[0].params.sandbox, 'workspace-write');
+  assert.equal(askServer.calls[0].params.approvalPolicy, 'on-request');
+  assert.equal(askServer.calls[0].params.approvalsReviewer, 'user');
+
+  assert.equal(askServer.calls[1].method, 'turn/start');
+  assert.equal(askServer.calls[1].params.sandboxPolicy.type, 'workspaceWrite');
+  assert.equal(askServer.calls[1].params.approvalPolicy, 'on-request');
+  assert.equal(askServer.calls[1].params.approvalsReviewer, 'user');
+
+  const fullServer = new MockCodexServer();
+  const fullEngine = new StreamEngine({ cwd: TEST_CWD, interactive: true, permissionMode: 'fullAccess', codexServerFactory: () => fullServer });
+  fullEngine.start({ agent: 'codex', prompt: 'inspect code' });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(fullServer.calls[0].params.sandbox, 'danger-full-access');
+  assert.equal(fullServer.calls[0].params.approvalPolicy, 'never');
+  assert.deepEqual(fullServer.calls[1].params.sandboxPolicy, { type: 'dangerFullAccess' });
+  assert.equal(fullServer.calls[1].params.approvalPolicy, 'never');
+});
+
+test('storage sweep removes only old, unreferenced attachments and finished tasks\' staging', () => {
+  const { sweepStorage, GRACE_MS } = require('../lib/storage-gc.js');
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'ai-chat-panel-gc-'));
+  const now = Date.now();
+  const old = new Date(now - GRACE_MS - 1000);
+  const put = (rel, text, when) => { const file = path.join(root, rel); fs.mkdirSync(path.dirname(file), { recursive: true }); fs.writeFileSync(file, text); fs.utimesSync(file, when, when); };
+  put('attachments/1_inchat.png', 'x', old);
+  put('attachments/2_inqueue.png', 'x', old);
+  put('attachments/3_orphan.png', 'x', old);
+  put('attachments/4_young.png', 'x', new Date(now));
+  put('chats/1_a.json', JSON.stringify({ messages: [{ attachments: [path.join('C:', 's', 'attachments', '1_inchat.png')] }] }), old);
+  const day = 864e5;
+  const tasks = [
+    { id: 'sched_done', status: 'done', completedAt: new Date(now - GRACE_MS - day).toISOString(), attachments: ['2_inqueue.png'] },
+    { id: 'sched_fresh_done', status: 'done', completedAt: new Date(now - day).toISOString() },
+    { id: 'sched_pending', status: 'pending' },
+    { id: 'sched_failed', status: 'failed', completedAt: new Date(now - GRACE_MS - day).toISOString() },
+  ];
+  put('scheduler-queue.json', JSON.stringify(tasks), old);
+  for (const id of ['sched_done', 'sched_fresh_done', 'sched_pending', 'sched_failed']) put(`scheduler/${id}/attachments/f.txt`, 'x', old);
+  put('scheduler/sched_gone/attachments/f.txt', 'x', old);
+  fs.utimesSync(path.join(root, 'scheduler/sched_gone'), old, old);
+  fs.utimesSync(path.join(root, 'scheduler/sched_fresh_done'), old, old);
+
+  const removed = sweepStorage(root, { now });
+  const left = (dir) => fs.readdirSync(path.join(root, dir)).sort();
+  assert.deepEqual(left('attachments'), ['1_inchat.png', '2_inqueue.png', '4_young.png'], 'only the old orphan goes: used by a chat, named in the queue, or too young stay');
+  assert.deepEqual(left('scheduler'), ['sched_failed', 'sched_fresh_done', 'sched_pending'], 'finished-long-ago and vanished tasks lose their staging; pending, failed and recent ones keep it');
+  assert.equal(removed.attachments, 1);
+  assert.equal(removed.staging, 2);
+  assert.doesNotThrow(() => sweepStorage(path.join(root, 'does-not-exist')));
+  fs.rmSync(root, { recursive: true, force: true });
+});
+
+test('a quota-reset task waits for the reset moment it was scheduled against, even while quota is left', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'ai-chat-panel-notbefore-'));
+  const queue = new SchedulerQueue({ workspaceDir: root, sessionDir: root });
+  const { isDue } = require('../lib/scheduler-queue.js');
+  const later = new Date(Date.now() + 3 * 3600e3).toISOString();
+  const waiting = await queue.enqueue({ model: 'claude', prompt: 'later', dispatchTrigger: 'quota-reset', notBefore: later });
+  const plain = await queue.enqueue({ model: 'codex', prompt: 'no reset known', dispatchTrigger: 'quota-reset' });
+  const fixed = await queue.enqueue({ model: 'gemini', prompt: 'not before either', dispatchTrigger: 'fixed-time', dispatchTime: new Date(Date.now() - 1000).toISOString(), notBefore: later });
+  assert.equal(waiting.notBefore, later);
+  assert.equal(plain.notBefore, undefined, 'no reset known: quota alone decides, as before');
+  assert.equal(fixed.notBefore, undefined, 'a fixed-time task has its own time');
+  assert.equal(await queue.getNextPendingForModel('claude'), null, 'three hours to go: not due');
+  assert.ok(await queue.getNextPendingForModel('codex'));
+  assert.equal(isDue(waiting, Date.parse(later) + 1), true, 'due once the reset has passed');
+  fs.rmSync(root, { recursive: true, force: true });
 });

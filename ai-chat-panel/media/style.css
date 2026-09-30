@@ -1,5 +1,5 @@
 :root {
-  /* Liquid-glass tokens, synced with site/packages/astro-content-editor/client/overlay.css */
+  /* Liquid-glass tokens (the same palette the Astro Visual Editor's own UI uses, kept in step by hand) */
   --eo-surface: rgba(20, 21, 26, 0.88);
   --eo-surface-solid: #1c1e24;
   --eo-surface-raised: rgba(40, 42, 50, 0.92);
@@ -695,7 +695,7 @@ body {
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 14px 14px 12px 18px;
+  padding: 14px 14px 14px 18px; /* the same above and below, so the close button sits mid-bar */
   border-bottom: 1px solid var(--eo-border);
 }
 
@@ -732,7 +732,10 @@ body {
 }
 
 .fs-modal-close:hover { color: var(--text-primary); transform: rotate(90deg); }
-.fs-modal-close svg { width: 13px; height: 13px; }
+/* 14px in the 28px inside of the ring: a whole-pixel offset on every side, so the cross draws sharp and centred
+   (13px sat on a half pixel and blurred to one side). */
+.fs-modal-close { padding: 0; }
+.fs-modal-close svg { display: block; width: 14px; height: 14px; }
 
 .fs-modal-body {
   flex: 1;
@@ -910,12 +913,57 @@ body {
   outline: none;
 }
 
+.history-title {
+  font: 600 13px/1.3 var(--font-text);
+  color: var(--text-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  flex: 1;
+  min-width: 0;
+  letter-spacing: -0.01em;
+}
+
+.history-card .queue-card-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: nowrap;
+}
+
+.history-card .queue-time,
+.history-card .history-count {
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+
+.history-card .title-edit {
+  flex: 1;
+  min-width: 80px;
+  max-width: 320px;
+  padding: 2px 6px;
+  font: 600 12.5px var(--font-text);
+}
+
+.history-preview-sender {
+  font-weight: 600;
+  color: var(--text-primary);
+  opacity: 0.9;
+  margin-right: 4px;
+}
+
+.history-preview-text {
+  color: var(--text-secondary);
+}
+
 .history-preview {
   display: -webkit-box;
-  -webkit-line-clamp: 4;
+  -webkit-line-clamp: 2;
   -webkit-box-orient: vertical;
   overflow: hidden;
   cursor: default;
+  font: 12.5px/1.45 var(--font-text);
+  color: var(--text-secondary);
 }
 
 /* Manage Chats: the whole card opens the chat; it lifts under the pointer. */
@@ -993,6 +1041,57 @@ body {
   .history-status::before { animation: none; }
 }
 
+/* Manage Chats looks like the rail's Recent list, only larger: each chat is a bubble (the message bubbles' shape, drawn by
+   bubble-shape.js behind the card, with the tail in the bottom padding), its rim white for the chat in this window, blue
+   for one that ran lately, orange for one waiting on you, and a running chat wears the orb at its top right. */
+.history-section .queue-list { gap: 16px; }
+.history-card {
+  --card-fill: rgb(26, 28, 34);
+  --card-rim: rgba(255, 255, 255, 0.14);
+  position: relative;
+  padding: 14px 18px 24px; /* 10px more under: the tail hangs there */
+  border: 0;
+  border-radius: 0;
+  background-color: transparent;
+  background-repeat: no-repeat;
+  background-size: 100% 100%;
+  box-shadow: none;
+  filter: drop-shadow(0 6px 14px rgba(0, 0, 0, 0.28));
+}
+.history-card:not(.has-shape) { border-radius: 20px; background-color: rgb(26, 28, 34); } /* until the shape is drawn */
+.history-card.is-recent { --card-rim: rgba(100, 210, 255, 0.48); }
+.history-card.is-current { --card-rim: rgba(255, 255, 255, 0.85); }
+/* Waiting for you outranks the rest: a bright yellow rim that breathes, so the eye finds it. The rim is part of the
+   drawn shape, so the pulse is a glow around it. */
+.history-card.is-waiting {
+  --card-rim: #ffd60a;
+  animation: chat-waiting 2.2s ease-in-out infinite;
+}
+@keyframes chat-waiting {
+  0%, 100% { filter: drop-shadow(0 6px 14px rgba(0, 0, 0, 0.28)) drop-shadow(0 0 0 rgba(255, 214, 10, 0)); }
+  50% { filter: drop-shadow(0 6px 14px rgba(0, 0, 0, 0.28)) drop-shadow(0 0 9px rgba(255, 214, 10, 0.55)); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .history-card.is-waiting { animation: none; filter: drop-shadow(0 6px 14px rgba(0, 0, 0, 0.28)) drop-shadow(0 0 7px rgba(255, 214, 10, 0.4)); }
+}
+.history-card[role="button"]:hover { border-color: transparent; box-shadow: none; filter: drop-shadow(0 10px 20px rgba(0, 0, 0, 0.38)) brightness(1.08); }
+.history-card.is-running, .history-card.is-waiting, .history-card.is-current { box-shadow: none; border-color: transparent; }
+.history-card.is-running .history-status::before, .history-card.is-waiting .history-status::before { content: none; }
+.history-card .queue-card-head { gap: 10px; }
+.history-card .agent-mark { display: inline-grid; place-items: center; }
+.history-card .agent-logo { width: 22px; height: 22px; }
+.history-card[data-agent='claude'] { --agent: var(--claude-color); }
+.history-card[data-agent='codex'] { --agent: var(--codex-color); }
+.history-card[data-agent='gemini'] { --agent: var(--gemini-color); }
+.history-card .history-spinner {
+  position: absolute;
+  top: -5px;
+  right: -5px;
+  width: 16px;
+  height: 16px;
+  pointer-events: none;
+}
+
 @media (prefers-reduced-motion: reduce) {
   .fs-modal, .fs-modal-sheet { animation: none; }
 }
@@ -1033,7 +1132,27 @@ body {
 
 /* ---------- Transcript ---------- */
 
+/* The chat dissolves into the top edge along an S curve (smoothstep, sampled every tenth) over --fade.
+   --fade is 0 at the top of the scroll so the fade disappears completely when scrolled all the way up,
+   and grows to 100px as content is scrolled down. */
+@property --fade { syntax: '<length>'; inherits: false; initial-value: 0px; }
+
 .transcript {
+  --fade: 0px;
+  --mask-fade: linear-gradient(to bottom,
+    rgba(0, 0, 0, 0) 0,
+    rgba(0, 0, 0, 0.028) calc(var(--fade) * 0.1),
+    rgba(0, 0, 0, 0.104) calc(var(--fade) * 0.2),
+    rgba(0, 0, 0, 0.216) calc(var(--fade) * 0.3),
+    rgba(0, 0, 0, 0.352) calc(var(--fade) * 0.4),
+    rgba(0, 0, 0, 0.5) calc(var(--fade) * 0.5),
+    rgba(0, 0, 0, 0.648) calc(var(--fade) * 0.6),
+    rgba(0, 0, 0, 0.784) calc(var(--fade) * 0.7),
+    rgba(0, 0, 0, 0.896) calc(var(--fade) * 0.8),
+    rgba(0, 0, 0, 0.972) calc(var(--fade) * 0.9),
+    #000 var(--fade));
+  -webkit-mask-image: none;
+  mask-image: none;
   flex: 1;
   min-height: 0;
   overflow-y: auto;
@@ -1046,6 +1165,16 @@ body {
   padding: 6px 4px 16px; /* P17-N: the last line never sits flush against the composer */
 }
 
+.transcript.has-fade {
+  -webkit-mask-image: var(--mask-fade);
+  mask-image: var(--mask-fade);
+}
+
+.transcript > .turn:first-child,
+.transcript > :first-child:not(.empty-state) {
+  margin-top: 100px;
+}
+
 /* P17-E: an overflow:hidden flex item's automatic min-height is 0 (CSS Flexbox
    §4.5), so tool cards used to shrink to 2px slits instead of the transcript
    scrolling. Every child keeps its intrinsic height. */
@@ -1054,6 +1183,22 @@ body {
   min-height: min-content;
 }
 
+
+/* Chat switch: the same shimmer as the launcher's usage rings (motion.dev skeleton-shimmer): a 200%-wide 6%/12%
+   white gradient sliding across, 1.5s ease-in-out. Shapes echo a user bubble and a reply. */
+.skeleton {
+  display: block;
+  height: 12px;
+  border-radius: 6px;
+  background: linear-gradient(90deg, rgba(255, 255, 255, 0.06) 25%, rgba(255, 255, 255, 0.12) 50%, rgba(255, 255, 255, 0.06) 75%) 0 0 / 200% 100%;
+  animation: skeleton-shimmer 1.5s ease-in-out infinite;
+}
+@keyframes skeleton-shimmer { from { background-position: -200% 0; } to { background-position: 200% 0; } }
+.chat-skeleton { display: flex; flex-direction: column; gap: 14px; padding: 4px 2px; }
+.skel-user { display: flex; justify-content: flex-end; }
+.skel-user .skeleton { height: 36px; border-radius: var(--bubble-radius, 18px) var(--bubble-radius, 18px) 6px var(--bubble-radius, 18px); }
+.skel-reply { display: flex; flex-direction: column; gap: 9px; padding: 0 2px 8px; }
+@media (prefers-reduced-motion: reduce) { .skeleton { animation: none; } }
 
 .empty-state {
   margin: auto;
@@ -1133,7 +1278,7 @@ body {
    fuses them into one liquid body. Text never passes through the blur. */
 .msg-group-user {
   --user-bubble: rgb(26, 28, 34);
-  --bubble-radius: 18px;
+  --bubble-radius: 20px;
   --bubble-pad-y: 9px;
   --bubble-pad-x: 14px;
   align-self: flex-end;
@@ -1143,21 +1288,28 @@ body {
   gap: 2px;
   max-width: 86%;
   transform-origin: 100% 100%;
-  filter: url(#msg-goo) drop-shadow(0 6px 14px rgba(0, 0, 0, 0.28));
+  /* No goo any more: the bubble and its dock are drawn as one contour, in the image behind the group (bubble-shape.js). */
+  position: relative;
+  background-repeat: no-repeat;
+  background-size: 100% 100%;
+  filter: drop-shadow(0 6px 14px rgba(0, 0, 0, 0.28));
   animation: msg-liquid-in 0.3s cubic-bezier(0.16, 1, 0.3, 1);
 }
 
+/* The same shape as the rail's chat tiles: superellipse corners and a tail under the right one. Fill and rim are drawn
+   by bubble-shape.js as the image behind the whole group, so the bubble itself has no background; the tail's 10px are
+   bottom padding. Until that script has drawn it (or without it) the bubble is a plain rounded box. */
 .msg-user {
   position: relative;
-  z-index: 1; /* the retracted dock hides behind it */
+  z-index: 1;
   max-width: 100%;
-  padding: var(--bubble-pad-y) var(--bubble-pad-x);
-  border-radius: var(--bubble-radius) var(--bubble-radius) 6px var(--bubble-radius);
-  background: linear-gradient(180deg, rgba(255, 255, 255, 0.045), rgba(255, 255, 255, 0) 40%), var(--user-bubble);
-  border: 1px solid rgba(255, 255, 255, 0.07);
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.06);
+  padding: var(--bubble-pad-y) var(--bubble-pad-x) calc(var(--bubble-pad-y) + 10px);
   color: var(--text-primary);
   animation: none;
+}
+.msg-group-user:not(.has-shape) .msg-user {
+  border-radius: var(--bubble-radius);
+  background: var(--user-bubble);
 }
 
 /* P17-K: sent attachments sit flush with the text; the first chip's corner is
@@ -1183,7 +1335,7 @@ body {
 .msg-clamp-toggle {
   position: absolute;
   left: 14px;
-  bottom: 8px;
+  bottom: 18px; /* above the tail's 10px */
   padding: 2px 10px;
   border: 1px solid rgba(255, 255, 255, 0.1);
   border-radius: 999px;
@@ -1200,7 +1352,7 @@ body {
 .msg-clamp-toggle:focus-visible { opacity: 1; transform: none; pointer-events: auto; }
 .msg-clamp-toggle:hover { background: rgba(55, 58, 68, 0.95); color: var(--text-primary); }
 .msg-clamp-toggle:active { transform: scale(0.96); }
-.msg-user.is-clamped.is-expanded { padding-bottom: 36px; } /* room for "Show less" under the full text */
+.msg-user.is-clamped.is-expanded { padding-bottom: 46px; } /* room for "Show less" under the full text */
 
 /* A prompt the scheduler sent: the same bubble, with a quiet clock tag above it. */
 .msg-scheduled-tag {
@@ -1490,14 +1642,15 @@ body {
   opacity: 1;
 }
 
-/* P17-Y: the dock drips out from under the bubble. Both are the same opaque
-   glass inside the group's goo filter, so while it slides down the two stretch
-   apart through a liquid neck, and at rest they stay fused by a soft meniscus. */
+/* The dock is part of the bubble: while the pointer is on the message, bubble-shape.js adds the dock's pill to the
+   bubble's outline, so they share one rim. The dock itself has no background; its row sits in that pill, tucked up
+   into the tail's 10px, and its contents ease in. */
 .msg-group-user .msg-actions {
-  padding: 0 4px 0 10px;
-  margin-right: 10px;
-  border-radius: var(--pill);
-  background: var(--user-bubble);
+  position: relative;
+  z-index: 2; /* above the bubble's tail zone that it overlaps, so the buttons stay clickable */
+  min-height: 28px;
+  padding: 0 8px 0 12px;
+  margin: -10px 0 0;
   color: var(--text-secondary);
   opacity: 0;
   transform: translateY(-22px) scale(0.7);
@@ -1859,15 +2012,22 @@ body {
 
 /* ---------- Approval cards ---------- */
 
+/* Permission requests share the question card's liquid glass and lime light (see "A question" below). */
 .approval-card {
-  border: 1px solid rgba(255, 159, 10, 0.4);
-  border-radius: var(--radius-md);
-  background: linear-gradient(180deg, rgba(255, 159, 10, 0.1), rgba(255, 159, 10, 0) 45%), var(--eo-surface);
-  padding: 10px 12px;
+  --q-accent: #a3e635;
+  --q-on-accent: #101800;
+  --q-spring: cubic-bezier(0.34, 1.36, 0.64, 1);
+  border: 1px solid var(--eo-border);
+  border-radius: 22px;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.09), rgba(255, 255, 255, 0) 28%), var(--eo-surface);
+  -webkit-backdrop-filter: blur(24px) saturate(180%);
+  backdrop-filter: blur(24px) saturate(180%);
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.35), 0 0 34px -8px rgba(163, 230, 53, 0.4), inset 0 1px 0 rgba(217, 249, 157, 0.55);
+  padding: 14px;
   font-size: 12.5px;
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: 12px;
   animation: msg-in 0.28s var(--eo-ease);
 }
 
@@ -1884,36 +2044,38 @@ body {
 }
 
 .approval-btn {
-  flex: 1;
-  padding: 6px 10px;
-  border-radius: var(--radius-sm);
+  flex: 0 1 auto;
+  min-width: 0;
+  height: 34px;
+  padding: 0 20px;
+  border-radius: var(--pill);
   border: 1px solid var(--eo-border);
-  font: 700 11px var(--font-text);
+  font: 700 12.5px var(--font-text);
   cursor: pointer;
-  transition: transform 0.15s var(--eo-ease), background 0.15s var(--eo-ease);
+  transition: transform 0.3s var(--q-spring, var(--eo-ease)), background 0.15s var(--eo-ease), color 0.15s var(--eo-ease);
 }
 
+/* Allow / Send: a lit lime pill. */
 .approval-approve {
-  background: rgba(52, 211, 153, 0.15);
-  color: #4ade80;
-  border-color: rgba(52, 211, 153, 0.4);
+  background: #a3e635;
+  color: #101800;
+  border-color: rgba(217, 249, 157, 0.7);
+  box-shadow: 0 6px 20px -6px rgba(163, 230, 53, 0.65), inset 0 1px 0 rgba(255, 255, 255, 0.5);
 }
 
-.approval-approve:hover {
-  background: rgba(52, 211, 153, 0.25);
-  transform: scale(1.02);
-}
+.approval-approve:hover:not(:disabled) { transform: scale(1.04); }
 
+/* Deny / Skip: plain text, no pill. */
 .approval-reject {
-  background: rgba(248, 113, 113, 0.12);
-  color: #f87171;
-  border-color: rgba(248, 113, 113, 0.35);
+  padding: 0 12px;
+  border-color: transparent;
+  background: transparent;
+  color: #ececf1;
+  font-weight: 600;
 }
 
-.approval-reject:hover {
-  background: rgba(248, 113, 113, 0.22);
-  transform: scale(1.02);
-}
+.approval-reject:hover:not(:disabled) { background: rgba(255, 255, 255, 0.08); }
+.approval-btn:active:not(:disabled) { transform: scale(0.97); }
 
 .approval-card.resolved .approval-actions {
   display: none;
@@ -2332,15 +2494,20 @@ body {
   white-space: nowrap;
 }
 
-.turn-queue-thumbs { display: inline-flex; padding-left: 5px; }
+/* The preview nests in the pill: 16px inside the 22px pill with 3px around it, so its ends are concentric with the
+   pill's. One photo is a circle; two or three are one capsule of photos side by side, its ends rounded by the clip. */
+.turn-queue-thumbs {
+  display: inline-flex;
+  gap: 1px;
+  overflow: hidden;
+  border-radius: var(--pill);
+  background: rgb(26, 28, 34); /* shows only as the hairline between photos */
+}
 
 .turn-queue-thumbs img {
   width: 16px;
   height: 16px;
-  margin-left: -5px;
-  border-radius: 5px;
   object-fit: cover;
-  box-shadow: 0 0 0 1.5px rgb(26, 28, 34);
 }
 
 .turn-queue-files-icon { display: inline-grid; }
@@ -2648,6 +2815,13 @@ body.attachment-dragging .drop-overlay-card { transform: scale(1); }
   box-shadow: 0 0 0 1px rgba(100, 210, 255, 0.18), 0 8px 32px rgba(0, 0, 0, 0.35);
 }
 
+/* The schedule button's own clock, in the composer's cyan, ahead of the placeholder (a placeholder is text and cannot
+   hold an icon). The room for it stays while typing so the text does not jump; the icon shows only on an empty box. */
+.composer.is-scheduled > #promptInput { padding-left: 22px; }
+.composer.is-scheduled > #promptInput:placeholder-shown {
+  background: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='%2364d2ff' stroke-width='1.3' stroke-linecap='round' stroke-linejoin='round'%3E%3Ccircle cx='8' cy='8.5' r='5.5'/%3E%3Cpath d='M8 5.5v3l2 1.2'/%3E%3C/svg%3E") no-repeat 2px center / 15px 15px;
+}
+
 @media (prefers-reduced-motion: reduce) {
   .schedule-toggle.is-scheduled { animation: none; }
 }
@@ -2698,11 +2872,11 @@ body.attachment-dragging .drop-overlay-card { transform: scale(1); }
 @keyframes tool-spin { to { transform: rotate(360deg); } }
 
 .approval-card, .question-card { outline: none; }
-.approval-card:focus-visible, .question-card:focus-within { box-shadow: 0 0 0 2px rgba(10, 132, 255, 0.35); }
-.approval-head { display: flex; align-items: center; gap: 8px; font: 600 12.5px var(--font-text); color: var(--text-primary); }
-.approval-head svg { width: 16px; height: 16px; flex-shrink: 0; color: var(--warning); }
-.approval-title { display: flex; align-items: center; flex-wrap: wrap; gap: 5px; }
-.approval-tool { padding: 1px 8px; border-radius: var(--pill); font: 600 11px var(--font-mono); background: rgba(255, 159, 10, 0.14); color: #ffb340; }
+.approval-head { display: flex; align-items: center; gap: 9px; font: 600 12.5px var(--font-text); color: var(--text-primary); }
+/* The icon sits in a lime glass orb, like the question card's. */
+.approval-head svg { box-sizing: content-box; width: 14px; height: 14px; padding: 4px; flex-shrink: 0; border-radius: 50%; background: rgba(163, 230, 53, 0.18); color: #d9f99d; box-shadow: inset 0 0 0 1px rgba(163, 230, 53, 0.6), inset 0 1px 0 rgba(255, 255, 255, 0.25); }
+.approval-title { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; }
+.approval-tool { padding: 1px 9px; border-radius: var(--pill); font: 600 11px var(--font-mono); background: rgba(163, 230, 53, 0.18); color: #d9f99d; box-shadow: inset 0 0 0 1px rgba(163, 230, 53, 0.5); }
 .approval-text { color: var(--text-secondary); font: 12.5px/1.45 var(--font-text); }
 .approval-preview {
   margin: 0;
@@ -2717,63 +2891,157 @@ body.attachment-dragging .drop-overlay-card { transform: scale(1); }
   white-space: pre-wrap;
   word-break: break-all;
 }
-.approval-btn { flex: 0 1 auto; min-width: 72px; height: 30px; padding: 0 14px; border-radius: var(--pill); }
 .approval-btn:disabled { opacity: 0.45; cursor: default; transform: none; }
-.approval-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
-.approval-always { background: rgba(10, 132, 255, 0.14); color: #64b5ff; border-color: rgba(10, 132, 255, 0.4); }
-.approval-always:hover { background: rgba(10, 132, 255, 0.24); transform: scale(1.02); }
+.approval-btn:focus-visible { outline: 2px solid #a3e635; outline-offset: 2px; }
+.approval-always { background: rgba(255, 255, 255, 0.06); color: #ececf1; border-color: rgba(255, 255, 255, 0.2); box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.08); }
+.approval-always:hover { background: rgba(255, 255, 255, 0.12); transform: scale(1.04); }
 .approval-actions .approval-reject { margin-left: auto; }
-.approval-card.resolved, .question-card.resolved { opacity: 0.78; }
+/* Answered: back to the flat charcoal of the tool steps. */
+.approval-card.resolved { background: rgb(26, 28, 34); border-color: rgba(255, 255, 255, 0.07); border-radius: 12px; box-shadow: none; -webkit-backdrop-filter: none; backdrop-filter: none; }
 .approval-card.resolved .approval-preview { max-height: 60px; }
 .is-allowed .approval-status { color: #4ade80; }
 .is-denied .approval-status { color: var(--text-tertiary); }
 
+/* A question: liquid glass with a lime light in it while it waits, then a quiet row like a tool step.
+   Lime is the one hue that is none of the providers' colours (Claude orange, Codex purple, Gemini blue). */
 .question-card {
-  border: 1px solid rgba(10, 132, 255, 0.4);
-  border-radius: var(--radius-md);
-  background: linear-gradient(180deg, rgba(10, 132, 255, 0.1), rgba(10, 132, 255, 0) 45%), var(--eo-surface);
-  padding: 10px 12px;
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
+  --q-accent: #a3e635;
+  --q-on-accent: #101800;
+  --q-spring: cubic-bezier(0.34, 1.36, 0.64, 1);
+  overflow: hidden;
+  border: 1px solid var(--eo-border);
+  border-radius: 22px;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.09), rgba(255, 255, 255, 0) 28%), var(--eo-surface);
+  -webkit-backdrop-filter: blur(24px) saturate(180%);
+  backdrop-filter: blur(24px) saturate(180%);
+  /* Lime is a light in the glass: a bright rim along the top edge and a soft glow around it. */
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.35), 0 0 34px -8px rgba(163, 230, 53, 0.4), inset 0 1px 0 rgba(217, 249, 157, 0.55);
   animation: msg-in 0.28s var(--eo-ease);
 }
-.question-card .approval-head svg { color: var(--accent); }
-.question-block { display: flex; flex-direction: column; gap: 7px; }
-.question-chip { align-self: flex-start; padding: 1px 8px; border-radius: var(--pill); font: 600 10.5px var(--font-text); letter-spacing: 0.02em; background: rgba(10, 132, 255, 0.16); color: #64b5ff; }
-.question-text { font: 500 13px/1.45 var(--font-text); color: var(--text-primary); }
-.question-options { display: flex; flex-direction: column; gap: 6px; }
-.question-option {
+.question-card.resolved {
+  border-color: rgba(255, 255, 255, 0.07);
+  border-radius: 12px; /* the tool steps' shape */
+  background: rgb(26, 28, 34);
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+  box-shadow: none;
+}
+.question-summary {
+  list-style: none;
   display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: 2px;
-  padding: 8px 11px;
-  border-radius: var(--radius-sm);
-  border: 1px solid var(--eo-border);
-  background: rgba(255, 255, 255, 0.03);
+  align-items: center;
+  gap: 9px;
+  padding: 10px 12px 8px 10px;
+  font: 600 12.5px var(--font-text);
+  color: var(--text-primary);
+  transition: background 0.15s var(--eo-ease);
+}
+.question-summary::-webkit-details-marker { display: none; }
+.question-card.resolved .question-summary { padding: 7px 12px 7px 10px; font-size: 12px; cursor: pointer; }
+.question-card.resolved .question-summary:hover { background: rgba(255, 255, 255, 0.04); }
+.question-card.resolved[open] .question-summary { border-bottom: 1px solid var(--eo-border); }
+.question-icon { display: grid; place-items: center; width: 22px; height: 22px; flex-shrink: 0; border-radius: 50%; background: rgba(163, 230, 53, 0.18); color: #d9f99d; box-shadow: inset 0 0 0 1px rgba(163, 230, 53, 0.6), inset 0 1px 0 rgba(255, 255, 255, 0.25); }
+.question-icon svg { width: 13px; height: 13px; }
+.question-icon .icon-done { display: none; }
+.question-card.resolved.is-allowed .icon-ask { display: none; }
+.question-card.resolved.is-allowed .icon-done { display: block; }
+.question-card.resolved.is-denied .question-icon { background: rgba(255, 255, 255, 0.1); color: var(--text-secondary); }
+.question-title { flex: 1; min-width: 0; }
+.question-card.resolved .question-title { flex: 0 0 auto; color: var(--text-secondary); font-weight: 600; }
+.question-answer { display: none; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 500; }
+.question-card.resolved .question-answer { display: block; }
+.question-card.resolved.is-allowed .question-answer { color: #bef264; }
+.question-card.resolved.is-denied .question-answer { color: var(--text-tertiary); }
+.question-chevron { display: none; width: 12px; height: 12px; flex-shrink: 0; color: var(--text-tertiary); transition: transform 0.2s var(--eo-ease); }
+.question-card.resolved .question-chevron { display: block; }
+.question-card[open] .question-chevron { transform: rotate(90deg); }
+.question-body { display: flex; flex-direction: column; gap: 14px; padding: 4px 14px 14px; }
+.question-card.resolved .question-body { padding-top: 10px; }
+.question-block { display: flex; flex-direction: column; gap: 6px; }
+.question-chip {
+  align-self: flex-start;
+  font: 700 10px var(--font-text);
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  color: var(--q-accent);
+}
+.question-text { font: 600 14px/1.4 var(--font-text); color: var(--text-primary); }
+.question-options { display: flex; flex-direction: column; gap: 4px; }
+.question-option {
+  display: grid;
+  grid-template-columns: 16px 1fr;
+  column-gap: 11px;
+  align-items: start;
+  padding: 9px 12px;
+  border: 0;
+  border-radius: 16px;
+  background: transparent;
   color: var(--text-primary);
   text-align: left;
   cursor: pointer;
-  transition: border-color 0.15s var(--eo-ease), background 0.15s var(--eo-ease), transform 0.15s var(--eo-ease);
+  transition: background 0.15s var(--eo-ease), transform 0.3s var(--q-spring);
 }
-.question-option:hover:not(:disabled) { background: rgba(255, 255, 255, 0.07); }
-.question-option:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
-.question-option[aria-checked='true'] { border-color: rgba(10, 132, 255, 0.7); background: rgba(10, 132, 255, 0.14); box-shadow: inset 3px 0 0 var(--accent); }
-.question-option-label { font: 600 12.5px var(--font-text); }
-.question-option-desc { font: 11.5px/1.4 var(--font-text); color: var(--text-secondary); }
+.question-option:hover:not(:disabled) { background: rgba(255, 255, 255, 0.06); transform: scale(1.01); }
+.question-option:active:not(:disabled) { transform: scale(0.99); }
+/* The first option takes focus when the card appears, so focus shows as a soft fill, never a ring. */
+.question-option:focus-visible { outline: none; background: rgba(255, 255, 255, 0.06); }
+/* One choice: a single lime glass pill glides to it (.pill-track). Several: each checked row lights up itself. */
+.question-options:not(.pill-track) .question-option[aria-checked='true'] { background: rgba(163, 230, 53, 0.14); }
+@supports (anchor-scope: --pill) {
+  .question-options.pill-track::before {
+    border-radius: 16px;
+    background: rgba(163, 230, 53, 0.14);
+    box-shadow: inset 0 0 0 1px rgba(163, 230, 53, 0.5), inset 0 1px 0 rgba(255, 255, 255, 0.14), 0 0 18px -4px rgba(163, 230, 53, 0.45);
+  }
+}
+.question-radio {
+  grid-row: 1 / span 2;
+  width: 16px;
+  height: 16px;
+  margin-top: 1px;
+  border-radius: 50%;
+  border: 1.5px solid rgba(255, 255, 255, 0.45);
+  transition: background 0.15s var(--eo-ease), border-color 0.15s var(--eo-ease);
+}
+.question-option[role='checkbox'] .question-radio { border-radius: 5px; }
+.question-option[aria-checked='true'] .question-radio {
+  border-color: var(--q-accent);
+  background: radial-gradient(circle, var(--q-on-accent) 0 2.5px, var(--q-accent) 3px);
+}
+.question-option-label { grid-column: 2; display: flex; align-items: center; gap: 7px; font: 600 13px var(--font-text); }
+.question-tag { padding: 0 8px; border-radius: var(--pill); background: rgba(163, 230, 53, 0.18); color: #d9f99d; box-shadow: inset 0 0 0 1px rgba(163, 230, 53, 0.5); font: 700 9.5px/17px var(--font-text); letter-spacing: 0.05em; text-transform: uppercase; }
+.question-option-desc {
+  grid-column: 2;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
+  margin-top: 1px;
+  font: 11.5px/1.4 var(--font-text);
+  color: var(--text-secondary);
+}
+.question-option[aria-checked='true'] .question-option-desc { -webkit-line-clamp: unset; color: #d1d1d6; }
 .question-other {
-  height: 30px;
-  padding: 0 10px;
-  border-radius: var(--radius-sm);
-  border: 1px solid var(--eo-border);
-  background: #111318;
-  color: var(--text-primary);
-  font: 12px var(--font-text);
+  height: 36px;
+  padding: 0 14px;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  border-radius: var(--pill);
+  background: rgba(255, 255, 255, 0.06);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.08);
+  color: #f2f2f7;
+  font: 12.5px var(--font-text);
   outline: none;
+  transition: border-color 0.15s var(--eo-ease), box-shadow 0.2s var(--eo-ease);
 }
-.question-other:focus { border-color: rgba(10, 132, 255, 0.6); }
-.question-submit:disabled { opacity: 0.4; }
+.question-other::placeholder { color: #b8b8c0; opacity: 1; }
+.question-other:focus { border-color: rgba(163, 230, 53, 0.7); box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.08), 0 0 0 3px rgba(163, 230, 53, 0.18); }
+.question-card .approval-actions { display: flex; align-items: center; gap: 8px; }
+/* Send and Skip are the shared approval buttons (a lit lime pill, plain text). Not ready yet: glass with a lime rim, still legible. */
+.question-card .question-submit:disabled { opacity: 1; background: rgba(163, 230, 53, 0.1); color: #d9f99d; border-color: rgba(163, 230, 53, 0.5); box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.1); }
+@media (prefers-reduced-motion: reduce) {
+  .question-card, .approval-card { animation: none; }
+  .question-chevron, .question-option, .approval-btn { transition: none; }
+}
 
 .chat-notice {
   align-self: center;

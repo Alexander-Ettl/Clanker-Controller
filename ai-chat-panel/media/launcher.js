@@ -3,146 +3,62 @@
 
   const vscode = acquireVsCodeApi();
 
-  const newChatWindowBtn = document.getElementById('newChatWindowBtn');
   const historyList = document.getElementById('historyList');
-  const scheduledList = document.getElementById('scheduledList');
-  const tabs = document.querySelectorAll('.launcher-tab');
-  const panels = { recent: document.getElementById('recentPanel'), scheduled: document.getElementById('scheduledPanel'), settings: document.getElementById('settingsPanel') || document.getElementById('systemPanel') };
   const modelCards = document.getElementById('modelCards');
   const ICONS = window.AGENT_ICONS || {};
   const names = window.AGENT_NAMES || { claude: 'Claude Code', codex: 'Codex', gemini: 'Antigravity', opus: 'Claude Opus 5.5' };
 
-  let activeTab = 'recent';
-  let lastQueue = [];
   let lastQuotas = null;
 
-  newChatWindowBtn.addEventListener('click', () => vscode.postMessage({ type: 'newChatWindow' }));
-  const siteSetupBtn = document.getElementById('siteSetupBtn');
-  const sitePromptBtn = document.getElementById('sitePromptBtn');
-  siteSetupBtn?.addEventListener('click', () => vscode.postMessage({ type: 'setupSite' }));
-  sitePromptBtn?.addEventListener('click', () => vscode.postMessage({ type: 'copySitePrompt' }));
-  window.addEventListener('message', (event) => {
-    if (event.data?.type !== 'siteSetup') return;
-    siteSetupBtn.hidden = event.data.ready; // shown with no folder too: the click explains what to open
-    sitePromptBtn.hidden = !event.data.ready;
-  });
-  vscode.postMessage({ type: 'requestSiteSetup' });
-
-  function setTab(tab) {
-    if (!panels[tab] || tab === activeTab) return;
-    activeTab = tab;
-    for (const btn of tabs) btn.setAttribute('aria-selected', String(btn.dataset.tab === tab));
-    for (const [id, panel] of Object.entries(panels)) panel.hidden = id !== tab;
-    if (tab === 'scheduled') vscode.postMessage({ type: 'requestSchedulerQueue' });
-    if (tab === 'settings' || tab === 'system') vscode.postMessage({ type: 'requestFleet' });
-  }
-  for (const btn of tabs) btn.addEventListener('click', () => setTab(btn.dataset.tab));
-
-  // ---------- Settings tab (Fleet, Telegram, Tunnel, Preferences) ----------
-  const fleetList = document.getElementById('fleetList');
-  const pingClisBtn = document.getElementById('pingClisBtn');
-  const telegramDot = document.getElementById('telegramDot');
-  const telegramDesc = document.getElementById('telegramDesc');
-  const configureTelegramBtn = document.getElementById('configureTelegramBtn');
-  const testTelegramBtn = document.getElementById('testTelegramBtn');
-  const disconnectTelegramBtn = document.getElementById('disconnectTelegramBtn');
-  const tunnelDot = document.getElementById('tunnelDot');
-  const tunnelDesc = document.getElementById('tunnelDesc');
-  const toggleTunnelBtn = document.getElementById('toggleTunnelBtn');
-  const formatPills = document.querySelectorAll('.format-pill');
-  const openTerminalBtn = document.getElementById('openTerminalBtn');
-  const CLI_NAMES = { claude: 'claude', codex: 'codex', gemini: 'agy' };
-  function systemRow(state, title, detail, hint = '') {
-    const row = document.createElement('div');
-    row.className = 'system-row';
-    const dot = document.createElement('span');
-    dot.className = `system-dot is-${state}`; // ok | warn | off
-    const text = document.createElement('div');
-    text.className = 'system-text';
-    const name = document.createElement('span'); name.className = 'system-name'; name.textContent = title;
-    const sub = document.createElement('span'); sub.className = 'system-detail'; sub.textContent = detail;
-    text.append(name, sub);
-    row.append(dot, text);
-    if (hint) row.title = hint;
-    return row;
-  }
-  function renderFleet({ models = [], clis = {}, services = {}, pinged = false }) {
-    const cliState = (agent) => {
-      const cli = clis[agent] || {};
-      if (!cli.path) return ['off', `${CLI_NAMES[agent]} not found`];
-      if (pinged && cli.version === null) return ['warn', `${CLI_NAMES[agent]} found, but --version failed`];
-      return ['ok', cli.version || `${CLI_NAMES[agent]} ready`];
-    };
-    if (fleetList) {
-      fleetList.replaceChildren(
-        systemRow('ok', 'Auto', 'Routes each prompt by role and remaining quota'),
-        ...models.map((m) => {
-          const [state, cliText] = cliState(m.agent);
-          return systemRow(state, m.label, `${m.model || m.agent}${m.effort ? ` · ${m.effort}` : ''} · ${cliText}`, clis[m.agent]?.path || '');
-        }),
-      );
+  // The iOS app-icon shape for the chat tiles: a superellipse (|x|^5 + |y|^5 = 1), whose curvature flows into the
+  // straight edges instead of jumping the way a circular corner radius does. CSS `border-radius` cannot draw it, so it
+  // is a clip path in bounding-box units (any element can use clip-path: url(#squircle)).
+  (function defineSquircle(n = 5, steps = 120) {
+    const points = [];
+    for (let i = 0; i < steps; i++) {
+      const t = (2 * Math.PI * i) / steps;
+      const c = Math.cos(t);
+      const s = Math.sin(t);
+      points.push(`${(0.5 + 0.5 * Math.sign(c) * Math.abs(c) ** (2 / n)).toFixed(4)} ${(0.5 + 0.5 * Math.sign(s) * Math.abs(s) ** (2 / n)).toFixed(4)}`);
     }
-
-    // 1. Telegram Bridge state
-    if (telegramDot && telegramDesc && configureTelegramBtn) {
-      const tg = services.telegram || {};
-      const isTgConfigured = typeof tg === 'boolean' ? tg : tg.configured;
-      if (isTgConfigured) {
-        telegramDot.className = 'system-dot is-ok';
-        const mode = tg.mode === 'webhook' ? 'live webhook' : 'long-polling';
-        telegramDesc.textContent = `Connected (Chat ID: ${tg.maskedChatId || 'linked'}) · ${mode}`;
-        configureTelegramBtn.textContent = 'Edit';
-        if (testTelegramBtn) testTelegramBtn.style.display = 'inline-block';
-        if (disconnectTelegramBtn) disconnectTelegramBtn.style.display = 'inline-block';
-      } else {
-        telegramDot.className = 'system-dot is-off';
-        telegramDesc.textContent = 'Not configured. Receive mobile task alerts & approvals.';
-        configureTelegramBtn.textContent = 'Configure';
-        if (testTelegramBtn) testTelegramBtn.style.display = 'none';
-        if (disconnectTelegramBtn) disconnectTelegramBtn.style.display = 'none';
+    // The chat tiles are the same squircle plus a bubble tail, in a 40x46 box: the squircle fills the top 40px and the
+    // 6px-tall tail hangs below its bottom edge, set in from the right corner: a diagonal down to a rounded tip, then a
+    // straight edge back up. It is ONE closed contour (the tail is spliced into the squircle's bottom edge), so there
+    // is one outline, not a body and a tail overlapping.
+    // The rim is the tile's own background; the fill (--bubble-fill-mask) is this same contour with a 2px black stroke
+    // erased out of it, which removes exactly the 1px just inside the edge (the half outside is off the shape anyway),
+    // all the way round the tail too.
+    const bubblePath = (m) => {
+      const yb = (x) => 20 + 20 * (1 - (Math.abs(x - 20) / 20) ** n) ** (1 / n);
+      let d = '';
+      let tailDone = false;
+      for (let i = 0; i < steps; i++) {
+        const t = (2 * Math.PI * i) / steps;
+        const c = Math.cos(t);
+        const s = Math.sin(t);
+        const x = 20 + 20 * Math.sign(c) * Math.abs(c) ** (2 / n);
+        const y = 20 + 20 * Math.sign(s) * Math.abs(s) ** (2 / n);
+        if (y > 20 && x < 31 && x > 22.4) {
+          if (!tailDone) d += `L${m(31, yb(31))}L${m(31, 44.6)}Q${m(31, 46.4)} ${m(29.6, 45.3)}L${m(22.4, yb(22.4))}`;
+          tailDone = true;
+          continue;
+        }
+        d += `${d ? 'L' : 'M'}${m(x, y)}`;
       }
-    }
+      return `${d}Z`;
+    };
+    const fractions = (x, y) => `${(x / 40).toFixed(4)} ${(y / 46).toFixed(4)}`;
+    const absolute = (x, y) => `${x.toFixed(2)} ${y.toFixed(2)}`;
+    const fillMask = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 40 46"><mask id="m"><path d="${bubblePath(absolute)}" fill="#fff" stroke="#000" stroke-width="2" stroke-linejoin="round"/></mask><rect width="40" height="46" mask="url(#m)"/></svg>`;
+    document.documentElement.style.setProperty('--bubble-fill-mask', `url("data:image/svg+xml,${encodeURIComponent(fillMask)}")`);
+    document.body.insertAdjacentHTML('afterbegin', `<svg width="0" height="0" style="position:absolute" aria-hidden="true"><defs><clipPath id="squircle" clipPathUnits="objectBoundingBox"><path d="M${points.join('L')}Z"/></clipPath><clipPath id="bubble" clipPathUnits="objectBoundingBox"><path d="${bubblePath(fractions)}"/></clipPath></defs></svg>`);
+  })();
 
-    // 2. Cloudflare Tunnel state
-    if (tunnelDot && tunnelDesc && toggleTunnelBtn) {
-      const tn = typeof services.tunnel === 'string' ? { status: services.tunnel, url: services.tunnelUrl } : (services.tunnel || {});
-      const isLive = tn.status === 'live';
-      const isConnecting = tn.status === 'connecting';
-      tunnelDot.className = `system-dot ${isLive ? 'is-ok' : isConnecting ? 'is-warn' : 'is-off'}`;
-      tunnelDesc.textContent = isLive ? `Live: ${tn.url}` : isConnecting ? 'Connecting tunnel…' : 'Off. Instant webhook ingress requires an active tunnel.';
-      toggleTunnelBtn.textContent = isLive ? 'Stop Tunnel' : isConnecting ? 'Connecting…' : 'Start Tunnel';
-      toggleTunnelBtn.disabled = isConnecting;
-    }
-
-    // 3. Time format selector sync
-    const currentFormat = services.timeFormat || '24h';
-    for (const pill of formatPills) {
-      pill.classList.toggle('active', pill.dataset.format === currentFormat);
-    }
-
-    if (pingClisBtn) {
-      pingClisBtn.disabled = false;
-      pingClisBtn.textContent = 'Check CLIs';
-    }
-  }
-  pingClisBtn?.addEventListener('click', () => { pingClisBtn.disabled = true; pingClisBtn.textContent = 'Checking…'; vscode.postMessage({ type: 'pingClis' }); });
-  document.getElementById('modelSettingsBtn')?.addEventListener('click', () => vscode.postMessage({ type: 'openModelSettings' }));
-  document.getElementById('resetCacheBtn')?.addEventListener('click', () => vscode.postMessage({ type: 'resetCliCache' }));
-  configureTelegramBtn?.addEventListener('click', () => vscode.postMessage({ type: 'configureTelegram' }));
-  testTelegramBtn?.addEventListener('click', () => vscode.postMessage({ type: 'testTelegram' }));
-  disconnectTelegramBtn?.addEventListener('click', () => vscode.postMessage({ type: 'disconnectTelegram' }));
-  toggleTunnelBtn?.addEventListener('click', () => {
-    const isLive = toggleTunnelBtn.textContent.startsWith('Stop');
-    vscode.postMessage({ type: isLive ? 'stopTunnel' : 'startTunnel' });
-  });
-  for (const pill of formatPills) {
-    pill.addEventListener('click', () => {
-      for (const p of formatPills) p.classList.remove('active');
-      pill.classList.add('active');
-      vscode.postMessage({ type: 'setTimeFormat', format: pill.dataset.format });
-    });
-  }
-  openTerminalBtn?.addEventListener('click', () => vscode.postMessage({ type: 'openTerminal' }));
+  // The rail lives in the chat's own webview. New chat, Manage chats and the Scheduled timer pill are the chat's own
+  // buttons (main.js finds them by id); Settings, and the "+N" chip below, open their popup with the same window
+  // message the host used to send.
+  const openInChat = (type) => window.postMessage({ type }, '*');
+  document.getElementById('settingsBtn').addEventListener('click', () => openInChat('openSettings'));
 
   // P16-M: legible model cards with 5h and 7d "% remaining" gauges.
   function resetsIn(resetsAt) {
@@ -156,105 +72,74 @@
     return `resets in ${d ? `${d}d ${h}h` : h ? `${h}h ${m}m` : `${m}m`}`;
   }
 
-  function gauge(label, window) {
-    const row = document.createElement('div');
-    row.className = 'gauge';
-    const name = document.createElement('span');
-    name.className = 'gauge-label';
-    name.textContent = label;
-    const track = document.createElement('span');
-    track.className = 'gauge-track';
-    const fill = document.createElement('span');
-    fill.className = 'gauge-fill';
-    const pct = typeof window?.remaining === 'number' ? Math.max(0, Math.min(100, Math.round(window.remaining))) : null;
-    fill.style.setProperty('--pct', pct === null ? '0' : String(pct));
-    track.append(fill);
-    const value = document.createElement('span');
-    value.className = 'gauge-value';
-    value.textContent = pct === null ? '\u2014' : `${pct}%`;
-    row.classList.toggle('is-low', pct !== null && pct <= 20);
-    row.classList.toggle('is-empty', pct === null);
-    row.append(name, track, value);
-    return row;
+  // The 5h reset as a bare countdown ("1h 50m", "45m", "2d 3h"), small and dim under the percentage; the tooltip spells it out.
+  function resetShort(resetsAt) {
+    if (!resetsAt) return '';
+    const minutes = Math.round((resetsAt * 1000 - Date.now()) / 60000);
+    if (!(minutes > 0)) return 'now';
+    const d = Math.floor(minutes / 1440);
+    const h = Math.floor((minutes % 1440) / 60);
+    const m = minutes % 60;
+    return d ? `${d}d ${h}h` : h ? `${h}h ${m}m` : `${m}m`;
   }
+
+  // One ring per provider: the 5h window outside, the week inside, the provider's mark in the middle.
+  // Beside it: % left (5h, then the week) and when the 5h window resets; the names live in the tooltip.
+  const ringCircles = (r) => `<circle class="ring-track" cx="18" cy="18" r="${r}"/><circle class="ring-fill" cx="18" cy="18" r="${r}" pathLength="100"/>`;
+  const pctOf = (window) => (typeof window?.remaining === 'number' ? Math.max(0, Math.min(100, Math.round(window.remaining))) : null);
 
   function modelCard(agent, quota) {
     const card = document.createElement('div');
     card.className = `model-card model-card-${agent}`;
     card.dataset.agent = agent;
-    const head = document.createElement('div');
-    head.className = 'model-card-head';
-    head.innerHTML = ICONS[agent] || '';
-    const title = document.createElement('span');
-    title.className = 'model-card-name';
-    title.textContent = names[agent] || agent;
-    const reset = document.createElement('span');
-    reset.className = 'model-card-reset';
-    reset.textContent = resetsIn(quota?.resetsAt);
-    head.append(title, reset);
-    card.append(head);
-    card.append(gauge('5h', quota && typeof quota.remaining === 'number' ? quota : null));
-    card.append(gauge('7d', quota?.secondary || null));
-    card.title = `${names[agent]}: ${typeof quota?.remaining === 'number' ? `${Math.round(quota.remaining)}% of the 5h window left` : 'no live quota'}${quota?.secondary ? `, ${Math.round(quota.secondary.remaining)}% of the week` : ''}`;
+    // Hovering the ring grows .ring-pill leftward out of it: both windows as bars with the exact % and reset (launcher.css).
+    const pillRow = (label) => `<span class="ring-row"><span class="ring-row-name">${label}</span><i class="ring-bar"><b></b></i><span class="ring-row-pct"></span><span class="ring-row-eta"></span></span>`;
+    card.innerHTML = `<span class="ring" title=""><span class="ring-pill" aria-hidden="true">${pillRow('5h')}${pillRow('7d')}</span><svg viewBox="0 0 36 36" aria-hidden="true">${ringCircles(15)}${ringCircles(10)}</svg><span class="ring-logo">${ICONS[agent] || ''}</span></span><b class="model-card-5h"></b><span class="model-card-7d"></span><span class="model-card-reset"></span>`;
+    return updateModelCard(card, quota);
+  }
+
+  function updateModelCard(card, quota) {
+    const five = pctOf(quota);
+    const week = pctOf(quota?.secondary);
+    [five, week].forEach((pct, i) => {
+      const fill = card.querySelectorAll('.ring-fill')[i];
+      fill.style.setProperty('--pct', pct ?? 0);
+      fill.classList.toggle('is-low', pct !== null && pct <= 20);
+    });
+    [[five, quota], [week, quota?.secondary]].forEach(([pct, win], i) => {
+      const row = card.querySelectorAll('.ring-row')[i];
+      row.style.setProperty('--pct', pct ?? 0);
+      row.classList.toggle('is-low', pct !== null && pct <= 20);
+      row.querySelector('.ring-row-pct').textContent = pct === null ? '—' : `${pct}%`;
+      row.querySelector('.ring-row-eta').textContent = resetShort(win?.resetsAt);
+    });
+    card.querySelector('.model-card-5h').textContent = five === null ? '—' : `${five}%`;
+    card.querySelector('.model-card-7d').textContent = week === null ? '—' : `${week}%`;
+    card.querySelector('.model-card-reset').textContent = resetShort(quota?.resetsAt);
+    card.classList.toggle('is-empty', five === null);
+    const agent = card.dataset.agent;
+    card.title = `${names[agent] || agent}: ${five === null ? 'no live quota' : `${five}% of the 5h window left`}${week === null ? '' : `, ${week}% of the week`}${quota?.resetsAt ? `, ${resetsIn(quota.resetsAt)}` : ''}`;
     return card;
   }
 
-  // Re-render in place (same nodes) so width changes animate instead of popping.
-  // No Opus card: it runs on the Claude account, so the Claude card already shows its windows.
+  // Re-render in place (same nodes) so the rings sweep instead of popping.
+  // No Opus card: it runs on the Claude account, so the Claude ring already shows its windows.
   function renderModelCards(quotas) {
-    const next = ['claude', 'codex', 'gemini'].map((agent) => modelCard(agent, quotas?.[agent]));
-    if (modelCards.childElementCount !== next.length) { modelCards.replaceChildren(...next); return; }
-    next.forEach((card, i) => {
-      const current = modelCards.children[i];
-      current.title = card.title;
-      current.querySelector('.model-card-name').textContent = card.querySelector('.model-card-name').textContent;
-      current.querySelector('.model-card-reset').textContent = card.querySelector('.model-card-reset').textContent;
-      const oldGauges = current.querySelectorAll('.gauge');
-      const newGauges = card.querySelectorAll('.gauge');
-      if (oldGauges.length !== newGauges.length) { current.replaceWith(card); return; }
-      newGauges.forEach((g, j) => {
-        const old = oldGauges[j];
-        old.className = g.className;
-        old.querySelector('.gauge-fill').style.setProperty('--pct', g.querySelector('.gauge-fill').style.getPropertyValue('--pct'));
-        old.querySelector('.gauge-value').textContent = g.querySelector('.gauge-value').textContent;
-      });
-    });
+    const agents = ['claude', 'codex', 'gemini'];
+    if (modelCards.childElementCount !== agents.length) { modelCards.replaceChildren(...agents.map((agent) => modelCard(agent, quotas?.[agent]))); return; }
+    agents.forEach((agent, i) => updateModelCard(modelCards.children[i], quotas?.[agent]));
   }
   setInterval(() => lastQuotas && renderModelCards(lastQuotas), 30000); // countdowns
-
-  // P17-X: the exact catalog tier when the task recorded one.
-  function modelBadge(agent, modelId) {
-    const badge = document.createElement('span');
-    badge.className = `agent-badge agent-badge-${agent}`;
-    badge.innerHTML = ICONS[agent] || '';
-    const exact = modelId && (window.MODEL_CATALOG || []).find((entry) => entry.id === modelId);
-    badge.append(exact ? exact.label : names[agent] || agent);
-    return badge;
-  }
+  // Until the first quotas message arrives the cards are shimmering skeletons (see .is-loading in launcher.css).
+  modelCards.classList.add('is-loading');
+  modelCards.setAttribute('aria-busy', 'true');
+  renderModelCards();
+  modelCards.querySelectorAll('.model-card').forEach((card) => { card.title = 'Loading usage…'; });
 
   // P17-X: 24h unless the user picks '12h', or 'auto' (the editor language's own convention).
   const TIME_PREFS = window.TIME_PREFS || {};
   const HOUR_CYCLE = { '24h': 'h23', '12h': 'h12' }[TIME_PREFS.timeFormat || '24h'];
   const clockParts = (extra) => ({ ...extra, hour: '2-digit', minute: '2-digit', ...(HOUR_CYCLE ? { hourCycle: HOUR_CYCLE } : {}) });
-  function fireTimeOf(task) {
-    if (task.dispatchTrigger === 'fixed-time') return Date.parse(task.dispatchTime) || null;
-    const resetsAt = lastQuotas?.[task.model]?.resetsAt;
-    return typeof resetsAt === 'number' ? resetsAt * 1000 : null;
-  }
-  function formatCountdown(ms) {
-    const s = Math.max(0, Math.floor(ms / 1000));
-    const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), sec = s % 60;
-    const pad = (n) => String(n).padStart(2, '0');
-    return h ? `${h}h ${pad(m)}m ${pad(sec)}s` : m ? `${m}m ${pad(sec)}s` : `${sec}s`;
-  }
-  function tickCountdowns() {
-    for (const el of scheduledList.querySelectorAll('.scheduled-countdown')) {
-      const task = lastQueue.find((item) => item.id === el.closest('.scheduled-card').dataset.taskId);
-      const fire = task && task.status === 'pending' ? fireTimeOf(task) : null;
-      el.textContent = fire ? formatCountdown(fire - Date.now()) : '';
-    }
-  }
-  setInterval(tickCountdowns, 1000);
 
   function modelMark(agent) {
     const mark = document.createElement('span');
@@ -275,35 +160,24 @@
       : date.toLocaleDateString(TIME_PREFS.locale, { month: 'short', day: 'numeric' });
   }
 
-  // Inline rename: the name turns into a field. Enter or clicking away saves,
-  // Esc cancels, and an empty name goes back to the first message.
-  function editTitle(el, current, onSave) {
-    const input = document.createElement('input');
-    input.className = 'title-edit';
-    input.value = current;
-    input.maxLength = 120;
-    input.setAttribute('aria-label', 'Chat name');
-    el.replaceWith(input);
-    input.focus();
-    input.select();
-    let done = false;
-    const finish = (save) => {
-      if (done) return;
-      done = true;
-      const name = input.value.trim();
-      if (save && name !== current) { el.textContent = name || el.textContent; onSave(name); }
-      input.replaceWith(el);
-    };
-    input.addEventListener('keydown', (event) => {
-      event.stopPropagation();
-      if (event.key === 'Enter') { event.preventDefault(); finish(true); }
-      if (event.key === 'Escape') { event.preventDefault(); finish(false); }
-    });
-    input.addEventListener('click', (event) => event.stopPropagation());
-    input.addEventListener('blur', () => finish(true));
+  // Under each tile: "now", "5min ago" for the first hour, then the clock time today or the date ("Sep 28").
+  function railTime(iso) {
+    const date = new Date(iso);
+    const minutes = Math.floor((Date.now() - date.getTime()) / 60000);
+    if (!iso || Number.isNaN(date.getTime())) return '';
+    if (minutes < 1) return 'now';
+    if (minutes < 60) return `${minutes}min ago`;
+    return formatTimestamp(iso);
   }
+  setInterval(() => historyList.querySelectorAll('.history-time').forEach((label) => { label.textContent = railTime(label.dataset.at); }), 30000);
+
+  // Every row is just a provider mark, so a long history is a wall of look-alikes: the rail shows the live chats
+  // and the latest few, and a "9+" chip opens Manage Chats (which also renames and deletes) for the rest.
+  const RAIL_CHATS = 5;
+  let recentTimer;
 
   function renderHistory(sessions) {
+    clearTimeout(recentTimer);
     historyList.replaceChildren();
     if (!sessions || !sessions.length) {
       const empty = document.createElement('div');
@@ -312,236 +186,79 @@
       historyList.appendChild(empty);
       return;
     }
-    // Active chats (an agent running now or in the last five minutes) lead, as in Manage Chats.
-    for (const session of [...sessions.filter((s) => s.active), ...sessions.filter((s) => !s.active)]) {
+    const now = Date.now();
+    const isRecent = (session) => Number(session.recentUntil) > now;
+    const nextExpiry = Math.min(...sessions.map((session) => Number(session.recentUntil)).filter((until) => until > now));
+    if (Number.isFinite(nextExpiry)) recentTimer = setTimeout(() => vscode.postMessage({ type: 'requestHistory' }), nextExpiry - now + 20);
+    // Keep the selected chat and recently selected or running chats visible before the older ones.
+    const ordered = [
+      ...sessions.filter((s) => s.selected),
+      ...sessions.filter((s) => !s.selected && (isRecent(s) || s.state === 'running')),
+      ...sessions.filter((s) => !s.selected && !isRecent(s) && s.state !== 'running'),
+    ];
+    const capped = ordered.length > RAIL_CHATS;
+    for (const session of capped ? ordered.slice(0, RAIL_CHATS) : ordered) {
       // A plain div, not a button: it hosts its own nested delete <button>,
       // and a <button> may not contain another <button> (HTML would silently
       // reparent it, breaking the click target).
       const row = document.createElement('div');
-      row.className = `history-row${session.active ? ' is-active' : ''}${session.state ? ` is-${session.state}` : ''}`;
-      row.title = session.preview || 'New chat';
+      row.className = `history-row${session.state === 'waiting' ? ' is-waiting' : ''}${isRecent(session) ? ' is-recent' : ''}${session.selected ? ' is-selected' : ''}`;
+      if (session.selected) row.setAttribute('aria-current', 'true');
+      // One pill per chat: the coding environment it last ran on (just one; two or three don't fit), then the name.
+      // The tooltip names both and gives the time.
+      const agent = (session.models || []).at(-1);
+      const title = session.title || session.preview || 'New chat';
+      const lastText = session.lastMessage?.text ? ` · "${session.lastMessage.text.slice(0, 60)}…"` : '';
+      row.title = `${title}${lastText} · ${agent ? `${names[agent] || agent} · ` : ''}${formatTimestamp(session.updatedAt)}${session.state === 'waiting' ? ' · Needs input' : ''}`;
 
-      const info = document.createElement('div');
-      info.className = 'history-info';
-      const title = document.createElement('div');
-      title.className = 'history-title';
-      title.textContent = session.preview || 'New chat';
-      const meta = document.createElement('div');
-      meta.className = 'history-meta';
-      if (session.state) {
-        const live = document.createElement('span');
-        live.className = 'history-live';
-        live.textContent = session.state === 'waiting' ? 'Needs input' : 'Running';
-        meta.append(live);
-      }
-      for (const agent of session.models || []) meta.append(modelMark(agent));
+      const lead = document.createElement('span');
+      lead.className = 'history-lead';
+      if (agent) lead.append(modelMark(agent));
+      row.addEventListener('click', () => vscode.postMessage({ type: 'restoreChat', id: session.id }));
+      row.append(lead);
       const time = document.createElement('span');
-      time.textContent = formatTimestamp(session.updatedAt);
-      meta.append(time);
-      info.append(title, meta);
-
-      const remove = document.createElement('button');
-      remove.type = 'button';
-      remove.className = 'history-delete';
-      remove.title = 'Delete chat';
-      remove.textContent = '×';
-      remove.addEventListener('click', (event) => {
-        event.stopPropagation();
-        vscode.postMessage({ type: 'deleteChat', id: session.id });
-      });
-
-      const rename = document.createElement('button');
-      rename.type = 'button';
-      rename.className = 'history-rename';
-      rename.title = 'Rename chat';
-      rename.setAttribute('aria-label', 'Rename chat');
-      rename.innerHTML = '<svg viewBox="7.99 7.95 496.01 496.06" fill="currentColor" aria-hidden="true"><path d="M339.24,100.59a8,8,0,0,0-11.32,0C21.76,406.75,39.26,388,37.51,393.51L8.76,483.11a16,16,0,0,0,20.13,20.13c97.07-31.14,92.2-28.84,96-32.67L411.41,184.08a8,8,0,0,0,0-11.32Z"/><path d="M403.22,25.29,361.86,66.65a8,8,0,0,0,0,11.31L434,150.14a8,8,0,0,0,11.31,0l41.36-41.36A58.65,58.65,0,0,0,504,67C504,14.85,440.44-11.93,403.22,25.29Z"/></svg>';
-      rename.addEventListener('click', (event) => {
-        event.stopPropagation();
-        editTitle(title, session.preview || '', (name) => vscode.postMessage({ type: 'renameChat', id: session.id, title: name }));
-      });
-
-      row.addEventListener('click', () => vscode.postMessage({ type: 'openChat', id: session.id }));
-      row.append(info, rename, remove);
-      historyList.appendChild(row);
+      time.className = 'history-time';
+      time.dataset.at = session.updatedAt || '';
+      time.textContent = railTime(session.updatedAt);
+      const item = document.createElement('div');
+      item.className = 'history-item';
+      if (agent) item.dataset.agent = agent; // the provider's colour for the orb
+      item.append(row, time);
+      if (session.state === 'running') {
+        // The same orb as the chat's "Thinking" pill (.pending-orb, style.css).
+        const orb = document.createElement('span');
+        orb.className = 'pending-orb history-spinner';
+        orb.setAttribute('aria-hidden', 'true');
+        item.append(orb);
+      }
+      historyList.appendChild(item);
     }
-  }
-
-  function formatDispatchStatus(task) {
-    if (task.dispatchTrigger === 'fixed-time' && task.dispatchTime) {
-      const date = new Date(task.dispatchTime);
-      return Number.isNaN(date.getTime())
-        ? 'Dispatches at a scheduled time'
-        : `Dispatches at ${date.toLocaleString(TIME_PREFS.locale, clockParts({ month: 'short', day: 'numeric' }))}`;
+    if (capped) {
+      const hidden = ordered.length - RAIL_CHATS;
+      const more = document.createElement('button');
+      more.type = 'button';
+      more.className = 'history-more';
+      more.textContent = hidden > 9 ? '9+' : `+${hidden}`;
+      more.title = `${hidden} more chat${hidden === 1 ? '' : 's'}: open Manage Chats`;
+      more.addEventListener('click', () => window.postMessage({ type: 'openHistory' }, '*'));
+      historyList.appendChild(more);
     }
-    const quota = lastQuotas?.[task.model];
-    return typeof quota?.remaining === 'number' ? `Waiting for quota (${quota.remaining}% left)` : 'Waiting for quota';
-  }
-
-  // P17-H: 'interrupted' = the extension host died mid-run (restart, crash, reload).
-  const VISIBLE = new Set(['pending', 'dispatched', 'interrupted']);
-  const WARN_ICON = '<svg viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M8 2.5 14 13H2z" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/><path d="M8 6.5v3M8 11.2v.1" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>';
-
-  function setStatus(el, task) {
-    el.className = `scheduled-status${task.status === 'dispatched' ? ' scheduled-status-active' : task.status === 'interrupted' ? ' scheduled-status-interrupted' : ''}`;
-    el.textContent = task.status === 'dispatched' ? 'Dispatching…'
-      : task.status === 'interrupted' ? 'Execution was interrupted (system restart or window reload).'
-        : formatDispatchStatus(task);
-  }
-
-  const ACTION_ICONS = {
-    now: '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round" aria-hidden="true"><path d="M9 1.75 3.5 9h4L7 14.25 12.5 7h-4z"/></svg>',
-    unschedule: '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5.5 3 2.5 6l3 3"/><path d="M2.5 6h6.75a4 4 0 0 1 0 8H7"/></svg>',
-  };
-
-  function actionButton(label, className, type, taskId, icon = '', title = '') {
-    const btn = document.createElement('button');
-    btn.type = 'button';
-    btn.className = `scheduled-action${className ? ` ${className}` : ''}`;
-    btn.innerHTML = icon;
-    btn.append(label);
-    if (title) btn.title = title;
-    btn.addEventListener('click', () => { btn.disabled = true; vscode.postMessage({ type, taskId }); });
-    return btn;
-  }
-
-  function scheduledCard(task) {
-    const card = document.createElement('div');
-    card.className = `scheduled-card glass${task.status === 'interrupted' ? ' is-interrupted' : ''}`;
-    card.dataset.taskId = task.id;
-    card.dataset.status = task.status;
-
-    const header = document.createElement('div');
-    header.className = 'scheduled-card-header';
-    const modelLabel = document.createElement('span');
-    modelLabel.className = 'scheduled-model';
-    modelLabel.append(modelBadge(task.model, task.modelId));
-    const countdown = document.createElement('span');
-    countdown.className = 'scheduled-countdown';
-    countdown.title = 'Time until this prompt fires';
-    header.append(modelLabel, countdown);
-    if (task.status === 'interrupted') {
-      const badge = document.createElement('span');
-      badge.className = 'scheduled-badge-interrupted';
-      badge.innerHTML = WARN_ICON;
-      badge.append('Interrupted');
-      header.append(badge);
-    }
-    const cancel = document.createElement('button');
-    cancel.type = 'button';
-    cancel.className = 'scheduled-cancel';
-    cancel.title = 'Cancel this task';
-    cancel.textContent = '×';
-    cancel.addEventListener('click', () => vscode.postMessage({ type: 'cancelScheduledTask', taskId: task.id }));
-    header.append(cancel);
-
-    const status = document.createElement('div');
-    setStatus(status, task);
-
-    const prompt = document.createElement('div');
-    prompt.className = 'scheduled-prompt';
-    prompt.textContent = task.prompt || '';
-
-    card.append(header, status, prompt);
-
-    if (task.attachments && task.attachments.length) {
-      const attachPill = document.createElement('div');
-      attachPill.className = 'scheduled-attachments';
-      attachPill.textContent = `${task.attachments.length} attachment${task.attachments.length === 1 ? '' : 's'}`;
-      card.appendChild(attachPill);
-    }
-
-    if (task.status === 'interrupted') {
-      const actions = document.createElement('div');
-      actions.className = 'scheduled-actions';
-      actions.append(
-        actionButton('Run Now', 'is-primary', 'dispatchInterruptedTask', task.id),
-        actionButton('Reschedule', '', 'rescheduleTask', task.id),
-      );
-      card.append(actions);
-    }
-    // P17-Z: don't want to wait for the reset? Send it now via Auto, or take it back into the composer.
-    if (task.status === 'pending') {
-      const actions = document.createElement('div');
-      actions.className = 'scheduled-actions';
-      actions.append(
-        actionButton('Send Now', 'is-primary', 'dispatchNowWithAutoRoute', task.id, ACTION_ICONS.now, 'Unschedule and send now via Auto (routes to a model with quota left)'),
-        actionButton('Unschedule', '', 'unscheduleToComposer', task.id, ACTION_ICONS.unschedule, 'Move back into the chat composer as an editable draft'),
-      );
-      card.append(actions);
-    }
-    return card;
-  }
-
-  // P17-H: quota polls arrive every 5s, and rebuilding the list on each one
-  // replayed every card's entry animation (the flicker). The same tasks in the
-  // same order update in place, a card whose status changed is swapped alone,
-  // and only an added, removed, or reordered task rebuilds the list.
-  function renderScheduled(queue) {
-    // P17-X: bundled by agent (stable sort keeps each agent's dispatch order).
-    const AGENTS = ['claude', 'codex', 'gemini'];
-    const visible = (queue || []).filter((task) => VISIBLE.has(task.status))
-      .sort((a, b) => AGENTS.indexOf(a.model) - AGENTS.indexOf(b.model));
-    const cards = [...scheduledList.querySelectorAll('.scheduled-card')];
-    if (!visible.length) {
-      if (!cards.length && scheduledList.querySelector('.scheduled-empty')) return;
-      const empty = document.createElement('div');
-      empty.className = 'scheduled-empty';
-      empty.textContent = 'No tasks scheduled. Tasks queued while quota is exhausted will appear here.';
-      scheduledList.replaceChildren(empty);
-      return;
-    }
-    const rebuilt = cards.length !== visible.length || cards.some((card, i) => card.dataset.taskId !== visible[i].id);
-    if (rebuilt) {
-      scheduledList.replaceChildren(...visible.flatMap((task, i) => {
-        const card = scheduledCard(task);
-        if (visible[i - 1]?.model === task.model) return [card];
-        const head = document.createElement('div');
-        head.className = 'scheduled-group-head';
-        head.append(modelMark(task.model), names[task.model] || task.model);
-        const reset = document.createElement('span');
-        reset.className = 'scheduled-group-reset';
-        reset.dataset.agent = task.model;
-        head.append(reset);
-        return [head, card];
-      }));
-    }
-    for (const reset of scheduledList.querySelectorAll('.scheduled-group-reset')) {
-      const resetsAt = lastQuotas?.[reset.dataset.agent]?.resetsAt;
-      reset.textContent = typeof resetsAt === 'number' ? `Quota resets ${new Date(resetsAt * 1000).toLocaleTimeString(TIME_PREFS.locale, clockParts())}` : '';
-    }
-    if (!rebuilt) {
-      visible.forEach((task, i) => {
-        const card = cards[i];
-        if (card.dataset.status !== task.status) { card.replaceWith(scheduledCard(task)); return; }
-        setStatus(card.querySelector('.scheduled-status'), task);
-        card.querySelector('.scheduled-prompt').textContent = task.prompt || '';
-      });
-    }
-    tickCountdowns();
   }
 
   window.addEventListener('message', (event) => {
     const message = event.data;
     switch (message.type) {
       case 'history': renderHistory(message.sessions); break;
-      case 'fleet': renderFleet(message); break;
-      case 'quotas': {
+      case 'quotas':
         lastQuotas = message.quotas;
+        modelCards.classList.remove('is-loading');
+        modelCards.removeAttribute('aria-busy');
         renderModelCards(lastQuotas);
-        if (activeTab === 'scheduled') renderScheduled(lastQueue);
         break;
-      }
-      case 'schedulerQueue': {
-        lastQueue = message.queue || [];
-        renderScheduled(lastQueue);
-        break;
-      }
       default: break;
     }
   });
 
   vscode.postMessage({ type: 'requestHistory' });
   vscode.postMessage({ type: 'requestQuotas' });
-  vscode.postMessage({ type: 'requestSchedulerQueue' });
 })();

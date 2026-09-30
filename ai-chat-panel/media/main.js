@@ -56,10 +56,20 @@
     document.body.appendChild(el);
     return { el, body: el.querySelector('.fs-modal-body'), count: el.querySelector('.fs-modal-count') };
   }
+  // One popup at a time: opening one closes whichever is open (they used to pile up, and the covered one could no longer
+  // be opened again). The button that opened a popup toggles it: a second click closes it.
   function openModal(modal) {
-    lastFocus = document.activeElement;
+    const others = [...document.querySelectorAll('.fs-modal:not([hidden])')].filter((el) => el !== modal.el);
+    if (!others.length) lastFocus = document.activeElement; // the first popup remembers where focus was; a switch keeps that
+    others.forEach((el) => { el.hidden = true; });
     modal.el.hidden = false;
     modal.el.querySelector('.fs-modal-close').focus();
+  }
+  /** Opens the popup, or closes it when it is the one showing. Returns whether it is open now. */
+  function toggleModal(modal) {
+    if (!modal.el.hidden) { closeModal(modal.el); return false; }
+    openModal(modal);
+    return true;
   }
   function closeModal(el) {
     if (el.hidden) return;
@@ -121,6 +131,7 @@
   const queueTip = queueBtn.querySelector('.round-btn-tip');
   let queueTick = null;
   let pulseOnShow = false;
+  let queuePinned = false; // opened from the launcher's clock: it stays open (empty) when the queue drains
   // P17-X: a live 1s countdown to whichever task (any agent) fires first.
   function tickQueueCountdown() {
     const times = activeTasks().filter((task) => task.status === 'pending').map(fireTimeOf).filter(Boolean);
@@ -137,7 +148,7 @@
     tickQueueCountdown();
     if (count && !queueTick) queueTick = setInterval(tickQueueCountdown, 1000);
     if (!count && queueTick) { clearInterval(queueTick); queueTick = null; }
-    if (!count) closeModal(queueModal.el);
+    if (!count && !queuePinned) closeModal(queueModal.el);
     if (count && pulseOnShow) { pulseOnShow = false; pulseQueueSaved(); }
   }
   // Persistence guarantee: pull the eye from the composer to the pill, confirm the disk write.
@@ -299,6 +310,9 @@
 
   // Manage Chats: chats with an agent running (or run in the last five minutes) on top, history below.
   const historyModal = createModal('historyModal', 'Manage Chats');
+  // Chat Settings: a popup like Manage Chats, opened from the launcher's gear. Its page is settings.js.
+  const settingsModal = createModal('settingsModal', 'Chat Settings');
+  const chatSettings = window.initChatSettings({ vscode, body: settingsModal.body });
   const runningBadge = document.getElementById('runningBadge');
   let currentChatId = null;
 
@@ -309,13 +323,57 @@
   const scheduleBtn = document.createElement('button');
   scheduleBtn.type = 'button'; scheduleBtn.id = 'scheduleBtn'; scheduleBtn.className = 'composer-icon-btn schedule-toggle';
   scheduleBtn.setAttribute('aria-pressed', 'false');
-  scheduleBtn.innerHTML = '<svg viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><circle cx="8" cy="8.5" r="5.5" stroke="currentColor" stroke-width="1.2"/><path d="M8 5.5v3l2 1.2" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+  // The clock wears the icon of its mode (schedule-timer.css picks one by data-mode): off, usage reset (a usage ring
+  // turning back to the start, as in the sidebar), timer, calendar.
+  const scheduleIcon = (name, paths) => `<svg class="sc-ico sc-ico-${name}" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.25" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${paths}</svg>`;
+  scheduleBtn.innerHTML = scheduleIcon('off', '<circle cx="8" cy="8.5" r="5.5"/><path d="M8 5.5v3l2 1.2"/>')
+    + scheduleIcon('reset', '<path d="M13 8a5 5 0 1 1-1.6-3.7"/><path d="M13 2.75v2.5h-2.5"/><circle cx="8" cy="8" r="1.1" fill="currentColor" stroke="none"/>')
+    + scheduleIcon('timer', '<circle cx="8" cy="9" r="5"/><path d="M8 6.5V9l1.6 1M6.5 2h3"/>')
+    + scheduleIcon('calendar', '<rect x="2.5" y="3.5" width="11" height="10" rx="2.5"/><path d="M2.5 7h11M5.5 2v3M10.5 2v3"/>');
+  scheduleBtn.dataset.mode = 'off';
   document.querySelector('.composer-actions').insertBefore(scheduleBtn, sendBtn);
+  // Hovering the clock opens the timer pill (schedule-timer.js); picking a time arms scheduling for it.
+  const scheduleTime = document.createElement('span');
+  scheduleTime.className = 'schedule-time';
+  scheduleBtn.append(scheduleTime);
+  const scheduleTimer = window.initScheduleTimer({
+    button: scheduleBtn,
+    composer: document.querySelector('.composer'),
+    preferred: window.SCHEDULE_MODE, // the mode the last scheduled prompt used (saved by the host)
+    // The chosen model's two limits, for the usage-reset mode: what it waits for and when that comes.
+    usage: () => {
+      const quota = lastQuotas[scheduleModel()];
+      return { windows: [
+        { key: '5h', name: '5h', remaining: quota?.remaining ?? null, resetsAt: quota?.resetsAt ?? null },
+        { key: '7d', name: '7d', remaining: quota?.secondary?.remaining ?? null, resetsAt: quota?.secondary?.resetsAt ?? null },
+      ] };
+    },
+    onChange: () => { scheduleChoice = true; refreshScheduleDefault(); },
+  });
+  const countdownClock = (ms) => {
+    const s = Math.max(0, Math.ceil(ms / 1000));
+    const pad = (n) => String(n).padStart(2, '0');
+    return s >= 3600 ? `${Math.floor(s / 3600)}:${pad(Math.floor((s % 3600) / 60))}:${pad(s % 60)}` : `${Math.floor(s / 60)}:${pad(s % 60)}`;
+  };
+  // Beside its icon the clock shows what the mode holds: the countdown to the reset it waits for, the delay, the day
+  // and time. Off, it shows the countdown to the next of this chat's already sent scheduled prompts, if any.
+  function renderScheduleTime() {
+    let text = '';
+    if (scheduleTimer.mode) text = scheduleTimer.short();
+    else {
+      const sent = activeTasks().filter((task) => task.status === 'pending' && task.chatId === currentChatId).map(fireTimeOf).filter(Boolean);
+      if (sent.length) text = countdownClock(Math.min(...sent) - Date.now());
+    }
+    if (scheduleTime.textContent !== text) scheduleTime.textContent = text;
+    scheduleBtn.classList.toggle('has-time', Boolean(text));
+  }
+  setInterval(renderScheduleTime, 1000);
 
   const AGENT_LABELS = AGENT_NAMES;
   const DEFAULT_PLACEHOLDER = promptInput.placeholder;
   let scheduleArmed = false;
   let pendingScheduleLabel = null;
+  let pendingScheduleWhen = '';
   // Declared before selectModel() first runs at startup: lastReplyAgent() reads it.
   let turnRoutedAgent = null; // who ran the current turn (set by 'routing')
   // 'auto' has no quota of its own to wait for; scheduling needs a real model.
@@ -327,15 +385,20 @@
   function scheduleModel() { return activeAgent === 'auto' ? lastReplyAgent() || 'claude' : activeAgent; }
   function setScheduleArmed(armed, { outOfUsage = false } = {}) {
     scheduleArmed = armed;
+    // Armed with no mode yet (turned on by the model being out of usage): the usage reset is what that means.
+    if (armed && !scheduleTimer.mode) scheduleTimer.select('reset');
+    else if (!armed && scheduleTimer.mode) scheduleTimer.clear();
     scheduleBtn.classList.toggle('is-scheduled', armed);
     scheduleBtn.setAttribute('aria-pressed', String(armed));
+    const modeName = { reset: 'when the usage resets', timer: 'after a delay', calendar: 'at a chosen day and time' }[scheduleTimer.mode];
     scheduleBtn.title = armed && outOfUsage
-      ? `${AGENT_LABELS[scheduleModel()]} is out of usage, so messages are scheduled for its reset. Click to send now instead.`
-      : armed ? 'Scheduling is on: the next message is queued instead of sent' : 'Schedule the next message for the next quota reset';
+      ? `${AGENT_LABELS[scheduleModel()]} is out of usage, so messages are scheduled for its reset. Click to change how, or to send now.`
+      : armed ? `The next message is scheduled ${modeName}. Click for the next mode: usage reset, timer, calendar, off.` : 'Schedule the next message: click to choose when (usage reset, timer or calendar)';
     document.querySelector('.composer').classList.toggle('is-scheduled', armed);
     promptInput.placeholder = armed
-      ? `\u23F0 Schedule prompt for ${AGENT_LABELS[scheduleModel()]} (will auto-dispatch when quota resets)\u2026`
+      ? `Schedule prompt for ${AGENT_LABELS[scheduleModel()]} (will auto-dispatch ${scheduleTimer.describe() || 'when quota resets'})\u2026` // the clock is drawn by CSS (.composer.is-scheduled)
       : DEFAULT_PLACEHOLDER;
+    renderScheduleTime();
   }
 
   // With the chat's model out of usage, scheduling is on by default, so a run of prompts can be queued
@@ -363,15 +426,23 @@
     const outOfUsage = isOutOfUsage(scheduleModel());
     setScheduleArmed(scheduleChoice ?? outOfUsage, { outOfUsage: scheduleChoice === null && outOfUsage });
   }
-  scheduleBtn.addEventListener('click', () => { scheduleChoice = !scheduleArmed; refreshScheduleDefault(); promptInput.focus(); });
+  // Each click is the next mode: the one last used, the other two in turn, then off (send as usual).
+  scheduleBtn.addEventListener('click', () => { scheduleChoice = scheduleTimer.advance() !== null; refreshScheduleDefault(); promptInput.focus(); });
   setScheduleArmed(false);
 
   function schedulePrompt(text) {
     const model = scheduleModel();
     pendingScheduleLabel = AGENT_LABELS[model];
+    pendingScheduleWhen = scheduleTimer.describe();
     const modelId = activeAgent === model ? activeModelId : undefined;
+    // Timer and calendar make a fixed-time task (a delay counts from this send); the usage reset waits for the limit chosen.
+    const at = scheduleTimer.resolve();
+    const trigger = at ? { dispatchTrigger: 'fixed-time', dispatchTime: new Date(at).toISOString() } : { dispatchTrigger: 'quota-reset', resetWindow: scheduleTimer.resetWindow };
+    // The mode this used is what the next click from "off" starts with, here and after a restart.
+    scheduleTimer.setPreferred(scheduleTimer.mode);
+    vscode.postMessage({ type: 'scheduleMode', mode: scheduleTimer.mode });
     // resumeHere: it fires into this chat, with its context, not a fresh headless one.
-    vscode.postMessage({ type: 'scheduleTask', task: { model, modelId, prompt: text, dispatchTrigger: 'quota-reset', resumeHere: true }, attachments: attachments.map((attachment) => attachment.path) });
+    vscode.postMessage({ type: 'scheduleTask', task: { model, modelId, prompt: text, ...trigger, resumeHere: true }, attachments: attachments.map((attachment) => attachment.path) });
   }
 
   // "Scheduled" confirmation: a bud of the composer pill (Dynamic Island), readable for a while,
@@ -473,10 +544,30 @@
     }
     return chip;
   }
+  // A pasted or dropped image is kept at 2000px on its long edge at most. The models shrink anything larger themselves
+  // (Claude to 1568 or 2576px, GPT to 2048px), so the extra pixels only cost upload time and disk, and a request holding
+  // more than 20 images is rejected by the Claude API if any of them is over 2000px. Smaller images are stored untouched.
+  const MAX_IMAGE_EDGE = 2000;
+  async function capImage(file) {
+    if (!/^image\/(png|jpeg)$/.test(file.type)) return file;
+    try {
+      const bitmap = await createImageBitmap(file);
+      const scale = MAX_IMAGE_EDGE / Math.max(bitmap.width, bitmap.height);
+      if (scale >= 1) { bitmap.close(); return file; }
+      const canvas = new OffscreenCanvas(Math.round(bitmap.width * scale), Math.round(bitmap.height * scale));
+      const context = canvas.getContext('2d');
+      context.imageSmoothingQuality = 'high';
+      context.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+      bitmap.close();
+      return await canvas.convertToBlob({ type: file.type, quality: 0.92 }); // PNG stays lossless; a JPEG is re-encoded once
+    } catch { return file; }
+  }
   function readAttachment(file) {
-    const reader = new FileReader();
-    reader.onload = () => vscode.postMessage({ type: 'attachmentData', name: file.name || `paste-${Date.now()}.png`, mime: file.type || 'application/octet-stream', data: reader.result });
-    reader.readAsDataURL(file);
+    void capImage(file).then((image) => {
+      const reader = new FileReader();
+      reader.onload = () => vscode.postMessage({ type: 'attachmentData', name: file.name || `paste-${Date.now()}.png`, mime: file.type || 'application/octet-stream', data: reader.result });
+      reader.readAsDataURL(image);
+    });
   }
   attachBtn.addEventListener('click', () => vscode.postMessage({ type: 'pickAttachments' }));
   promptInput.addEventListener('paste', (event) => { for (const item of event.clipboardData?.items || []) { if (item.type.startsWith('image/')) { event.preventDefault(); readAttachment(item.getAsFile()); } } });
@@ -983,12 +1074,12 @@
   new MutationObserver(syncPending).observe(transcriptEl, { childList: true, subtree: true });
 
   let lastTurn = null; // P17-I: what an upstream_error card's Retry resends
-  function dispatchTurn(turn) {
+  function dispatchTurn(turn, steer = true) { // steer false: a queued turn taking its turn, which the host lines up behind whatever it has running
     lastTurn = turn;
     if (turn.modelId !== activeModelId) selectModel(turn.modelId);
     appendUserMessage(turn.text, undefined, turn.files);
     setBusy(true);
-    vscode.postMessage({ type: 'send', modelId: turn.modelId, text: turn.text, attachments: turn.attachments, submit: true });
+    vscode.postMessage({ type: 'send', modelId: turn.modelId, text: turn.text, attachments: turn.attachments, submit: true, steer });
   }
 
   function appendInterruptedPill() {
@@ -1127,6 +1218,8 @@
   }
 
   function renderTurnQueue() {
+    vscode.postMessage({ type: 'queuedTurns', count: turnQueue.length }); // so the chime waits for the last one
+    try { vscode.setState({ ...(vscode.getState() || {}), queue: { chatId: currentChatId, turns: turnQueue } }); } catch { /* the queue just isn't kept across a reload */ }
     queueStrip.hidden = !turnQueue.length;
     queueStrip.replaceChildren();
     if (!turnQueue.length) return;
@@ -1140,7 +1233,7 @@
       resume.type = 'button'; resume.className = 'turn-queue-btn is-primary'; resume.textContent = 'Resume';
       resume.addEventListener('click', () => {
         queuePaused = false;
-        if (!busy && turnQueue.length) dispatchTurn(turnQueue.shift());
+        if (!busy && turnQueue.length) dispatchTurn(turnQueue.shift(), false);
         renderTurnQueue();
       });
       head.append(resume);
@@ -1210,6 +1303,7 @@
     if (scheduleArmed) {
       schedulePrompt(text);
       scheduleChoice = null;
+      scheduleTimer.clear(); // the pick was for this prompt; the next one starts from the default again
       refreshScheduleDefault(); // stays on while the model is out of usage, so the next prompt queues too
     } else if (busy && !steer) {
       turnQueue.push(turn);
@@ -1339,9 +1433,9 @@
   // Navigating away counts too: hiding the window keeps what was fixed so far (switching chats flushes in chatLoaded).
   document.addEventListener('visibilitychange', () => { if (document.hidden) flushVoiceDraft(promptInput.value.trim()); });
 
-  queueBtn.addEventListener('click', () => { renderQueue(); openModal(queueModal); });
+  queueBtn.addEventListener('click', () => { if (!queueModal.el.hidden) { closeModal(queueModal.el); return; } queuePinned = false; renderQueue(); openModal(queueModal); });
   newChatBtn.addEventListener('click', () => { attachments = []; renderAttachments(); vscode.postMessage({ type: 'newChat' }); });
-  historyBtn.addEventListener('click', () => { vscode.postMessage({ type: 'requestHistory' }); openModal(historyModal); });
+  historyBtn.addEventListener('click', () => { if (toggleModal(historyModal)) vscode.postMessage({ type: 'requestHistory' }); });
   terminalBtn?.addEventListener('click', () => {
     // The only action that ever reveals the real VS Code terminal — an
     // explicit escape hatch for debugging, not something a tab click does.
@@ -1960,7 +2054,19 @@
   function isTranscriptNearBottom(threshold = 80) {
     return transcriptEl.scrollHeight - transcriptEl.scrollTop - transcriptEl.clientHeight <= threshold;
   }
+  function updateTranscriptFade() {
+    const top = transcriptEl.scrollTop;
+    if (top <= 1) {
+      transcriptEl.classList.remove('has-fade');
+      transcriptEl.style.setProperty('--fade', '0px');
+    } else {
+      const px = Math.min(100, Math.max(0, Math.round((top / 60) * 100)));
+      transcriptEl.style.setProperty('--fade', `${px}px`);
+      transcriptEl.classList.add('has-fade');
+    }
+  }
   transcriptEl.addEventListener('scroll', () => {
+    updateTranscriptFade();
     const top = transcriptEl.scrollTop;
     if (isTranscriptNearBottom()) stickToEnd = true;
     else if (top < lastScrollTop) stickToEnd = false;
@@ -1969,11 +2075,19 @@
   function scrollTranscriptToEnd(force = false) {
     if (!force && !stickToEnd) return;
     stickToEnd = true;
-    requestAnimationFrame(() => { transcriptEl.scrollTop = transcriptEl.scrollHeight; });
+    requestAnimationFrame(() => {
+      transcriptEl.scrollTop = transcriptEl.scrollHeight;
+      updateTranscriptFade();
+    });
   }
   // P17-N: content that grows after the scroll (code highlighting, KaTeX,
   // images decoding, a turn collapsing) re-pins the tail while stuck to it.
-  const pinToEnd = new ResizeObserver(() => { if (stickToEnd) transcriptEl.scrollTop = transcriptEl.scrollHeight; });
+  const pinToEnd = new ResizeObserver(() => {
+    if (stickToEnd) {
+      transcriptEl.scrollTop = transcriptEl.scrollHeight;
+      updateTranscriptFade();
+    }
+  });
   const observeTail = () => {
     pinToEnd.disconnect();
     pinToEnd.observe(transcriptEl); // the composer growing shrinks the viewport too
@@ -1981,6 +2095,7 @@
   };
   observeTail();
   new MutationObserver(observeTail).observe(transcriptEl, { childList: true });
+  updateTranscriptFade();
   // A tool card opened at the tail keeps the tail in view; anywhere else,
   // CSS overflow-anchor holds the viewport steady. (`toggle` doesn't bubble.)
   transcriptEl.addEventListener('toggle', (event) => {
@@ -2523,6 +2638,13 @@
   function settleCard(card, text, tone) {
     card.classList.add('resolved', `is-${tone}`);
     card.querySelectorAll('button, input').forEach((el) => { el.disabled = true; });
+    if (card.matches('.question-card')) {
+      // Folds to one row: the question's tag and the answer; click it to see everything again.
+      card.querySelector('.question-title').textContent = card.dataset.label;
+      card.querySelector('.question-answer').textContent = text;
+      card.open = false;
+      return;
+    }
     let status = card.querySelector('.approval-status');
     if (!status) {
       status = document.createElement('div');
@@ -2605,9 +2727,12 @@
   // (radio or multi-select), plus a free "Other" answer.
   function appendQuestionCard({ agent, actionId, questions }) {
     clearEmptyState();
-    const card = document.createElement('div');
+    // A <details> like the tool steps: open while it waits, one summary row once answered, click to read it again.
+    const card = document.createElement('details');
     card.className = 'question-card';
+    card.open = true;
     card.dataset.actionId = actionId;
+    card.dataset.label = questions[0]?.header || 'Question';
     const answers = new Map();
     const submit = document.createElement('button');
     submit.type = 'button';
@@ -2615,14 +2740,15 @@
     submit.textContent = 'Send answer';
     const refresh = () => { submit.disabled = questions.some((q) => !(answers.get(q.question) || []).length); };
 
-    const head = document.createElement('div');
-    head.className = 'approval-head';
-    head.innerHTML = '<svg viewBox="0 0 16 16" fill="none" aria-hidden="true"><circle cx="8" cy="8" r="6" stroke="currentColor" stroke-width="1.5"/><path d="M6.4 6.3a1.7 1.7 0 1 1 2.4 1.6c-.5.2-.8.6-.8 1.1v.3M8 11.2v.1" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>';
-    const title = document.createElement('span');
-    title.className = 'approval-title';
-    title.textContent = `${AGENT_TITLES[agent] || 'The agent'} has a question`;
-    head.appendChild(title);
+    const head = document.createElement('summary');
+    head.className = 'question-summary';
+    head.innerHTML = '<span class="question-icon"><svg class="icon-ask" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M6.2 6.2a1.9 1.9 0 1 1 2.7 1.7c-.6.3-.9.7-.9 1.3M8 11.6v.1" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg><svg class="icon-done" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="m4 8.4 2.7 2.6L12 5.5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg></span><span class="question-title"></span><span class="question-answer"></span><svg class="question-chevron" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="m6 3.5 4.5 4.5L6 12.5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+    head.querySelector('.question-title').textContent = `${AGENT_TITLES[agent] || 'The agent'} has a question`;
+    head.addEventListener('click', (event) => { if (!card.classList.contains('resolved')) event.preventDefault(); }); // only foldable once answered
     card.appendChild(head);
+    const body = document.createElement('div');
+    body.className = 'question-body';
+    card.appendChild(body);
 
     questions.forEach((q, qi) => {
       const block = document.createElement('div');
@@ -2638,7 +2764,7 @@
       text.textContent = q.question;
       block.appendChild(text);
       const list = document.createElement('div');
-      list.className = 'question-options';
+      list.className = q.multiSelect ? 'question-options' : 'question-options pill-track'; // a single choice gets the gliding pill
       list.setAttribute('role', q.multiSelect ? 'group' : 'radiogroup');
       list.setAttribute('aria-label', q.question);
       const pick = (label, on) => {
@@ -2656,9 +2782,20 @@
         btn.dataset.label = opt.label;
         btn.setAttribute('role', q.multiSelect ? 'checkbox' : 'radio');
         btn.setAttribute('aria-checked', 'false');
+        const radio = document.createElement('span');
+        radio.className = 'question-radio';
+        btn.appendChild(radio);
+        // "(Recommended)" becomes a small tag; the answer sent back still carries the full label.
+        const recommended = /\s*\(Recommended\)\s*$/i.test(opt.label);
         const l = document.createElement('span');
         l.className = 'question-option-label';
-        l.textContent = opt.label;
+        l.textContent = recommended ? opt.label.replace(/\s*\(Recommended\)\s*$/i, '') : opt.label;
+        if (recommended) {
+          const tag = document.createElement('span');
+          tag.className = 'question-tag';
+          tag.textContent = 'Recommended';
+          l.appendChild(tag);
+        }
         btn.appendChild(l);
         if (opt.description) {
           const d = document.createElement('span');
@@ -2683,7 +2820,7 @@
       });
       other.addEventListener('keydown', (event) => { if (event.key === 'Enter' && !submit.disabled) submit.click(); });
       block.appendChild(other);
-      card.appendChild(block);
+      body.appendChild(block);
       if (qi === 0) queueMicrotask(() => list.querySelector('.question-option')?.focus({ preventScroll: true }));
     });
 
@@ -2694,12 +2831,12 @@
     skip.className = 'approval-btn approval-reject';
     skip.textContent = 'Skip';
     actions.append(submit, skip);
-    card.appendChild(actions);
+    body.appendChild(actions);
     submit.addEventListener('click', () => {
       const payload = Object.fromEntries(questions.map((q) => [q.question, (answers.get(q.question) || []).join(', ')]));
       vscode.postMessage({ type: 'questionResponse', actionId, answers: payload });
       pendingCards.delete(actionId);
-      settleCard(card, `Answered: ${Object.values(payload).join(' \u00b7 ')}`, 'allowed');
+      settleCard(card, Object.values(payload).join(' \u00b7 '), 'allowed');
       promptInput.focus();
     });
     skip.addEventListener('click', () => {
@@ -2818,6 +2955,7 @@
     });
     restoringHistory = false;
     scheduleChoice = null; // a new chat starts from its own model's usage, not the last chat's clock pick
+    scheduleTimer.clear();
     refreshScheduleDefault();
     if (running) {
       turnAnchor = anchor;
@@ -2869,7 +3007,6 @@
     input.addEventListener('blur', () => finish(true));
   }
 
-  const STATE_LABELS = { running: 'Running', waiting: 'Needs input' };
   function renderHistory(sessions) {
     const list = sessions || [];
     const working = list.filter((session) => session.state).length;
@@ -2911,17 +3048,36 @@
     wrap.className = 'queue-list';
     for (const session of sessions) {
       const card = document.createElement('article');
-      card.className = `history-card${session.state ? ` is-${session.state}` : ''}${session.id === currentChatId ? ' is-current' : ''}`;
+      // The same look as the rail's Recent tiles: a chat bubble whose rim is white for the chat in this window, blue for
+      // one that ran in the last minutes, orange when it waits for you; a running chat wears the orb on its top right.
+      card.className = `history-card${session.state ? ` is-${session.state}` : ''}${session.active ? ' is-recent' : ''}${session.id === currentChatId ? ' is-current' : ''}`;
       card.dataset.id = session.id;
       const head = document.createElement('div');
       head.className = 'queue-card-head';
-      if (session.state || session.id === currentChatId) {
-        const status = document.createElement('span');
-        status.className = 'history-status';
-        status.textContent = [STATE_LABELS[session.state], session.id === currentChatId ? 'This window' : ''].filter(Boolean).join(' · ');
-        head.append(status);
+      // (A chat waiting for you says so with its yellow, pulsing rim, not in words.)
+      // The providers that answered, as their marks (the name is the tooltip), like the tile in the rail.
+      for (const model of session.models || []) {
+        const mark = document.createElement('span');
+        mark.className = 'agent-mark';
+        mark.title = MODEL_LABELS[model] || model;
+        mark.setAttribute('aria-label', mark.title);
+        mark.innerHTML = (window.AGENT_ICONS && window.AGENT_ICONS[model]) || '';
+        head.append(mark);
       }
-      for (const model of session.models || []) head.append(modelPill(model));
+      const latest = (session.models || []).at(-1);
+      if (latest) card.dataset.agent = latest; // the orb's colour
+      if (session.state === 'running') {
+        const orb = document.createElement('span');
+        orb.className = 'pending-orb history-spinner';
+        orb.setAttribute('aria-hidden', 'true');
+        card.append(orb);
+      }
+      const titleEl = document.createElement('span');
+      titleEl.className = 'history-title';
+      titleEl.textContent = session.title || session.preview || 'New chat';
+      titleEl.title = session.title || session.preview || 'New chat';
+      head.append(titleEl);
+
       const when = document.createElement('time');
       when.className = 'queue-time';
       when.dateTime = session.updatedAt || '';
@@ -2930,9 +3086,24 @@
       count.className = 'history-count';
       count.textContent = `${session.messageCount || 0} message${session.messageCount === 1 ? '' : 's'}`;
       head.append(when, count);
+
       const preview = document.createElement('div');
       preview.className = 'queue-prompt history-preview';
-      preview.textContent = session.preview || 'New chat';
+      if (session.lastMessage && session.lastMessage.text) {
+        const sender = document.createElement('span');
+        sender.className = 'history-preview-sender';
+        const senderName = session.lastMessage.role === 'user'
+          ? 'You'
+          : (session.lastMessage.agent ? (session.lastMessage.agent.charAt(0).toUpperCase() + session.lastMessage.agent.slice(1)) : 'AI');
+        sender.textContent = `${senderName}: `;
+        const text = document.createElement('span');
+        text.className = 'history-preview-text';
+        text.textContent = session.lastMessage.text;
+        preview.append(sender, text);
+      } else {
+        preview.textContent = 'No messages yet';
+      }
+
       const actions = document.createElement('div');
       actions.className = 'history-actions';
       const action = (icon, label, handler, cls = '') => {
@@ -2946,15 +3117,17 @@
         actions.append(btn);
       };
       if (session.state) action('stop', 'Stop', () => vscode.postMessage({ type: 'stopChat', id: session.id }));
-      action('rename', 'Rename', () => editTitle(preview, session.preview || '', (title) => vscode.postMessage({ type: 'renameChat', id: session.id, title })));
+      action('rename', 'Rename', () => editTitle(titleEl, session.title || session.preview || '', (title) => vscode.postMessage({ type: 'renameChat', id: session.id, title })));
       action('fork', 'Fork into a new chat', () => { vscode.postMessage({ type: 'forkChat', id: session.id }); closeModal(historyModal.el); });
       action('delete', 'Delete', () => { card.classList.add('is-leaving'); vscode.postMessage({ type: 'deleteChat', id: session.id }); }, 'is-danger');
       head.append(actions);
       // The whole card opens the chat; whatever runs in the current one keeps going in the background.
       card.tabIndex = 0;
       card.setAttribute('role', 'button');
-      card.setAttribute('aria-label', `Open chat: ${session.preview || 'New chat'}`);
-      const open = () => {
+      card.setAttribute('aria-label', `Open chat${session.state === 'waiting' ? ' (waiting for your input)' : ''}: ${session.title || session.preview || 'New chat'}`);
+      if (session.state === 'waiting') card.title = 'Waiting for your input';
+      const open = (event) => {
+        if (event?.target?.closest('.history-actions') || event?.target?.tagName === 'INPUT') return;
         if (session.id !== currentChatId) vscode.postMessage({ type: 'restoreChat', id: session.id });
         closeModal(historyModal.el);
       };
@@ -2962,8 +3135,9 @@
       card.addEventListener('keydown', (event) => {
         if (event.target === card && (event.key === 'Enter' || event.key === ' ')) { event.preventDefault(); open(); }
       });
-      card.append(head, preview);
+      card.prepend(head, preview);
       wrap.append(card);
+      window.shapeBubbleCard?.(card);
     }
     section.append(wrap);
     return section;
@@ -2980,16 +3154,33 @@
         break;
       }
       case 'editorTheme': editorTheme = message.theme; void applyEditorTheme(); break;
+      // A chat switch has started: the old thread goes, shimmering placeholders stand in until chatLoaded renders the new one.
+      case 'chatLoading': {
+        const bar = (width) => `<i class="skeleton" style="width:${width}%"></i>`;
+        transcriptEl.innerHTML = `<div class="chat-skeleton" aria-busy="true" aria-label="Loading chat">
+          <div class="skel-user"><i class="skeleton" style="width:58%"></i></div>
+          <div class="skel-reply">${[92, 84, 68].map(bar).join('')}</div>
+          <div class="skel-user"><i class="skeleton" style="width:42%"></i></div>
+          <div class="skel-reply">${[88, 61].map(bar).join('')}</div></div>`;
+        break;
+      }
       case 'chatLoaded': {
         // Whatever ran in the previous thread keeps going in the background;
         // queued turns belonged to that thread.
         flushVoiceDraft(promptInput.value.trim());
-        awaitingInterruptAck = false; queuePaused = false; turnQueue = [];
+        // Queued turns belong to the thread they were queued in: a different chat drops them, but the same chat shown
+        // again (or this window reloaded, which restores them from its saved state, paused) keeps them.
+        awaitingInterruptAck = false;
+        const savedQueue = vscode.getState()?.queue;
+        if (message.chat?.id && message.chat.id === currentChatId) { /* same chat: the queue stays as it is */ }
+        else if (message.chat?.id && savedQueue?.chatId === message.chat.id && Array.isArray(savedQueue.turns) && savedQueue.turns.length) { turnQueue = savedQueue.turns; queuePaused = true; }
+        else { queuePaused = false; turnQueue = []; }
         renderTurnQueue();
         busy = false;
         resetThought();
         resetAgents(); // the new chat's own agents follow in a subagentReplay
         restoreChat(message.chat, message.running);
+        renderTurnQueue(); // again, now that the chat's id is known: saves the queue under it and tells the host the count
         restoreAgents();
         setBusy(Boolean(message.running));
         break;
@@ -3068,7 +3259,7 @@
       // aiChatPanel.injectPrompt with submit:false (e.g. a batch dispatch the
       // user should review before sending) drops the prompt into the
       // composer instead of sending it immediately.
-      // Files dropped in, or sent here from the Explorer's "Add to AI Chat".
+      // Files dropped in, or sent here from the Explorer's "Add to Clanker Controller".
       case 'insertMentions': {
         for (const file of message.paths || []) insertMention(file, false);
         promptInput.focus();
@@ -3207,7 +3398,7 @@
         } else resetThought();
         turnAnchor = null;
         setBusy(false);
-        if (!message.interrupted && !message.compacting && !queuePaused && turnQueue.length) { dispatchTurn(turnQueue.shift()); renderTurnQueue(); }
+        if (!message.interrupted && !message.compacting && !queuePaused && turnQueue.length) { dispatchTurn(turnQueue.shift(), false); renderTurnQueue(); }
         break;
       }
       case 'routing': {
@@ -3221,6 +3412,15 @@
         setBusy(true);
         break;
       }
+      // The launcher's dock points at these two popups.
+      // Each one toggles: the same button again closes it, another one switches to its popup.
+      case 'openQueue':
+        if (!queueModal.el.hidden) closeModal(queueModal.el);
+        else { queuePinned = true; renderQueue(); openModal(queueModal); }
+        break;
+      case 'openHistory': if (toggleModal(historyModal)) vscode.postMessage({ type: 'requestHistory' }); break;
+      case 'openSettings': if (toggleModal(settingsModal)) vscode.postMessage({ type: 'requestFleet' }); break;
+      case 'fleet': chatSettings.fleet(message); break;
       case 'schedulerQueue': {
         schedulerTasks = Array.isArray(message.queue) ? message.queue : [];
         renderQueueButton();
@@ -3233,8 +3433,10 @@
         break;
       }
       case 'taskScheduled': {
-        showScheduleBud(`Scheduled for ${pendingScheduleLabel || 'the agent'}: sends when its usage limit resets`);
+        showScheduleBud(`Scheduled for ${pendingScheduleLabel || 'the agent'}: sends ${pendingScheduleWhen || 'when its usage limit resets'}`);
         pendingScheduleLabel = null;
+        pendingScheduleWhen = '';
+        renderScheduleTime();
         pulseQueueSaved();
         break;
       }
