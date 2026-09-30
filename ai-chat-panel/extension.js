@@ -46,6 +46,8 @@ const AUTO_COMPACT_RATIO = 0.90;
 const SUBAGENT_LOG_LIMIT = 3000; // subagent events kept per chat for the agents viewer
 const { notifyReply } = require('./lib/notify.js');
 const { sweepStorage } = require('./lib/storage-gc.js');
+const { planUndo, applyUndo, fileCount, fileList } = require('./lib/turn-undo.js');
+const { verifyInstruction, ARCHITECT_PREFIX, buildInstruction } = require('./lib/turn-extras.js');
 
 // P17-X: clock locale + format shared by both webviews ('24h' default, 'auto' follows vscode.env.language).
 const timePrefs = () => JSON.stringify({ locale: vscode.env.language || 'en', timeFormat: vscode.workspace.getConfiguration('aiChatPanel').get('timeFormat', '24h') });
@@ -355,6 +357,8 @@ async function planTurn(run, message, deps) {
   if (dispatch.agent === 'gemini' && /^\/grillme(\b|\s|$)/i.test(promptText)) {
     promptText = promptText.replace(/^\/grillme(\b|\s|$)/i, '/grill-me$1');
   }
+  // Auto-Verify and Architect/Editor wrap the prompt the agent gets, never a slash command, and never the transcript.
+  if (!slashAgent && (message.promptPrefix || message.promptSuffix)) promptText = [message.promptPrefix, promptText, message.promptSuffix].filter(Boolean).join('\n\n');
   // Memory across turns and agents: the agent resumes its own session in this
   // chat (it remembers its turns), and is briefed on the turns it missed while
   // other agents answered. Auto's role boundary goes out once on a new
@@ -371,7 +375,7 @@ async function planTurn(run, message, deps) {
     rerouted,
     begin: {
       agent: dispatch.agent,
-      user: { role: 'user', text, at: new Date().toISOString(), agent: dispatch.agent, attachments: Array.isArray(message.attachments) ? message.attachments : [], ...(message.scheduled ? { scheduled: true } : {}) },
+      user: { role: 'user', text, at: new Date().toISOString(), agent: dispatch.agent, attachments: Array.isArray(message.attachments) ? message.attachments : [], ...(message.scheduled ? { scheduled: true } : {}), ...(message.pipelineBuild ? { pipelineBuild: true } : {}) },
       reply: { role: 'assistant', text: '', agent: dispatch.agent, modelLabel: used?.label, roleName: session?.id ? undefined : dispatch.roleName, routing: dispatch.split ? 'contract-lock' : undefined },
       routing: { agentId: dispatch.agent, modelLabel: used?.label, roleName: session?.id ? null : dispatch.roleName, auto: requested === 'auto', split: dispatch.split },
       run: { agent: dispatch.agent, prompt, freshPrompt, resume: session?.id || null, codexCommand: codexCommand?.name || null, codexCommandArgs: codexCommand?.args || [], attachments: safeAttachmentPaths(deps, message.attachments), model: used?.model, effort: used?.effort, permissionMode: deps.getPermissionMode?.() || 'fullAccess' },
@@ -438,14 +442,49 @@ class ChatRun {
     }
     // The composer draws what you type itself; a scheduled prompt arrives from the queue, so the
     // window is told to draw it as your bubble, the same as if you had just sent it.
-    if (user.scheduled) this.post({ type: 'userMessage', text: user.text, at: user.at, scheduled: true });
+    if (user.scheduled || user.pipelineBuild) this.post({ type: 'userMessage', text: user.text, at: user.at, scheduled: Boolean(user.scheduled) });
     this.turn = { ...routing, startedAt: Date.now() };
     this.post({ type: 'routing', ...routing });
     if (contextEstimate) this.post({ type: 'usage', agent, contextTokens: contextEstimate.tokens, estimated: true });
     this.streamEngine.models = this.deps.getModels();
     this.streamEngine.permissionMode = this.deps.getPermissionMode?.() || 'fullAccess';
+    this.streamEngine.turnBases = null; // set again by start(), unless the turn goes to a process that is already running
     this.streamEngine.start(run);
+    // What "Undo turn" goes back to: the repos as this turn found them.
+    const bases = this.streamEngine.turnBases;
+    this.turnUndo = bases?.size && !reply.compact ? { bases: [...bases], startedAt: this.streamEngine.turnStartedAt } : null;
     this.deps.notifyHistory();
+  }
+
+  /** Turn end: notes on the reply which files the turn changed (nothing is kept when none), and tells the window. */
+  recordUndo(reply) {
+    const undo = this.turnUndo;
+    this.turnUndo = null;
+    if (!undo || !reply || reply.compact) return 0;
+    const count = fileCount(planUndo(undo.bases, undo.startedAt));
+    if (count) reply.undo = { ...undo, count };
+    return count;
+  }
+
+  /**
+   * /architect: one model plans, another builds. The plan turn ends here; its text goes to the editor model as the
+   * next turn (queued ahead of anything you queued, drained by the turn-end below). Stop, or a turn without a plan, ends it.
+   */
+  continuePipeline(event, reply) {
+    const pipeline = this.pipeline;
+    if (!pipeline || !reply || reply.compact) return;
+    this.pipeline = null;
+    const plan = reply.text.trim();
+    if (event.interrupted) return;
+    if (!plan || /^(Claude|Gemini|Codex) error:/.test(plan)) { this.post({ type: 'notice', text: 'The architect turn ended without a plan, so nothing was built.' }); return; }
+    this.queue.unshift({
+      text: 'Build the plan above.',
+      modelId: pipeline.editorModel,
+      pipelineBuild: true,
+      promptPrefix: buildInstruction(plan, pipeline.task),
+      promptSuffix: pipeline.verify ? verifyInstruction(pipeline.verifyCommand) : undefined,
+      attachments: [],
+    });
   }
 
   async autoGenerateTitle(promptText) {
@@ -630,6 +669,7 @@ class ChatRun {
     let compacted = null;
     let autoCompact = null;
     let contextEstimate = null;
+    let undoCount = 0;
     if (event.type === 'turn_complete' && this.activeAssistantMessage) {
       const reply = this.activeAssistantMessage;
       const summary = reply.text.trim();
@@ -663,6 +703,8 @@ class ChatRun {
         const more = this.queuedTurns > 0 || this.queue.some((next) => !next.scheduled);
         const scheduled = Boolean(this.chat.messages.findLast((entry) => entry.role === 'user')?.scheduled);
         if (!reply.compact && !more) this.deps.notify?.(reply.agent, reply.text, this.chat.title || this.chat.messages.find((entry) => entry.role === 'user')?.text?.slice(0, 40), { chime: !scheduled });
+        // Opt-in droid voice (docs/clanker-controller-mascot-spec.md §4): same moments as the chime, played by the window itself.
+        if (!reply.compact && !more && !scheduled && vscode.workspace.getConfiguration('aiChatPanel').get('droidSounds', false)) this.post({ type: 'droid', kind: /^(Claude|Gemini|Codex) error:/.test(reply.text.trim()) ? 'warn' : 'done' });
         if (reply.agent === 'codex' && !reply.compact && this.chat.context?.estimated) {
           this.chat.context.tokens = Math.min(CONTEXT_LIMITS.codex, this.chat.context.tokens + estimateTokens(reply.text));
           contextEstimate = this.chat.context;
@@ -670,6 +712,9 @@ class ChatRun {
       }
       if (this.activeAssistantMessage) this.activeAssistantMessage.at = new Date().toISOString();
       if (this.activeAssistantMessage && event.totalTokens) this.activeAssistantMessage.tokens = event.totalTokens; // P17-V
+      if (this.activeAssistantMessage && event.costUsd) this.activeAssistantMessage.costUsd = event.costUsd; // what Claude Code itself reports
+      undoCount = this.recordUndo(this.activeAssistantMessage);
+      this.continuePipeline(event, this.activeAssistantMessage);
       if (event.interrupted && this.activeAssistantMessage) this.activeAssistantMessage.interrupted = true;
       this.chat.lastRunAt = new Date().toISOString();
       this.save();
@@ -678,6 +723,7 @@ class ChatRun {
       this.pending.clear();
     }
     this.post(autoCompact ? { ...event, compacting: true } : event);
+    if (undoCount) this.post({ type: 'undoOffer', count: undoCount });
     if (compacted) this.post({ type: 'usage', agent: compacted.agent, contextTokens: compacted.tokens, estimated: true });
     else if (contextEstimate) this.post({ type: 'usage', agent: contextEstimate.agent, contextTokens: contextEstimate.tokens, estimated: true });
     // An agent past 90% of its window compacts before the next turn can overflow it.
@@ -781,6 +827,7 @@ class ChatWindowHost {
       case 'scheduleTask': await this.scheduleTask(message); break;
       case 'scheduleMode': this.deps.setScheduleMode?.(message.mode); break; // the mode the last scheduled prompt used
       case 'remoteControl': void this.run.toggleRemote(); break;
+      case 'undoTurn': void this.undoLastTurn(); break;
       case 'requestSchedulerQueue': await this.pushSchedulerQueue(); break;
       case 'cancelScheduledTask': if (message.taskId) { await this.deps.schedulerQueue.dequeue(message.taskId); this.deps.notifySchedulerQueue?.(); } break;
       case 'editScheduledTask': {
@@ -946,15 +993,55 @@ class ChatWindowHost {
     // scheduled prompt has started in this chat. It must wait its turn, not interrupt that one or race it into begin().
     if (message.steer === false && (run.turn || run.starting)) { run.enqueue({ ...message, text }); return; }
     run.streamEngine.interrupt();
-    if (message.modelId) this.selectModel(message.modelId);
-    else if (message.agentId) this.setActiveAgent(message.agentId);
-    const plan = await planTurn(run, { ...message, text, modelId: this.activeModelId }, this.deps);
+    // /architect turns run on the models set for them; the picker stays where you left it.
+    const config = vscode.workspace.getConfiguration('aiChatPanel');
+    const pipelineModel = (key, fallback) => (modelOption(config.get(key)) || modelOption(fallback)).id;
+    const pinned = Boolean(message.pipeline || message.pipelineBuild);
+    if (!pinned) {
+      if (message.modelId) this.selectModel(message.modelId);
+      else if (message.agentId) this.setActiveAgent(message.agentId);
+    }
+    // What wraps this turn's prompt (never the transcript): Auto-Verify, or the architect's and editor's briefs.
+    const verifyCommand = config.get('verifyCommand', '');
+    const extras = message.pipelineBuild ? { promptPrefix: message.promptPrefix, promptSuffix: message.promptSuffix }
+      : message.pipeline ? { promptPrefix: ARCHITECT_PREFIX, promptSuffix: undefined }
+        : { promptPrefix: undefined, promptSuffix: message.verify ? verifyInstruction(verifyCommand) : undefined };
+    const modelId = message.pipeline ? pipelineModel('architectModel', 'claude-opus-5-5-medium') : pinned ? pipelineModel('editorModel', 'gpt-6.1-sol-high') : this.activeModelId;
+    const plan = await planTurn(run, { ...message, text, ...extras, modelId }, this.deps);
     this.lastRoutedAgent = plan.agent;
     // A low quota can reroute an explicit pick; the picker follows it. 'auto'
     // stays selected across turns (the reply bubble names the agent used).
-    if (plan.rerouted) this.setActiveAgent(plan.agent);
+    if (plan.rerouted && !pinned) this.setActiveAgent(plan.agent);
     run.chat.modelId = this.activeModelId; // what the picker shows when you come back to this chat
+    run.pipeline = message.pipeline ? { task: text, editorModel: pipelineModel('editorModel', 'gpt-6.1-sol-high'), verify: Boolean(message.verify), verifyCommand } : null;
     run.begin(plan.begin);
+  }
+
+  /** /undo and the reply's Undo button: the last turn's file changes go back to how the turn found them (after you confirm). */
+  async undoLastTurn() {
+    const run = this.run;
+    const post = (message) => this.panel.webview.postMessage(message);
+    const notice = (text) => post({ type: 'notice', text });
+    if (run.turn) return notice('Undo waits until the running turn is done.');
+    const messages = run.chat.messages;
+    const at = messages.findLastIndex((entry) => entry.role === 'assistant' && !entry.compact);
+    const last = messages[at];
+    if (!last?.undo || last.undone || messages.slice(at).some((entry) => entry.role === 'user' && !entry.compact)) return notice('Nothing to undo: the last turn changed no files.');
+    const plans = planUndo(last.undo.bases, last.undo.startedAt);
+    const count = fileCount(plans);
+    if (!count) {
+      post({ type: 'undoOffer', count: 0 });
+      return notice(plans.some((plan) => plan.missing) ? 'Git no longer has the snapshot from before that turn, so it can\'t be undone.' : 'Those files already match how they were before the turn.');
+    }
+    const files = fileList(plans, this.deps.workspaceDir);
+    const shown = files.slice(0, 12).join('\n') + (files.length > 12 ? `\n… and ${files.length - 12} more` : '');
+    const answer = await vscode.window.showWarningMessage(`Undo the last turn? ${count} file${count === 1 ? '' : 's'} go back to how they were before it.`, { modal: true, detail: `${shown}\n\nEdits of your own in these files since the turn started are undone too.` }, 'Undo turn');
+    if (answer !== 'Undo turn') return;
+    const done = applyUndo(plans);
+    last.undone = true;
+    run.save();
+    post({ type: 'undoOffer', count: 0 });
+    notice(`Undid the last turn: ${done.restored} restored, ${done.removed} removed${done.failed.length ? `, ${done.failed.length} could not be changed (${done.failed.slice(0, 3).join(', ')})` : ''}.`);
   }
 
   /** The Compact button: compacts whichever agent's context the gauge shows (see ChatRun.compact). */

@@ -276,7 +276,12 @@ class SlashCommandCatalog {
 
     const codex = (await this.codexCommands.list()).map((command) => ({ ...command, agent: 'codex' }));
     // The panel's own command (headless runs can't do it; extension.js starts it in a terminal).
-    const panel = [{ name: 'remote-control', description: 'Continue this chat from the Claude app on your phone', agent: 'claude' }];
+    // `panel` ones are Clanker's own and show under every model (main.js handles them before anything is sent).
+    const panel = [
+      { name: 'remote-control', description: 'Continue this chat from the Claude app on your phone', agent: 'claude' },
+      { name: 'undo', description: 'Put the last turn\'s file changes back (asks first)', agent: 'claude', panel: true },
+      { name: 'architect', description: 'One model plans, another builds: /architect <task>', agent: 'claude', panel: true },
+    ];
     return [
       ...panel,
       ...this.claude().filter((command) => command.name !== 'remote-control'),
