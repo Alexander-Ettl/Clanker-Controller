@@ -2366,44 +2366,95 @@
   // Tool cards, matched to their result by toolId (Claude tool_use id, Codex
   // item id, agy step) so parallel or interleaved tools never cross wires.
   const toolCards = new Map();
-  const SHELL_TOOLS = /^(bash|powershell|shell|run_command)$/i;
-  const EDIT_TOOLS = /^(edit|write|multiedit|notebookedit|write_to_file|replace_file_content)$/i;
+  const SHELL_TOOLS = /^(bash|powershell|shell|run_command|command_execution)$/i;
+  const EDIT_TOOLS = /^(edit|write|multiedit|notebookedit|write_to_file|(multi_)?replace_file_content|file_change|edit_file|create_file)$/i;
+  const READ_TOOLS = /^(read|view_file|view|list_dir|view_content|read_file)$/i;
+  const SEARCH_TOOLS = /^(glob|grep|grep_search|find_by_name|search_in_file|find_file)$/i;
+  const WEB_TOOLS = /^(web_?(fetch|search)|search_?web|read_?url_?content|read_?browser_?page|browser_?page)$/i;
+  const TASK_TOOLS = /^(manage_?task)$/i;
+  const AGENT_TOOLS = /^(agent|task|invoke_?subagent|manage_?subagents|define_?subagent)$/i;
+
   function toolKind(name) {
-    if (SHELL_TOOLS.test(name || '')) return 'shell';
-    if (EDIT_TOOLS.test(name || '')) return 'edit';
-    if (/^(glob|grep|grep_search|find_by_name)$/i.test(name || '')) return 'search';
-    if (/^(read|view_file|list_dir)$/i.test(name || '')) return 'read';
-    if (/^(agent|task)$/i.test(name || '')) return 'agent'; // Claude spawning a subagent
+    const raw = String(name || '').trim();
+    if (TASK_TOOLS.test(raw)) return 'task';
+    if (SHELL_TOOLS.test(raw)) return 'shell';
+    if (EDIT_TOOLS.test(raw)) return 'edit';
+    if (READ_TOOLS.test(raw)) return 'read';
+    if (WEB_TOOLS.test(raw)) return 'web';
+    if (SEARCH_TOOLS.test(raw)) return 'search';
+    if (AGENT_TOOLS.test(raw)) return 'agent';
     // The rarer tools each get a glyph; anything still unknown keeps the clock.
-    for (const [kind, pattern] of TOOL_PATTERNS) if (pattern.test(name || '')) return kind;
+    for (const [kind, pattern] of TOOL_PATTERNS) if (pattern.test(raw)) return kind;
     return 'other';
   }
   const TOOL_PATTERNS = [
-    ['handback', /^subagenthandback$/i],
-    ['message', /^(sendmessage|pushnotification)$/i],
-    ['web', /^web(fetch|search)$/i],
+    ['task', /^(manage_?task)$/i],
+    ['handback', /^subagent_?handback$/i],
+    ['message', /^(send_?message|push_?notification)$/i],
+    ['web', /^(web_?(fetch|search)|search_?web|read_?url_?content|read_?browser_?page|browser_?page)$/i],
+    ['image', /^(generate_?image|image_?generate)$/i],
+    ['question', /^(ask_?question|ask_?user_?question|ask_?followup_?question)$/i],
     ['todo', /^(todowrite|task(create|update|list|get)|update_plan)$/i],
     ['plan', /^(enter|exit)planmode$/i],
     ['skill', /^skill$/i],
-    ['schedule', /^(cron(create|delete|list)|schedulewakeup)$/i],
+    ['schedule', /^(schedule|cron(create|delete|list)|schedulewakeup)$/i],
     ['monitor', /^(monitor|bashoutput|taskoutput)$/i],
     ['stop', /^(taskstop|killshell|kill_bash)$/i],
     ['plug', /^(mcp__|toolsearch$|listmcpresources$|readmcpresource$)/i],
     ['worktree', /^(enter|exit)worktree$/i],
     ['remote', /^remotetrigger$/i],
   ];
+
+  function toolDisplayName(name, kind) {
+    const raw = String(name || '').trim();
+    const clean = raw.toLowerCase().replace(/[-_]/g, '');
+
+    if (kind === 'shell') return 'Run';
+    if (kind === 'edit') return 'Edit';
+    if (kind === 'read' || /^(viewfile|readfile|view|read|listdir|viewcontent)$/i.test(clean)) return 'View';
+    if (/^(searchweb|websearch)$/i.test(clean)) return 'Web Search';
+    if (/^(readurlcontent|webfetch)$/i.test(clean)) return 'Web Fetch';
+    if (/^(readbrowserpage|browserpage)$/i.test(clean)) return 'Browser';
+    if (/^(managetask)$/i.test(clean)) return 'ManageTask';
+    if (/^(managesubagents)$/i.test(clean)) return 'ManageSubagents';
+    if (/^(definesubagent)$/i.test(clean)) return 'DefineSubagent';
+    if (/^(invokesubagent)$/i.test(clean)) return 'Subagent';
+    if (/^(sendmessage|pushnotification)$/i.test(clean)) return 'Message';
+    if (/^(subagenthandback|handback)$/i.test(clean)) return 'Handback';
+    if (/^(generateimage|imagegenerate)$/i.test(clean)) return 'Image';
+    if (/^(askquestion|askuserquestion|askfollowupquestion)$/i.test(clean)) return 'Question';
+    if (/^(schedule|schedulewakeup|croncreate|crondelete|cronlist)$/i.test(clean)) return 'Schedule';
+    if (/^(grepsearch|searchinfile|grep)$/i.test(clean)) return 'Grep';
+    if (/^(findbyname|findfile|glob)$/i.test(clean)) return 'Glob';
+    if (/^(todowrite|taskcreate|taskupdate|tasklist|taskget|updateplan)$/i.test(clean)) return 'Todo';
+    if (/^(enterplanmode|exitplanmode)$/i.test(clean)) return 'Plan';
+    if (/^(skill)$/i.test(clean)) return 'Skill';
+    if (/^(monitor|bashoutput|taskoutput)$/i.test(clean)) return 'Monitor';
+    if (/^(taskstop|killshell|killbash)$/i.test(clean)) return 'Stop';
+    if (/^(enterworktree|exitworktree)$/i.test(clean)) return 'Worktree';
+    if (/^(remotetrigger)$/i.test(clean)) return 'Remote';
+    if (/^mcp__/i.test(raw)) return raw.replace(/^mcp__/, '');
+    if (raw.includes('_') || raw.includes('-')) {
+      return raw.split(/[-_]+/).map((w) => w.charAt(0).toUpperCase() + w.slice(1)).join(' ');
+    }
+    return raw || 'Tool';
+  }
+
   const lineIcon = (body) => `<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${body}</svg>`;
   const TOOL_ICONS = {
     shell: '<svg viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M3 4.5 6.5 8 3 11.5M8 11.5h5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>',
     edit: PENCIL_SVG,
     search: '<svg viewBox="0 0 16 16" fill="none" aria-hidden="true"><circle cx="7" cy="7" r="4.25" stroke="currentColor" stroke-width="1.5"/><path d="m10.2 10.2 3.3 3.3" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>',
     read: '<svg viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M1.75 8S4.25 3.5 8 3.5 14.25 8 14.25 8 11.75 12.5 8 12.5 1.75 8 1.75 8z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/><circle cx="8" cy="8" r="2" stroke="currentColor" stroke-width="1.5"/></svg>',
+    task: lineIcon('<rect x="3" y="3" width="10" height="10.5" rx="1.5"/><path d="M6 1.75h4v2.5H6z"/><path d="m5.5 8 1.8 1.8 3.2-3.2"/>'),
     other: '<svg viewBox="0 0 16 16" fill="none" aria-hidden="true"><circle cx="8" cy="8" r="5.5" stroke="currentColor" stroke-width="1.5"/><path d="M8 5.5v3l2 1.2" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>',
     // The composer's agents chip robot (extension.js #agentsBtn), so the step and the chip read as one thing.
     agent: '<svg viewBox="0 0 16 16" fill="none" aria-hidden="true"><rect x="3" y="5" width="10" height="8" rx="2.5" stroke="currentColor" stroke-width="1.3"/><path d="M8 5V2.75" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/><circle cx="8" cy="2.25" r="0.9" fill="currentColor"/><circle cx="6.1" cy="8.75" r="1" fill="currentColor"/><circle cx="9.9" cy="8.75" r="1" fill="currentColor"/><path d="M1.75 8.25v2M14.25 8.25v2" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>',
     handback: lineIcon('<path d="M6.25 3.75 2.5 7.5l3.75 3.75"/><path d="M2.5 7.5h6.75a4.25 4.25 0 0 1 4.25 4.25v.75"/>'), // a reply arrow: the subagent's answer coming back
     message: lineIcon('<path d="M14 2 2 6.8l4.6 2 2 4.6z"/><path d="M6.6 8.8 14 2"/>'),
     web: lineIcon('<circle cx="8" cy="8" r="5.5"/><ellipse cx="8" cy="8" rx="2.4" ry="5.5"/><path d="M2.5 8h11"/>'),
+    image: lineIcon('<rect x="2.5" y="2.5" width="11" height="11" rx="2"/><circle cx="5.75" cy="5.75" r="1.25"/><path d="m13.5 11-3.5-3.5-5.5 5.5"/>'),
+    question: lineIcon('<circle cx="8" cy="8" r="5.5"/><path d="M6.5 6.25a1.5 1.5 0 0 1 2.8.75c0 1-1.3 1.5-1.3 2.5M8 12.25v.1"/>'),
     todo: lineIcon('<path d="m2.5 4.5 1.2 1.2 2-2.4M2.5 10.5l1.2 1.2 2-2.4M8 5h5.5M8 11h5.5"/>'),
     plan: lineIcon('<rect x="3.5" y="3" width="9" height="10.5" rx="1.5"/><rect x="6" y="1.75" width="4" height="2.5" rx="0.8"/><path d="M6 8h4M6 10.5h2.5"/>'),
     skill: lineIcon('<path d="M8 2c.4 3 1.4 4.6 6 6-4.6 1.4-5.6 3-6 6-.4-3-1.4-4.6-6-6 4.6-1.4 5.6-3 6-6z"/>'),
@@ -2427,15 +2478,18 @@
     const summary = document.createElement('summary');
     const icon = document.createElement('span');
     icon.className = 'tool-icon';
-    icon.innerHTML = TOOL_ICONS[kind];
+    icon.innerHTML = TOOL_ICONS[kind] || TOOL_ICONS.other;
     const tool = document.createElement('span');
     tool.className = 'tool-name';
-    tool.textContent = kind === 'shell' ? 'Run' : kind === 'edit' ? 'Edit' : name || 'Tool';
+    tool.textContent = toolDisplayName(name, kind);
     const label = document.createElement('span');
     label.className = 'tool-label';
     label.title = command || '';
     // A file path reads like the Explorer: the name up front, its folder dimmed after it.
-    const path = (kind === 'read' || kind === 'edit') && /^[^\s"]+$/.test(command || '') ? command.match(/^(.*[\\/])?([^\\/]+)$/) : null;
+    const isPath = (kind === 'read' || kind === 'edit') && typeof command === 'string' && !command.includes('\n') && (
+      /^[^\s"]+$/.test(command) || /^(?:[a-zA-Z]:[\\/]|[\\/]|(?:\.\.?[\\/])|[\w.-]+[\\/])/.test(command.trim())
+    );
+    const path = isPath ? command.trim().match(/^(.*[\\/])?([^\\/]+)$/) : null;
     if (path) {
       label.classList.add('is-path');
       const file = document.createElement('span');
@@ -2671,7 +2725,7 @@
     title.textContent = `${AGENT_TITLES[agent] || 'The agent'} wants to use `;
     const pill = document.createElement('span');
     pill.className = 'approval-tool';
-    pill.textContent = tool || 'a tool';
+    pill.textContent = toolDisplayName(tool, toolKind(tool)) || tool || 'a tool';
     title.appendChild(pill);
     head.appendChild(title);
     card.appendChild(head);

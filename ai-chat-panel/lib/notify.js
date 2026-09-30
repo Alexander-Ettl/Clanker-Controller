@@ -10,7 +10,8 @@ const path = require('node:path');
 
 const SOUND = path.join(process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), 'Nextcloud', 'ClaudeConfig'), 'sounds', 'universfield-new-notification-07-210334.mp3');
 const NAMES = { claude: 'Claude', codex: 'Codex', gemini: 'Gemini' };
-// The panel's three-circle mark on a dark tile (media/icon.svg), which Windows shows beside "AI Chat Panel".
+// The panel's mark on a dark tile, which Windows shows beside "Clanker Controller". This PNG is still the old
+// three-circle mark; it is not generated from media/clanker.svg.
 const TOAST_ICON = path.join(__dirname, '..', 'media', 'icon-toast.png');
 
 /** Plain first sentence (or first ~140 chars) of a Markdown reply. */
@@ -27,10 +28,11 @@ function firstSentence(markdown) {
   return sentence.length > 140 ? `${sentence.slice(0, 137).trimEnd()}...` : sentence;
 }
 
-/** Fire and forget; never throws. `toast` is { agent, text, chatTitle } or null. */
-function notifyReply({ toast = null, appName = '' } = {}) {
-  if (process.platform !== 'win32') return;
-  const env = { ...process.env, CHAT_SOUND: SOUND, CHAT_APP_NAME: appName, CHAT_TOAST_ICON: TOAST_ICON };
+/** Fire and forget; never throws. `toast` is { agent, text, chatTitle } or null; `chime: false` makes it a silent toast (or nothing). */
+function notifyReply({ toast = null, appName = '', chime = true } = {}) {
+  if (process.env.NO_CHIME === '1' || process.env.AI_CHAT_PANEL_COMPACT === '1') chime = false;
+  if (process.platform !== 'win32' || (!chime && !toast)) return;
+  const env = { ...process.env, CHAT_SOUND: chime ? SOUND : '', CHAT_APP_NAME: appName, CHAT_TOAST_ICON: TOAST_ICON };
   if (toast) {
     env.CHAT_TOAST_TITLE = `${NAMES[toast.agent] || 'Your AI'} replied${toast.chatTitle ? ` · ${toast.chatTitle}` : ''}`;
     env.CHAT_TOAST_BODY = firstSentence(toast.text) || 'Your response is ready.';

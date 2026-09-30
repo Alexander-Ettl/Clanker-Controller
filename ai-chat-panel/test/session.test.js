@@ -305,7 +305,7 @@ test('package.json declares the webview view, the injectPrompt command, and the 
   assert.ok(commandIds.includes('aiChatPanel.focusClaude'));
   assert.ok(commandIds.includes('aiChatPanel.focusCodex'));
   assert.ok(commandIds.includes('aiChatPanel.focusGemini'));
-  assert.equal(pkg.contributes.configuration.properties['aiChatPanel.models'].default.codex, 'gpt-6-sol');
+  assert.equal(pkg.contributes.configuration.properties['aiChatPanel.models'].default.codex, 'gpt-6.1-sol');
 });
 
 test('P16-I: binary-locator finds the newest bundled CLI across IDE extension dirs and reports every path checked', () => {
@@ -669,17 +669,17 @@ test('P16-L: no microphone at all is a clear error', async () => {
 
 test('CLI command lines use only flags the real CLIs accept, and stdin payloads they parse', () => {
   const { StreamEngine } = require('../lib/stream-engine.js');
-  const e = new StreamEngine({ models: { claude: 'claude', codex: 'gpt-6-sol', gemini: 'gemini-3.8-flash-high' } });
+  const e = new StreamEngine({ models: { claude: 'claude', codex: 'gpt-6.1-sol', gemini: 'gemini-3.8-flash-high' } });
   const claude = e.commandFor('claude', 'hi');
   assert.ok(claude.args.includes('-p') && claude.args.includes('auto') && !claude.args.includes('--model'));
   assert.ok(!claude.args.includes('accept-non-destructive') && !claude.args.includes('--input-format'));
   const codex = e.commandFor('codex', 'hi');
-  assert.deepEqual(codex.args, ['exec', '--json', '--sandbox', 'danger-full-access', '-c', 'approval_policy="never"', '-c', 'approvals_reviewer="user"', '--skip-git-repo-check', '-m', 'gpt-6-sol', '-']);
+  assert.deepEqual(codex.args, ['exec', '--json', '--sandbox', 'danger-full-access', '-c', 'approval_policy="never"', '-c', 'approvals_reviewer="user"', '--skip-git-repo-check', '-m', 'gpt-6.1-sol', '-']);
   const review = e.commandFor('codex', 'focus on races', [], { codexCommand: 'review' });
-  assert.deepEqual(review.args, ['exec', 'review', '--json', '--skip-git-repo-check', '-m', 'gpt-6-sol', '-']);
+  assert.deepEqual(review.args, ['exec', 'review', '--json', '--skip-git-repo-check', '-m', 'gpt-6.1-sol', '-']);
   assert.equal(review.input, 'focus on races\n');
   const defaultReview = e.commandFor('codex', '', [], { codexCommand: 'review', codexCommandArgs: ['--uncommitted'] });
-  assert.deepEqual(defaultReview.args, ['exec', 'review', '--uncommitted', '--json', '--skip-git-repo-check', '-m', 'gpt-6-sol']);
+  assert.deepEqual(defaultReview.args, ['exec', 'review', '--uncommitted', '--json', '--skip-git-repo-check', '-m', 'gpt-6.1-sol']);
   assert.equal(defaultReview.input, '');
   const gemini = e.commandFor('gemini', 'hi');
   assert.deepEqual(JSON.parse(gemini.input), { event: 'user', message: { content: 'hi' } });
@@ -749,6 +749,21 @@ test('codex command unwrap/exit code, agy tool steps and denied_actions notice',
   e.on('event', (ev) => events.push(ev.type));
   e.consumeLine(JSON.stringify({ event: 'result', result: { status: 'SUCCESS', denied_actions: [{ action: 'write_file' }] } }), 'gemini');
   assert.deepEqual(events, ['notice', 'turn_complete']);
+
+  // Historical stream interruption error on a successful/resumed reply is ignored
+  const e2 = new StreamEngine({});
+  const deltas2 = [];
+  e2.on('event', (ev) => { if (ev.type === 'delta') deltas2.push(ev.text); });
+  e2.hadText = true;
+  e2.consumeLine(JSON.stringify({ event: 'result', result: { status: 'ERROR', response: 'OK\n', error: 'The stream was interrupted. Please continue the task you were working on.' } }), 'gemini');
+  assert.deepEqual(deltas2, [], 'suppresses stream interrupted error when text was already produced');
+
+  // Genuine failure with no text produces the error delta
+  const e3 = new StreamEngine({});
+  const deltas3 = [];
+  e3.on('event', (ev) => { if (ev.type === 'delta') deltas3.push(ev.text); });
+  e3.consumeLine(JSON.stringify({ event: 'result', result: { status: 'ERROR', error: 'quota exceeded' } }), 'gemini');
+  assert.equal(deltas3[0], 'Gemini error: quota exceeded', 'reports error when no text was produced');
 });
 
 test('edit tool starts carry a diff; Gemini reads are not edits', () => {
@@ -756,6 +771,14 @@ test('edit tool starts carry a diff; Gemini reads are not edits', () => {
   const gem = (tool_name, parameters) => normalizeEvent({ event: 'step_update', step_update: { step_type: 'tool', step_index: 1, tool_name, state: 'ACTIVE', tool_info: { parameters } } }, 'gemini');
   const read = gem('view_file', { AbsolutePath: 'C:\\a.js' });
   assert.deepEqual([read.name, read.command, read.diff], ['view_file', 'C:\\a.js', '']);
+  assert.equal(gem('search_web', { query: 'astro visual editor' }).command, 'astro visual editor');
+  assert.equal(gem('manage_task', { Action: 'status', TaskId: 'task-1' }).command, 'status task-1');
+  assert.equal(gem('read_url_content', { Url: 'https://example.com' }).command, 'https://example.com');
+  assert.equal(gem('schedule', { DurationSeconds: 60, Prompt: 'check build' }).command, '60s check build');
+  assert.equal(gem('invoke_subagent', { Subagents: [{ Role: 'Codebase Researcher' }] }).command, 'Codebase Researcher');
+  assert.equal(gem('send_message', { Recipient: 'agent-1', Message: 'hello' }).command, 'agent-1: hello');
+  assert.equal(gem('generate_image', { ImageName: 'hero', Prompt: 'a sunset' }).command, 'hero: a sunset');
+  assert.equal(gem('ask_question', { questions: [{ question: 'Which mode?' }] }).command, 'Which mode?');
   const edit = gem('replace_file_content', { TargetFile: 'C:\\a.js', TargetContent: 'keep\nold\nend', ReplacementContent: 'keep\nnew\nend' });
   assert.deepEqual([edit.name, edit.file, edit.diff], ['edit', 'C:\\a.js', ' keep\n-old\n+new\n end']);
   assert.equal(gem('write_to_file', { TargetFile: 'b.txt', CodeContent: 'hi' }).diff, '+hi');
@@ -847,8 +870,8 @@ test('composer model picker: each catalog entry reaches its CLI as model + effor
   const e = new StreamEngine({ interactive: true });
   const claude = e.commandFor('claude', 'hi', [], modelOption('claude-opus-5-5-medium')).args;
   assert.deepEqual(claude.slice(claude.indexOf('--model')), ['--model', 'claude-opus-5-5', '--effort', 'medium']);
-  const codex = e.commandFor('codex', 'hi', [], modelOption('gpt-6-sol-high')).args;
-  assert.deepEqual(codex.slice(-5), ['-m', 'gpt-6-sol', '-c', 'model_reasoning_effort="high"', '-']);
+  const codex = e.commandFor('codex', 'hi', [], modelOption('gpt-6.1-sol-high')).args;
+  assert.deepEqual(codex.slice(-5), ['-m', 'gpt-6.1-sol', '-c', 'model_reasoning_effort="high"', '-']);
   const gemini = e.commandFor('gemini', 'hi', [], modelOption('gemini-3.8-flash-high')).args;
   assert.equal(gemini[gemini.indexOf('--model') + 1], 'gemini-3.8-flash-high');
   assert.ok(!e.commandFor('codex', 'hi').args.some((arg) => arg.startsWith('model_reasoning_effort=')), 'no picker choice: no effort override');
@@ -945,7 +968,7 @@ test('P17-H: a task left "dispatched" by a restart loads as "interrupted", persi
 
 test('chat memory: each CLI resumes its own session by id, and a missing session reruns fresh', () => {
   const { StreamEngine, normalizeEvent } = require('../lib/stream-engine.js');
-  const engine = new StreamEngine({ cwd: process.cwd(), models: { claude: 'claude', codex: 'gpt-6-sol', gemini: 'gemini-3.8-flash-high' } });
+  const engine = new StreamEngine({ cwd: process.cwd(), models: { claude: 'claude', codex: 'gpt-6.1-sol', gemini: 'gemini-3.8-flash-high' } });
   assert.deepEqual(engine.commandFor('claude', 'hi', [], { resume: 'c-1' }).args.slice(-2), ['--resume', 'c-1']);
   assert.deepEqual(engine.commandFor('codex', 'hi', [], { resume: 'x-1' }).args.slice(0, 3), ['exec', 'resume', 'x-1']);
   assert.ok(!engine.commandFor('codex', 'hi', [], { resume: 'x-1' }).args.includes('--sandbox'), 'exec resume takes no --sandbox');
@@ -1334,3 +1357,57 @@ test('a quota-reset task waits for the reset moment it was scheduled against, ev
   assert.equal(isDue(waiting, Date.parse(later) + 1), true, 'due once the reset has passed');
   fs.rmSync(root, { recursive: true, force: true });
 });
+
+test('tool cards in main.js map Antigravity, Claude, and Codex tools to clean labels and icons', () => {
+  const vm = require('node:vm');
+  const mainSrc = fs.readFileSync(path.join(__dirname, '..', 'media', 'main.js'), 'utf8');
+  const match = mainSrc.match(/(const SHELL_TOOLS[\s\S]*?function toolDisplayName\([\s\S]*?\n  \})/);
+  assert.ok(match, 'found toolKind and toolDisplayName in main.js');
+  const context = vm.createContext({});
+  vm.runInContext(`${match[1]}; this.toolKind = toolKind; this.toolDisplayName = toolDisplayName;`, context);
+  const { toolKind, toolDisplayName } = context;
+
+  assert.equal(toolDisplayName('view_file', toolKind('view_file')), 'View');
+  assert.equal(toolKind('view_file'), 'read');
+  assert.equal(toolDisplayName('search_web', toolKind('search_web')), 'Web Search');
+  assert.equal(toolKind('search_web'), 'web');
+  assert.equal(toolDisplayName('manage_task', toolKind('manage_task')), 'ManageTask');
+  assert.equal(toolKind('manage_task'), 'task');
+
+  assert.equal(toolDisplayName('run_command', toolKind('run_command')), 'Run');
+  assert.equal(toolKind('run_command'), 'shell');
+  assert.equal(toolDisplayName('replace_file_content', toolKind('replace_file_content')), 'Edit');
+  assert.equal(toolKind('replace_file_content'), 'edit');
+  assert.equal(toolDisplayName('write_to_file', toolKind('write_to_file')), 'Edit');
+  assert.equal(toolDisplayName('read_url_content', toolKind('read_url_content')), 'Web Fetch');
+  assert.equal(toolKind('read_url_content'), 'web');
+  assert.equal(toolDisplayName('invoke_subagent', toolKind('invoke_subagent')), 'Subagent');
+  assert.equal(toolKind('invoke_subagent'), 'agent');
+  assert.equal(toolDisplayName('schedule', toolKind('schedule')), 'Schedule');
+  assert.equal(toolKind('schedule'), 'schedule');
+  assert.equal(toolDisplayName('generate_image', toolKind('generate_image')), 'Image');
+  assert.equal(toolKind('generate_image'), 'image');
+  assert.equal(toolDisplayName('ask_question', toolKind('ask_question')), 'Question');
+  assert.equal(toolKind('ask_question'), 'question');
+});
+
+test('compaction: StreamEngine flags compact turn and notifyReply suppresses chime under NO_CHIME', () => {
+  const { StreamEngine } = require('../lib/stream-engine.js');
+  const { notifyReply } = require('../lib/notify.js');
+
+  const engine = new StreamEngine({ cwd: TEST_CWD, codexServerFactory: () => ({ connect: async () => {}, request: async () => ({}) }) });
+  engine.turn = null;
+  engine.resetCodexTurn({ agent: 'codex', prompt: 'test', compact: true });
+  assert.equal(engine.turn?.compact, true);
+
+  const origNoChime = process.env.NO_CHIME;
+  try {
+    process.env.NO_CHIME = '1';
+    assert.doesNotThrow(() => notifyReply({ toast: null, chime: true }));
+  } finally {
+    if (origNoChime === undefined) delete process.env.NO_CHIME;
+    else process.env.NO_CHIME = origNoChime;
+  }
+});
+
+

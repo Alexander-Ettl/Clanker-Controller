@@ -577,7 +577,7 @@ class ChatRun {
       user: { role: 'user', text, compact: true, auto, at: new Date().toISOString(), agent },
       reply: { role: 'assistant', text: '', agent, modelLabel: used?.label, compact: true, compactContext: history, compactPreviousContext: previousContext },
       routing: { agentId: agent, modelLabel: used?.label, roleName: null, compact: true },
-      run: { agent, prompt: native ? '' : resume ? COMPACT_DIRECTIVE : fromTranscript, resume, freshPrompt: resume && !native ? fromTranscript : null, codexCommand: native && agent === 'codex' ? 'compact' : null, model: used?.model, effort: used?.effort },
+      run: { agent, prompt: native ? '' : resume ? COMPACT_DIRECTIVE : fromTranscript, resume, freshPrompt: resume && !native ? fromTranscript : null, codexCommand: native && agent === 'codex' ? 'compact' : null, model: used?.model, effort: used?.effort, compact: true, autoCompact: auto },
     });
   }
 
@@ -1677,7 +1677,7 @@ function activate(context) {
 
   function getModels() {
     const configured = vscode.workspace.getConfiguration('aiChatPanel').get('models', {});
-    return { claude: configured.claude || 'claude', codex: configured.codex || 'gpt-6-sol', gemini: configured.gemini || 'gemini-3.8-flash-high' };
+    return { claude: configured.claude || 'claude', codex: configured.codex || 'gpt-6.1-sol', gemini: configured.gemini || 'gemini-3.8-flash-high' };
   }
 
   function getPermissionMode() {
