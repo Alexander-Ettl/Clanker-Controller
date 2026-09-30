@@ -1217,9 +1217,22 @@
     return badge;
   }
 
+  function saveTurnQueue() {
+    if (!currentChatId) return;
+    try {
+      const { queue, ...state } = vscode.getState() || {};
+      const queues = { ...state.queues };
+      // Keep the old single-chat saved queue when upgrading the panel.
+      if (queue?.chatId && Array.isArray(queue.turns) && !queues[queue.chatId]) queues[queue.chatId] = queue.turns;
+      if (turnQueue.length) queues[currentChatId] = turnQueue;
+      else delete queues[currentChatId];
+      vscode.setState({ ...state, queues });
+    } catch { /* the queue just isn't kept across a reload */ }
+  }
+
   function renderTurnQueue() {
     vscode.postMessage({ type: 'queuedTurns', count: turnQueue.length }); // so the chime waits for the last one
-    try { vscode.setState({ ...(vscode.getState() || {}), queue: { chatId: currentChatId, turns: turnQueue } }); } catch { /* the queue just isn't kept across a reload */ }
+    saveTurnQueue();
     queueStrip.hidden = !turnQueue.length;
     queueStrip.replaceChildren();
     if (!turnQueue.length) return;
@@ -3222,14 +3235,15 @@
         // Whatever ran in the previous thread keeps going in the background;
         // queued turns belonged to that thread.
         flushVoiceDraft(promptInput.value.trim());
-        // Queued turns belong to the thread they were queued in: a different chat drops them, but the same chat shown
-        // again (or this window reloaded, which restores them from its saved state, paused) keeps them.
+        // Save the outgoing thread before selecting the incoming queue. Returning to a chat (or reloading)
+        // restores its queue paused, since its running turn may have finished while it wasn't shown.
         awaitingInterruptAck = false;
-        const savedQueue = vscode.getState()?.queue;
+        saveTurnQueue();
+        const state = vscode.getState();
+        const savedQueue = state?.queues?.[message.chat?.id] || (state?.queue?.chatId === message.chat?.id ? state.queue.turns : null);
         if (message.chat?.id && message.chat.id === currentChatId) { /* same chat: the queue stays as it is */ }
-        else if (message.chat?.id && savedQueue?.chatId === message.chat.id && Array.isArray(savedQueue.turns) && savedQueue.turns.length) { turnQueue = savedQueue.turns; queuePaused = true; }
+        else if (message.chat?.id && Array.isArray(savedQueue) && savedQueue.length) { turnQueue = savedQueue; queuePaused = true; }
         else { queuePaused = false; turnQueue = []; }
-        renderTurnQueue();
         busy = false;
         resetThought();
         resetAgents(); // the new chat's own agents follow in a subagentReplay
