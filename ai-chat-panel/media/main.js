@@ -1246,8 +1246,12 @@
   function dispatchTurn(turn, steer = true) { // steer false: a queued turn taking its turn, which the host lines up behind whatever it has running
     lastTurn = turn;
     if (turn.modelId !== activeModelId) selectModel(turn.modelId);
-    emptyMascot?.launch();
-    emptyMascot = null;
+    if (emptyMascot) {
+      const isVisibleFreshChat = transcriptEl && !transcriptEl.querySelector('.msg-user, .msg-assistant, .compact-divider, .chat-turn');
+      if (isVisibleFreshChat) emptyMascot.launch();
+      else emptyMascot.dispose();
+      emptyMascot = null;
+    }
     appendUserMessage(turn.text, undefined, turn.files);
     setBusy(true);
     dropUndo(); // the last turn's undo is only for the last turn
@@ -1737,7 +1741,7 @@
     schedPop.hidden = true;
     if (chats[0].id !== currentChatId) vscode.postMessage({ type: 'restoreChat', id: chats[0].id }); else promptInput.focus();
   });
-  newChatBtn.addEventListener('click', () => { if (editingQueue) finishQueueEdit(); attachments = []; renderAttachments(); vscode.postMessage({ type: 'newChat' }); });
+  newChatBtn.addEventListener('click', () => { if (editingQueue) finishQueueEdit(); attachments = []; renderAttachments(); clearEmptyState(); vscode.postMessage({ type: 'newChat' }); });
   historyBtn.addEventListener('click', () => { if (toggleModal(historyModal)) vscode.postMessage({ type: 'requestHistory' }); });
   terminalBtn?.addEventListener('click', () => {
     // The only action that ever reveals the real VS Code terminal — an
@@ -3351,6 +3355,7 @@
     activeCompactDivider = null;
     renderContextGauge(chat.context);
     renderChatCost(chat.apiCostUsd);
+    clearEmptyState();
     transcriptEl.replaceChildren();
     currentAssistantBubble = null;
     turnBubbles = [];
@@ -3660,6 +3665,7 @@
       // A chat switch has started: the old thread goes, shimmering placeholders stand in until chatLoaded renders the new one.
       case 'chatLoading': {
         if (editingQueue) finishQueueEdit();
+        clearEmptyState();
         const bar = (width) => `<i class="skeleton" style="width:${width}%"></i>`;
         transcriptEl.innerHTML = `<div class="chat-skeleton" aria-busy="true" aria-label="Loading chat">
           <div class="skel-user"><i class="skeleton" style="width:58%"></i></div>

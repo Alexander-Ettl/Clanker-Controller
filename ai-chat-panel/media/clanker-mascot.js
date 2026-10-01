@@ -201,7 +201,15 @@
       dispose,
       launch() {
         if (!alive || !root.isConnected) { dispose(); root.remove(); return; }
+        // The send-message sound and launch leap only play in a completely new chat where the Clanker controller is visible.
+        const hasExistingChat = Boolean(transcript?.querySelector('.msg-user, .msg-assistant, .compact-divider, .chat-turn, .chat-notice'));
+        if (hasExistingChat) { dispose(); root.remove(); return; }
         const rect = root.getBoundingClientRect();
+        if (rect.width === 0 || rect.height === 0 || root.closest('[hidden]') || getComputedStyle(root).display === 'none' || getComputedStyle(root).visibility === 'hidden') {
+          dispose();
+          root.remove();
+          return;
+        }
         dispose();
         root.classList.remove('mascot-blinking', 'mascot-paused');
         root.dataset.mascot = 'idle';
