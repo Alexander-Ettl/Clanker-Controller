@@ -114,8 +114,32 @@ try {
   await send({ type: 'chatLoaded', chat: { id: 'history', modelId: 'auto', messages: [{ role: 'user', text: 'Previous task' }, { role: 'assistant', text: 'Done', agent: 'codex' }] } });
   assert.equal(await page.locator('.clanker-rig').count(), 0);
   assert.equal(await page.locator('.topbar').innerHTML(), header);
+
+  // Sending in an existing chat must NOT play sound or launch mascot
+  await input.fill('Second prompt in existing chat');
+  await page.locator('#sendBtn').click();
+  assert.equal(await page.evaluate(() => window.notes.length), 8, 'Sound must not play in existing chat');
+  assert.equal(await page.locator('.empty-state.is-launching').count(), 0);
+
+  // Chat handed over to a different AI model (e.g. model switched in an existing thread)
+  await send({ type: 'chatLoaded', chat: { id: 'handoff', modelId: 'claude-3-7-sonnet', messages: [{ role: 'user', text: 'Planning turn' }, { role: 'assistant', text: 'Plan ready', agent: 'claude' }] } });
+  assert.equal(await page.locator('.clanker-rig').count(), 0);
+  await page.evaluate(() => window.dispatchEvent(new MessageEvent('message', { data: { type: 'setActive', modelId: 'codex' } })));
+  await input.fill('Editor turn handed over to Codex');
+  await page.locator('#sendBtn').click();
+  assert.equal(await page.evaluate(() => window.notes.length), 8, 'Sound must not play in handed-over chat');
+  assert.equal(await page.locator('.empty-state.is-launching').count(), 0);
+
+  // Completely new chat where Clanker controller is visible: sound MUST play on prompt send
+  await send({ type: 'chatLoaded', chat: { id: 'brand-new', modelId: 'auto', messages: [] } });
+  assert.equal(await empty.locator('.clanker-rig').count(), 1);
+  await input.fill('First prompt in fresh chat');
+  await page.locator('#sendBtn').click();
+  assert.equal(await page.evaluate(() => window.notes.length), 12, 'Sound must play when sending in a completely new chat');
+  await page.locator('.empty-state.is-launching').waitFor({ state: 'detached' });
+
   assert.deepEqual(errors, []);
-  console.log('Clanker mascot: stable chassis, clamped gaze, blink, typing/scan, chips, model, launch-only audio, Enter/Send, restore and reduced motion passed.');
+  console.log('Clanker mascot: stable chassis, clamped gaze, blink, typing/scan, chips, model, launch-only audio, Enter/Send, restore, existing-chat and handed-over silence, and reduced motion passed.');
 } finally {
   await browser.close();
 }
