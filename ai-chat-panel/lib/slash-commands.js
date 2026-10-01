@@ -280,6 +280,7 @@ class SlashCommandCatalog {
     const panel = [
       { name: 'remote-control', description: 'Continue this chat from the Claude app on your phone', agent: 'claude' },
       { name: 'undo', description: 'Put the last turn\'s file changes back (asks first)', agent: 'claude', panel: true },
+      { name: 'verify', description: 'Auto-Verify on/off; /verify npm test pins the check to run', agent: 'claude', panel: true },
       { name: 'architect', description: 'One model plans, another builds: /architect <task>', agent: 'claude', panel: true },
     ];
     return [
