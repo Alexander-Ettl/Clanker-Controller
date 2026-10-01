@@ -11,7 +11,9 @@
   const AGENT_ICONS = window.AGENT_ICONS || {};
   const AUTO_ICON = '<svg class="agent-logo" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M8 1.5 9.2 5l3.5 1.2-3.5 1.2L8 10.9 6.8 7.4 3.3 6.2l3.5-1.2L8 1.5Z" fill="currentColor"/><path d="M13 10.5 13.6 12l1.5.6-1.5.6-.6 1.5-.6-1.5-1.5-.6 1.5-.6.6-1.5Z" fill="currentColor"/></svg>';
   // Composer model picker: 'auto' plus lib/model-catalog.js (injected by the host).
-  const MODEL_OPTIONS = [{ id: 'auto', agent: 'auto', label: 'Auto', hint: 'Routes each message' }, ...(window.MODEL_CATALOG || [])];
+  const MODEL_OPTIONS = [{ id: 'auto', agent: 'auto', label: 'Auto', hint: 'Best available favorite for each task' }, ...(window.MODEL_CATALOG || [])];
+  let availableModels = window.AVAILABLE_MODELS || [];
+  let pendingModelId = null;
   const modelPickerBtn = document.getElementById('modelPill');
 
   const promptInput = document.getElementById('promptInput');
@@ -29,6 +31,22 @@
   const turnHost = () => (currentTurnEl?.isConnected ? currentTurnEl : transcriptEl);
   let openToolCard = null;
   let attachments = [];
+  let emptyMascot = null;
+  const chatDrafts = new Map();
+  const projectBar = document.createElement('div');
+  projectBar.className = 'project-toolbar'; projectBar.hidden = true;
+  const projectBtn = document.createElement('button');
+  projectBtn.type = 'button'; projectBtn.className = 'project-picker'; projectBtn.textContent = 'Choose project';
+  projectBtn.setAttribute('aria-label', 'Choose project');
+  projectBtn.addEventListener('click', () => { if (editingQueue) finishQueueEdit(); vscode.postMessage({ type: 'chooseProject' }); });
+  const explorerBtn = document.createElement('button');
+  explorerBtn.type = 'button'; explorerBtn.className = 'round-btn'; explorerBtn.title = 'Open project in Explorer';
+  explorerBtn.setAttribute('aria-label', 'Open project in Explorer');
+  explorerBtn.innerHTML = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" aria-hidden="true"><path d="M2 4a1 1 0 0 1 1-1h4l2 2h4a1 1 0 0 1 1 1v6a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1Z"/></svg>';
+  explorerBtn.addEventListener('click', () => vscode.postMessage({ type: 'openProjectExplorer' }));
+  projectBar.append(projectBtn, explorerBtn);
+  const topbar = document.querySelector('.topbar');
+  if (topbar) topbar.prepend(projectBar); else transcriptEl.before(projectBar);
 
   const attachmentStrip = document.createElement('div');
   attachmentStrip.className = 'attachment-strip island-bud';
@@ -39,6 +57,11 @@
   document.querySelector('.composer').insertBefore(attachBtn, promptInput);
 
   // ---------- P16-K: full-screen Liquid Glass modals (queue + history) ----------
+  // The one trash can: Manage Chats' Delete, a queued turn's Delete and a scheduled prompt's Delete all draw it.
+  const TRASH_PATH = '<path d="M2.75 4.25h10.5M6.25 4.25V2.75h3.5v1.5M4.25 4.25l.6 8.4a1 1 0 0 0 1 .93h4.3a1 1 0 0 0 1-.93l.6-8.4M6.75 7v4M9.25 7v4"/>';
+  const TRASH_SVG = `<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${TRASH_PATH}</svg>`;
+  const VERIFY_SVG = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 1.75 2.75 3.75v4c0 3 2.2 5.2 5.25 6.5 3.05-1.3 5.25-3.5 5.25-6.5v-4z"/><path d="m5.6 8.2 1.7 1.7 3.1-3.4"/></svg>';
+  const NOTE_SVG = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" aria-hidden="true"><path d="M3 4.5h10M3 8h10M3 11.5h6"/></svg>';
   const CLOSE_SVG = '<svg viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M4 4l8 8M12 4l-8 8" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>';
   // The suite's one pencil (sources/noun_Pencil_3437310.svg, omeneko / Noun Project): every edit button and the Edit tool card.
   const PENCIL_SVG = '<svg viewBox="7.99 7.95 496.01 496.06" fill="currentColor" aria-hidden="true"><path d="M339.24,100.59a8,8,0,0,0-11.32,0C21.76,406.75,39.26,388,37.51,393.51L8.76,483.11a16,16,0,0,0,20.13,20.13c97.07-31.14,92.2-28.84,96-32.67L411.41,184.08a8,8,0,0,0,0-11.32Z"/><path d="M403.22,25.29,361.86,66.65a8,8,0,0,0,0,11.31L434,150.14a8,8,0,0,0,11.31,0l41.36-41.36A58.65,58.65,0,0,0,504,67C504,14.85,440.44-11.93,403.22,25.29Z"/></svg>';
@@ -74,6 +97,7 @@
   function closeModal(el) {
     if (el.hidden) return;
     el.hidden = true;
+    if (el.id === 'cliSetupModal') vscode.postMessage({ type: 'completeCliSetup' });
     if (lastFocus && document.contains(lastFocus)) lastFocus.focus();
   }
   document.addEventListener('keydown', (event) => {
@@ -110,6 +134,14 @@
     const pad = (n) => String(n).padStart(2, '0');
     return h ? `${h}h ${pad(m)}m ${pad(sec)}s` : m ? `${m}m ${pad(sec)}s` : `${sec}s`;
   }
+  // The pill's countdown, one unit to a line (days, hours, minutes, seconds from the largest that is not zero), right-aligned
+  // so the units stack in a column.
+  function countdownLines(ms) {
+    const s = Math.max(0, Math.floor(ms / 1000));
+    const parts = [[Math.floor(s / 86400), 'd'], [Math.floor((s % 86400) / 3600), 'h'], [Math.floor((s % 3600) / 60), 'm'], [s % 60, 's']];
+    const first = parts.findIndex(([n]) => n > 0);
+    return parts.slice(first < 0 ? 3 : first).map(([n, unit], i) => `${i === 0 ? n : String(n).padStart(2, '0')}${unit}`);
+  }
   // FLIP: siblings glide to their new slots instead of jumping.
   function flip(container, mutate) {
     const items = [...container.children];
@@ -136,7 +168,16 @@
   function tickQueueCountdown() {
     const times = activeTasks().filter((task) => task.status === 'pending').map(fireTimeOf).filter(Boolean);
     const next = times.length ? Math.min(...times) : null;
-    queueCountdown.textContent = next ? formatCountdown(next - Date.now()) : '';
+    const lines = next ? countdownLines(next - Date.now()) : [];
+    const key = lines.length;
+    // one element per line; only the text changes each second
+    if (queueCountdown.childElementCount !== key) queueCountdown.replaceChildren(...lines.map(() => document.createElement('span')));
+    lines.forEach((text, i) => { const el = queueCountdown.children[i]; if (el.textContent !== text) el.textContent = text; });
+    queueCountdown.title = next ? formatCountdown(next - Date.now()) : '';
+    document.querySelectorAll('.turn-queue-item.is-scheduled').forEach((row) => { // the strip's own countdowns
+      const task = schedulerTasks.find((item) => item.id === row.dataset.taskId); const at = task && fireTimeOf(task);
+      if (at && task.dispatchTrigger === 'quota-reset') row.querySelector('.turn-queue-when').textContent = `at reset · ${formatCountdown(at - Date.now())}`;
+    });
     queueBtn.classList.toggle('is-pill', Boolean(next));
   }
   function renderQueueButton() {
@@ -156,13 +197,9 @@
     if (queueBtn.hidden) { pulseOnShow = true; return; } // the queue broadcast lands right after taskScheduled
     queueBtn.classList.remove('is-saved');
     void queueBtn.offsetWidth; // restart the animation
-    queueTip.innerHTML = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3.5 8.5l3 3 6-7"/></svg><span>Saved to disk · survives a restart</span>';
     queueBtn.classList.add('is-saved');
     clearTimeout(pulseQueueSaved.timer);
-    pulseQueueSaved.timer = setTimeout(() => {
-      queueBtn.classList.remove('is-saved');
-      pulseQueueSaved.timer = setTimeout(() => { queueTip.textContent = 'Queue'; }, 350); // after the tag sinks back
-    }, 5000);
+    pulseQueueSaved.timer = setTimeout(() => queueBtn.classList.remove('is-saved'), 1000);
   }
   function beginEdit(card, task) {
     const promptEl = card.querySelector('.queue-prompt');
@@ -247,7 +284,7 @@
     when.dateTime = task.createdAt || '';
     when.textContent = pending ? formatWhen(task.createdAt) : 'Dispatching\u2026';
     const remove = document.createElement('button');
-    remove.type = 'button'; remove.className = 'queue-delete'; remove.innerHTML = `${CLOSE_SVG}<span>Delete</span>`;
+    remove.type = 'button'; remove.className = 'queue-delete'; remove.innerHTML = `${TRASH_SVG}<span>Delete</span>`;
     remove.addEventListener('click', () => {
       card.classList.add('is-leaving');
       vscode.postMessage({ type: 'cancelScheduledTask', taskId: task.id });
@@ -313,32 +350,26 @@
   // Chat Settings: a popup like Manage Chats, opened from the launcher's gear. Its page is settings.js.
   const settingsModal = createModal('settingsModal', 'Chat Settings');
   const chatSettings = window.initChatSettings({ vscode, body: settingsModal.body });
-  const runningBadge = document.getElementById('runningBadge');
+  const cliSetupModal = createModal('cliSetupModal', 'Welcome to Clanker');
+  const cliSetup = window.initCliSetup({ vscode, body: cliSetupModal.body, onClose: () => closeModal(cliSetupModal.el) });
+  let cliSetupSeen = false;
   let currentChatId = null;
 
   // ---------- Auto-Verify ----------
-  // A standing switch, not a one-shot: while on, every turn also tells the agent to run the project's checks
-  // (the aiChatPanel.verifyCommand setting, or its own test script) after it changes files, and fix what fails.
-  // The agent's own shell tool does the running; this only asks.
+  // A standing switch, not a one-shot, and it lives in the model menu (renderModelMenu): while on, every turn of every
+  // model also tells the agent to run the project's checks (the aiChatPanel.verifyCommand setting, or its own test
+  // script) after it changes files, and fix what fails. The agent's own shell tool does the running; this only asks.
   let autoVerify = Boolean(vscode.getState()?.autoVerify);
-  const verifyBtn = document.createElement('button');
-  verifyBtn.type = 'button'; verifyBtn.id = 'verifyBtn'; verifyBtn.className = 'composer-icon-btn verify-toggle';
-  verifyBtn.innerHTML = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.25" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 1.75 2.75 3.75v4c0 3 2.2 5.2 5.25 6.5 3.05-1.3 5.25-3.5 5.25-6.5v-4z"/><path d="m5.6 8.2 1.7 1.7 3.1-3.4"/></svg>';
-  const renderVerify = () => {
-    verifyBtn.classList.toggle('is-armed', autoVerify);
-    verifyBtn.setAttribute('aria-pressed', String(autoVerify));
-    verifyBtn.title = autoVerify ? 'Auto-Verify is on: after changing files, the agent runs your checks and fixes failures. Click to turn off.' : 'Auto-Verify: have the agent run your checks after it changes files, and fix what fails.';
-  };
-  renderVerify();
-  // Turning it on says what will run (the host knows the setting); /verify <command> sets it without opening Settings.
+  let modelPromptIds = new Set(); // models that carry a prompt of the user's own (Settings > Models); the menu marks them
+  let verifyCommand = ''; // the pinned check (aiChatPanel.verifyCommand), told by the host; empty: the agent finds the project's own
+  // The switch in the menu says what will run (the host knows the setting); /verify <command> sets it without opening Settings.
   function setAutoVerify(on) {
     autoVerify = on;
     try { vscode.setState({ ...(vscode.getState() || {}), autoVerify }); } catch {}
     renderVerify();
-    if (on) vscode.postMessage({ type: 'verifyInfo' }); else showToast('Auto-Verify is off.');
+    if (on) vscode.postMessage({ type: 'verifyInfo' });
   }
-  verifyBtn.addEventListener('click', () => { setAutoVerify(!autoVerify); promptInput.focus(); });
-  document.querySelector('.composer-actions').insertBefore(verifyBtn, sendBtn); // the clock is inserted before send next, so this sits left of it
+  if (autoVerify) vscode.postMessage({ type: 'verifyInfo' });
 
   // ---------- P16-J: inline schedule toggle ----------
   // One input, not two: the composer's clock button arms "schedule instead
@@ -442,10 +473,7 @@
   }
   // A reply that *is* the CLI's limit notice (one or two short lines), not an answer that happens to
   // talk about limits: those used to match too, and put "Continue when … resets" under normal replies.
-  function isLimitNotice(raw) {
-    const text = String(raw || '').trim();
-    return text.length > 0 && text.length <= 400 && LIMIT_RE.test(text);
-  }
+  const { isLimitNotice, LIMIT_RE } = window.limitNotice; // limit-notice.js, shared with the extension
   function refreshScheduleDefault() {
     const outOfUsage = isOutOfUsage(scheduleModel());
     setScheduleArmed(scheduleChoice ?? outOfUsage, { outOfUsage: scheduleChoice === null && outOfUsage });
@@ -542,26 +570,54 @@
     attachmentStrip.replaceChildren(...attachments.map((attachment) => attachmentChip(attachment, () => {
       vscode.postMessage({ type: 'removeAttachment', path: attachment.path }); attachments = attachments.filter((item) => item.path !== attachment.path); renderAttachments();
     })));
+    saveQueueEdit();
+  }
+  // Files are stored as "<timestamp>_<name>"; people read the name.
+  const shownName = (name) => String(name || '').replace(/^\d{10,}_/, '');
+  // Click the name on a composer chip to rename the file: a plain field, no model. Enter or clicking away saves, Esc cancels.
+  function renameAttachmentInline(nameEl, attachment) {
+    const input = document.createElement('input');
+    input.className = 'attachment-rename';
+    const ext = attachment.name.includes('.') ? attachment.name.slice(attachment.name.lastIndexOf('.')) : '';
+    input.value = shownName(attachment.name).slice(0, shownName(attachment.name).length - ext.length);
+    input.maxLength = 60;
+    input.setAttribute('aria-label', 'Image name');
+    nameEl.replaceWith(input);
+    input.focus(); input.select();
+    let done = false;
+    const finish = (save) => {
+      if (done) return; done = true;
+      const next = input.value.trim();
+      if (save && next && next !== input.defaultValue) vscode.postMessage({ type: 'renameAttachment', path: attachment.path, name: next });
+      input.replaceWith(nameEl);
+    };
+    input.addEventListener('keydown', (event) => { event.stopPropagation(); if (event.key === 'Enter') { event.preventDefault(); finish(true); } if (event.key === 'Escape') { event.preventDefault(); finish(false); } });
+    input.addEventListener('click', (event) => event.stopPropagation());
+    input.addEventListener('blur', () => finish(true));
   }
   // A composer chip (with remove) or, without onRemove, a sent bubble's read-only pill.
   function attachmentChip(attachment, onRemove) {
     const chip = document.createElement('div'); chip.className = 'attachment-chip';
     const isImage = attachment.mime?.startsWith('image/') && attachment.uri;
     const label = document.createElement('span');
-    const name = document.createElement('span'); name.className = 'attachment-name'; name.textContent = attachment.name;
+    const name = document.createElement('span'); name.className = 'attachment-name'; name.textContent = shownName(attachment.name);
     const meta = document.createElement('span'); meta.className = 'attachment-meta';
-    meta.textContent = isImage ? (attachment.dims || '') : formatSize(attachment.size);
+    const withPx = (dims) => (dims ? `${dims} px` : '');
+    meta.textContent = isImage ? withPx(attachment.dims) : formatSize(attachment.size);
     label.append(name, meta);
     if (isImage) {
       const image = document.createElement('img'); image.src = attachment.uri; image.alt = '';
-      if (!attachment.dims) image.addEventListener('load', () => { attachment.dims = `${image.naturalWidth}×${image.naturalHeight}`; meta.textContent = attachment.dims; }, { once: true });
+      if (!attachment.dims) image.addEventListener('load', () => { attachment.dims = `${image.naturalWidth}×${image.naturalHeight}`; meta.textContent = withPx(attachment.dims); }, { once: true });
       chip.appendChild(image);
       chip.classList.add('is-previewable');
-      chip.title = `Preview ${attachment.name}`;
-      chip.addEventListener('click', () => openLightbox(attachment.uri, `${attachment.name}  ${attachment.dims || ''}`.trim()));
+      chip.title = `Preview ${shownName(attachment.name)}`;
+      chip.addEventListener('click', () => openLightbox(attachment.uri, `${shownName(attachment.name)}  ${withPx(attachment.dims)}`.trim()));
     }
     chip.append(label);
     if (onRemove) {
+      name.title = 'Click to rename';
+      name.classList.add('is-renamable');
+      name.addEventListener('click', (event) => { event.stopPropagation(); renameAttachmentInline(name, attachment); });
       const remove = document.createElement('button'); remove.type = 'button'; remove.textContent = '×'; remove.title = `Remove ${attachment.name}`;
       remove.addEventListener('click', (event) => { event.stopPropagation(); onRemove(); });
       chip.append(remove);
@@ -587,13 +643,14 @@
     } catch { return file; }
   }
   function readAttachment(file) {
+    const chatId = currentChatId;
     void capImage(file).then((image) => {
       const reader = new FileReader();
-      reader.onload = () => vscode.postMessage({ type: 'attachmentData', name: file.name || `paste-${Date.now()}.png`, mime: file.type || 'application/octet-stream', data: reader.result });
+      reader.onload = () => vscode.postMessage({ type: 'attachmentData', chatId, name: file.name || `paste-${Date.now()}.png`, mime: file.type || 'application/octet-stream', data: reader.result });
       reader.readAsDataURL(image);
     });
   }
-  attachBtn.addEventListener('click', () => vscode.postMessage({ type: 'pickAttachments' }));
+  attachBtn.addEventListener('click', () => vscode.postMessage({ type: 'pickAttachments', chatId: currentChatId }));
   promptInput.addEventListener('paste', (event) => { for (const item of event.clipboardData?.items || []) { if (item.type.startsWith('image/')) { event.preventDefault(); readAttachment(item.getAsFile()); } } });
   // The whole window is one drop zone. The IDE only hands a drag to a webview while
   // Shift is held (otherwise its own "Upload to Agent" overlay takes it), so the
@@ -843,7 +900,23 @@
   modelMenuStage.append(modelMenu, modelMenuFillets);
   document.body.appendChild(modelMenuStage); // outside the composer, above the transcript
 
-  const optionFor = (id) => MODEL_OPTIONS.find((option) => option.id === id);
+  // A small shield after the model's name while Auto-Verify is on, so it is never on without you seeing it.
+  const verifyMark = document.createElement('span');
+  verifyMark.className = 'model-picker-verify';
+  verifyMark.title = 'Auto-Verify is on';
+  verifyMark.innerHTML = VERIFY_SVG;
+  modelPickerBtn.querySelector('.model-picker-chevron').before(verifyMark);
+  function renderVerify() {
+    modelPickerBtn.classList.toggle('has-verify', autoVerify);
+    for (const row of modelMenu.querySelectorAll('.model-verify')) {
+      row.setAttribute('aria-checked', String(autoVerify));
+      row.querySelector('.model-option-hint').textContent = !autoVerify ? 'Check the work after every change, for every model'
+        : verifyCommand ? `Runs "${verifyCommand}" after every change` : "Runs the project's own checks after every change";
+    }
+  }
+  renderVerify();
+
+  const optionFor = (id) => MODEL_OPTIONS.find((option) => option.id === id) || availableModels.find((option) => option.id === id);
   const brandOf = (option) => option.agent; // one mark and accent per company: Opus looks like any Claude model
   const iconFor = (brand) => (brand === 'auto' ? AUTO_ICON : AGENT_ICONS[brand] || '');
   function quotaText(agent) {
@@ -853,7 +926,8 @@
 
   function selectModel(modelId, { notifyExtension = true } = {}) {
     const option = optionFor(modelId);
-    if (!option) return;
+    if (!option) { pendingModelId = modelId; return; }
+    pendingModelId = null;
     activeModelId = option.id;
     activeAgent = option.agent;
     modelPickerBtn.dataset.agent = option.agent;
@@ -873,7 +947,10 @@
     try { vscode.setState({ ...(vscode.getState() || {}), modelId: option.id }); } catch {}
     // Picking a model only retargets the next message; it never reveals the
     // real terminal (that's the dedicated Terminal button).
-    if (notifyExtension) vscode.postMessage({ type: 'setModel', modelId: option.id });
+    if (notifyExtension) {
+      modelPickerBtn.dispatchEvent(new Event('clanker:model-change'));
+      vscode.postMessage({ type: 'setModel', modelId: option.id });
+    }
   }
 
   // An agent chosen from outside the picker (voice routing): keep the current
@@ -885,7 +962,10 @@
   }
 
   function renderModelMenu() {
-    const groups = [['auto', MODEL_OPTIONS.filter((option) => option.agent === 'auto')], ...AGENT_IDS.map((agent) => [agent, MODEL_OPTIONS.filter((option) => option.agent === agent)])];
+    const current = optionFor(activeModelId);
+    const visibleIds = new Set([...MODEL_OPTIONS.map((option) => option.id), current?.id]);
+    const options = availableModels.length ? [MODEL_OPTIONS[0], ...availableModels.filter((option) => visibleIds.has(option.id))] : MODEL_OPTIONS;
+    const groups = [['auto', options.filter((option) => option.agent === 'auto')], ...AGENT_IDS.map((agent) => [agent, options.filter((option) => option.agent === agent)])];
     modelMenu.replaceChildren();
     for (const [agent, options] of groups) {
       if (!options.length) continue;
@@ -916,11 +996,30 @@
         item.innerHTML = `<span class="model-option-icon">${iconFor(brandOf(option))}</span><span class="model-option-text"><span class="model-option-label"></span>${option.hint ? '<span class="model-option-hint"></span>' : ''}</span><svg class="model-option-check" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="m3.5 8.5 3 3 6-7" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
         item.querySelector('.model-option-label').textContent = option.label;
         if (option.hint) item.querySelector('.model-option-hint').textContent = option.hint;
+        if (modelPromptIds.has(option.id)) {
+          const note = document.createElement('span');
+          note.className = 'model-option-note';
+          note.title = 'Your own prompt is sent with every message to this model (Settings > Models)';
+          note.innerHTML = NOTE_SVG;
+          item.querySelector('.model-option-check').before(note);
+        }
         item.addEventListener('click', () => { selectModel(option.id); closeModelMenu(); });
         group.appendChild(item);
       }
       modelMenu.appendChild(group);
     }
+    // Auto-Verify applies to every model, so it sits under all of them rather than inside one group.
+    const footer = document.createElement('div');
+    footer.className = 'model-group model-footer';
+    const verify = document.createElement('button');
+    verify.type = 'button';
+    verify.className = 'model-verify';
+    verify.setAttribute('role', 'switch');
+    verify.innerHTML = `<span class="model-verify-icon">${VERIFY_SVG}</span><span class="model-option-text"><span class="model-option-label">Auto-Verify</span><span class="model-option-hint">Check the work after every change, for every model</span></span><span class="model-verify-switch" aria-hidden="true"></span>`;
+    verify.addEventListener('click', () => setAutoVerify(!autoVerify));
+    footer.appendChild(verify);
+    modelMenu.appendChild(footer);
+    renderVerify();
   }
 
   function placeModelMenu() {
@@ -973,6 +1072,7 @@
 
   const savedModel = (() => { try { return vscode.getState()?.modelId; } catch { return null; } })();
   selectModel(optionFor(savedModel) ? savedModel : 'auto', { notifyExtension: Boolean(optionFor(savedModel)) && savedModel !== 'auto' });
+  if (savedModel && !optionFor(savedModel)) pendingModelId = savedModel;
 
   // Ctrl+0 = Auto, Ctrl+1..9 = the picker's models in order.
   document.addEventListener('keydown', (event) => {
@@ -1016,8 +1116,9 @@
   // Idle: send arrow. Busy + empty composer: the arrow gives way to a crimson
   // Stop: only this button stops a turn, never a key. Busy + text: Stop plus a Queue button; Enter queues the turn,
   // Ctrl+Enter steers (interrupts and sends now). Queued turns dispatch FIFO
-  // when a turn ends on its own; a Stop pauses the queue instead.
+  // in the extension even when this chat isn't visible. Pause holds the next turn; Stop also interrupts the current one.
   const SEND_SVG = sendBtn.innerHTML;
+  const SAVE_EDIT_SVG = '<svg viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="m3 8 3.25 3.25L13 4.5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>';
   const QUEUE_SVG = '<svg viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><path d="M6.5 13V4.5M3 8l3.5-3.5L10 8" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/><path d="M12.5 9.5v4M10.5 11.5h4" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>';
   const STOP_SVG = '<svg viewBox="0 0 16 16" aria-hidden="true"><rect x="4.25" y="4.25" width="7.5" height="7.5" rx="1.75" fill="currentColor"/></svg>';
   const stopBtn = document.createElement('button');
@@ -1028,19 +1129,56 @@
 
   let busy = false;
   let isCompacting = false;
+  let activeCompactDivider = null;
   let queuePaused = false;
   let awaitingInterruptAck = false; // the host's turn_complete for a turn this window already closed out
   let turnQueue = []; // { id, text, modelId, attachments }
+  let editingQueue = null;
+  let composerDraft = null;
+  function saveQueueEdit(finish = false) {
+    if (!editingQueue) return;
+    const turn = { ...editingQueue.turn, text: promptInput.value, modelId: pendingModelId || activeModelId, attachments: attachments.map(file => file.path), files: attachments.slice() };
+    if (!editingQueue.taskId) {
+      const original = turnQueue.find(item => item.id === turn.id);
+      if (original) Object.assign(original, turn);
+    }
+    queueAction(editingQueue.taskId ? 'saveScheduledDraft' : 'editQueuedTurn', { chatId: editingQueue.chatId, taskId: editingQueue.taskId, turn, editing: !finish });
+    if (finish) editingQueue = null;
+  }
+  function editQueuePrompt(turn, taskId = null) {
+    if (!editingQueue) composerDraft = { text: promptInput.value, files: attachments.slice(), modelId: pendingModelId || activeModelId };
+    saveQueueEdit(true);
+    editingQueue = { turn, taskId, chatId: currentChatId };
+    promptInput.value = turn.text;
+    attachments = (turn.files || []).slice();
+    selectModel(turn.modelId || 'auto');
+    if (!taskId) queueAction('editQueuedTurn', { turn, editing: true });
+    renderAttachments(); autoGrow(); renderComposerState(); renderTurnQueue(); promptInput.focus();
+  }
+  function finishQueueEdit() {
+    saveQueueEdit(true);
+    const draft = composerDraft;
+    composerDraft = null;
+    promptInput.value = draft?.text || '';
+    attachments = draft?.files || [];
+    if (draft?.modelId) selectModel(draft.modelId);
+    renderAttachments(); autoGrow(); renderComposerState(); renderTurnQueue();
+  }
 
   function renderComposerState() {
-    const queueing = busy && !scheduleArmed && Boolean(promptInput.value.trim());
+    const queueing = !editingQueue && (busy || turnQueue.length > 0) && !scheduleArmed && Boolean(promptInput.value.trim());
     stopBtn.hidden = !busy;
-    sendBtn.hidden = busy && !queueing && !scheduleArmed;
-    if (sendBtn.classList.contains('is-queue') !== queueing) {
+    sendBtn.hidden = !editingQueue && busy && !queueing && !scheduleArmed;
+    const mode = editingQueue ? 'edit' : queueing ? 'queue' : 'send';
+    if (sendBtn.dataset.mode !== mode) {
+      sendBtn.dataset.mode = mode;
       sendBtn.classList.toggle('is-queue', queueing);
-      sendBtn.innerHTML = queueing ? QUEUE_SVG : SEND_SVG;
+      sendBtn.innerHTML = editingQueue ? SAVE_EDIT_SVG : queueing ? QUEUE_SVG : SEND_SVG;
     }
-    sendBtn.title = queueing ? 'Queue for after this turn (Enter). Ctrl+Enter sends now.' : 'Send';
+    sendBtn.title = queueing ? (queuePaused ? 'Add to the paused queue (Enter). Ctrl+Enter sends now.' : 'Queue for after this turn (Enter). Ctrl+Enter sends now.') : 'Send';
+    if (editingQueue) sendBtn.title = 'Save queue edits (Enter). Ctrl+Enter sends now.';
+    // Stop and send together: send steps in left of the clock (style.css), so the clock under your pointer never moves.
+    composerActions.classList.toggle('is-queueing', !stopBtn.hidden && !sendBtn.hidden);
     autoGrow(); // Stop/Queue buttons change the text column's width, so re-measure
   }
   function setBusy(next) { busy = next; renderComposerState(); syncPending(); }
@@ -1052,10 +1190,17 @@
   const pendingEl = document.createElement('div');
   pendingEl.className = 'msg-pending';
   pendingEl.setAttribute('role', 'status');
-  pendingEl.innerHTML = '<span class="pending-orb" aria-hidden="true"></span><span class="pending-label">Thinking</span><span class="pending-time" aria-hidden="true"></span><span class="pending-tokens"></span><span class="pending-thought"></span>';
+  pendingEl.innerHTML = '<span class="pending-orb" aria-hidden="true"></span><span class="pending-label">Thinking</span><span class="pending-time" aria-hidden="true"></span><span class="pending-tokens"></span><span class="pending-cost"></span><span class="pending-thought"></span>';
   const pendingTime = pendingEl.querySelector('.pending-time');
   const pendingTokens = pendingEl.querySelector('.pending-tokens');
   const pendingThought = pendingEl.querySelector('.pending-thought');
+  // Beside the context: what this whole chat would have cost at pay-per-token API prices (the extension adds each turn,
+  // compactions included, since it is still the same chat). A comparison for the subscription, never a charge.
+  const pendingCost = pendingEl.querySelector('.pending-cost');
+  pendingCost.title = 'API value of this chat: what its tokens would cost at the providers’ pay-per-token API prices. An estimate for comparison. Your subscriptions cover this work; nothing is charged.';
+  function renderChatCost(usd) {
+    pendingCost.textContent = usd > 0 ? `≈ ${window.apiValue.formatUsd(usd)} API value` : '';
+  }
   // The running clock for the turn; it becomes the "Worked for" figure at the end.
   setInterval(() => {
     if (pendingEl.isConnected && turnStartedAt) pendingTime.textContent = Date.now() - turnStartedAt >= 1000 ? formatDuration(Date.now() - turnStartedAt) : '';
@@ -1091,7 +1236,7 @@
   }
   function syncPending() {
     const last = [...turnHost().children].reverse().find((el) => el !== pendingEl);
-    const show = busy && Boolean(last) && last !== currentAssistantBubble && !last.matches('.approval-card, .question-card');
+    const show = busy && !isCompacting && Boolean(last) && last !== currentAssistantBubble && !last.matches('.approval-card, .question-card');
     if (show && turnHost().lastElementChild !== pendingEl) { turnHost().appendChild(pendingEl); scrollTranscriptToEnd(); }
     else if (!show && pendingEl.isConnected) pendingEl.remove();
   }
@@ -1101,10 +1246,12 @@
   function dispatchTurn(turn, steer = true) { // steer false: a queued turn taking its turn, which the host lines up behind whatever it has running
     lastTurn = turn;
     if (turn.modelId !== activeModelId) selectModel(turn.modelId);
+    emptyMascot?.launch();
+    emptyMascot = null;
     appendUserMessage(turn.text, undefined, turn.files);
     setBusy(true);
     dropUndo(); // the last turn's undo is only for the last turn
-    vscode.postMessage({ type: 'send', modelId: turn.modelId, text: turn.text, attachments: turn.attachments, submit: true, steer, verify: Boolean(turn.verify), pipeline: Boolean(turn.pipeline) });
+    vscode.postMessage({ type: 'send', chatId: currentChatId, modelId: turn.modelId, text: turn.text, attachments: turn.attachments, submit: true, steer, verify: Boolean(turn.verify), pipeline: Boolean(turn.pipeline) });
   }
 
   function appendInterruptedPill() {
@@ -1121,6 +1268,7 @@
   // turn_complete for it (if the process was still alive) is then swallowed.
   function interruptLocally() {
     awaitingInterruptAck = true;
+    if (isCompacting) { finishCompactDivider('interrupted'); isCompacting = false; }
     for (const [id, card] of pendingCards) { settleCard(card, 'Turn stopped', 'denied'); pendingCards.delete(id); }
     document.querySelectorAll('.tool-card.is-running').forEach((card) => {
       finishToolCard(card, { output: card.querySelector('.tool-body')?.textContent || '' });
@@ -1158,10 +1306,13 @@
   const QUEUE_ICONS = {
     steer: queueSvg('<path d="M9 1.75 3.5 9h4L7 14.25 12.5 7h-4z"/>'),
     edit: PENCIL_SVG,
-    remove: queueSvg('<path d="M4 4l8 8M12 4l-8 8"/>'),
+    remove: queueSvg(TRASH_PATH),
     unschedule: queueSvg('<path d="M5.5 3 2.5 6l3 3"/><path d="M2.5 6h6.75a4 4 0 0 1 0 8H7"/>'),
     grip: queueSvg('<path d="M6 4h.01M10 4h.01M6 8h.01M10 8h.01M6 12h.01M10 12h.01" stroke-width="2"/>'),
+    pause: queueSvg('<path d="M5.5 4v8M10.5 4v8"/>'),
+    play: queueSvg('<path d="m5.5 3.5 7 4.5-7 4.5z"/>'),
   };
+  const queueAction = (type, details = {}) => vscode.postMessage({ type, chatId: currentChatId, ...details });
 
   // P17-M: the dragged row follows the pointer; siblings spring aside by one
   // row pitch (transform only, no reflow). On drop the queue re-renders in the
@@ -1196,6 +1347,7 @@
       grip.removeEventListener('pointercancel', up);
       const letGoAt = tops[from] + dy;
       if (to !== from) turnQueue.splice(to, 0, ...turnQueue.splice(from, 1));
+      queueAction('reorderQueuedTurns', { ids: turnQueue.map((item) => item.id) });
       renderTurnQueue();
       const settled = queueStrip.querySelector(`[data-id="${CSS.escape(turn.id)}"]`);
       if (settled) {
@@ -1242,42 +1394,76 @@
     return badge;
   }
 
-  function saveTurnQueue() {
-    if (!currentChatId) return;
-    try {
-      const { queue, ...state } = vscode.getState() || {};
-      const queues = { ...state.queues };
-      // Keep the old single-chat saved queue when upgrading the panel.
-      if (queue?.chatId && Array.isArray(queue.turns) && !queues[queue.chatId]) queues[queue.chatId] = queue.turns;
-      if (turnQueue.length) queues[currentChatId] = turnQueue;
-      else delete queues[currentChatId];
-      vscode.setState({ ...state, queues });
-    } catch { /* the queue just isn't kept across a reload */ }
+  // This chat's scheduled prompts (the scheduler holds them; the chat shows them where the queue is).
+  const scheduledHere = () => activeTasks().filter((task) => task.status === 'pending' && task.chatId && task.chatId === currentChatId);
+  function scheduledRow(task) {
+    const row = document.createElement('div');
+    row.className = 'turn-queue-item is-scheduled';
+    row.dataset.taskId = task.id;
+    const mark = document.createElement('span');
+    mark.className = 'turn-queue-grip turn-queue-clock';
+    mark.innerHTML = CLOCK_SVG;
+    mark.title = 'Scheduled';
+    const option = optionFor(task.modelId) || MODEL_OPTIONS.find((candidate) => candidate.agent === task.model) || MODEL_OPTIONS[0];
+    const pill = document.createElement('span');
+    pill.className = 'model-pill';
+    pill.dataset.brand = brandOf(option);
+    pill.innerHTML = iconFor(brandOf(option));
+    pill.append(option.shortLabel || option.label);
+    const text = document.createElement('span');
+    text.className = 'turn-queue-text';
+    text.textContent = task.prompt;
+    text.title = task.prompt;
+    const when = document.createElement('span');
+    when.className = 'turn-queue-when';
+    const at = fireTimeOf(task);
+    when.textContent = task.dispatchTrigger === 'quota-reset' ? (at ? `at reset · ${formatCountdown(at - Date.now())}` : 'at reset') : at ? formatWhen(at) : '';
+    const button = (icon, label, title, cls, type) => {
+      const btn = document.createElement('button');
+      btn.type = 'button'; btn.className = `turn-queue-btn ${cls}`; btn.innerHTML = icon; btn.title = title;
+      if (label) btn.append(label); else btn.setAttribute('aria-label', title);
+      btn.addEventListener('click', () => vscode.postMessage({ type, taskId: task.id }));
+      return btn;
+    };
+    row.append(mark, pill, text, when,
+      button(QUEUE_ICONS.steer, 'Send Now', 'Send this now instead of waiting', 'is-primary', 'dispatchNowWithAutoRoute'),
+      button(QUEUE_ICONS.edit, '', 'Move back into the composer', 'is-icon', 'unscheduleToComposer'),
+      button(QUEUE_ICONS.remove, '', 'Delete', 'is-danger is-icon', 'cancelScheduledTask'));
+    return row;
   }
 
   function renderTurnQueue() {
-    vscode.postMessage({ type: 'queuedTurns', count: turnQueue.length }); // so the chime waits for the last one
-    saveTurnQueue();
-    queueStrip.hidden = !turnQueue.length;
+    const scheduled = scheduledHere();
+    queueStrip.hidden = !(turnQueue.length || scheduled.length);
     queueStrip.replaceChildren();
-    if (!turnQueue.length) return;
+    if (!(turnQueue.length || scheduled.length)) return;
     const head = document.createElement('div');
     head.className = 'turn-queue-head';
     const title = document.createElement('span');
-    title.textContent = queuePaused ? `${turnQueue.length} queued · paused` : `${turnQueue.length} queued · sends after this turn`;
+    const parts = [];
+    if (turnQueue.length) parts.push(queuePaused ? `${turnQueue.length} queued · paused` : `${turnQueue.length} queued · sends after this turn`);
+    if (scheduled.length) parts.push(`${scheduled.length} scheduled`);
+    title.textContent = parts.join(' · ');
     head.append(title);
-    if (queuePaused) {
-      const resume = document.createElement('button');
-      resume.type = 'button'; resume.className = 'turn-queue-btn is-primary'; resume.textContent = 'Resume';
-      resume.addEventListener('click', () => {
-        queuePaused = false;
-        if (!busy && turnQueue.length) dispatchTurn(turnQueue.shift(), false);
-        renderTurnQueue();
-      });
-      head.append(resume);
-    }
+    const transport = document.createElement('button');
+    transport.type = 'button'; transport.className = 'turn-queue-btn is-icon queue-transport';
+    transport.innerHTML = queuePaused ? QUEUE_ICONS.play : QUEUE_ICONS.pause;
+    transport.title = queuePaused ? 'Resume queue' : 'Pause queue after the current task';
+    transport.setAttribute('aria-label', queuePaused ? 'Resume queue' : 'Pause queue');
+    transport.addEventListener('click', () => {
+      queuePaused = !queuePaused;
+      queueAction('pauseTurnQueue', { paused: queuePaused });
+      renderTurnQueue();
+      renderComposerState();
+      queueStrip.querySelector('.queue-transport')?.focus({ preventScroll: true });
+    });
+    if (turnQueue.length) head.append(transport);
     queueStrip.append(head);
+    // Scheduled prompts sit in the same list, marked with a clock: they wait for a time (or the usage reset) instead of the
+    // previous turn, and then join the queue.
+    for (const task of scheduled) if (task.id !== editingQueue?.taskId) queueStrip.append(scheduledRow(task));
     for (const turn of turnQueue) {
+      if (!editingQueue?.taskId && turn.id === editingQueue?.turn.id) continue;
       const row = document.createElement('div');
       row.className = 'turn-queue-item';
       row.dataset.id = turn.id;
@@ -1304,19 +1490,13 @@
         btn.addEventListener('click', onClick);
         return btn;
       };
-      const remove = () => { turnQueue = turnQueue.filter((item) => item !== turn); renderTurnQueue(); };
+      const remove = () => { queueAction('removeQueuedTurn', { id: turn.id }); turnQueue = turnQueue.filter((item) => item !== turn); renderTurnQueue(); };
       row.append(pill, text);
       if (turn.files?.length) row.append(queuedFilesBadge(turn.files));
       row.append(
-        button(QUEUE_ICONS.steer, 'Steer Now', busy ? 'Interrupt the running turn and send this now' : 'Send this now', 'is-primary', () => { remove(); queuePaused = false; renderTurnQueue(); steerTurn(turn); }),
-        button(QUEUE_ICONS.edit, 'Edit', 'Move back into the composer', '', () => {
-          remove();
-          promptInput.value = promptInput.value.trim() ? `${promptInput.value}\n${turn.text}` : turn.text;
-          // The queued files come back with the text (they were dropped here before).
-          const held = new Set(attachments.map((attachment) => attachment.path));
-          attachments.push(...(turn.files || []).filter((file) => !held.has(file.path)));
-          renderAttachments();
-          autoGrow(); renderComposerState(); promptInput.focus();
+        button(QUEUE_ICONS.steer, 'Steer Now', busy ? 'Interrupt the running turn and send this now' : 'Send this now', 'is-primary', () => { queueAction('steerQueuedTurn', { id: turn.id }); }),
+        button(QUEUE_ICONS.edit, '', 'Move back into the composer', 'is-icon', () => {
+          editQueuePrompt(turn);
         }),
         button(QUEUE_ICONS.remove, '', 'Delete', 'is-danger is-icon', () => {
           for (const file of turn.files || []) vscode.postMessage({ type: 'removeAttachment', path: file.path }); // as a composer chip's ×
@@ -1328,6 +1508,7 @@
 
   function sendPrompt({ steer = false } = {}) {
     let text = promptInput.value.trim();
+    if (editingQueue && !steer) { finishQueueEdit(); return; }
     if (!text) return;
     // /undo is Clanker's own: the host asks, then puts the last turn's file changes back.
     if (/^\/undo\s*$/i.test(text)) {
@@ -1360,14 +1541,19 @@
       return;
     }
     flushVoiceDraft(text);
-    const turn = { id: `${Date.now()}-${turnQueue.length}`, text, modelId: activeModelId, attachments: attachments.map((attachment) => attachment.path), files: attachments.slice(), verify: autoVerify, pipeline };
+    const turn = { id: crypto.randomUUID(), text, modelId: pendingModelId || activeModelId, attachments: attachments.map((attachment) => attachment.path), files: attachments.slice(), verify: autoVerify, pipeline };
+    if (editingQueue) {
+      queueAction(editingQueue.taskId ? 'cancelScheduledTask' : 'removeQueuedTurn', { chatId: editingQueue.chatId, taskId: editingQueue.taskId, id: editingQueue.turn.id });
+      editingQueue = null;
+    }
     if (scheduleArmed) {
       schedulePrompt(text);
       scheduleChoice = null;
       scheduleTimer.clear(); // the pick was for this prompt; the next one starts from the default again
       refreshScheduleDefault(); // stays on while the model is out of usage, so the next prompt queues too
-    } else if (busy && !steer) {
+    } else if ((busy || turnQueue.length) && !steer) {
       turnQueue.push(turn);
+      queueAction('queueTurn', { turn });
       renderTurnQueue();
     } else {
       steerTurn(turn);
@@ -1377,6 +1563,13 @@
     mentioned.clear();
     renderMentions();
     promptInput.value = '';
+    if (composerDraft) {
+      promptInput.value = composerDraft.text;
+      attachments = composerDraft.files;
+      selectModel(composerDraft.modelId);
+      composerDraft = null;
+      renderAttachments();
+    }
     closeSlashMenu();
     autoGrow();
     renderComposerState();
@@ -1386,6 +1579,7 @@
   stopBtn.addEventListener('click', () => { stopTurn(); promptInput.focus(); });
   scheduleBtn.addEventListener('click', renderComposerState);
   promptInput.addEventListener('input', renderComposerState);
+  promptInput.addEventListener('input', () => saveQueueEdit());
 
   promptInput.addEventListener('keydown', (event) => {
     if (event.key === 'Enter' && !event.shiftKey) {
@@ -1397,71 +1591,68 @@
   micBtn.addEventListener('click', () => {
     vscode.postMessage({ type: 'micToggle' });
   });
+  // Esc drops the recording without transcribing it.
+  document.addEventListener('keydown', (event) => {
+    if (event.key !== 'Escape' || !composerEl.classList.contains('is-voice') || composerEl.classList.contains('is-voice-processing')) return;
+    event.preventDefault();
+    vscode.postMessage({ type: 'micCancel' });
+  });
 
   // ---------- P17-ZA: live mic meter in the composer ----------
-  // A scrolling level history: every WAVE_STEP_MS the loudest RMS since the last
-  // step enters on the right, so each syllable becomes a spike that glides left and
-  // leaves after ~2s. Below the noise gate the line stays perfectly flat.
-  // Stop squeezes the bars into a shimmer beam while Whisper runs; the draft then
-  // fades in where the beam was. Bars animate height (round pill caps), the scroll is a transform.
-  const WAVE_BARS = 24;
+  // One symmetric voice meter: thin bars swell from the centre with the speaker's level and a soft ripple travels
+  // outward; in silence they rest as an even row of dots. The edge fade is a CSS mask. The mic button's ring follows
+  // the same level (--mic-level). Stop squeezes the bars into a shimmer beam while Whisper runs; the draft then
+  // fades in where the beam was. The recording also ends by itself after a pause in speech (VOICE_SILENCE_MS).
+  const WAVE_BARS = 31;
   const voiceOverlay = document.createElement('div');
   voiceOverlay.id = 'composerVoiceOverlay'; voiceOverlay.className = 'voice-overlay'; voiceOverlay.hidden = true;
   voiceOverlay.setAttribute('aria-hidden', 'true');
   const waveBars = Array.from({ length: WAVE_BARS }, () => { const bar = document.createElement('span'); bar.className = 'waveform-bar'; return bar; });
   voiceOverlay.append(...waveBars);
   composerEl.appendChild(voiceOverlay);
-  const WAVE_STEP_MS = 90; // ~2.16s speech history across 24 columns
-  const waveHeights = new Float32Array(WAVE_BARS); // 0..1 per bar, index 0 = oldest (left)
-  let micLevel = 0; // peak speech level since last step
-  let micLevelSum = 0; // accumulator for average
-  let micLevelSamples = 0; // count of volume events in window
+  const WAVE_MIN = 3; // px: a resting dot
+  const WAVE_MAX = 28; // px: the loudest centre bar
+  const VOICE_SPEECH = 0.12; // a level above this is speech, not room noise
+  const VOICE_MIN_SPEECH_MS = 300; // a cough does not arm the auto-stop
+  let micLevel = 0; // latest level, 0..1
   let micLevelAt = 0;
+  let waveLevel = 0; // micLevel smoothed per frame: quick to rise, slow to fall
   let waveFrame = 0;
-  let waveShiftAt = 0;
-  let wavePitch = 0;
+  let speechMs = 0; // speech heard so far in this recording
+  let lastSpeechAt = 0;
+  let lastVolumeAt = 0;
+  let voiceStopSent = false; // the auto-stop fires once per recording
   let lastVoiceDraft = null; // { original, raw }: what the transcript said, to learn from the user's fixes
   const REDUCED_MOTION = matchMedia('(prefers-reduced-motion: reduce)');
   function waveStep(now) {
-    if (!waveShiftAt) waveShiftAt = now;
-    let heightsChanged = false;
-    while (now - waveShiftAt >= WAVE_STEP_MS) {
-      waveShiftAt += WAVE_STEP_MS;
-      const fresh = now - micLevelAt < 300;
-      const average = micLevelSamples ? micLevelSum / micLevelSamples : 0;
-      const target = fresh ? micLevel * 0.68 + average * 0.32 : 0;
-      const previous = waveHeights[WAVE_BARS - 1];
-      const response = target > previous ? 0.78 : 0.38;
-      const level = previous + (target - previous) * response;
-      micLevel = 0; micLevelSum = 0; micLevelSamples = 0;
-      waveHeights.copyWithin(0, 1);
-      waveHeights[WAVE_BARS - 1] = level < 0.025 ? 0 : level;
-      heightsChanged = true;
-    }
-    // Between steps every bar glides one pitch left, so the history scrolls instead of ticking.
-    const frac = (now - waveShiftAt) / WAVE_STEP_MS;
-    const shift = (-frac * wavePitch).toFixed(2);
+    const target = now - micLevelAt < 300 ? micLevel : 0;
+    waveLevel += (target - waveLevel) * (target > waveLevel ? 0.35 : 0.1);
+    const t = now / 1000;
+    const mid = (WAVE_BARS - 1) / 2;
     for (let i = 0; i < WAVE_BARS; i++) {
-      const pos = i - frac; // continuous across steps, so edge fades never jump
-      waveBars[i].style.transform = `translateX(${shift}px)`;
-      if (heightsChanged) waveBars[i].style.height = `${(6 + 22 * waveHeights[i]).toFixed(1)}px`;
-      waveBars[i].style.opacity = Math.max(0, Math.min(1, pos + 0.35, WAVE_BARS - 0.65 - pos)).toFixed(2);
+      const x = Math.abs(i - mid) / mid; // 0 at the centre, 1 at the edges
+      const swell = (1 - x ** 1.7) * (0.74 + 0.26 * Math.sin(t * 7 - x * 5)); // bell-shaped, rippling outward
+      const s = Math.min(1, waveLevel * swell * 1.15);
+      waveBars[i].style.height = `${(WAVE_MIN + (WAVE_MAX - WAVE_MIN) * s).toFixed(1)}px`;
+      waveBars[i].style.opacity = (0.3 + 0.7 * s).toFixed(2);
     }
+    micBtn.style.setProperty('--mic-level', waveLevel.toFixed(3));
     waveFrame = requestAnimationFrame(waveStep);
   }
   function setVoiceState(state) {
     const recording = state === 'recording';
     const processing = state === 'processing';
     cancelAnimationFrame(waveFrame);
+    emptyMascot?.setListening?.(recording);
     if (recording) {
       voiceOverlay.hidden = false;
-      micLevelAt = 0; micLevel = 0; micLevelSum = 0; micLevelSamples = 0; waveShiftAt = 0;
-      waveHeights.fill(0);
-      wavePitch = waveBars.length > 1 ? waveBars[1].offsetLeft - waveBars[0].offsetLeft : 0;
+      micLevelAt = 0; micLevel = 0; waveLevel = 0; speechMs = 0; lastSpeechAt = 0; lastVolumeAt = 0; voiceStopSent = false;
       if (!REDUCED_MOTION.matches) waveFrame = requestAnimationFrame(waveStep);
+    } else {
+      micBtn.style.removeProperty('--mic-level');
     }
     if (processing) {
-      waveBars.forEach((bar) => { bar.style.transform = ''; bar.style.opacity = ''; bar.style.height = ''; }); // CSS collapses them to the 4px baseline
+      waveBars.forEach((bar) => { bar.style.opacity = ''; bar.style.height = ''; }); // CSS collapses them to the 4px baseline
       promptInput.placeholder = 'Transcribing & formatting with Whisper…';
     }
     composerEl.classList.toggle('is-voice', recording || processing);
@@ -1494,8 +1685,59 @@
   // Navigating away counts too: hiding the window keeps what was fixed so far (switching chats flushes in chatLoaded).
   document.addEventListener('visibilitychange', () => { if (document.hidden) flushVoiceDraft(promptInput.value.trim()); });
 
-  queueBtn.addEventListener('click', () => { if (!queueModal.el.hidden) { closeModal(queueModal.el); return; } queuePinned = false; renderQueue(); openModal(queueModal); });
-  newChatBtn.addEventListener('click', () => { attachments = []; renderAttachments(); vscode.postMessage({ type: 'newChat' }); });
+  // The pill is the way back to the prompts: it jumps to the chat holding the next one to go out; with scheduled prompts in
+  // several chats, hovering lists them all (the same marks and names as Recent in the sidebar).
+  const scheduledChats = () => {
+    const byChat = new Map();
+    for (const task of activeTasks().filter((entry) => entry.status === 'pending' && entry.chatId)) {
+      const entry = byChat.get(task.chatId) || { id: task.chatId, count: 0, at: Infinity, agent: task.model };
+      entry.count += 1;
+      entry.at = Math.min(entry.at, fireTimeOf(task) || Infinity);
+      byChat.set(task.chatId, entry);
+    }
+    return [...byChat.values()].sort((a, b) => a.at - b.at);
+  };
+  const schedPop = document.createElement('div');
+  schedPop.className = 'sched-pop';
+  schedPop.hidden = true;
+  document.body.appendChild(schedPop);
+  let schedPopTimer;
+  function showSchedPop() {
+    clearTimeout(schedPopTimer);
+    const chats = scheduledChats();
+    if (chats.length < 2) { schedPop.hidden = true; return; }
+    schedPop.replaceChildren(...chats.map((entry) => {
+      const session = historySessions.find((item) => item.id === entry.id);
+      const row = document.createElement('button');
+      row.type = 'button';
+      row.className = 'sched-pop-row';
+      row.dataset.agent = (session?.models || []).at(-1) || entry.agent;
+      row.innerHTML = '<span class="sched-pop-mark"></span><span class="sched-pop-title"></span><span class="sched-pop-meta"></span>';
+      row.querySelector('.sched-pop-mark').innerHTML = (window.AGENT_ICONS && window.AGENT_ICONS[row.dataset.agent]) || '';
+      row.querySelector('.sched-pop-title').textContent = session?.title || session?.preview || 'Chat';
+      row.querySelector('.sched-pop-meta').textContent = `${entry.count} scheduled${Number.isFinite(entry.at) ? ` · ${formatCountdown(entry.at - Date.now())}` : ''}`;
+      row.classList.toggle('is-here', entry.id === currentChatId);
+      row.addEventListener('click', () => { schedPop.hidden = true; if (entry.id !== currentChatId) vscode.postMessage({ type: 'restoreChat', id: entry.id }); });
+      return row;
+    }));
+    const rect = queueBtn.getBoundingClientRect();
+    schedPop.hidden = false;
+    schedPop.style.top = `${Math.max(8, Math.min(rect.top, window.innerHeight - schedPop.offsetHeight - 12))}px`;
+    schedPop.style.right = `${window.innerWidth - rect.left + 10}px`;
+  }
+  const hideSchedPop = () => { schedPopTimer = setTimeout(() => { schedPop.hidden = true; }, 220); };
+  queueBtn.addEventListener('mouseenter', showSchedPop);
+  queueBtn.addEventListener('mouseleave', hideSchedPop);
+  schedPop.addEventListener('mouseenter', () => clearTimeout(schedPopTimer));
+  schedPop.addEventListener('mouseleave', hideSchedPop);
+  queueBtn.addEventListener('click', () => {
+    const chats = scheduledChats();
+    // Tasks from before they were tied to a chat have no chat to jump to: the old list opens.
+    if (!chats.length) { if (!queueModal.el.hidden) { closeModal(queueModal.el); return; } queuePinned = false; renderQueue(); openModal(queueModal); return; }
+    schedPop.hidden = true;
+    if (chats[0].id !== currentChatId) vscode.postMessage({ type: 'restoreChat', id: chats[0].id }); else promptInput.focus();
+  });
+  newChatBtn.addEventListener('click', () => { if (editingQueue) finishQueueEdit(); attachments = []; renderAttachments(); vscode.postMessage({ type: 'newChat' }); });
   historyBtn.addEventListener('click', () => { if (toggleModal(historyModal)) vscode.postMessage({ type: 'requestHistory' }); });
   terminalBtn?.addEventListener('click', () => {
     // The only action that ever reveals the real VS Code terminal — an
@@ -2102,9 +2344,24 @@
   // ---------- Transcript ----------
 
   function clearEmptyState() {
+    emptyMascot?.dispose();
+    emptyMascot = null;
     const empty = transcriptEl.querySelector('.empty-state');
     if (empty) empty.remove();
   }
+  // Clanker's interactive rig lives only in the empty state; launching never delays the chat stream.
+  function emptyState() {
+    emptyMascot?.dispose();
+    const el = document.createElement('div');
+    el.className = 'empty-state';
+    el.innerHTML = `<div class="empty-mark"></div>
+      <h2 class="empty-title">What are we working on?</h2>
+      <p class="empty-lead">Claude, Codex and Gemini share this chat. Pick a model below, or leave it on Auto.</p>
+      <ul class="empty-tips"><li><button type="button" data-mascot-action="mention"><kbd>@</kbd>mention a file</button></li><li><button type="button" data-mascot-action="action"><kbd>/</kbd>run an action</button></li><li><button type="button" data-mascot-action="image"><kbd>+</kbd>attach an image</button></li></ul>`;
+    emptyMascot = window.createClankerMascot({ root: el, input: promptInput, modelPicker: modelPickerBtn, attach: attachBtn, mic: micBtn, transcript: transcriptEl });
+    return el;
+  }
+  transcriptEl.querySelector('.empty-state')?.replaceWith(emptyState());
 
   // P17-E: streaming output only follows the tail while the reader is already
   // there; scrolling up to read earlier output is never yanked back down.
@@ -2194,7 +2451,7 @@
     }, () => showToast('Could not copy to the clipboard.', { error: true }));
   }
 
-  function messageActions(at, getText, extra = [], cost = 0) {
+  function messageActions(at, getText, extra = []) {
     const row = document.createElement('div');
     row.className = 'msg-actions';
     const time = document.createElement('time');
@@ -2202,14 +2459,6 @@
     time.textContent = formatTime(at);
     if (at) time.dateTime = new Date(at).toISOString();
     row.append(time);
-    // Claude Code's own figure for the reply. Codex and Gemini report none, so theirs show nothing rather than a guess.
-    if (cost > 0) {
-      const price = document.createElement('span');
-      price.className = 'msg-cost';
-      price.textContent = `≈ ${cost < 0.01 ? '<$0.01' : `$${cost.toFixed(2)}`}`;
-      price.title = 'What this reply would cost at API prices, as Claude Code reports it. A subscription is not billed per token.';
-      row.append(price);
-    }
     row.append(iconAction(COPY_ICON, 'Copy', (btn) => copyText(btn, getText())), ...extra);
     return row;
   }
@@ -2263,19 +2512,21 @@
   document.body.insertAdjacentHTML('beforeend', '<svg width="0" height="0" style="position:absolute" aria-hidden="true" focusable="false"><filter id="msg-goo" x="-10%" y="-10%" width="120%" height="130%" color-interpolation-filters="sRGB"><feGaussianBlur in="SourceGraphic" stdDeviation="5" result="blur"/><feColorMatrix in="blur" mode="matrix" values="1 0 0 0 0  0 1 0 0 0  0 0 1 0 0  0 0 0 18 -7" result="goo"/><feComposite in="SourceGraphic" in2="goo" operator="atop"/></filter><filter id="tip-goo" filterUnits="userSpaceOnUse" x="-320" y="-40" width="420" height="140" color-interpolation-filters="sRGB"><feGaussianBlur in="SourceGraphic" stdDeviation="5" result="blur"/><feColorMatrix in="blur" mode="matrix" values="1 0 0 0 0  0 1 0 0 0  0 0 1 0 0  0 0 0 18 -7" result="goo"/><feComposite in="SourceGraphic" in2="goo" operator="atop"/></filter></svg>'); // tip-goo: same goo, a wide fixed region for a tag hanging off a 32px button
 
   // P17-K: a prompt longer than three lines clamps behind a fade with a Show more / Show less toggle.
-  function clampUserBubble(bubble, body) {
+  function clampUserBubble(bubble, body, actions) {
     const line = parseFloat(getComputedStyle(body).lineHeight) || 20;
     if (body.scrollHeight <= line * 3 + 4) return;
     bubble.classList.add('is-clamped');
     const toggle = document.createElement('button');
     toggle.type = 'button';
-    toggle.className = 'msg-clamp-toggle';
+    toggle.className = 'msg-action msg-clamp-toggle';
     toggle.textContent = 'Show more';
+    toggle.setAttribute('aria-expanded', 'false');
     toggle.addEventListener('click', () => {
       const expanded = bubble.classList.toggle('is-expanded');
       toggle.textContent = expanded ? 'Show less' : 'Show more';
+      toggle.setAttribute('aria-expanded', String(expanded));
     });
-    bubble.appendChild(toggle);
+    actions.querySelector('.msg-time').after(toggle);
   }
 
   function appendUserMessage(text, at = new Date().toISOString(), files = [], { scheduled = false } = {}) {
@@ -2304,12 +2555,13 @@
     bubble.appendChild(body);
     const index = transcriptEl.querySelectorAll('.msg-group-user').length; // nth user message = its place in the stored chat
     const revert = iconAction(REVERT_ICON, 'Revert to here (forks the chat, message goes back to the composer)', () => vscode.postMessage({ type: 'revertToMessage', index }));
-    group.append(bubble, messageActions(at, () => text, [revert]));
+    const actions = messageActions(at, () => text, [revert]);
+    group.append(bubble, actions);
     const turn = document.createElement('div');
     turn.className = 'turn';
     turn.appendChild(group);
     transcriptEl.appendChild(turn); // always top level, never inside the previous turn
-    clampUserBubble(bubble, body);
+    clampUserBubble(bubble, body, actions);
     currentTurnEl = turn;
     turnAnchor = group;
     turnStartedAt = Date.now();
@@ -2376,7 +2628,6 @@
   // the plan ran out, so offer to send "continue" into this chat once that agent's limit resets.
   // Claude: "You've hit your session limit"; Codex: "You've hit your usage limit"; Gemini: "Quota exceeded" /
   // "You have exhausted your daily quota" / RESOURCE_EXHAUSTED.
-  const LIMIT_RE = /\b(usage|session|weekly|daily|rate)\s+limit\b|hit your .{0,24}limit|limit (reached|exceeded)|quota (exceeded|exhausted)|exhausted (your|the) .{0,24}(quota|limit)|RESOURCE_EXHAUSTED|out of (usage|credits)/i;
   let limitHitThisTurn = false; // an upstream_error card already said so
   let restoringHistory = false; // old limit replies in a restored transcript get no button; only the last may
   function offerContinueAtReset(host) {
@@ -2397,9 +2648,9 @@
     host.append(btn);
   }
 
-  function endAssistantTurn(at = new Date().toISOString(), cost = 0) {
+  function endAssistantTurn(at = new Date().toISOString()) {
     const last = turnBubbles[turnBubbles.length - 1];
-    if (last && !last.querySelector('.msg-actions')) last.append(messageActions(at, () => last.dataset.raw.trim(), [], cost));
+    if (last && !last.querySelector('.msg-actions')) last.append(messageActions(at, () => last.dataset.raw.trim(), []));
     const limitHit = limitHitThisTurn || isLimitNotice(last?.dataset.raw);
     const replied = turnRoutedAgent || lastReplyAgent();
     // Only when there is something to continue (the turn was cut off by the limit) and a reason to
@@ -2868,9 +3119,10 @@
       return btn;
     };
     const resolve = (approved, always) => {
-      vscode.postMessage({ type: 'approvalResponse', approved, always, actionId });
+      const settled = { text: approved ? (always ? 'Allowed for this session' : 'Allowed') : 'Denied', tone: approved ? 'allowed' : 'denied' }; // other windows on this chat settle theirs the same way
+      vscode.postMessage({ type: 'approvalResponse', approved, always, actionId, settled });
       pendingCards.delete(actionId);
-      settleCard(card, approved ? (always ? 'Allowed for this session' : 'Allowed') : 'Denied', approved ? 'allowed' : 'denied');
+      settleCard(card, settled.text, settled.tone);
       promptInput.focus();
     };
     const allow = button('Allow', 'approval-approve', () => resolve(true, false));
@@ -3000,13 +3252,14 @@
     body.appendChild(actions);
     submit.addEventListener('click', () => {
       const payload = Object.fromEntries(questions.map((q) => [q.question, (answers.get(q.question) || []).join(', ')]));
-      vscode.postMessage({ type: 'questionResponse', actionId, answers: payload });
+      const settled = { text: Object.values(payload).join(' \u00b7 '), tone: 'allowed' };
+      vscode.postMessage({ type: 'questionResponse', actionId, answers: payload, settled });
       pendingCards.delete(actionId);
-      settleCard(card, Object.values(payload).join(' \u00b7 '), 'allowed');
+      settleCard(card, settled.text, settled.tone);
       promptInput.focus();
     });
     skip.addEventListener('click', () => {
-      vscode.postMessage({ type: 'approvalResponse', approved: false, actionId });
+      vscode.postMessage({ type: 'approvalResponse', approved: false, actionId, settled: { text: 'Skipped', tone: 'denied' } });
       pendingCards.delete(actionId);
       settleCard(card, 'Skipped', 'denied');
     });
@@ -3052,14 +3305,32 @@
     contextWarning.querySelector('.context-warning-text').textContent = `Context ${pct}% full (${kTokens(remaining)} left)`;
     contextWarning.title = `${AGENT_NAMES[context.agent] || context.agent} context window: ${context.estimated ? 'approximately ' : ''}${tokens.toLocaleString()} of ${limit.toLocaleString()} tokens (${remaining.toLocaleString()} left). Compacting retains up to roughly 100,000 tokens in a detailed checkpoint.`;
   }
-  const COMPACT_SVG = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 2.5 8 6l4-3.5M4 13.5 8 10l4 3.5"/></svg>';
-  // The history stays on screen; only a quiet divider marks the hidden handoff.
-  function appendCompactDivider(auto) {
+  const COMPACT_SVG = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path class="compact-arrow-top" d="M4 2.5 8 6l4-3.5"/><path class="compact-arrow-bottom" d="M4 13.5 8 10l4 3.5"/></svg>';
+  const compactVisibility = new IntersectionObserver((entries) => {
+    entries.forEach((entry) => entry.target.classList.toggle('is-visible', entry.isIntersecting));
+  });
+  // One status for both the hidden handoff and its thinking; it settles into the history divider.
+  function appendCompactDivider(auto, active = false, outcome = 'complete') {
     const divider = document.createElement('div');
-    divider.className = 'compact-divider';
-    divider.innerHTML = COMPACT_SVG;
-    divider.append(auto ? 'Context auto-compacted' : 'Context compacted');
+    divider.className = `compact-divider${active ? ' is-compacting' : ''}`;
+    divider.dataset.completeLabel = auto ? 'Context auto-compacted' : 'Context compacted';
+    divider.setAttribute('role', 'status');
+    divider.innerHTML = `<span class="compact-status">${COMPACT_SVG}<span class="compact-label"></span><span class="compact-thinking" aria-hidden="true"${active ? '' : ' hidden'}><i></i><i></i><i></i></span></span>`;
+    divider.querySelector('.compact-label').textContent = active ? 'Thinking · compacting context' : outcome === 'complete' ? divider.dataset.completeLabel : `Context compaction ${outcome}`;
+    if (active) activeCompactDivider = divider;
     transcriptEl.appendChild(divider);
+    if (active) compactVisibility.observe(divider);
+    scrollTranscriptToEnd();
+  }
+  function finishCompactDivider(outcome = 'complete') {
+    if (!activeCompactDivider) return;
+    const divider = activeCompactDivider;
+    activeCompactDivider = null;
+    compactVisibility.unobserve(divider);
+    divider.classList.remove('is-compacting');
+    divider.classList.add('is-settled');
+    divider.querySelector('.compact-thinking').hidden = true;
+    divider.querySelector('.compact-label').textContent = outcome === 'complete' && !divider.dataset.failed ? divider.dataset.completeLabel : `Context compaction ${divider.dataset.failed ? 'failed' : outcome}`;
   }
   contextWarning.querySelector('.context-compact').addEventListener('click', () => {
     if (busy) { showToast('Compaction runs once the current turn is done.'); return; }
@@ -3072,10 +3343,14 @@
    * so far stays open, and the stream picks up where it is. */
   function restoreChat(chat, running = null) {
     currentChatId = chat.id;
+    if (chat.modelId) selectModel(chat.modelId, { notifyExtension: false });
     try { vscode.setState({ ...(vscode.getState() || {}), chatId: chat.id }); } catch {} // reopened here after a restart
     turnRoutedAgent = null; // the restored transcript's own last reply says who answered here
     isCompacting = Boolean(running?.compact);
+    if (activeCompactDivider) compactVisibility.unobserve(activeCompactDivider);
+    activeCompactDivider = null;
     renderContextGauge(chat.context);
+    renderChatCost(chat.apiCostUsd);
     transcriptEl.replaceChildren();
     currentAssistantBubble = null;
     turnBubbles = [];
@@ -3095,7 +3370,14 @@
       if (message.role === 'user') {
         flush();
         hiddenCompactTurn = Boolean(message.compact);
-        if (hiddenCompactTurn) { appendCompactDivider(message.auto); return; }
+        if (hiddenCompactTurn) {
+          const reply = messages.slice(index + 1).find((entry) => entry.role === 'assistant');
+          const active = isCompacting && messages.findLastIndex((entry) => entry.role === 'user') === index;
+          const outcome = reply?.interrupted ? 'interrupted' : /^(Claude|Gemini|Codex) error:/i.test(reply?.text || '') ? 'failed' : 'complete';
+          appendCompactDivider(message.auto, active, outcome);
+          if (active) { currentTurnEl = null; currentAssistantBubble = null; }
+          return;
+        }
         appendUserMessage(message.text || '', message.at || null, message.files, { scheduled: message.scheduled });
         anchor = currentTurnEl.firstElementChild; startedAt = message.at; endedAt = null;
       }
@@ -3114,7 +3396,7 @@
         appendAssistantDelta(text.slice(from), message.agent, message.modelLabel, message.roleName);
         if (index === live) return;
         if (message.interrupted) appendInterruptedPill();
-        endAssistantTurn(message.at || null, message.costUsd);
+        endAssistantTurn(message.at || null);
         endedAt = message.at;
       }
       else if (message.role === 'tool' && !placed.has(index)) storedTool(message);
@@ -3143,7 +3425,7 @@
         offerContinueAtReset([...transcriptEl.querySelectorAll('.msg-assistant')].pop());
       }
     }
-    if (!transcriptEl.childElementCount) transcriptEl.innerHTML = '<div class="empty-state"><p>Start a new conversation.</p></div>';
+    if (!transcriptEl.childElementCount) transcriptEl.append(emptyState());
     scrollTranscriptToEnd(true);
   }
 
@@ -3175,25 +3457,52 @@
     input.addEventListener('blur', () => finish(true));
   }
 
+  // Manage Chats: a search field above the list, Active Chats first, the rest grouped by day (Today, Yesterday, ...).
+  const timeOptions = () => ({ locale: TIME_PREFS.locale, hourCycle: HOUR_CYCLE });
+  const chatWhen = (iso) => window.chatTime.chatTime(iso, timeOptions());
+  const fullWhen = (iso) => { const date = new Date(iso); return Number.isNaN(date.getTime()) ? '' : date.toLocaleString(TIME_PREFS.locale, clockParts({ weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })); };
+  const historySearch = document.createElement('input');
+  historySearch.type = 'search';
+  historySearch.className = 'history-search';
+  historySearch.placeholder = 'Search chats';
+  historySearch.setAttribute('aria-label', 'Search chats');
+  historySearch.autocomplete = 'off';
+  historyModal.body.before(historySearch);
+  let historySessions = [];
+  historySearch.addEventListener('input', () => renderHistory(historySessions));
+  // "5 minutes ago" ages while the list is open.
+  setInterval(() => {
+    if (historyModal.el.hidden) return;
+    historyModal.body.querySelectorAll('.history-when[data-at]').forEach((label) => { const text = chatWhen(label.dataset.at); if (label.textContent !== text) label.textContent = text; });
+  }, 30000);
+
   function renderHistory(sessions) {
-    const list = sessions || [];
-    const working = list.filter((session) => session.state).length;
-    runningBadge.hidden = !working;
-    runningBadge.textContent = String(working);
+    historySessions = sessions || [];
+    const all = historySessions;
+    const working = all.filter((session) => session.state).length;
     historyBtn.title = working ? `${working} chat${working === 1 ? '' : 's'} running` : 'Manage chats';
-    historyModal.count.textContent = String(list.length);
+    const query = historySearch.value.trim().toLowerCase();
+    const list = query ? all.filter((session) => [session.title, session.projectName, session.preview, session.lastMessage?.text].some((field) => String(field || '').toLowerCase().includes(query))) : all;
+    historyModal.count.textContent = query ? `${list.length} of ${all.length}` : String(all.length);
+    historySearch.hidden = !all.length;
+    const scrolled = historyModal.body.scrollTop; // a live refresh keeps your place
     historyModal.body.replaceChildren();
     if (!list.length) {
       const empty = document.createElement('p');
       empty.className = 'fs-modal-empty';
-      empty.textContent = 'No conversations yet.';
+      empty.textContent = all.length ? `No chats match “${historySearch.value.trim()}”.` : 'No conversations yet.';
       historyModal.body.append(empty);
       return;
     }
     const active = list.filter((session) => session.active);
-    const rest = list.filter((session) => !session.active);
     if (active.length) historyModal.body.append(historySection('Active Chats', active));
-    if (rest.length) historyModal.body.append(historySection(active.length ? 'Chat History' : '', rest));
+    const groups = [];
+    for (const session of list.filter((entry) => !entry.active)) {
+      const label = window.chatTime.chatDayGroup(session.updatedAt, timeOptions());
+      if (groups.at(-1)?.label === label) groups.at(-1).sessions.push(session); else groups.push({ label, sessions: [session] });
+    }
+    for (const group of groups) historyModal.body.append(historySection(group.label || 'Older', group.sessions));
+    historyModal.body.scrollTop = scrolled;
   }
 
   const CHAT_ICONS = {
@@ -3201,7 +3510,7 @@
     rename: PENCIL_SVG,
     // The Source Control mark: one trunk, one branch splitting off, a node on each end.
     fork: '<svg viewBox="0 0 16 16" fill="none" aria-hidden="true"><circle cx="4.5" cy="3.5" r="1.6" stroke="currentColor" stroke-width="1.3"/><circle cx="4.5" cy="12.5" r="1.6" stroke="currentColor" stroke-width="1.3"/><circle cx="11.5" cy="4.5" r="1.6" stroke="currentColor" stroke-width="1.3"/><path d="M4.5 5.1v5.8M11.5 6.1c0 2.6-2 3.4-4.3 3.9-1.5.3-2.7.7-2.7 1" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>',
-    delete: '<svg viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M2.75 4.25h10.5M6.25 4.25V2.75h3.5v1.5M4.25 4.25l.6 8.4a1 1 0 0 0 1 .93h4.3a1 1 0 0 0 1-.93l.6-8.4M6.75 7v4M9.25 7v4" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>',
+    delete: TRASH_SVG,
   };
   function historySection(label, sessions) {
     const section = document.createElement('section');
@@ -3246,14 +3555,21 @@
       titleEl.title = session.title || session.preview || 'New chat';
       head.append(titleEl);
 
+      // Under the title, left-aligned with every other card's: when it was last active, in the messenger style of
+      // chat-time.js, then how long the chat is. The label ages ("5 minutes ago"), so it is refreshed (see below).
+      const meta = document.createElement('div');
+      meta.className = 'history-meta';
+      if (session.projectName) { const project = document.createElement('span'); project.textContent = session.projectName; meta.append(project); }
       const when = document.createElement('time');
-      when.className = 'queue-time';
+      when.className = 'history-when';
       when.dateTime = session.updatedAt || '';
-      when.textContent = formatWhen(session.updatedAt);
+      when.dataset.at = session.updatedAt || '';
+      when.textContent = chatWhen(session.updatedAt);
+      when.title = fullWhen(session.updatedAt);
       const count = document.createElement('span');
       count.className = 'history-count';
       count.textContent = `${session.messageCount || 0} message${session.messageCount === 1 ? '' : 's'}`;
-      head.append(when, count);
+      meta.append(when, count);
 
       const preview = document.createElement('div');
       preview.className = 'queue-prompt history-preview';
@@ -3303,7 +3619,7 @@
       card.addEventListener('keydown', (event) => {
         if (event.target === card && (event.key === 'Enter' || event.key === ' ')) { event.preventDefault(); open(); }
       });
-      card.prepend(head, preview);
+      card.prepend(head, meta, preview);
       wrap.append(card);
       window.shapeBubbleCard?.(card);
     }
@@ -3314,16 +3630,36 @@
 
   window.addEventListener('message', (event) => {
     const message = event.data;
+    // Chat navigation reveals the thread instead of leaving a popup over it.
+    if (message.type === 'chatLoading' || message.type === 'chatLoaded') {
+      document.querySelectorAll('.fs-modal:not([hidden])').forEach(closeModal);
+    }
     switch (message.type) {
-      case 'attachmentSaved': { attachments.push(message.attachment); renderAttachments(); break; }
+      case 'attachmentSaved': {
+        if (message.chatId && message.chatId !== currentChatId) {
+          const draft = chatDrafts.get(message.chatId) || { text: '', files: [], mentions: [] };
+          draft.files.push(message.attachment); chatDrafts.set(message.chatId, draft);
+        } else { attachments.push(message.attachment); renderAttachments(); }
+        break;
+      }
+      case 'attachmentRenamed': { const at = attachments.findIndex((item) => item.path === message.from); if (at >= 0) { attachments[at] = { ...attachments[at], ...message.attachment, dims: attachments[at].dims }; renderAttachments(); } break; }
       case 'history': {
         // A rename in progress would lose its text to a live refresh; its own save refreshes again.
         if (!historyModal.body.querySelector('input')) renderHistory(message.sessions);
         break;
       }
+      case 'project': {
+        projectBar.hidden = false;
+        projectBtn.textContent = message.project?.name || 'Choose project';
+        projectBtn.title = message.project ? (message.project.root || 'Planning project — attach a folder through Manage projects') : 'Select a project before sending this chat';
+        projectBtn.classList.toggle('needs-project', Boolean(message.required));
+        explorerBtn.hidden = !message.project?.root;
+        break;
+      }
       case 'editorTheme': editorTheme = message.theme; void applyEditorTheme(); break;
       // A chat switch has started: the old thread goes, shimmering placeholders stand in until chatLoaded renders the new one.
       case 'chatLoading': {
+        if (editingQueue) finishQueueEdit();
         const bar = (width) => `<i class="skeleton" style="width:${width}%"></i>`;
         transcriptEl.innerHTML = `<div class="chat-skeleton" aria-busy="true" aria-label="Loading chat">
           <div class="skel-user"><i class="skeleton" style="width:58%"></i></div>
@@ -3333,25 +3669,53 @@
         break;
       }
       case 'chatLoaded': {
-        // Whatever ran in the previous thread keeps going in the background;
-        // queued turns belonged to that thread.
+        if (message.chat?.id !== currentChatId) {
+          if (editingQueue) finishQueueEdit();
+          if (currentChatId) chatDrafts.set(currentChatId, { text: promptInput.value, files: attachments.slice(), mentions: [...mentioned] });
+          const draft = chatDrafts.get(message.chat?.id);
+          promptInput.value = draft?.text || '';
+          attachments = draft?.files || [];
+          mentioned.clear();
+          for (const mention of draft?.mentions || []) mentioned.add(mention);
+          workspaceFiles = null; workspaceRoot = '';
+          closeSlashMenu(); renderAttachments(); renderMentions(); autoGrow();
+        }
+        // The extension keeps every chat's queue running, independently of the visible thread.
         flushVoiceDraft(promptInput.value.trim());
-        // Save the outgoing thread before selecting the incoming queue. Returning to a chat (or reloading)
-        // restores its queue paused, since its running turn may have finished while it wasn't shown.
         awaitingInterruptAck = false;
-        saveTurnQueue();
         const state = vscode.getState();
-        const savedQueue = state?.queues?.[message.chat?.id] || (state?.queue?.chatId === message.chat?.id ? state.queue.turns : null);
-        if (message.chat?.id && message.chat.id === currentChatId) { /* same chat: the queue stays as it is */ }
-        else if (message.chat?.id && Array.isArray(savedQueue) && savedQueue.length) { turnQueue = savedQueue; queuePaused = true; }
-        else { queuePaused = false; turnQueue = []; }
+        // Migrate all old queues, including chats not currently shown. A host acknowledgement removes each old copy.
+        const legacy = { ...state?.queues };
+        if (state?.queue?.chatId && !legacy[state.queue.chatId]) legacy[state.queue.chatId] = state.queue.turns;
+        for (const [chatId, turns] of Object.entries(legacy)) if (Array.isArray(turns) && turns.length) vscode.postMessage({ type: 'importTurnQueue', chatId, turns });
+        turnQueue = message.chat?.turnQueue?.turns || [];
+        queuePaused = message.chat?.turnQueue?.paused === true;
         busy = false;
         resetThought();
         resetAgents(); // the new chat's own agents follow in a subagentReplay
         restoreChat(message.chat, message.running);
-        renderTurnQueue(); // again, now that the chat's id is known: saves the queue under it and tells the host the count
+        renderTurnQueue();
         restoreAgents();
         setBusy(Boolean(message.running));
+        break;
+      }
+      case 'turnQueue': {
+        // Clear acknowledged legacy copies before checking visibility, so they can't reappear on a later switch.
+        try {
+          const state = vscode.getState() || {};
+          const queues = { ...state.queues };
+          delete queues[message.chatId];
+          const next = { ...state, queues };
+          if (next.queue?.chatId === message.chatId) delete next.queue;
+          vscode.setState(next);
+        } catch {}
+        if (message.chatId !== currentChatId) break;
+        const transportFocused = document.activeElement?.matches('.queue-transport');
+        turnQueue = message.turns || [];
+        queuePaused = message.paused === true;
+        renderTurnQueue();
+        renderComposerState();
+        if (transportFocused) queueStrip.querySelector('.queue-transport')?.focus({ preventScroll: true });
         break;
       }
       // Auto mode is a standing preference, not a one-shot pick — keep the
@@ -3384,7 +3748,7 @@
         micBtn.disabled = message.state === 'processing' || message.state === 'starting';
         micBtn.title =
           message.state === 'recording'
-            ? `Recording${message.device ? ` from ${message.device}` : ''}\u2026 click to stop`
+            ? `Listening${message.device ? ` on ${message.device}` : ''}\u2026 stops by itself after a pause. Click to stop now, Esc to cancel`
             : message.state === 'processing'
               ? 'Transcribing and routing\u2026'
               : message.state === 'starting'
@@ -3400,10 +3764,16 @@
         const legacyEnergy = rms * 0.78 + crest * 0.22;
         const legacyLevel = legacyEnergy <= 0.0035 ? 0 : Math.min(1, ((legacyEnergy - 0.0035) / 0.0915) ** 0.58);
         const level = Math.max(0, Math.min(1, Number.isFinite(Number(message.level)) ? Number(message.level) : legacyLevel));
-        micLevel = Math.max(micLevel, level);
-        micLevelSum += level;
-        micLevelSamples += 1;
-        micLevelAt = performance.now();
+        const now = performance.now();
+        micLevel = level;
+        micLevelAt = now;
+        // Hands-free end: once real speech has been heard, a pause of VOICE_SILENCE_MS stops and transcribes, like a click would.
+        if (level > VOICE_SPEECH) { speechMs += lastVolumeAt ? Math.min(now - lastVolumeAt, 100) : 40; lastSpeechAt = now; }
+        lastVolumeAt = now;
+        if (window.VOICE_SILENCE_MS && !voiceStopSent && speechMs >= VOICE_MIN_SPEECH_MS && now - lastSpeechAt > window.VOICE_SILENCE_MS) {
+          voiceStopSent = true;
+          vscode.postMessage({ type: 'micToggle' });
+        }
         break;
       }
       case 'voiceError': {
@@ -3435,6 +3805,7 @@
         break;
       }
       case 'prefillPrompt': {
+        if (editingQueue) finishQueueEdit();
         promptInput.value = message.text || '';
         autoGrow();
         promptInput.focus();
@@ -3450,10 +3821,7 @@
           if (busy) { turnQueue.unshift(turn); renderTurnQueue(); } else dispatchTurn(turn);
           break;
         }
-        promptInput.value = promptInput.value.trim() ? `${promptInput.value}\n${text}` : text;
-        attachments.push(...files);
-        renderAttachments();
-        autoGrow(); renderComposerState(); promptInput.focus();
+        editQueuePrompt({ text, files, modelId: message.modelId }, message.taskId);
         break;
       }
       // Forward-compatible with the Unified Event Protocol the headless
@@ -3472,7 +3840,10 @@
         break;
       case 'delta': {
         if (isCompacting) {
-          if (/^(Gemini|Codex) error:/i.test(message.text || '')) appendNotice(message.text);
+          if (/^(Claude|Gemini|Codex) error:/i.test(message.text || '')) {
+            if (activeCompactDivider) activeCompactDivider.dataset.failed = 'true';
+            appendNotice(message.text);
+          }
           break;
         }
         foldThought();
@@ -3505,17 +3876,23 @@
         appendNotice(message.text || '');
         break;
       }
+      // Answered in another window showing this chat: the card settles here exactly as it did there.
+      case 'cardSettled': {
+        const card = pendingCards.get(message.actionId);
+        if (card) { settleCard(card, message.text, message.tone); pendingCards.delete(message.actionId); }
+        break;
+      }
       case 'binary_missing': {
         appendBinaryMissingCard({ agent: message.agent, checked: Array.isArray(message.checked) ? message.checked : [] });
         break;
       }
       case 'compacting': {
-        // The handoff streams invisibly; the transcript only gets this divider.
+        // The handoff streams invisibly; its thinking and compaction share one live status.
         isCompacting = true;
         currentAssistantBubble = null;
         currentTurnEl = null;
         turnAnchor = null;
-        appendCompactDivider(message.auto);
+        appendCompactDivider(message.auto, true);
         renderContextGauge(null);
         setBusy(true);
         break;
@@ -3536,6 +3913,7 @@
         break;
       }
       case 'upstream_error': {
+        if (isCompacting && activeCompactDivider) activeCompactDivider.dataset.failed = 'true';
         appendUpstreamErrorCard({ agent: message.agent, detail: message.detail || '' });
         if (LIMIT_RE.test(message.detail || '')) limitHitThisTurn = true;
         break;
@@ -3549,9 +3927,11 @@
         break;
       }
       case 'turn_complete': {
+        if (Number.isFinite(message.chatCostUsd)) renderChatCost(message.chatCostUsd); // every turn, compactions too: the same chat goes on
         settleAgents(Boolean(message.interrupted));
         if (awaitingInterruptAck) { awaitingInterruptAck = false; isCompacting = false; break; } // already closed out by Stop / Steer Now
         const completedCompaction = isCompacting;
+        if (completedCompaction) finishCompactDivider(message.interrupted ? 'interrupted' : 'complete');
         isCompacting = false;
         // Anything still unanswered can't be answered any more.
         for (const [id, card] of pendingCards) { settleCard(card, 'Turn ended', 'denied'); pendingCards.delete(id); }
@@ -3562,12 +3942,11 @@
           });
           foldThought();
           if (message.interrupted) appendInterruptedPill(); // interrupted host-side (a voice turn)
-          endAssistantTurn(undefined, message.costUsd);
+          endAssistantTurn(undefined);
           collapseTurn(turnAnchor, Date.now() - turnStartedAt);
         } else resetThought();
         turnAnchor = null;
         setBusy(false);
-        if (!message.interrupted && !message.compacting && !queuePaused && turnQueue.length) { dispatchTurn(turnQueue.shift(), false); renderTurnQueue(); }
         break;
       }
       case 'routing': {
@@ -3588,24 +3967,46 @@
         else { queuePinned = true; renderQueue(); openModal(queueModal); }
         break;
       case 'openHistory': if (toggleModal(historyModal)) vscode.postMessage({ type: 'requestHistory' }); break;
-      case 'openSettings': if (toggleModal(settingsModal)) vscode.postMessage({ type: 'requestFleet' }); break;
+      case 'openSettings':
+        if (toggleModal(settingsModal)) {
+          vscode.postMessage({ type: 'requestFleet' });
+          if (message.tab) chatSettings.showTab(message.tab);
+        }
+        break;
       case 'fleet': chatSettings.fleet(message); break;
+      case 'cliStatus': chatSettings.cliStatus(message); break;
+      case 'cliConnections':
+        chatSettings.cliConnections(message);
+        cliSetup.update(message);
+        if (message.setupNeeded && !cliSetupSeen) { cliSetupSeen = true; openModal(cliSetupModal); }
+        if (!message.setupNeeded && !cliSetupModal.el.hidden) closeModal(cliSetupModal.el);
+        break;
+      case 'modelPrompts': modelPromptIds = new Set(message.models || []); break;
+      // Settings and the picker share discovered names. A restored chat keeps
+      // its exact model even when that model is not currently favorited.
+      case 'modelCatalog':
+        window.MODEL_CATALOG = message.catalog;
+        MODEL_OPTIONS.splice(1, MODEL_OPTIONS.length, ...message.catalog); // the menu re-renders each time it opens
+        availableModels = message.available || [];
+        selectModel(pendingModelId || activeModelId, { notifyExtension: Boolean(pendingModelId && optionFor(pendingModelId)) });
+        if (menuOpen()) renderModelMenu();
+        break;
       case 'schedulerQueue': {
         schedulerTasks = Array.isArray(message.queue) ? message.queue : [];
         renderQueueButton();
+        if (!queueStrip.querySelector('.is-dragging')) renderTurnQueue();
         if (!queueModal.el.hidden && !queueModal.el.querySelector('textarea, .is-dragging')) renderQueue();
         break;
       }
       // A turn that didn't come from this composer (a scheduled prompt, Remote Control): your bubble.
       case 'undoOffer': offerUndo(Number(message.count) || 0); break;
       case 'droid': playDroid(message.kind); break;
-      case 'verifyInfo': showToast(message.command ? `Auto-Verify is on: after changing files the agent runs "${message.command}".` : 'Auto-Verify is on: after changing files the agent runs the project\'s own checks. Pin one with /verify npm test.'); break;
+      case 'verifyInfo': verifyCommand = message.command || ''; renderVerify(); break;
       case 'userMessage': {
-        appendUserMessage(message.text || '', message.at || undefined, [], { scheduled: message.scheduled });
+        appendUserMessage(message.text || '', message.at || undefined, message.files || [], { scheduled: message.scheduled });
         break;
       }
       case 'taskScheduled': {
-        showScheduleBud(`Scheduled for ${pendingScheduleLabel || 'the agent'}: sends ${pendingScheduleWhen || 'when its usage limit resets'}`);
         pendingScheduleLabel = null;
         pendingScheduleWhen = '';
         renderScheduleTime();
@@ -3622,4 +4023,6 @@
   });
 
   vscode.postMessage({ type: 'requestQuotas' });
+  vscode.postMessage({ type: 'requestProject' });
+  vscode.postMessage({ type: 'requestCliConnections' });
 })();
