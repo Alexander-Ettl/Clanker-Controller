@@ -330,12 +330,14 @@
     verifyBtn.title = autoVerify ? 'Auto-Verify is on: after changing files, the agent runs your checks and fixes failures. Click to turn off.' : 'Auto-Verify: have the agent run your checks after it changes files, and fix what fails.';
   };
   renderVerify();
-  verifyBtn.addEventListener('click', () => {
-    autoVerify = !autoVerify;
+  // Turning it on says what will run (the host knows the setting); /verify <command> sets it without opening Settings.
+  function setAutoVerify(on) {
+    autoVerify = on;
     try { vscode.setState({ ...(vscode.getState() || {}), autoVerify }); } catch {}
     renderVerify();
-    promptInput.focus();
-  });
+    if (on) vscode.postMessage({ type: 'verifyInfo' }); else showToast('Auto-Verify is off.');
+  }
+  verifyBtn.addEventListener('click', () => { setAutoVerify(!autoVerify); promptInput.focus(); });
   document.querySelector('.composer-actions').insertBefore(verifyBtn, sendBtn); // the clock is inserted before send next, so this sits left of it
 
   // ---------- P16-J: inline schedule toggle ----------
@@ -1334,6 +1336,17 @@
       closeSlashMenu(); autoGrow(); renderComposerState();
       return;
     }
+    // /verify toggles Auto-Verify; /verify npm test pins that command and turns it on; /verify off clears it.
+    const verify = /^\/verify(?:\s+([\s\S]+))?$/i.exec(text);
+    if (verify) {
+      const command = (verify[1] || '').trim();
+      if (!command) setAutoVerify(!autoVerify);
+      else if (/^(off|none|auto)$/i.test(command)) { vscode.postMessage({ type: 'setVerifyCommand', command: '' }); setAutoVerify(true); }
+      else { vscode.postMessage({ type: 'setVerifyCommand', command }); setAutoVerify(true); }
+      promptInput.value = '';
+      closeSlashMenu(); autoGrow(); renderComposerState();
+      return;
+    }
     // /architect <task>: a planning model, then a building one (models: aiChatPanel.architectModel / editorModel).
     const architect = /^\/architect(?:\s+([\s\S]+))?$/i.exec(text);
     if (architect && !architect[1]) { appendNotice('Give /architect a task: "/architect move the header links into a menu".'); return; }
@@ -2232,10 +2245,14 @@
   function dropUndo() { transcriptEl.querySelectorAll('.undo-action').forEach((el) => el.remove()); }
   function offerUndo(count) {
     dropUndo();
-    const row = count ? [...transcriptEl.querySelectorAll('.msg-assistant .msg-actions')].pop() : null;
-    if (!row) return;
-    const undo = iconAction(UNDO_ICON, `Undo this turn: ${count} file${count === 1 ? '' : 's'} go back to how they were before it`, () => vscode.postMessage({ type: 'undoTurn' }));
+    const turn = count ? transcriptEl.lastElementChild : null; // the latest turn only, even when it ended in tools with no reply text
+    if (!turn) return;
+    let row = [...turn.querySelectorAll('.msg-assistant .msg-actions')].pop();
+    if (!row) { row = document.createElement('div'); row.className = 'msg-actions'; turn.append(row); }
+    const label = `${count} file${count === 1 ? '' : 's'}`;
+    const undo = iconAction(UNDO_ICON, `Undo this turn: ${label} go back to how they were before it`, () => vscode.postMessage({ type: 'undoTurn' }));
     undo.classList.add('undo-action');
+    undo.append(`Undo · ${label}`); // labelled: an icon alone hid the one action that matters after a bad turn
     row.append(undo);
   }
 
@@ -3582,6 +3599,7 @@
       // A turn that didn't come from this composer (a scheduled prompt, Remote Control): your bubble.
       case 'undoOffer': offerUndo(Number(message.count) || 0); break;
       case 'droid': playDroid(message.kind); break;
+      case 'verifyInfo': showToast(message.command ? `Auto-Verify is on: after changing files the agent runs "${message.command}".` : 'Auto-Verify is on: after changing files the agent runs the project\'s own checks. Pin one with /verify npm test.'); break;
       case 'userMessage': {
         appendUserMessage(message.text || '', message.at || undefined, [], { scheduled: message.scheduled });
         break;

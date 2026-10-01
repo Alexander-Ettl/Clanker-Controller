@@ -477,6 +477,7 @@ class ChatRun {
     const plan = reply.text.trim();
     if (event.interrupted) return;
     if (!plan || /^(Claude|Gemini|Codex) error:/.test(plan)) { this.post({ type: 'notice', text: 'The architect turn ended without a plan, so nothing was built.' }); return; }
+    this.post({ type: 'notice', text: `Plan ready. Handing it to ${modelOption(pipeline.editorModel)?.shortLabel || 'the editor model'}.` });
     this.queue.unshift({
       text: 'Build the plan above.',
       modelId: pipeline.editorModel,
@@ -828,6 +829,12 @@ class ChatWindowHost {
       case 'scheduleMode': this.deps.setScheduleMode?.(message.mode); break; // the mode the last scheduled prompt used
       case 'remoteControl': void this.run.toggleRemote(); break;
       case 'undoTurn': void this.undoLastTurn(); break;
+      case 'verifyInfo': this.panel.webview.postMessage({ type: 'verifyInfo', command: vscode.workspace.getConfiguration('aiChatPanel').get('verifyCommand', '') }); break;
+      case 'setVerifyCommand': {
+        const command = String(message.command || '').replace(/[`\r\n]+/g, ' ').trim().slice(0, 200);
+        void vscode.workspace.getConfiguration('aiChatPanel').update('verifyCommand', command, vscode.ConfigurationTarget.Global).then(() => this.panel.webview.postMessage({ type: 'verifyInfo', command }));
+        break;
+      }
       case 'requestSchedulerQueue': await this.pushSchedulerQueue(); break;
       case 'cancelScheduledTask': if (message.taskId) { await this.deps.schedulerQueue.dequeue(message.taskId); this.deps.notifySchedulerQueue?.(); } break;
       case 'editScheduledTask': {
@@ -1015,6 +1022,7 @@ class ChatWindowHost {
     run.chat.modelId = this.activeModelId; // what the picker shows when you come back to this chat
     run.pipeline = message.pipeline ? { task: text, editorModel: pipelineModel('editorModel', 'gpt-6.1-sol-high'), verify: Boolean(message.verify), verifyCommand } : null;
     run.begin(plan.begin);
+    if (message.pipeline) this.panel.webview.postMessage({ type: 'notice', text: `Architect: ${modelOption(modelId).shortLabel} plans, then ${modelOption(run.pipeline.editorModel).shortLabel} builds. Stop ends it; the models are set in Settings (aiChatPanel.architectModel, aiChatPanel.editorModel).` });
   }
 
   /** /undo and the reply's Undo button: the last turn's file changes go back to how the turn found them (after you confirm). */
