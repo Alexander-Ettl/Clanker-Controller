@@ -51,9 +51,21 @@
         },
         "commands": [
             {
+                "command": "aiChatPanel.chooseProject",
+                "title": "Clanker Controller: Choose Project"
+            },
+            {
+                "command": "aiChatPanel.manageProjects",
+                "title": "Clanker Controller: Manage Projects"
+            },
+            {
                 "command": "aiChatPanel.open",
                 "title": "Clanker Controller:Open",
                 "icon": "$(comment-discussion)"
+            },
+            {
+                "command": "aiChatPanel.toggleMic",
+                "title": "Clanker Controller:Dictate (start or stop)"
             },
             {
                 "command": "aiChatPanel.newChatWindow",
@@ -135,6 +147,17 @@
                     "default": "24h",
                     "markdownDescription": "Clock format for times in the chat panel and launcher. `auto` follows the editor's display language."
                 },
+                "aiChatPanel.livePrices": {
+                    "type": "boolean",
+                    "default": true,
+                    "markdownDescription": "Keep the API prices behind the *API value* figure current by reading the community price table once a day (LiteLLM, raw.githubusercontent.com). Off: only the prices that ship with the extension are used."
+                },
+                "aiChatPanel.voiceAutoStopSeconds": {
+                    "type": "number",
+                    "default": 2,
+                    "minimum": 0,
+                    "markdownDescription": "Dictation stops and transcribes by itself after this many seconds of silence once you have spoken. `0` keeps recording until you stop it."
+                },
                 "aiChatPanel.showStatusBar": {
                     "type": "boolean",
                     "default": false,
@@ -153,36 +176,46 @@
                 },
                 "aiChatPanel.architectModel": {
                     "type": "string",
-                    "enum": ["claude-opus-5-5-medium", "claude-sonnet-5-5-high", "gpt-6.1-sol-high", "gpt-6-astra-high", "gpt-6-luna-high", "gemini-3.8-flash-high"],
-                    "default": "claude-opus-5-5-medium",
-                    "markdownDescription": "The model that plans when you send `/architect <task>`. It reads the code and writes a plan, and edits nothing."
+                    "default": "",
+                    "markdownDescription": "The discovered model id that plans when you send `/architect <task>`. Empty uses the current Claude default. It reads the code and writes a plan, and edits nothing."
                 },
                 "aiChatPanel.editorModel": {
                     "type": "string",
-                    "enum": ["claude-opus-5-5-medium", "claude-sonnet-5-5-high", "gpt-6.1-sol-high", "gpt-6-astra-high", "gpt-6-luna-high", "gemini-3.8-flash-high"],
-                    "default": "gpt-6.1-sol-high",
-                    "markdownDescription": "The model that builds the plan after `/architect`. It starts by itself when the plan is done."
+                    "default": "",
+                    "markdownDescription": "The discovered model id that builds the plan after `/architect`. Empty uses the current Codex default. It starts by itself when the plan is done."
                 },
                 "aiChatPanel.droidSounds": {
                     "type": "boolean",
                     "default": false,
                     "markdownDescription": "Clanker's own sound when a turn ends: a rising astromech chirp when it's done, a low warble when the agent reports an error. Synthesized in the chat window (no audio files). Off by default; the completion chime your CLI hooks play is separate."
                 },
+                "aiChatPanel.voiceHotkey": {
+                    "type": "string",
+                    "default": "",
+                    "markdownDescription": "Global hotkey for dictation, e.g. `Ctrl+Alt+Space` or `F9` (Windows). Works from any app, not only this window; the keys still reach the app in front. Set it in Chat Settings > Voice. Empty: off."
+                },
+                "aiChatPanel.voiceHotkeyMode": {
+                    "type": "string",
+                    "enum": ["toggle", "hold"],
+                    "default": "toggle",
+                    "markdownDescription": "How the dictation hotkey behaves. `toggle`: press once to start, press again to stop and transcribe. `hold`: record while the keys are held, transcribe on release."
+                },
+                "aiChatPanel.voiceSounds": {
+                    "type": "boolean",
+                    "default": true,
+                    "markdownDescription": "Play a short tone when dictation starts recording and when it stops, so you know the microphone is live."
+                },
                 "aiChatPanel.models": {
                     "type": "object",
-                    "default": {
-                        "claude": "claude",
-                        "codex": "gpt-6.1-sol",
-                        "gemini": "gemini-3.8-flash-high"
-                    },
-                    "description": "CLI model identifiers used by the headless Clanker Controller."
+                    "default": {},
+                    "description": "Optional CLI model overrides. Empty uses the dynamically discovered models."
                 }
             }
         }
     },
     "scripts": {
         "check": "node test/check.js",
-        "test": "node test/check.js && node test/session.test.js && node test/turn-undo.test.js && node test/turn-extras.test.js"
+        "test": "node test/check.js && node test/session.test.js && node test/turn-undo.test.js && node test/turn-extras.test.js && node --test test/turn-queue.test.js test/cli-tools.test.js"
     },
     "extensionKind": [
         "ui"

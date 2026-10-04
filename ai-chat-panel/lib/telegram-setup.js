@@ -89,7 +89,7 @@ async function configureTelegram({ vscode, secrets, getCurrent, connect, onResto
     }, 'Connect and send test');
     if (confirm !== 'Connect and send test') return false;
     candidate.chatId = String(account.chat.id);
-    if (!await candidate.sendMessage(`Connected to AI Chat Panel as @${bot.username}.\nThis is your test message. Next, send /help or /status.\nKeep your PC and editor running to use remote control.`)) throw new Error(`The test message could not be delivered. ${candidate.lastError}`);
+    if (!await candidate.sendMessage(`Connected to Clanker Controller as @${bot.username}.\nThis is your test message. Next, send /help or /status.\nKeep your PC and editor running to use remote control.`)) throw new Error(`The test message could not be delivered. ${candidate.lastError}`);
     await connect(token, candidate.chatId);
     connected = true;
     await vscode.window.showInformationMessage('Telegram is connected. Check your phone for the test message, then send /status.', 'Open my bot').then((choice) => choice && open(`https://t.me/${bot.username}`));

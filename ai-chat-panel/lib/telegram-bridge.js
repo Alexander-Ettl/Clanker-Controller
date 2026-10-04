@@ -71,7 +71,7 @@ const COMMANDS = [
   ['help', 'Commands and examples']
 ];
 
-const HELP = '🖥️ AI Chat Panel — Mobile Remote Cockpit\n\n' +
+const HELP = '🖥️ Clanker Controller — Mobile Remote Cockpit\n\n' +
   'Tap any button in the dock below, or send a message directly to chat with your active agent:\n\n' +
   '• 📊 Cockpit — Live workstation dashboard, quota meters & status\n' +
   '• 💬 Chats — Recent sessions and quick-select buttons\n' +
@@ -93,7 +93,7 @@ const MINI_APP_HTML = `<!DOCTYPE html>
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
-  <title>Astro Visual Editor — Mobile Cockpit</title>
+  <title>Clanker Controller — Mobile Cockpit</title>
   <script src="https://telegram.org/js/telegram-web-app.js"></script>
   <style>
     :root {

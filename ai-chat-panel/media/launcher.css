@@ -1,665 +1,552 @@
-/* Launcher-only layout. Design tokens, .glass, .dot-*, and .icon-btn come
-   from style.css (loaded alongside this file) so the palette stays in one
-   place instead of being redeclared per webview document. */
+/* The rail: the launcher's column at the far right of the sidebar chat (railMarkup() in extension.js). Design tokens,
+   .glass, .round-btn and .dot-* come from style.css, loaded alongside, so the palette stays in one place. The rail is
+   always this slim: new chat, quota rings, the chat list. Scheduled and Settings open as popups in the chat. */
 
-body {
-  padding: 12px;
-  gap: 14px;
-}
-
-.launcher-tabs {
-  display: flex;
-  gap: 2px;
-  padding: 3px;
+/* Charcoal: the exact glass fill of the round buttons and the message box (style.css), not a new grey. */
+:root {
+  --rail-pill: var(--eo-surface); /* flat: the buttons' 45% highlight gradient would smear down a tall pill */
+  --rail-tile: linear-gradient(180deg, rgba(255, 255, 255, 0.09), rgba(255, 255, 255, 0) 45%), var(--eo-surface);
+  --rail-tile-hover: linear-gradient(180deg, rgba(255, 255, 255, 0.14), rgba(255, 255, 255, 0.02) 45%), var(--eo-surface-raised);
 }
 
-/* P17-W: System tab. Quiet rows, one status dot each; actions stay small. */
-.system-list {
-  display: flex;
-  flex-direction: column;
-  padding: 4px;
-  border-radius: 14px;
+/* The chat's own rows sit in the first column; the rail spans all of them in the second, at the far right. */
+body.has-rail {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 75px;
+  grid-template-rows: minmax(0, 1fr) auto;
 }
-.system-row {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 7px 8px;
-  border-radius: 10px;
-}
-.system-row + .system-row { box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.05); }
-.system-dot {
-  flex-shrink: 0;
-  width: 7px;
-  height: 7px;
-  border-radius: 50%;
-  background: var(--text-tertiary);
-}
-.system-dot.is-ok { background: #34d399; box-shadow: 0 0 0 3px rgba(52, 211, 153, 0.16); }
-.system-dot.is-warn { background: #ffb340; box-shadow: 0 0 0 3px rgba(255, 179, 64, 0.16); }
-.system-dot.is-off { background: rgba(255, 255, 255, 0.22); }
-.system-text { display: flex; flex-direction: column; min-width: 0; }
-.system-name { font: 600 12px var(--font-text); color: var(--text-primary); }
-.system-detail {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  font: 400 11px var(--font-text);
-  font-variant-numeric: tabular-nums;
-  color: var(--text-secondary);
-}
-.system-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 12px; }
-.system-action {
-  padding: 5px 11px;
-  border: 1px solid var(--eo-border);
-  border-radius: 999px;
-  background: rgba(255, 255, 255, 0.05);
-  color: var(--text-secondary);
-  font: 500 11px var(--font-text);
-  cursor: pointer;
-  transition: background 0.15s var(--eo-ease), color 0.15s var(--eo-ease), transform 0.2s cubic-bezier(0.34, 1.56, 0.64, 1);
-}
-.system-action:hover:not(:disabled) { background: rgba(255, 255, 255, 0.1); color: var(--text-primary); transform: scale(1.03); }
-.system-action:active:not(:disabled) { transform: scale(0.97); }
-.system-action:disabled { opacity: 0.6; cursor: default; }
+body.has-rail > .transcript { grid-area: 1 / 1; }
+body.has-rail > .compose-row { grid-area: 2 / 1; }
+body.has-rail > .rail { grid-area: 1 / 2 / -1 / 3; }
 
-.launcher-tab {
-  flex: 1;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 6px;
-  padding: 7px 10px;
-  border: none;
-  border-radius: var(--pill);
-  background: transparent;
-  color: var(--text-secondary);
-  font: 500 12px var(--font-text);
-  cursor: pointer;
-  transition: background 0.15s var(--eo-ease), color 0.15s var(--eo-ease), transform 0.15s var(--eo-ease);
-}
+/* Popups (Settings, Scheduled, Manage Chats) cover the chat only: the rail is a menu of its own. */
+body.has-rail > .fs-modal { right: 85px; }
 
-.launcher-tab:hover:not([aria-selected='true']) {
-  background: rgba(255, 255, 255, 0.06);
-  color: var(--text-primary);
-}
-
-.launcher-panel {
+/* Three sections, well apart: the buttons, the usage, the chats. The rail runs edge to edge (it pulls out over the
+   body's 10px padding), so its left border is one full-height line between it and the chat. Even margins: 10px from
+   the chat to that line (the body's gap), 10px from the line to the content, 10px from the content to the window
+   edge; that leaves 64px of content. Vertically it clips, horizontally it doesn't, so the hover tags of the
+   buttons can reach over the chat. */
+.rail {
+  position: relative;
   display: flex;
   flex-direction: column;
-  gap: 14px;
+  min-height: 0;
+  margin: -10px -10px -10px 0;
+  overflow: visible clip;
+}
+/* The sections scroll when the window is too short for them. A scroll container clips sideways too, and the hover tags
+   and cards grow leftward over the chat, so the scroller itself reaches 330px out over the chat (the extra is left
+   padding). It lets clicks through everywhere except on the sections, so the chat under it stays usable. */
+.rail-scroll {
   flex: 1;
   min-height: 0;
-}
-
-.launcher-panel[hidden] {
-  display: none;
-}
-
-.scheduled-list {
-  flex: 1;
-  min-height: 0;
-  overflow-y: auto;
   display: flex;
   flex-direction: column;
+  align-items: stretch;
+  justify-content: safe center; /* the same space above and below; "safe" so a short window scrolls from the top instead of clipping it */
+  gap: 22px;
+  margin-left: -330px;
+  padding: 10px 10px 10px 340px;
+  overflow: hidden auto;
+  scrollbar-width: none;
+  pointer-events: none;
+}
+.rail-scroll > * { flex: none; pointer-events: auto; }
+/* The divider fades in over its top 100px instead of running into the IDE's sidebar header. */
+.rail::before {
+  content: '';
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 1px;
+  background: linear-gradient(180deg, transparent, var(--eo-border) 100px);
+  pointer-events: none;
+}
+
+/* Project: the folder this chat works in (main.js moves its bar here from the old strip under the composer). The name is
+   a pill as wide as the rail, ellipsised when long (the tooltip has the full path); the folder button sits under it. */
+.project-toolbar.is-rail { flex-direction: column; align-items: center; gap: 8px; margin: 0; max-width: none; }
+.project-toolbar.is-rail .project-picker { width: 100%; box-sizing: border-box; padding: 7px 8px; border-radius: 14px; text-align: center; }
+.project-toolbar.is-rail .round-btn { width: 42px; height: 42px; }
+.project-toolbar.is-rail .round-btn svg { width: 20px; height: 20px; }
+
+/* Buttons: new chat, scheduled, settings. Round, like every other icon button in the chat. */
+.launcher-actions {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
   gap: 8px;
 }
-
-.scheduled-empty {
-  color: var(--text-tertiary);
-  font-size: 12px;
-  text-align: center;
-  margin-top: 20px;
-  line-height: 1.5;
-}
-
-.scheduled-card {
-  display: flex;
+.launcher-actions .round-btn { width: 42px; height: 42px; }
+.launcher-actions .round-btn svg { width: 20px; height: 20px; }
+/* Each button paints its own glass layer; lift the hovered one so its tooltip clears the buttons below it. */
+.launcher-actions .round-btn:is(:hover, :focus-visible) { z-index: 1; }
+/* The Scheduled timer pill is the same width as the round button, with its countdown stacked below the clock. */
+.launcher-actions .round-btn-queue.is-pill {
   flex-direction: column;
-  gap: 6px;
-  padding: 10px 12px;
-  animation: scheduled-in 0.28s var(--eo-ease);
-}
-
-@keyframes scheduled-in {
-  from { opacity: 0; transform: translateY(4px); }
-  to { opacity: 1; transform: translateY(0); }
-}
-
-.scheduled-card-header {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-}
-
-.scheduled-model {
-  flex: 1;
-  display: flex;
-  align-items: center;
-}
-
-/* P17-X: live time-to-fire, and one header per agent bundle. */
-.scheduled-countdown {
-  color: #64d2ff;
-  font: 600 11px var(--font-text, inherit);
-  font-variant-numeric: tabular-nums;
-}
-
-.scheduled-group-head {
-  display: flex;
-  align-items: center;
-  margin: 10px 2px 2px;
-  font-size: 11.5px;
-  font-weight: 600;
-  opacity: 0.9;
-}
-
-.scheduled-group-head:first-child {
-  margin-top: 0;
-}
-
-.scheduled-group-reset {
-  margin-left: auto;
-  font-weight: 400;
-  opacity: 0.7;
-  font-variant-numeric: tabular-nums;
-}
-
-.scheduled-cancel {
-  flex-shrink: 0;
-  width: 18px;
-  height: 18px;
-  border: none;
-  background: transparent;
-  color: var(--text-tertiary);
-  border-radius: 50%;
-  cursor: pointer;
-  font-size: 13px;
-  line-height: 1;
-  transition: background 0.15s var(--eo-ease), color 0.15s var(--eo-ease);
-}
-
-.scheduled-cancel:hover {
-  background: rgba(255, 59, 48, 0.18);
-  color: #ff453a;
-}
-
-.scheduled-status {
-  font: 500 10.5px var(--font-text);
-  color: var(--text-tertiary);
-}
-
-.scheduled-status-active {
-  color: var(--accent);
-}
-
-/* P17-H: a run severed by a restart or reload. Amber, never the blue "Dispatching" state. */
-.scheduled-card.is-interrupted {
-  border-color: color-mix(in srgb, var(--warning) 32%, transparent);
-  background: linear-gradient(135deg, color-mix(in srgb, var(--warning) 9%, transparent), transparent 60%), var(--eo-surface);
-}
-
-.scheduled-badge-interrupted {
-  display: inline-flex;
-  align-items: center;
   gap: 4px;
-  padding: 2px 8px 2px 6px;
-  border-radius: var(--pill);
-  background: color-mix(in srgb, var(--warning) 16%, transparent);
-  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--warning) 30%, transparent);
-  color: var(--warning);
-  font: 600 10px var(--font-text);
+  width: 42px;
+  height: auto;
+  padding: 10px 2px 9px;
+  border-radius: 24px;
+}
+.launcher-actions .round-btn-queue.is-pill .queue-countdown {
+  display: grid;
+  justify-items: center;
+  text-align: center;
+  font-size: 10.5px;
+  line-height: 1.25;
+  white-space: nowrap;
 }
 
-.scheduled-badge-interrupted svg {
-  width: 11px;
-  height: 11px;
-}
-
-.scheduled-status-interrupted {
-  color: var(--text-secondary);
-}
-
-.scheduled-actions {
-  display: flex;
-  gap: 6px;
-  margin-top: 2px;
-}
-
-.scheduled-action {
-  flex: 1;
-  height: 26px;
-  border: 1px solid var(--eo-border);
-  border-radius: var(--pill);
-  background: var(--eo-surface-raised);
-  color: var(--text-primary);
-  font: 600 11px var(--font-text);
-  cursor: pointer;
-  transition: background 0.15s var(--eo-ease), transform 0.15s var(--eo-ease), opacity 0.15s var(--eo-ease);
-}
-
-.scheduled-action svg {
-  width: 12px;
-  height: 12px;
-  margin-right: 5px;
-  vertical-align: -2px;
-}
-
-.scheduled-action:hover {
-  background: color-mix(in srgb, var(--text-primary) 10%, var(--eo-surface-raised));
-}
-
-.scheduled-action:active {
-  transform: scale(0.97);
-}
-
-.scheduled-action:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 2px;
-}
-
-.scheduled-action.is-primary {
-  border-color: transparent;
-  background: var(--accent);
-  color: #fff;
-}
-
-.scheduled-action.is-primary:hover {
-  background: color-mix(in srgb, var(--accent) 86%, #fff);
-}
-
-.scheduled-action:disabled {
-  opacity: 0.5;
-  cursor: default;
-  transform: none;
-}
-
-.scheduled-prompt {
-  font: 400 12px var(--font-text);
-  color: var(--text-secondary);
-  line-height: 1.4;
-  display: -webkit-box;
-  -webkit-line-clamp: 2;
-  -webkit-box-orient: vertical;
-  overflow: hidden;
-}
-
-.scheduled-attachments {
-  align-self: flex-start;
-  padding: 2px 8px;
-  border-radius: var(--pill);
-  background: var(--eo-surface-raised);
+/* A section is its label plus what it labels; the gap between sections is much wider than inside one. */
+.launcher-section { display: flex; flex-direction: column; gap: 8px; }
+.launcher-label {
+  font: 600 9.5px var(--font-text);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  text-align: center;
   color: var(--text-tertiary);
-  font: 500 10px var(--font-text);
 }
 
-.new-chat-btn {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 8px;
-  width: 100%;
-  padding: 12px 16px;
-  border-radius: var(--radius-lg);
-  color: var(--text-primary);
-  font: 600 13px var(--font-text);
-  cursor: pointer;
-  border: 1px solid var(--eo-border);
-  background: linear-gradient(180deg, rgba(255, 255, 255, 0.08), rgba(255, 255, 255, 0.02)), var(--eo-surface);
-  transition: transform 0.15s var(--eo-ease), box-shadow 0.15s var(--eo-ease);
-}
-
-.new-chat-btn:hover {
-  transform: scale(1.015);
-  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.35), inset 0 1px 0 rgba(255, 255, 255, 0.1);
-}
-
-.new-chat-btn:active {
-  transform: scale(0.98);
-}
-
-.new-chat-btn svg {
-  width: 15px;
-  height: 15px;
-}
-
-/* P16-M: model cards -- name, 5h + 7d "% remaining" gauges, reset countdown. */
+/* Model cards: a ring per provider (5h outside, the week inside) and its numbers underneath. */
 .model-cards {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 10px;
 }
-
 .model-card {
   --agent: var(--text-secondary);
+  --usage-low: color-mix(in srgb, var(--agent) 85%, white);
   display: flex;
   flex-direction: column;
-  gap: 7px;
-  padding: 10px 12px 11px;
-  border-radius: var(--radius-md);
-  border: 1px solid var(--eo-border);
-  background: var(--eo-surface);
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.06);
+  align-items: center;
+  gap: 1px;
+  font: 500 10.5px var(--font-text);
+  font-variant-numeric: tabular-nums;
+  color: var(--text-tertiary);
 }
-
 .model-card-claude { --agent: var(--claude-color); }
 .model-card-codex { --agent: var(--codex-color); }
 .model-card-gemini { --agent: var(--gemini-color); }
 
-.model-card-head {
-  display: flex;
-  align-items: center;
-  gap: 7px;
+/* Halfway between the original 32px ring and the 63px one that filled the rail (47.5px box, so the drawn ring,
+   which is 33/36 of it, is about 43.5px). */
+.ring {
+  position: relative;
+  flex-shrink: 0;
+  width: 100%;
+  max-width: 47.5px;
+  height: auto;
+  aspect-ratio: 1;
+}
+/* Only the ring itself starts at twelve o'clock; the provider mark inside stays upright. */
+.ring > svg { width: 100%; height: 100%; transform: rotate(-90deg); }
+.ring circle { fill: none; stroke-width: 3; stroke-linecap: round; }
+.ring-track { stroke: rgba(255, 255, 255, 0.07); }
+.ring-fill {
+  /* The agent colour, desaturated toward grey: identifiable, not loud. */
+  stroke: color-mix(in srgb, var(--agent) 50%, #8e8e93);
+  stroke-dasharray: calc(var(--pct, 0) * 1px) 100px;
+  transition: stroke-dasharray 0.7s var(--eo-ease);
+}
+.ring-fill.is-low { stroke: var(--usage-low); }
+.ring-logo {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
   color: var(--agent);
 }
+.ring-logo .agent-logo { width: 33%; height: 33%; }
 
-.model-card-head .agent-logo {
-  width: 15px;
-  height: 15px;
-  flex-shrink: 0;
-}
-
-.model-card-name {
-  font: 600 13px var(--font-text);
-  letter-spacing: -0.01em;
-  color: var(--text-primary);
-}
-
-.model-card-reset {
-  margin-left: auto;
-  font: 500 10.5px var(--font-text);
-  color: var(--text-tertiary);
-  font-variant-numeric: tabular-nums;
-}
-
-.gauge {
-  display: grid;
-  grid-template-columns: 20px 1fr 34px;
+/* Hover: the ring's circle grows leftward into a pill over the chat, out of the ring itself (one element, so it stays
+   fused), the mark stays put at its right end. It's absolute, so the rail never stretches. Inside: the 5h and the week
+   as bars, each with its exact % and time to reset. Un-hover runs the same motion backwards. */
+.rail:has(.ring:is(:hover, :focus-visible)) { z-index: 20; } /* over the chat while open */
+.ring:is(:hover, :focus-visible) { z-index: 3; }
+.ring:focus-visible { outline: 1px solid var(--agent); outline-offset: 3px; border-radius: 50%; }
+.ring-pill {
+  position: absolute;
+  inset: 0 0 0 auto;
+  box-sizing: border-box;
+  width: 100%;
+  border-radius: 999px;
+  display: flex;
   align-items: center;
   gap: 8px;
-  font: 500 10.5px var(--font-text);
-  color: var(--text-tertiary);
+  padding: 0 44px 0 6px; /* inset badge on the left, provider mark clear on the right */
+  pointer-events: none;
+  transition: width 0.6s cubic-bezier(0.32, 0.72, 0, 1); /* eases in, so the circle is still visible while it starts to stretch */
 }
-
-.gauge-track {
-  position: relative;
+.ring-pill::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  /* The charcoal of the message bubbles, the composer and the model menu (--island in style.css), solid like them. */
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.05), rgba(255, 255, 255, 0) 28%), rgb(26, 28, 34);
+  border: 1px solid var(--eo-border);
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.35), inset 0 1px 0 rgba(255, 255, 255, 0.06);
+  opacity: 0;
+  transition: opacity 0.25s var(--eo-ease);
+}
+.ring > svg { position: relative; z-index: 1; transition: opacity 0.3s ease-out; } /* above the growing pill, so the circle dissolves into its end cap */
+.ring-row, .ring-burn {
+  position: relative; /* above the ::before fill */
+  opacity: 0;
+  transition: opacity 0.1s var(--eo-ease);
+}
+/* An inset pill shares the outer pill's curvature, with a 6px gutter. Brighter when the quota won't last. */
+.ring-burn {
+  --burn: color-mix(in srgb, var(--agent) 55%, #8e8e93);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  flex: none;
+  box-sizing: border-box;
+  height: calc(100% - 12px);
+  padding: 0 8px;
+  border: 1px solid color-mix(in srgb, var(--burn) 45%, transparent);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--burn) 12%, transparent);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.07);
+  color: var(--text-primary);
+  white-space: nowrap;
+  line-height: 1;
+}
+.ring-burn.is-low { --burn: var(--usage-low); }
+.ring-burn-label { font: 600 9px var(--font-text); color: var(--text-secondary); }
+.ring-burn-val { font: 700 13px var(--font-text); font-variant-numeric: tabular-nums; }
+.ring-burn.is-low .ring-burn-val { color: color-mix(in srgb, var(--burn) 70%, white); }
+.ring-burn i { font: 600 7px var(--font-text); font-style: normal; color: var(--text-secondary); }
+.ring-rows { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 6px; }
+.ring-row {
+  display: grid;
+  grid-template-columns: 12px minmax(0, 1fr) 26px 36px;
+  align-items: center;
+  column-gap: 4px;
+  opacity: 0;
+  transition: opacity 0.1s var(--eo-ease);
+}
+.ring-row-name { color: var(--text-tertiary); }
+.ring-row-pct { text-align: right; font-weight: 600; color: var(--text-primary); }
+.ring-row-eta { text-align: right; white-space: nowrap; color: var(--text-tertiary); }
+.ring-bar {
   height: 5px;
-  border-radius: var(--pill);
-  background: rgba(255, 255, 255, 0.07);
-  box-shadow: inset 0 0 0 0.5px rgba(255, 255, 255, 0.06);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.09);
   overflow: hidden;
 }
-
-.gauge-fill {
-  position: absolute;
-  inset: 0 auto 0 0;
-  width: calc(var(--pct, 0) * 1%);
+.ring-bar b {
+  display: block;
+  width: 0;
+  height: 100%;
   border-radius: inherit;
-  /* The agent colour, desaturated toward grey: identifiable, not loud. */
   background: color-mix(in srgb, var(--agent) 50%, #8e8e93);
-  transition: width 0.7s var(--eo-ease);
+  transition: width 0.3s var(--eo-ease);
 }
+.ring-row.is-low .ring-bar b { background: var(--usage-low); }
 
-.gauge-value {
-  text-align: right;
-  color: var(--text-primary);
-  font-variant-numeric: tabular-nums;
+.model-cards:not(.is-loading) .ring:is(:hover, :focus-visible) > svg { opacity: 0; }
+.model-cards:not(.is-loading) .ring:is(:hover, :focus-visible) .ring-pill { width: min(300px, calc(100vw - 32px)); pointer-events: auto; }
+.model-cards:not(.is-loading) .ring:is(:hover, :focus-visible) .ring-pill::before { opacity: 1; }
+.model-cards:not(.is-loading) .ring:is(:hover, :focus-visible) :is(.ring-row, .ring-burn) { opacity: 1; transition: opacity 0.25s var(--eo-ease) 0.2s; }
+.model-cards:not(.is-loading) .ring:is(:hover, :focus-visible) .ring-bar b { width: calc(var(--pct, 0) * 1%); transition: width 0.7s var(--eo-ease) 0.2s; }
+.is-loading .ring-pill { display: none; }
+
+.model-card-5h { font-size: 11px; font-weight: 600; color: var(--text-primary); }
+.model-card.is-empty .model-card-5h { color: var(--text-tertiary); }
+.model-card-7d { display: none; }
+.model-card-reset { font-size: 10px; color: var(--text-tertiary); white-space: nowrap; }
+.model-card-reset:empty { display: none; }
+
+/* Skeleton while the first quotas load: motion.dev's skeleton-shimmer (a 200%-wide 6%/12% white gradient sliding
+   across, 1.5s ease-in-out; the keyframes are in style.css). The two rings and the % label become shimmering
+   shapes; the provider mark stays. */
+.is-loading .ring > svg { visibility: hidden; }
+.is-loading .ring::before,
+.is-loading .model-card-5h {
+  background: linear-gradient(90deg, rgba(255, 255, 255, 0.06) 25%, rgba(255, 255, 255, 0.12) 50%, rgba(255, 255, 255, 0.06) 75%) 0 0 / 200% 100%;
+  animation: skeleton-shimmer 1.5s ease-in-out infinite;
 }
-
-.gauge.is-low .gauge-value { color: #ff9f0a; }
-.gauge.is-empty .gauge-value { color: var(--text-tertiary); }
+/* Ring shapes cut from the shimmer: outer 13.5-16.5px, inner 8.5-11.5px (the live rings' radii 15 and 10, stroke 3). */
+.is-loading .ring::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  -webkit-mask: radial-gradient(circle closest-side, transparent 47%, #000 47.6% 63.6%, transparent 64.2% 74.4%, #000 75% 91.2%, transparent 91.8%);
+  mask: radial-gradient(circle closest-side, transparent 47%, #000 47.6% 63.6%, transparent 64.2% 74.4%, #000 75% 91.2%, transparent 91.8%);
+}
+.is-loading .model-card-5h { width: 28px; height: 12px; border-radius: 6px; color: transparent; }
+.is-loading .model-card-reset { display: none; }
 
 @media (prefers-reduced-motion: reduce) {
-  .gauge-fill { transition: none; }
+  .ring-fill, .ring-pill, .ring-pill::before, .ring-row, .ring-burn, .ring-bar b, .ring > svg { transition: none !important; }
+  .is-loading .ring::before, .is-loading .model-card-5h { animation: none; }
 }
 
-/* Model badge (logo + short name) on Recent and Scheduled items. */
-.agent-badge {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  height: 17px;
-  padding: 0 6px 0 5px;
-  margin-right: 5px;
-  border-radius: var(--pill);
-  font: 600 10px var(--font-text);
-  vertical-align: middle;
-  background: rgba(255, 255, 255, 0.05);
-  box-shadow: inset 0 0 0 1px var(--eo-border);
-}
-
-.agent-badge .agent-logo { width: 10px; height: 10px; }
-.agent-badge-claude { color: var(--claude-color); }
-.agent-badge-codex { color: var(--codex-color); }
-.agent-badge-gemini { color: var(--gemini-color); }
-
-/* Recent: just the provider marks, no names. */
-.agent-mark {
-  display: inline-grid;
-  place-items: center;
-  margin-right: 6px;
-  vertical-align: middle;
-}
-
-.agent-mark .agent-logo {
-  width: 12px;
-  height: 12px;
-}
-
-.launcher-tab svg {
-  width: 14px;
-  height: 14px;
-  flex-shrink: 0;
-}
-
-/* Too narrow for the labels: icons only, the tab's title carries the name. */
-@media (max-width: 320px) {
-  .launcher-tab span { display: none; }
-  .launcher-tab svg { width: 16px; height: 16px; }
-}
-
-.history-label {
-  font: 600 11px var(--font-text);
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
-  color: var(--text-tertiary);
-}
-
+/* Recent: one glass pill holding a bubble tile per chat, just the provider's mark. Concentric corners: outer radius =
+   tile corner radius + margin (+ the 1px border). The pill hugs the tiles so the margin is the same 8px on all four
+   sides. --tile-r is the circular radius that best fits the tile's curvature-continuous (superellipse n=5) corner:
+   within 0.25px of an even margin around the whole corner. */
 .history-list {
-  flex: 1;
+  --tile-r: 9px;
+  --pad: 8px;
+  flex: 0 1 auto;
+  align-self: center;
+  align-items: center;
   min-height: 0;
-  overflow-y: auto;
+  overflow: visible; /* the hover preview of a chat reaches out over the chat; the rail scrolls when the window is short */
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: var(--pad);
+  padding: var(--pad);
+  border: 1px solid var(--eo-border);
+  border-radius: calc(var(--tile-r) + var(--pad) + 1px);
+  background: var(--rail-pill);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.05);
 }
+.history-list:has(> .history-empty:only-child) { display: none; }
 
-.history-empty {
-  color: var(--text-tertiary);
-  font-size: 12px;
+/* A chat: its tile with the time under it. The label is wider than the 40px tile, so it overhangs into the pill's
+   8px padding on both sides. */
+.history-item {
+  flex: none;
+  width: 40px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+}
+/* The same colours as the times in Manage Chats: plain for an old chat, white for the one open here, blue for one that ran
+   lately, yellow for one waiting on you. Kept inside the 56px the tile and the pill's padding leave ("Yesterday" is the widest). */
+.history-time {
+  font: 500 10px var(--font-text);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
   text-align: center;
-  margin-top: 20px;
+  color: var(--text-secondary);
 }
+.history-item:has(.is-selected) .history-time { color: var(--text-primary); }
+.history-item:has(.is-recent) .history-time { color: #64d2ff; }
+.history-item:has(.is-waiting) .history-time { color: #ffd60a; }
 
+/* Each chat is a chat-bubble tile: a squircle with a tail (#bubble, defined in launcher.js) and its provider's logo.
+   The rim is the tile's own background showing around the fill, which is the same shape with its outer 1px masked
+   away (--bubble-fill-mask, set in launcher.js; a border would be clipped to straight segments by the clip path). */
 .history-row {
+  --history-rim: rgba(255, 255, 255, 0.14);
+  position: relative;
+  flex: none;
   display: flex;
   align-items: center;
-  gap: 8px;
-  width: 100%;
-  padding: 9px 10px;
-  border: 1px solid var(--eo-border);
-  border-radius: var(--radius-md);
-  background: var(--eo-surface);
+  justify-content: center;
+  width: 40px;
+  height: 46px; /* the 40px squircle plus the 6px bubble tail */
+  padding: 0 0 6px;
+  background: var(--history-rim);
+  clip-path: url(#bubble);
   color: var(--text-primary);
   cursor: pointer;
-  text-align: left;
-  transition: background 0.15s var(--eo-ease), transform 0.15s var(--eo-ease);
+  transition: background 0.15s var(--eo-ease);
+}
+.history-row::before {
+  content: '';
+  position: absolute;
+  z-index: 1;
+  inset: 0; /* the mask already leaves the 1px rim */
+  background: var(--rail-tile);
+  mask: var(--bubble-fill-mask) center / 100% 100% no-repeat;
+  transition: background 0.15s var(--eo-ease);
+}
+.history-row:hover::before { background: var(--rail-tile-hover); }
+:is(.history-row, .history-peek).is-recent { --history-rim: rgba(100, 210, 255, 0.48); }
+:is(.history-row, .history-peek).is-selected { --history-rim: rgba(255, 255, 255, 0.85); }
+.history-row.is-selected::before { background: var(--rail-tile-hover); }
+/* Waiting for you outranks the rest, as in Manage Chats: bright yellow, and the tile breathes (a glow on the item, since
+   the tile itself is clipped to its shape). */
+:is(.history-row, .history-peek).is-waiting { --history-rim: #ffd60a; }
+.history-item:has(.is-waiting) { animation: rail-waiting 2.2s ease-in-out infinite; }
+@keyframes rail-waiting {
+  0%, 100% { filter: drop-shadow(0 0 0 rgba(255, 214, 10, 0)); }
+  50% { filter: drop-shadow(0 0 7px rgba(255, 214, 10, 0.55)); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .history-item:has(.is-waiting) { animation: none; filter: drop-shadow(0 0 5px rgba(255, 214, 10, 0.4)); }
 }
 
-.history-row:hover {
-  background: var(--eo-surface-raised);
-  transform: scale(1.01);
+/* A running chat wears the chat's own "Thinking" orb (.pending-orb in style.css: a turning ring with a glass core) in
+   its provider's colour, on the tile's top-right corner. It lives on the item, not the tile, which is clipped to the
+   bubble. Its animation and reduced-motion rule are the chat's. */
+.history-item { position: relative; --agent: var(--auto-color); }
+.history-item[data-agent='claude'] { --agent: var(--claude-color); }
+.history-item[data-agent='codex'] { --agent: var(--codex-color); }
+.history-item[data-agent='gemini'] { --agent: var(--gemini-color); }
+.history-item .history-spinner {
+  position: absolute;
+  top: -4px;
+  right: -4px;
+  z-index: 3;
+  width: 16px;
+  height: 16px;
+  pointer-events: none;
 }
 
-.history-info {
-  flex: 1;
-  min-width: 0;
-}
-
-.history-title {
-  font: 500 12px var(--font-text);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.history-meta {
-  display: flex;
-  align-items: center;
-  font: 400 10.5px var(--font-text);
-  color: var(--text-tertiary);
-  margin-top: 3px;
-}
-
-.history-rename {
-  flex-shrink: 0;
+.history-lead { position: relative; z-index: 2; display: flex; }
+.agent-mark { display: inline-grid; place-items: center; vertical-align: middle; }
+.history-row .agent-logo { width: 22px; height: 22px; }
+/* A chat with no turn yet: a dashed ring around a dot, the size of a provider mark. It reads as an open slot waiting for
+   its first provider; selecting it brightens the ring. */
+.slot-mark {
   display: grid;
   place-items: center;
-  width: 20px;
-  height: 20px;
-  border: none;
+  width: 22px;
+  height: 22px;
+  box-sizing: border-box;
+  border: 1.5px dashed rgba(255, 255, 255, 0.28);
   border-radius: 50%;
-  background: transparent;
-  color: var(--text-tertiary);
+  transition: border-color 0.15s var(--eo-ease);
+}
+.slot-mark::before { content: ''; width: 4px; height: 4px; border-radius: 50%; background: rgba(255, 255, 255, 0.4); }
+.history-row:hover .slot-mark, .history-row.is-selected .slot-mark { border-color: rgba(255, 255, 255, 0.5); }
+
+/* Hover: the tile's left edge is pulled out over the chat into a preview of the chat (its name, when it was last active, who
+   said what last), the way the usage rings grow into a pill. Same height and same tail, so only the left border moves, and
+   the two left corners keep their curvature (launcher.js redraws the outline at every width the transition passes). The
+   mark stays at the right end; closing runs the motion backwards. It sits over the tile, opaque, and takes over its click. */
+.rail:has(.history-item:hover) { z-index: 20; } /* over the chat while open */
+.history-peek {
+  --history-rim: rgba(255, 255, 255, 0.14);
+  position: absolute;
+  top: 0;
+  right: 0;
+  z-index: 2; /* over the tile, under the running orb */
+  width: 40px;
+  height: 46px;
+  color: var(--text-primary);
   cursor: pointer;
   opacity: 0;
-  transition: opacity 0.15s var(--eo-ease), background 0.15s var(--eo-ease), color 0.15s var(--eo-ease);
+  pointer-events: none;
+  transition: width 0.6s cubic-bezier(0.32, 0.72, 0, 1), opacity 0.15s var(--eo-ease) 0.45s, filter 0.25s var(--eo-ease);
 }
-
-.history-rename svg {
-  width: 12px;
-  height: 12px;
-}
-
-.history-row:hover .history-rename,
-.history-rename:focus-visible {
+.history-item:hover .history-peek {
+  width: min(300px, calc(100vw - 32px));
   opacity: 1;
+  pointer-events: auto;
+  filter: drop-shadow(0 8px 24px rgba(0, 0, 0, 0.35));
+  transition: width 0.6s cubic-bezier(0.32, 0.72, 0, 1), opacity 0.1s var(--eo-ease), filter 0.25s var(--eo-ease);
 }
-
-.history-row.is-active { border-color: rgba(100, 210, 255, 0.28); }
-.history-row.is-waiting { border-color: rgba(255, 159, 10, 0.4); }
-.history-live {
-  margin-right: 6px;
-  font-weight: 600;
-  color: #64d2ff;
-}
-.history-row.is-waiting .history-live { color: #ff9f0a; }
-
-.history-rename:hover {
-  background: rgba(255, 255, 255, 0.1);
-  color: var(--text-primary);
-}
-
-.history-delete {
-  flex-shrink: 0;
-  width: 20px;
-  height: 20px;
-  border: none;
-  background: transparent;
-  color: var(--text-tertiary);
-  border-radius: 50%;
-  cursor: pointer;
-  font-size: 14px;
-  line-height: 1;
-  transition: background 0.15s var(--eo-ease), color 0.15s var(--eo-ease);
-}
-
-.history-delete:hover {
-  background: rgba(255, 59, 48, 0.18);
-  color: #ff453a;
-}
-
-/* Settings Cards & Control Center */
-.settings-card {
+.history-peek-shape { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; pointer-events: none; }
+.history-peek-fill { fill: rgb(26, 28, 34); } /* the charcoal of the message bubbles and the Manage Chats cards */
+.history-peek-rim { fill: none; stroke: var(--history-rim); stroke-width: 2; stroke-linejoin: round; } /* the outer half is clipped away: a 1px rim */
+.history-peek-text,
+.history-peek-title,
+.history-peek-last { transition: opacity 0.1s var(--eo-ease); }
+.history-peek-text {
+  position: absolute;
+  top: 0;
+  left: 18px;
+  right: 40px; /* clear of the mark */
+  height: 40px; /* the body, not the tail */
   display: flex;
   flex-direction: column;
-  padding: 8px 12px;
-  border-radius: 14px;
-}
-.settings-row {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  padding: 8px 0;
-}
-.settings-header {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  min-width: 0;
-  flex: 1;
-}
-.settings-info {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  min-width: 0;
-}
-.settings-title {
-  font: 600 12px var(--font-text);
-  color: var(--text-primary);
-}
-.settings-desc {
-  font: 400 11px var(--font-text);
-  color: var(--text-secondary);
+  justify-content: center;
+  gap: 1px;
   overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  opacity: 0;
 }
-.settings-divider {
-  height: 1px;
-  background: rgba(255, 255, 255, 0.06);
-  margin: 2px 0;
+.history-item:hover .history-peek-text { opacity: 1; transition: opacity 0.25s var(--eo-ease) 0.2s; }
+.history-peek-title { font: 600 13px/1.3 var(--font-text); letter-spacing: -0.01em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.history-peek-meta { display: flex; align-items: baseline; gap: 6px; font: 400 11.5px/1.3 var(--font-text); white-space: nowrap; }
+.history-peek-when { flex: none; font-weight: 600; font-variant-numeric: tabular-nums; color: var(--text-primary); opacity: 0.88; }
+.history-peek.is-recent .history-peek-when { color: #64d2ff; opacity: 1; }
+.history-peek.is-waiting .history-peek-when { color: #ffd60a; opacity: 1; }
+.history-peek-last { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; color: var(--text-secondary); }
+.history-peek-last::before { content: '\00b7'; margin-right: 6px; color: var(--text-tertiary); }
+.history-peek-last b { font-weight: 600; color: var(--text-primary); opacity: 0.9; }
+.history-peek-mark { position: absolute; top: 0; right: 0; width: 40px; height: 40px; display: grid; place-items: center; }
+.history-peek .agent-logo { width: 22px; height: 22px; }
+@media (prefers-reduced-motion: reduce) {
+  .history-peek, .history-peek-text { transition: none !important; }
 }
-.settings-actions {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  flex-shrink: 0;
-}
-.settings-btn {
-  padding: 4px 10px;
-  border: 1px solid var(--eo-border);
-  border-radius: 999px;
-  background: rgba(255, 255, 255, 0.06);
-  color: var(--text-primary);
-  font: 500 11px var(--font-text);
-  cursor: pointer;
-  transition: background 0.15s var(--eo-ease), transform 0.15s var(--eo-ease);
-}
-.settings-btn:hover:not(:disabled) {
-  background: rgba(255, 255, 255, 0.14);
-  transform: scale(1.02);
-}
-.settings-btn.secondary { color: var(--text-secondary); }
-.settings-btn.danger { color: #f87171; border-color: rgba(248, 113, 113, 0.25); }
-.settings-btn.danger:hover:not(:disabled) { background: rgba(248, 113, 113, 0.15); }
 
-.time-format-picker {
+.history-empty { display: none; }
+
+/* API value: a comparison figure, never a bill. It is the rail's own charcoal glass pill (like the Recent list) with
+   "not billed" under the number; on hover it grows leftward into a card over the chat, out of the pill itself (the same
+   motion as the usage rings). One element, so it stays fused: the card is revealed by a clip that starts as the pill's
+   exact rectangle (64 x 40) and opens to the card. */
+.api-value { position: relative; align-items: center; }
+.api-value[hidden] { display: none; }
+.rail:has(.api-value-figure:is(:hover, :focus-visible)) { z-index: 20; } /* over the chat while open */
+.api-value-figure {
+  position: relative;
+  z-index: 2; /* over the usage rings' marks (z-index 1) when the card opens across them */
+  box-sizing: border-box;
   display: flex;
-  gap: 2px;
-  padding: 2px;
-  background: rgba(0, 0, 0, 0.2);
-  border-radius: 999px;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 1px;
+  width: 64px;
+  height: 40px;
   border: 1px solid var(--eo-border);
+  border-radius: 14px;
+  background: var(--rail-pill);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.05);
+  cursor: default;
+  transition: filter 0.25s var(--eo-ease);
 }
-.format-pill {
-  padding: 3px 8px;
-  border: none;
-  border-radius: 999px;
-  background: transparent;
+.api-value-figure:focus-visible { outline: 1px solid var(--text-tertiary); outline-offset: 3px; }
+.api-value-figure:is(:hover, :focus-visible) { filter: drop-shadow(0 8px 24px rgba(0, 0, 0, 0.35)); }
+.api-value-amount, .api-value-note { transition: opacity 0.2s var(--eo-ease); }
+.api-value-amount { font: 600 12.5px var(--font-text); font-variant-numeric: tabular-nums; color: var(--text-primary); white-space: nowrap; }
+.api-value-note { font: 500 9px var(--font-text); letter-spacing: 0.02em; color: var(--text-tertiary); }
+.api-value-figure:is(:hover, :focus-visible) :is(.api-value-amount, .api-value-note) { opacity: 0; }
+
+.api-value-card {
+  position: absolute;
+  top: 50%;
+  right: -1px;
+  box-sizing: border-box;
+  width: 268px;
+  padding: 14px;
+  border: 1px solid var(--eo-border);
+  border-radius: 22px;
+  /* The charcoal of the message bubbles, the composer and the usage pill (--island in style.css). */
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.05), rgba(255, 255, 255, 0) 28%), rgb(26, 28, 34);
   color: var(--text-secondary);
-  font: 500 10px var(--font-text);
-  cursor: pointer;
+  font: 400 11.5px/1.45 var(--font-text);
+  transform: translateY(-50%);
+  clip-path: inset(calc(50% - 20px) 0 calc(50% - 20px) calc(100% - 64px) round 14px);
+  opacity: 0;
+  pointer-events: none;
+  transition: clip-path 0.6s cubic-bezier(0.32, 0.72, 0, 1), opacity 0.25s var(--eo-ease);
 }
+.api-value-figure:is(:hover, :focus-visible) .api-value-card { clip-path: inset(0 0 0 0 round 22px); opacity: 1; pointer-events: auto; }
+.api-value-card > * { opacity: 0; transition: opacity 0.1s var(--eo-ease); }
+.api-value-figure:is(:hover, :focus-visible) .api-value-card > * { opacity: 1; transition: opacity 0.25s var(--eo-ease) 0.2s; }
+
+.api-value-card-head { display: flex; justify-content: space-between; align-items: baseline; }
+.api-value-card-head span { font: 600 9.5px var(--font-text); text-transform: uppercase; letter-spacing: 0.08em; color: var(--text-tertiary); }
+.api-value-card-head b { font: 600 15px var(--font-text); font-variant-numeric: tabular-nums; color: var(--text-primary); }
+/* The honest spread under the figure: the estimate plus and minus 20%. */
+.api-value-range { display: flex; justify-content: space-between; align-items: baseline; margin-top: 2px; font: 500 10.5px var(--font-text); font-variant-numeric: tabular-nums; color: var(--text-tertiary); }
+.api-value-range i { font-style: normal; }
+.api-value-card-lead { margin: 8px 0 12px; }
+.api-value-rows { display: flex; flex-direction: column; gap: 8px; }
+.api-value-row { --agent: var(--text-secondary); display: grid; grid-template-columns: 14px 78px minmax(0, 1fr) 44px; align-items: center; column-gap: 8px; color: var(--text-primary); font-variant-numeric: tabular-nums; }
+.api-value-row[data-agent='claude'] { --agent: var(--claude-color); }
+.api-value-row[data-agent='codex'] { --agent: var(--codex-color); }
+.api-value-row[data-agent='gemini'] { --agent: var(--gemini-color); }
+.api-value-mark { display: grid; place-items: center; }
+.api-value-mark .agent-logo, .api-value-mark svg { width: 14px; height: 14px; }
+.api-value-usd { text-align: right; color: var(--text-secondary); }
+/* The share of the total, drawn like the usage rings' bars: the agent colour, desaturated toward grey. */
+.api-value-bar { height: 5px; border-radius: 999px; background: rgba(255, 255, 255, 0.09); overflow: hidden; }
+.api-value-bar b { display: block; width: 0; height: 100%; border-radius: inherit; background: color-mix(in srgb, var(--agent) 50%, #8e8e93); transition: width 0.3s var(--eo-ease); }
+.api-value-figure:is(:hover, :focus-visible) .api-value-bar b { width: calc(var(--pct, 0) * 1%); transition: width 0.7s var(--eo-ease) 0.2s; }
+.api-value-card-foot { margin: 12px 0 0; padding-top: 10px; border-top: 1px solid var(--eo-border); color: var(--text-tertiary); font-size: 10.5px; }
+@media (prefers-reduced-motion: reduce) { .api-value-figure, .api-value-card, .api-value-card > *, .api-value-amount, .api-value-note, .api-value-bar b { transition: none !important; } }

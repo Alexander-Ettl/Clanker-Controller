@@ -7,13 +7,14 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { locate, resolveShim } = require('./binary-locator.js');
 const { CodexAppServer } = require('./codex-app-server.js');
-const { modelOption } = require('./model-catalog.js');
+const { AVAILABLE_MODELS, defaultModel } = require('./model-catalog.js');
 const { fromRateLimitEvent } = require('./claude-usage.js');
 
 // P17-D: how an older claude CLI / API rejects the Opus 5.5 model id or the
 // --effort flag. Only checked before a turn has produced any output.
 const MODEL_UNAVAILABLE = /unknown option '--(model|effort)'|not_found_error|invalid model|model[^"\n]{0,40}(not found|does not exist|not available)/i;
-const OPUS_FALLBACK_ID = 'claude-sonnet-5-5-high';
+const opusFallback = () => AVAILABLE_MODELS.filter((entry) => entry.agent === 'claude' && /sonnet/i.test(entry.model))
+  .sort((a, b) => b.model.localeCompare(a.model, 'en', { numeric: true }) || Number(b.effort === 'high') - Number(a.effort === 'high'))[0];
 // P17-I: upstream outages (Gemini's "Eligibility check failed ... UNAVAILABLE
 // (code 503)"). Before any output the turn reruns after 2s, then 4s; after
 // that it ends with one upstream_error card instead of raw error text.
@@ -105,10 +106,19 @@ function tokenCountsOf(raw) {
   const n = (x) => (Number.isFinite(x) ? x : 0);
   const inputOf = (u) => n(u.input_tokens) + n(u.cache_read_input_tokens) + n(u.cache_creation_input_tokens) || n(u.prompt_tokens);
   const outputOf = (u) => n(u.output_tokens) || n(u.completion_tokens);
-  if (raw?.type === 'assistant' && raw.message?.usage) return { id: raw.message.id || null, input: inputOf(raw.message.usage), output: outputOf(raw.message.usage) };
+  // What each kind of token is billed as (api-cost.js): Claude reports fresh input apart from cache reads and writes;
+  // Codex's input includes its cached part; Antigravity's input includes cache_read_tokens, and its thinking is billed as output.
+  const detailOf = (u) => {
+    if ('cache_read_input_tokens' in u || 'cache_creation_input_tokens' in u) return { fresh: n(u.input_tokens), cachedInput: n(u.cache_read_input_tokens), cacheWrite: n(u.cache_creation_input_tokens), output: outputOf(u) };
+    const cached = n(u.cached_input_tokens) || n(u.cache_read_tokens);
+    return { fresh: Math.max(0, inputOf(u) - cached), cachedInput: cached, cacheWrite: 0, output: outputOf(u) + n(u.thinking_tokens) };
+  };
+  if (raw?.type === 'assistant' && raw.message?.usage) return { id: raw.message.id || null, input: inputOf(raw.message.usage), output: outputOf(raw.message.usage), detail: detailOf(raw.message.usage) };
   const final = raw?.type === 'result' || raw?.type === 'turn.completed' ? raw.usage : raw?.event === 'result' ? raw.result?.usage : null;
-  return final ? { final: true, input: inputOf(final), output: outputOf(final) } : null;
+  return final ? { final: true, input: inputOf(final), output: outputOf(final), detail: detailOf(final) } : null;
 }
+const noTokens = () => ({ input: 0, output: 0, lastId: null, detail: { fresh: 0, cachedInput: 0, cacheWrite: 0, output: 0 } });
+const addDetail = (a, b) => ({ fresh: a.fresh + b.fresh, cachedInput: a.cachedInput + b.cachedInput, cacheWrite: a.cacheWrite + b.cacheWrite, output: a.output + b.output });
 
 function stringAt(value, keys) {
   for (const key of keys) {
@@ -400,7 +410,7 @@ class StreamEngine extends EventEmitter {
     this.agyEdits = new Map(); // toolId -> { event, file, before }: a Gemini edit waiting for its diff
     this.codexBases = new Map(); // repo root -> snapshot, for Codex's per-edit diffs
     this.turnBases = null; // repo root -> snapshot as the turn began, and when (ms): what Undo turn restores
-    this.tokens = { input: 0, output: 0, lastId: null };
+    this.tokens = noTokens();
     this.subagentIds = new Set(); // Agent/Task tool_use ids still running (background ones outlive their call)
     this.codexServerFactory = codexServerFactory;
     this.codexServer = null;
@@ -424,7 +434,7 @@ class StreamEngine extends EventEmitter {
   commandFor(agent, prompt, attachments = [], choice = {}) {
     const effort = choice.effort || null;
     const resume = choice.resume || null;
-    const model = choice.model || this.models[agent] || { claude: 'claude', codex: 'gpt-6.1-sol', gemini: 'gemini-3.8-flash-high' }[agent];
+    const model = choice.model || this.models[agent] || defaultModel(agent)?.model;
     const pointers = attachments.map((file) => `Attachment available locally: ${file}`).join('\n');
     const fullPrompt = pointers ? `${prompt}\n\n${pointers}` : prompt;
     const command = locate(agent).path;
@@ -436,7 +446,7 @@ class StreamEngine extends EventEmitter {
       // agy's stream-json input is {"event":"user","message":{"content":...}}.
       // --add-dir: without it agy runs its shell and resolves relative paths in its own scratch
       // folder (~/.gemini/antigravity-cli/scratch), not the project, even though init reports the cwd.
-      return { command, args: ['--input-format', 'stream-json', '--output-format', 'stream-json', '--model', model, ...permArgs, '--add-dir', this.cwd, ...(resume ? ['--conversation', resume] : [])], input: JSON.stringify({ event: 'user', message: { content: fullPrompt } }) + '\n' };
+      return { command, args: ['--input-format', 'stream-json', '--output-format', 'stream-json', ...(model ? ['--model', model] : []), ...permArgs, '--add-dir', this.cwd, ...(resume ? ['--conversation', resume] : [])], input: JSON.stringify({ event: 'user', message: { content: fullPrompt } }) + '\n' };
     }
     if (agent === 'claude') {
       // -p reads the prompt from stdin; stream-json output needs --verbose.
@@ -467,12 +477,13 @@ class StreamEngine extends EventEmitter {
       return { command, args: ['-p', '--output-format', 'stream-json', '--verbose', '--permission-mode', permFlag, ...modelArgs], input: fullPrompt + '\n' };
     }
     const effortArgs = effort ? ['-c', `model_reasoning_effort="${effort}"`] : [];
+    const modelArgs = model ? ['-m', model] : [];
     // Composer slash actions are discovered from this installed CLI's own
     // `codex exec --help`, then run through its native JSONL subcommand.
     if (choice.codexCommand) {
       return {
         command,
-        args: ['exec', choice.codexCommand, ...(choice.codexCommandArgs || []), '--json', '--skip-git-repo-check', '-m', model, ...effortArgs, ...(fullPrompt ? ['-'] : [])],
+        args: ['exec', choice.codexCommand, ...(choice.codexCommandArgs || []), '--json', '--skip-git-repo-check', ...modelArgs, ...effortArgs, ...(fullPrompt ? ['-'] : [])],
         input: fullPrompt ? `${fullPrompt}\n` : '',
       };
     }
@@ -481,8 +492,8 @@ class StreamEngine extends EventEmitter {
     const autoArgs = permMode === 'auto' ? ['--approve-for-me'] : [];
     const approvalArgs = ['-c', `approval_policy="${permMode === 'fullAccess' ? 'never' : 'on-request'}"`, '-c', `approvals_reviewer="${permMode === 'auto' ? 'auto_review' : 'user'}"`];
     // `exec resume` takes config overrides but has no --sandbox or --approve-for-me flags.
-    if (resume) return { command, args: ['exec', 'resume', resume, '--json', '-c', `sandbox_mode="${permMode === 'fullAccess' ? 'danger-full-access' : 'workspace-write'}"`, ...approvalArgs, '--skip-git-repo-check', '-m', model, ...effortArgs, '-'], input: fullPrompt + '\n' };
-    return { command, args: ['exec', '--json', ...sandboxArgs, ...autoArgs, ...approvalArgs, '--skip-git-repo-check', '-m', model, ...effortArgs, '-'], input: fullPrompt + '\n' };
+    if (resume) return { command, args: ['exec', 'resume', resume, '--json', '-c', `sandbox_mode="${permMode === 'fullAccess' ? 'danger-full-access' : 'workspace-write'}"`, ...approvalArgs, '--skip-git-repo-check', ...modelArgs, ...effortArgs, '-'], input: fullPrompt + '\n' };
+    return { command, args: ['exec', '--json', ...sandboxArgs, ...autoArgs, ...approvalArgs, '--skip-git-repo-check', ...modelArgs, ...effortArgs, '-'], input: fullPrompt + '\n' };
   }
 
   getCodexServer() {
@@ -503,12 +514,14 @@ class StreamEngine extends EventEmitter {
 
   resetCodexTurn(turn) {
     this.turn = turn;
-    this.tokens = { input: 0, output: 0, lastId: null };
+    this.tokens = noTokens();
     this.blockCount = 0;
     this.lastTextKey = null;
     this.hadText = false;
     this.sawOutput = false;
     this.codexTurnId = null;
+    this.codexTurnBase = null; // the thread's token totals as this turn found them (see thread/tokenUsage/updated)
+    this.codexPeakPrompt = 0; // the largest single request's prompt this turn: what decides long-context pricing
     this.codexActive = true;
     this.codexAcceptEvents = !this.codexInterrupting;
     this.approvals.clear();
@@ -671,7 +684,18 @@ class StreamEngine extends EventEmitter {
       const last = usage.last || {};
       const total = usage.total || {};
       if (usage.modelContextWindow && last.totalTokens) this.emit('event', { type: 'usage', agent: 'codex', contextTokens: last.totalTokens });
-      if (total.totalTokens) this.emit('event', { type: 'token_usage', agent: 'codex', inputTokens: total.inputTokens || 0, outputTokens: total.outputTokens || 0, totalTokens: total.totalTokens });
+      if (total.totalTokens) {
+        // `total` is the whole thread's, resumed history included. The turn began where the first update's total, less that
+        // update's own request (`last`), stood; what has been drawn since is this turn's.
+        const take = (u, k) => Number(u?.[k]) || 0;
+        this.codexTurnBase ||= Object.fromEntries(['inputTokens', 'cachedInputTokens', 'cacheWriteInputTokens', 'outputTokens', 'totalTokens'].map((k) => [k, take(total, k) - take(last, k)]));
+        const turn = Object.fromEntries(Object.keys(this.codexTurnBase).map((k) => [k, Math.max(0, take(total, k) - this.codexTurnBase[k])]));
+        // OpenAI counts cached and cache-write tokens inside input; reasoning tokens are inside output.
+        this.codexPeakPrompt = Math.max(this.codexPeakPrompt, take(last, 'inputTokens'));
+        const detail = { fresh: Math.max(0, turn.inputTokens - turn.cachedInputTokens - turn.cacheWriteInputTokens), cachedInput: turn.cachedInputTokens, cacheWrite: turn.cacheWriteInputTokens, output: turn.outputTokens, peakPrompt: this.codexPeakPrompt };
+        this.tokens = { input: turn.inputTokens, output: turn.outputTokens, lastId: null, detail };
+        this.emit('event', { type: 'token_usage', agent: 'codex', inputTokens: turn.inputTokens, outputTokens: turn.outputTokens, totalTokens: turn.totalTokens });
+      }
       return;
     }
     if (!this.codexActive && method !== 'thread/started') return;
@@ -743,8 +767,7 @@ class StreamEngine extends EventEmitter {
     setTimeout(() => killTree(child), 3000).unref?.();
   }
 
-  sendControl(request) {
-    const child = this.live;
+  sendControl(request, child = this.live) {
     if (!child?.stdin?.writable) return Promise.reject(new Error('no live Claude process'));
     const id = `panel-${crypto.randomUUID()}`;
     return new Promise((resolve, reject) => {
@@ -754,12 +777,26 @@ class StreamEngine extends EventEmitter {
     });
   }
 
-  start({ agent, prompt, attachments = [], model, effort, resume = null, freshPrompt = null, codexCommand = null, codexCommandArgs = [], attempt = 0, live = false, permissionMode = null, compact = false, autoCompact = false }) {
+  start({ agent, prompt, attachments = [], model, effort, resume = null, freshPrompt = null, codexCommand = null, codexCommandArgs = [], attempt = 0, live = false, permissionMode = null, compact = false, autoCompact = false, groqRouter = null }) {
+    if (agent === 'groq') {
+      this.cancel();
+      const marker = {}; this.groqTurn = marker;
+      this.turn = { agent, prompt, model };
+      void (async () => {
+        try {
+          if (attachments.length || !groqRouter) throw new Error('Groq only supports text here');
+          const text = await groqRouter.call('groq', { messages: [{role:'user', content:prompt}] });
+          if(this.groqTurn === marker) this.emit('event',{type:'delta',text,agent});
+        } catch { if(this.groqTurn === marker) this.emit('event',{type:'delta',text:'Groq could not answer within the free budget or timeout. Choose an available CLI model or wait for the quota reset.',agent}); }
+        finally { if(this.groqTurn === marker) { this.groqTurn=null;this.turn=null;this.emit('event',{type:'turn_complete',agent}); } }
+      })();
+      return;
+    }
     // A live Remote Control process takes the turn as a message instead of a new process.
-    if (agent === 'claude' && this.live && !live) return this.sendToLive({ agent, prompt, attachments, model, effort });
+    if (agent === 'claude' && this.live && !live) return this.sendToLive({ agent, prompt, attachments, model, effort, permissionMode });
     // So does a process kept open for its background agents (on the model it started with):
     // a new process would kill them.
-    if (agent === 'claude' && this.lingering && !live) return this.sendToLive({ agent, prompt, attachments, model, effort }, this.lingering);
+    if (agent === 'claude' && this.lingering && !live) return this.sendToLive({ agent, prompt, attachments, model, effort, permissionMode }, this.lingering);
     // Codex and agy don't send the edited text: their +/- come from each file against these snapshots.
     // The same snapshots, kept whole, are what "Undo turn" restores (lib/turn-undo.js).
     this.editCache = new Map();
@@ -768,15 +805,15 @@ class StreamEngine extends EventEmitter {
     if (agent === 'codex') return this.startCodex({ prompt, attachments, model, effort, resume, freshPrompt, codexCommand, codexCommandArgs, attempt, permissionMode, compact, autoCompact });
     this.cancel();
     this.turn = live ? null : { agent, prompt, attachments, model, effort, resume, freshPrompt, codexCommand, codexCommandArgs, attempt, permissionMode, compact: Boolean(compact), autoCompact: Boolean(autoCompact) };
-    this.tokens = { input: 0, output: 0, lastId: null }; // P17-V: this turn's token draw
+    this.tokens = noTokens(); // P17-V: this turn's token draw
     const spec = this.commandFor(agent, prompt, attachments, { model, effort, resume, codexCommand, codexCommandArgs, permissionMode });
     if (live && spec.command) spec.args.push('--replay-user-messages');
     // A session that no longer exists (cleared, or made on another machine)
     // reruns the turn once as a new session, with the chat's full handoff.
-    this.resumeRetry = resume && !live ? { agent, prompt: freshPrompt || prompt, attachments, model, effort } : null;
+    this.resumeRetry = resume && !live ? { agent, prompt: freshPrompt || prompt, attachments, model, effort, permissionMode } : null;
     // P17-D: a claude CLI that predates Opus 5.5 (or --effort) fails before
     // any output; that turn reruns once on the fallback model instead.
-    this.fallback = agent === 'claude' && !live && /opus/i.test(model || '') ? { agent, prompt, attachments, resume, freshPrompt } : null;
+    this.fallback = agent === 'claude' && !live && /opus/i.test(model || '') ? { agent, prompt, attachments, resume, freshPrompt, permissionMode } : null;
     this.sawOutput = false;
     // P16-I: a missing CLI becomes a structured event the chat view renders
     // as a setup card, instead of a raw `spawn ... ENOENT` string posing as
@@ -813,6 +850,7 @@ class StreamEngine extends EventEmitter {
       stdio: ['pipe', 'pipe', 'pipe'],
     });
     this.child = child;
+    child.permissionMode = this.effectivePermissionMode(agent, permissionMode);
     if (live) { child.live = true; child.turnCompleted = true; this.live = child; } // idle until a message arrives
     this.blockCount = 0;
     this.lastTextKey = null;
@@ -882,10 +920,10 @@ class StreamEngine extends EventEmitter {
   }
 
   /** A panel turn into the live process: same message shape a fresh process would get. */
-  sendToLive({ agent, prompt, attachments, model, effort }, child = this.live) {
-    const spec = this.commandFor(agent, prompt, attachments, { model, effort });
+  sendToLive({ agent, prompt, attachments, model, effort, permissionMode }, child = this.live) {
+    const spec = this.commandFor(agent, prompt, attachments, { model, effort, permissionMode });
     this.child = child;
-    this.turn = { agent, prompt, attachments, model, effort, attempt: 0 };
+    this.turn = { agent, prompt, attachments, model, effort, permissionMode, attempt: 0 };
     this.beginLiveTurn();
     try {
       // Only the Remote Control process replays user messages; its replay is ours, not the phone's.
@@ -893,13 +931,26 @@ class StreamEngine extends EventEmitter {
     } catch {
       this.expectEcho = null;
     }
-    child.stdin.write(spec.input);
+    const mode = this.effectivePermissionMode(agent, permissionMode);
+    if (mode !== (child.permissionMode || this.effectivePermissionMode(agent))) {
+      const turn = this.turn;
+      this.sendControl({ subtype: 'set_permission_mode', mode: mode === 'fullAccess' ? 'bypassPermissions' : mode === 'auto' ? 'auto' : 'default' }, child).then(() => {
+        if (this.child !== child || this.turn !== turn) return;
+        child.permissionMode = mode;
+        child.stdin.write(spec.input);
+      }).catch((error) => {
+        if (this.child !== child || this.turn !== turn) return;
+        this.emit('event', { type: 'delta', text: `Unable to apply model permissions: ${error.message}`, agent });
+        child.turnCompleted = true;
+        this.emit('event', { type: 'turn_complete', agent });
+      });
+    } else child.stdin.write(spec.input);
     return child;
   }
 
   /** Per-turn state for a turn inside the live process (started here or from the phone). */
   beginLiveTurn() {
-    this.tokens = { input: 0, output: 0, lastId: null };
+    this.tokens = noTokens();
     this.blockCount = 0;
     this.lastTextKey = null;
     this.hadText = false;
@@ -929,9 +980,9 @@ class StreamEngine extends EventEmitter {
         this.failUpstream(agent, line);
         return;
       }
-      if (this.fallback && MODEL_UNAVAILABLE.test(line)) {
-        const { model, effort, label } = modelOption(OPUS_FALLBACK_ID);
-        this.emit('event', { type: 'notice', text: `This claude CLI can't run Opus 5.5 yet, so this turn runs on ${label}. Update Claude Code to use Opus.`, agent });
+      if (this.fallback && MODEL_UNAVAILABLE.test(line) && opusFallback()) {
+        const { model, effort, label } = opusFallback();
+        this.emit('event', { type: 'notice', text: `This claude CLI can't run the selected Opus model, so this turn runs on ${label}. Update Claude Code to use Opus.`, agent });
         this.start({ ...this.fallback, model, effort });
         return;
       }
@@ -954,9 +1005,9 @@ class StreamEngine extends EventEmitter {
       this.failUpstream(agent, line);
       return;
     }
-    if (this.fallback && !this.sawOutput && MODEL_UNAVAILABLE.test(line)) {
-      const { model, effort, label } = modelOption(OPUS_FALLBACK_ID);
-      this.emit('event', { type: 'notice', text: `This claude CLI can't run Opus 5.5 yet, so this turn runs on ${label}. Update Claude Code to use Opus.`, agent });
+    if (this.fallback && !this.sawOutput && MODEL_UNAVAILABLE.test(line) && opusFallback()) {
+      const { model, effort, label } = opusFallback();
+      this.emit('event', { type: 'notice', text: `This claude CLI can't run the selected Opus model, so this turn runs on ${label}. Update Claude Code to use Opus.`, agent });
       this.start({ ...this.fallback, model, effort }); // no opus in `model`, so it never falls back twice
       return;
     }
@@ -982,8 +1033,8 @@ class StreamEngine extends EventEmitter {
       const counts = tokenCountsOf(raw);
       if (counts && (counts.final || counts.id === null || counts.id !== this.tokens.lastId)) {
         this.tokens = counts.final
-          ? { input: counts.input, output: counts.output, lastId: null }
-          : { input: this.tokens.input + counts.input, output: this.tokens.output + counts.output, lastId: counts.id };
+          ? { input: counts.input, output: counts.output, lastId: null, detail: counts.detail }
+          : { input: this.tokens.input + counts.input, output: this.tokens.output + counts.output, lastId: counts.id, detail: addDetail(this.tokens.detail, counts.detail) };
         const { input: inputTokens, output: outputTokens } = this.tokens;
         if (inputTokens + outputTokens) this.emit('event', { type: 'token_usage', agent, inputTokens, outputTokens, totalTokens: inputTokens + outputTokens });
       }
@@ -1035,7 +1086,14 @@ class StreamEngine extends EventEmitter {
     }
     if (event.type === 'turn_complete') {
       if (this.child?.turnCompleted) return; // the CLI's own result event already ended the turn
-      if (this.tokens.input + this.tokens.output) event.totalTokens = this.tokens.input + this.tokens.output;
+      // Claude Code's cost figure is a running total for its process (one process lives across a chat's turns), so this
+      // turn's share is the rise since the last one; a lower figure means a new process that started from zero.
+      if (Number.isFinite(event.costUsd) && this.child) {
+        const seen = this.child.costSeen || 0;
+        this.child.costSeen = event.costUsd;
+        event.costUsd = event.costUsd >= seen ? event.costUsd - seen : event.costUsd;
+      }
+      if (this.tokens.input + this.tokens.output) { event.totalTokens = this.tokens.input + this.tokens.output; event.usage = this.tokens.detail; } // priced by api-cost.js
       if (this.child) this.child.turnCompleted = true;
       this.approvals.clear();
       // Interactive Claude keeps stdin open for answers; the turn is over now.
@@ -1243,6 +1301,7 @@ class StreamEngine extends EventEmitter {
   }
 
   cancel() {
+    this.groqTurn = null;
     clearTimeout(this.retryTimer);
     this.retryTimer = null;
     this.approvals.clear();

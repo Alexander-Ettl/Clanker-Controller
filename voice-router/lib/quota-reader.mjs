@@ -1,13 +1,13 @@
 'use strict';
 
-// Synchronous port of tools/antigravity-usage-statusbar/usage.js + extension.js.
-// The statusbar extension reads async (fs.promises) because VS Code doesn't mind
+// Synchronous port of tools/ai-chat-panel/lib/quota-sources.js.
+// The panel reads async (fs.promises) because VS Code doesn't mind
 // the latency; the router needs the same data inline in its <5ms quota-read stage,
 // so every read here uses the *Sync fs variants instead.
 //
 // P12-F: the actual *parsing* (as opposed to the sync-vs-async file I/O,
 // which genuinely has to differ) is no longer duplicated here -- it's
-// require()'d straight from usage.js (CommonJS, loadable from this ESM
+// require()'d straight from quota-sources.js (CommonJS, loadable from this ESM
 // module via createRequire) so a bug fix like P11-I's weekly-quota
 // fallback lands here automatically instead of needing a second,
 // hand-applied patch to a second copy of the same logic.
@@ -19,7 +19,7 @@ import { createRequire } from 'node:module';
 
 const require = createRequire(import.meta.url);
 const { parseClaudeCache: parseClaudeCacheCanonical, parseClaudeWeeklyState: parseClaudeWeeklyStateCanonical, findLatestCodexRateLimit } =
-  require('../../antigravity-usage-statusbar/usage.js');
+  require('../../ai-chat-panel/lib/quota-sources.js');
 
 const CODEX_TAIL_BYTES = 512 * 1024;
 const CODEX_CANDIDATE_FILES = 5;

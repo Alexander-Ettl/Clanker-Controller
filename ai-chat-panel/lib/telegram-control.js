@@ -1,6 +1,7 @@
 'use strict';
 
 const { makeDockKeyboard, escapeHtml } = require('./telegram-bridge.js');
+const providers = require('./providers');
 const clip = (text, limit = 3500) => String(text).slice(0, limit).replace(/[\uD800-\uDBFF]$/, '');
 
 function makeBar(percent, length = 5) {
@@ -106,7 +107,7 @@ function bindTelegramControls(bridge, { manager, watchdog, queue, readQuotas, mo
   async function buildCockpitCard() {
     let quotas = {};
     try { quotas = await readQuotas() || {}; } catch {}
-    const agents = ['claude', 'codex', 'gemini'];
+    const agents = providers.ids();
     if (quotas.claudeOpus && typeof quotas.claudeOpus.remaining === 'number') agents.push('opus');
     const quotaLines = agents.map((agent) => {
       const q = quotas[agent];

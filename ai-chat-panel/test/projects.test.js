@@ -1,0 +1,52 @@
+'use strict';
+const test = require('node:test');
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
+const { ProjectRegistry, projectFiles } = require('../lib/projects');
+
+test('projects have stable, user-local identities independent of folder structure', t => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'clanker-projects-'));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const cloud = path.join(root, 'Cloud drive', 'Website'), local = path.join(root, 'Other drive', 'Extension');
+  fs.mkdirSync(cloud, { recursive: true }); fs.mkdirSync(local, { recursive: true });
+  const registry = new ProjectRegistry(path.join(root, 'user-one'));
+  const a = registry.add('Website', cloud), b = registry.add('Extension', local);
+  assert.notEqual(a.id, b.id);
+  assert.equal(registry.add('Duplicate', cloud).id, a.id);
+  assert.equal(registry.forFile(path.join(local, 'main.js')).id, b.id);
+  assert.equal(registry.forFile(local + '-other/main.js'), null);
+  const nested = path.join(cloud, 'tools'); fs.mkdirSync(nested);
+  const c = registry.add('Tools', nested);
+  assert.equal(registry.forFile(path.join(nested, 'tool.js')).id, c.id);
+  assert.deepEqual(new ProjectRegistry(path.join(root, 'user-two')).list(), []);
+  const reopened = new ProjectRegistry(path.join(root, 'user-one'));
+  assert.equal(reopened.get(a.id).root, a.root);
+  const moved = path.join(root, 'Moved website'); fs.renameSync(cloud, moved);
+  assert.throws(() => reopened.context(a.id), /unavailable/);
+  reopened.update(a.id, { root: moved, name: 'Moved' });
+  assert.equal(reopened.get(a.id).id, a.id);
+  assert.equal(reopened.context(a.id).workspaceDir, fs.realpathSync.native(moved));
+  assert.notEqual(reopened.context(a.id).attachmentsDir, reopened.context(b.id).attachmentsDir);
+  assert.throws(() => reopened.context(null), /Choose a project/);
+  const planning = reopened.add('Idea');
+  assert.equal(planning.root, null);
+  assert.ok(reopened.context(planning.id).workspaceDir.startsWith(path.join(root, 'user-one')));
+  assert.throws(() => reopened.update(b.id, { root: moved }), /another project/);
+  assert.ok(fs.existsSync(registry.file + '.bak'));
+});
+
+test('file mentions walk only the selected project even outside the Explorer', async t => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'clanker-project-files-'));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const a = path.join(root, 'a'), b = path.join(root, 'b');
+  fs.mkdirSync(path.join(a, 'src'), { recursive: true });
+  fs.mkdirSync(path.join(a, 'node_modules')); fs.mkdirSync(b);
+  fs.writeFileSync(path.join(a, 'src', 'index.js'), '');
+  fs.writeFileSync(path.join(a, 'node_modules', 'dependency.js'), '');
+  fs.writeFileSync(path.join(b, 'other-project.js'), '');
+  fs.symlinkSync(b, path.join(a, 'linked-project'), process.platform === 'win32' ? 'junction' : 'dir');
+  assert.deepEqual(await projectFiles(a), ['src/index.js']);
+  assert.equal((await projectFiles(a, 1)).length, 1);
+});

@@ -10,8 +10,8 @@ const path = require('node:path');
 
 const SOUND = path.join(process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), 'Nextcloud', 'ClaudeConfig'), 'sounds', 'universfield-new-notification-07-210334.mp3');
 const NAMES = { claude: 'Claude', codex: 'Codex', gemini: 'Gemini' };
-// The panel's mark on a dark tile, which Windows shows beside "Clanker Controller". This PNG is still the old
-// three-circle mark; it is not generated from media/clanker.svg.
+// The Clanker Controller logo (Clanker_Controller_logo.svg in the website repo's root) in its orange on a dark rounded
+// tile, 256x256, which Windows shows beside "Clanker Controller". Rendered from that SVG by hand: redo it if the logo changes.
 const TOAST_ICON = path.join(__dirname, '..', 'media', 'icon-toast.png');
 
 /** Plain first sentence (or first ~140 chars) of a Markdown reply. */

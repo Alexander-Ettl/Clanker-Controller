@@ -1,17 +1,17 @@
 # Voice Router
 
-Voice-to-LLM quota-aware router. Spec: [`docs/voice-quota-router-spec.md`](../../docs/voice-quota-router-spec.md).
+Voice-to-LLM quota-aware router. See [batch synthesis](../docs/batch-synthesis-workflow.md).
 
 Speak a prompt, and it transcribes (Groq Whisper), cleans it up and classifies
 its intent (Groq `openai/gpt-oss-120b`), then routes it to Claude, Codex, or
 Gemini based on the task type and your live token quotas — reading the same
-caches as [`astro-visual-editor/tools/antigravity-usage-statusbar/`](../antigravity-usage-statusbar/).
+caches as [`ai-chat-panel/lib/quota-sources.js`](../ai-chat-panel/lib/quota-sources.js).
 
 Two ways to use it: a manual CLI, or a background hotkey daemon.
 
 ## Setup
 
-1. `astro-visual-editor/tools/voice-router/.env` (gitignored, never commit it):
+1. `voice-router/.env` (gitignored, never commit it):
    ```
    GROQ_API_KEY=your-key-here
    ```
@@ -48,7 +48,7 @@ Classification (`lib/batch-synthesizer.mjs`) is a deterministic keyword/file
 classifier, not an LLM call — same UI/backend/planning buckets as the
 single-prompt pipeline, plus the same `< 20%` Claude-quota failover to Codex.
 Prints a breakdown and every synthesized package, then copies the first
-one to the clipboard. See [`docs/batch-synthesis-workflow.md`](../../docs/batch-synthesis-workflow.md)
+one to the clipboard. See [`docs/batch-synthesis-workflow.md`](../docs/batch-synthesis-workflow.md)
 for the full design (and its own corrected-status note on what's actually
 implemented vs. originally envisioned).
 

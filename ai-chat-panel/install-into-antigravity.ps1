@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-  Installs or links the AI Chat Panel extension into Antigravity IDE.
+  Installs or links the Clanker Controller extension into Antigravity IDE.
 .DESCRIPTION
   Safely installs the unpacked extension into Antigravity's extensions directory
   without introducing UTF-8 Byte Order Marks (BOM), and registers it in extensions.json.
