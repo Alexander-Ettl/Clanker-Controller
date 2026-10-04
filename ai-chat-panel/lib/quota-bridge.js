@@ -1,47 +1,9 @@
 'use strict';
 
-// P12-F: Quota Consolidation. This used to hand-roll its own disk-scraping
-// (guessing tools/antigravity-usage-statusbar's install path across the
-// filesystem with fs.readdirSync, then re-implementing that tool's own
-// parseClaudeCache/parseClaudeWeeklyState/findLatestCodexRateLimit as
-// fallbacks if the guess failed) -- three duplicated parsers that could
-// silently drift from the real ones. Now it does the one thing a VS Code
-// extension is actually supposed to do to talk to another one: look it up
-// by id and call its exported API. tools/antigravity-usage-statusbar is the
-// single canonical source of truth for both the parsing logic and the
-// actual disk reads (see that extension's own exported `getQuotas()`).
+// Shapes the raw readings from lib/quota-sources.js (Gemini, Claude, Codex) into the windows the
+// launcher gauges, chat headers and scheduler read, and keeps the last-known store on disk.
 
-const ANTIGRAVITY_STATUSBAR_EXTENSION_ID = 'local.antigravity-usage-statusbar';
-
-const NO_QUOTAS = { claude: null, claudeWeekly: null, claudeOpus: null, opus: null, codex: null, gemini: null };
-
-// `vscode` is required lazily, inside the function, rather than once at
-// module top-level -- this file (like every other ai-chat-panel module) is
-// also exercised outside a real VS Code extension host, by this package's
-// own test/session.test.js. A top-level `require('vscode')` evaluates
-// exactly once and gets baked into this module's cached exports forever;
-// if that one evaluation happened to run while some other test had
-// `vscode` monkeypatched to a bare stub (this file gets pulled in
-// transitively through extension.js), every later call would silently
-// keep using that stale stub instead of the real thing. A fresh require
-// per call has no such staleness, and simply throws (caught below) when
-// there's truly no VS Code host to resolve it against.
-function getVscodeExtensionsApi() {
-  try {
-    return require('vscode').extensions || null;
-  } catch {
-    return null;
-  }
-}
-
-async function getCanonicalQuotaReader() {
-  const extensions = getVscodeExtensionsApi();
-  if (!extensions) return null;
-  const ext = extensions.getExtension(ANTIGRAVITY_STATUSBAR_EXTENSION_ID);
-  if (!ext) return null;
-  const exportsObj = ext.isActive ? ext.exports : await ext.activate();
-  return exportsObj && typeof exportsObj.getQuotas === 'function' ? exportsObj : null;
-}
+const { getQuotas, onDidChangeQuotas: onRawQuotas } = require('./quota-sources.js');
 
 // Our own reset clock. A provider's usage file only updates when that CLI runs,
 // so after a limit it can say "0% left, resets 18:30" (or nothing at all) long
@@ -67,6 +29,7 @@ function remember(key, window) {
   cache()[key] = window;
   try { fs.writeFileSync(resetCacheFile, JSON.stringify(resetCache)); } catch { /* best effort */ }
 }
+const UNDATED_READING_MS = 20 * 60 * 1000;
 const resetPassed = (window) => typeof window?.resetsAt === 'number' && window.resetsAt * 1000 <= Date.now();
 const fresh = (window) => ({ ...window, remaining: 100, used: 0, resetsAt: null, assumedReset: true });
 
@@ -91,7 +54,11 @@ function claudeUsageAge() {
 function withClaudeLive(quotas) {
   const live = cache().claudeLive;
   if (!live) return quotas;
-  const asWindow = (w, windowMinutes) => w && w.resetsAt * 1000 > Date.now() ? { used: w.used, remaining: 100 - w.used, resetsAt: w.resetsAt, windowMinutes } : null;
+  // A reading with a reset time counts until that time. One without (`/usage` right after a reset says "0% used" and no
+  // "resets ..." yet: the next window has not started) counts for a while; dropping it left the stale "0% left" from the
+  // status bar in charge, and a task waiting for the reset never fired.
+  const fresh = (w) => w.resetsAt == null ? Date.now() - live.at < UNDATED_READING_MS : w.resetsAt * 1000 > Date.now();
+  const asWindow = (w, windowMinutes) => w && fresh(w) ? { used: w.used, remaining: 100 - w.used, resetsAt: w.resetsAt ?? null, windowMinutes } : null;
   return {
     ...quotas,
     claude: asWindow(live.fiveHour, 300) || quotas.claude,
@@ -107,7 +74,12 @@ function windowOf(raw, windowLabel, key) {
     ? { remaining: raw.remaining, used: raw.used, resetsAt: raw.resetsAt ?? null, windowMinutes: raw.windowMinutes ?? null, windowLabel }
     : null;
   if (!key) return live && resetPassed(live) ? fresh(live) : live;
-  if (live && !resetPassed(live)) { remember(key, live); return live; }
+  // No reset time in the reading, and it is exactly what was remembered before whose reset has since passed: the same
+  // stale number (a provider file that only updates when its CLI runs), so the window has rolled over.
+  const known = cache()[key];
+  const unchanged = live && live.resetsAt == null && known && resetPassed(known) && known.remaining === live.remaining;
+  if (live && !unchanged && !resetPassed(live)) { remember(key, live); return live; }
+  if (unchanged) return fresh(known);
   // Stale or missing: the last reading, reset by our own clock once its time has come.
   const last = live || cache()[key] || null;
   return last && resetPassed(last) ? fresh(last) : last;
@@ -135,24 +107,13 @@ function shapeQuotas(raw) {
 }
 
 /** Snapshot for the panel header: Claude 5h/7d, Codex 5h/7d, Antigravity 5h/7d (live language-server quota). */
-async function readQuotas() {
-  const remembered = Boolean(cache().claudeLive); // read before any await
-  const reader = await getCanonicalQuotaReader();
-  // Without the status-bar extension, Claude's own remembered numbers still count.
-  if (!reader) return remembered ? { ...NO_QUOTAS, ...shapeQuotas({}) } : NO_QUOTAS;
-  return shapeQuotas(await reader.getQuotas());
+async function readQuotas(sources) {
+  return shapeQuotas(await getQuotas(sources));
 }
 
-/** Live updates from the status-bar extension's own poll, so gauges move as tokens are spent. */
-async function onDidChangeQuotas(listener) {
-  const reader = await getCanonicalQuotaReader().catch(() => null);
-  if (!reader || typeof reader.onDidChangeQuotas !== 'function') return { dispose() {} };
-  return reader.onDidChangeQuotas((quotas) => listener(shapeQuotas(quotas)));
+/** Live updates from one shared poll, so gauges move as tokens are spent. */
+function onDidChangeQuotas(listener) {
+  return onRawQuotas((quotas) => listener(shapeQuotas(quotas)));
 }
 
-/** P17-W: whether the usage status-bar extension is there to read quotas from. */
-async function quotaBridgeConnected() {
-  try { return Boolean(await getCanonicalQuotaReader()); } catch { return false; }
-}
-
-module.exports = { readQuotas, onDidChangeQuotas, shapeQuotas, quotaBridgeConnected, recordClaudeUsage, claudeUsageAge };
+module.exports = { readQuotas, onDidChangeQuotas, shapeQuotas, recordClaudeUsage, claudeUsageAge };

@@ -1,0 +1,177 @@
+/* The composer clock's scheduling modes (schedule-timer.js). Clicking the clock steps through Usage reset, Timer and
+   Calendar (then off); the clock wears the icon of the mode it is in, and its value. Hovering it grows one tall pill out
+   of it with that mode's picker. The pill is a bud of the composer, in the compose row's goo, and is placed from the
+   clock's own position, so it stays wrapped around it when the composer turns from a pill into a squircle. Surfaces are
+   the row's --island. */
+
+/* The clock: the icon of the mode, and the value beside it once there is one (a time, a delay, the live countdown). */
+.schedule-toggle svg.sc-ico { display: none; }
+.schedule-toggle[data-mode='off'] .sc-ico-off,
+.schedule-toggle[data-mode='reset'] .sc-ico-reset,
+.schedule-toggle[data-mode='timer'] .sc-ico-timer,
+.schedule-toggle[data-mode='calendar'] .sc-ico-calendar { display: block; }
+.schedule-toggle .schedule-time { display: none; }
+.schedule-toggle.has-time {
+  width: auto;
+  min-width: 36px;
+  gap: 6px;
+  padding: 0 11px 0 10px;
+  border-radius: 999px;
+  font: 600 11.5px var(--font-text);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+/* --time-w: the widest label this mode can show (schedule-timer.js), so dragging the bar from "15 min" to "1.5 hours"
+   never changes the clock's width, and the pill grown from it stays one size. Centred, so a short label sits evenly. */
+.schedule-toggle.has-time .schedule-time { display: inline-block; min-width: var(--time-w, 0); text-align: center; }
+.schedule-probe { position: absolute; visibility: hidden; pointer-events: none; white-space: nowrap; font: 600 11.5px var(--font-text); font-variant-numeric: tabular-nums; }
+/* Sent and waiting: the countdown, not the armed glow. */
+.schedule-toggle.has-time:not(.is-scheduled) { color: #64d2ff; }
+/* Open: the clock sits on top of the pill, as its foot. */
+.schedule-toggle.is-timer-open { position: relative; z-index: 7; }
+
+.timer-bud {
+  position: absolute; /* right and bottom are set from the clock's position */
+  z-index: 6;
+  width: 0;
+  height: 0;
+}
+.timer-bud[hidden], .timer-bud [hidden] { display: none; }
+
+/* One card for every mode, so the margins never differ: 10px above, left and right of the content; the clock's own corner
+   (4px) is the only tighter edge, because the pill wraps the clock like a bud. */
+.timer-pill {
+  --bw: 36px; /* the clock's width */
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  box-sizing: border-box;
+  width: 236px;
+  padding: 10px 4px 4px 10px;
+  border-radius: 28px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  background: var(--island-surface);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.07), inset 0 1px 0 rgba(255, 255, 255, 0.06);
+  color: var(--text-primary);
+  font: 500 12px var(--font-text);
+  font-variant-numeric: tabular-nums;
+  transform-origin: 100% 100%;
+  animation: island-bud 0.5s cubic-bezier(0.34, 1.36, 0.64, 1) both;
+}
+.timer-pill.is-leaving { animation: island-bud-out 0.28s cubic-bezier(0.5, 0, 0.75, 0) both; }
+
+.timer-title, .timer-body { padding-right: 6px; } /* 4px of the pill's own + 6px = the 10px of the left side */
+.timer-title { font-weight: 600; font-size: 12.5px; white-space: nowrap; }
+.timer-body { display: flex; flex-direction: column; }
+
+/* Round quiet buttons inside the pill. */
+.timer-nav {
+  display: grid;
+  place-items: center;
+  border: 0;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.07);
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: background 0.15s var(--eo-ease), color 0.15s var(--eo-ease);
+}
+.timer-nav:hover:not(:disabled) { background: rgba(255, 255, 255, 0.14); color: var(--text-primary); }
+.timer-nav svg { width: 12px; height: 12px; }
+.timer-nav:disabled { opacity: 0.25; cursor: default; }
+
+/* Timer: every delay is a button, four to a row. The lit one is the choice, in the same cyan as the chosen limit in Usage
+   reset; the rows are as tall as that mode's rows (34px) and the gaps match, so the three modes read as one family. */
+.timer-chips { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 6px; }
+.timer-chip {
+  height: 34px;
+  padding: 0;
+  border: 0;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.05);
+  color: var(--text-secondary);
+  font: 500 12px var(--font-text);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background 0.15s var(--eo-ease), color 0.15s var(--eo-ease), box-shadow 0.15s var(--eo-ease);
+}
+.timer-chip:hover:not(.is-sel) { background: rgba(255, 255, 255, 0.1); color: var(--text-primary); }
+.timer-chip.is-sel { background: rgba(100, 210, 255, 0.14); box-shadow: inset 0 0 0 1px rgba(100, 210, 255, 0.5); color: var(--text-primary); font-weight: 600; }
+.timer-chip:focus-visible { outline: none; box-shadow: 0 0 0 1.5px rgba(100, 210, 255, 0.7); }
+.timer-chip.is-sel:focus-visible { box-shadow: inset 0 0 0 1px rgba(100, 210, 255, 0.5), 0 0 0 1.5px rgba(100, 210, 255, 0.7); }
+
+/* Foot: a line about what is chosen at the left, the clock's own slot at the right. */
+.timer-foot { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.timer-slot { width: var(--bw); height: 36px; flex-shrink: 0; }
+.timer-note { color: var(--text-secondary); font-size: 11.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.timer-note:empty { display: none; }
+
+/* Usage reset: the limits it can wait for, as the sidebar's usage rows (bar, % left, time to reset). One is picked. */
+.timer-windows { width: 100%; display: flex; flex-direction: column; gap: 6px; }
+.timer-window {
+  display: grid;
+  grid-template-columns: 8px 22px minmax(0, 1fr) 32px 46px;
+  align-items: center;
+  column-gap: 8px;
+  height: 34px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.05);
+  color: var(--text-secondary);
+  font: 500 11.5px var(--font-text);
+  font-variant-numeric: tabular-nums;
+  text-align: left;
+  cursor: pointer;
+  transition: background 0.15s var(--eo-ease), box-shadow 0.15s var(--eo-ease);
+}
+.timer-window:hover:not(.is-sel) { background: rgba(255, 255, 255, 0.1); }
+.timer-window.is-sel { background: rgba(100, 210, 255, 0.14); box-shadow: inset 0 0 0 1px rgba(100, 210, 255, 0.5); color: var(--text-primary); }
+.timer-window-dot { width: 8px; height: 8px; border-radius: 50%; box-shadow: inset 0 0 0 1.5px rgba(255, 255, 255, 0.3); }
+.timer-window.is-sel .timer-window-dot { background: #64d2ff; box-shadow: none; }
+.timer-window .timer-bar { height: 5px; border-radius: 999px; background: rgba(255, 255, 255, 0.09); overflow: hidden; }
+.timer-window .timer-bar b { display: block; width: calc(var(--pct, 0) * 1%); height: 100%; border-radius: inherit; background: #8e8e93; }
+.timer-window.is-sel .timer-bar b { background: #64d2ff; }
+.timer-window.is-low .timer-bar b { background: #ff9f0a; }
+.timer-window-pct { text-align: right; font-weight: 600; color: var(--text-primary); }
+.timer-window-eta { text-align: right; white-space: nowrap; }
+
+/* Calendar: a month, past days off, then the time. */
+.timer-calendar { width: 100%; display: flex; flex-direction: column; gap: 8px; }
+.timer-day {
+  height: 26px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.05);
+  color: var(--text-primary);
+  font: 500 12px var(--font-text);
+  font-variant-numeric: tabular-nums;
+  cursor: pointer;
+  transition: background 0.12s var(--eo-ease), color 0.12s var(--eo-ease);
+}
+.timer-day:hover:not(:disabled, .is-sel) { background: rgba(255, 255, 255, 0.14); }
+.timer-day.is-sel { background: #64d2ff; color: #06202b; font-weight: 600; }
+.timer-day.is-other { color: var(--text-tertiary); }
+.timer-day:disabled { opacity: 0.25; cursor: default; }
+.timer-day.is-today:not(.is-sel) { box-shadow: inset 0 0 0 1px rgba(100, 210, 255, 0.6); }
+
+/* ‹ 14 › : ‹ 35 › */
+.timer-time { display: flex; align-items: center; justify-content: center; gap: 4px; }
+.timer-time > b { font-size: 18px; font-weight: 600; color: var(--text-secondary); }
+.timer-field { display: flex; align-items: center; gap: 2px; }
+.timer-field .timer-nav { width: 22px; height: 22px; }
+.timer-num { min-width: 30px; text-align: center; font-size: 20px; font-weight: 600; }
+
+.timer-monthbar { display: flex; align-items: center; justify-content: space-between; }
+.timer-monthbar .timer-nav { width: 24px; height: 24px; }
+.timer-month { font-weight: 600; font-size: 12.5px; }
+.timer-weekdays, .timer-days { display: grid; grid-template-columns: repeat(7, 1fr); gap: 2px; text-align: center; }
+.timer-weekdays { margin-bottom: -4px; font-size: 10px; color: var(--text-tertiary); }
+
+@media (prefers-reduced-motion: reduce) {
+  .timer-pill, .timer-pill.is-leaving { animation: none; }
+  .timer-chip, .timer-window { transition: none; }
+}

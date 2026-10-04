@@ -3,10 +3,11 @@
 const crypto = require('node:crypto');
 const fs = require('node:fs/promises');
 const path = require('node:path');
+const providers = require('./providers');
 
 const MAX_QUEUE_SIZE = 50;
 const MAX_ATTACHMENT_BYTES = 20 * 1024 * 1024;
-const MODELS = new Set(['claude', 'codex', 'gemini']);
+const MODELS = { has: (agent) => providers.has(agent) }; // any registered provider (lib/providers)
 // Statuses still shown in the Scheduled tab and counted against MAX_QUEUE_SIZE.
 const ACTIVE = new Set(['pending', 'dispatched', 'interrupted']);
 
@@ -23,12 +24,13 @@ function safeName(name) {
 class SchedulerQueue {
   constructor({ workspaceDir = process.cwd(), sessionDir } = {}) {
     this.workspaceDir = path.resolve(workspaceDir);
-    this.sessionDir = path.resolve(sessionDir || path.join(this.workspaceDir, '.astro', 'session'));
+    this.sessionDir = path.resolve(sessionDir || path.join(this.workspaceDir, '.clanker', 'session'));
     this.filePath = path.join(this.sessionDir, 'scheduler-queue.json');
     this.stagingDir = path.join(this.sessionDir, 'scheduler');
     this.tasks = [];
     this.loaded = false;
     this.writeTail = Promise.resolve();
+    this.draftFiles = new Map();
   }
 
   async load() {
@@ -44,6 +46,7 @@ class SchedulerQueue {
     this.loaded = true;
     let changed = false;
     for (const task of this.tasks) {
+      delete task.editing; // An editor from a previous window/session no longer holds this task.
       if (!Array.isArray(task.attachments)) task.attachments = [];
       // P17-H: a queue loads once per extension host, before any CLI is
       // spawned, so a persisted 'dispatched' task lost its process to a
@@ -55,8 +58,11 @@ class SchedulerQueue {
         changed = true;
       }
       for (const attachment of task.attachments) {
-        const absolute = path.resolve(this.workspaceDir, attachment.relativePath || '');
-        if (!absolute.startsWith(this.workspaceDir + path.sep) || !(await exists(absolute))) {
+        // Staged copies live in this queue's own folder (session/scheduler), outside the workspace: both are allowed.
+        // Checking the workspace alone marked every scheduled prompt with an image as missing on the next reload.
+        const absolute = path.resolve(this.workspaceDir, attachment.absolutePath || attachment.relativePath || '');
+        const inside = (root) => absolute.startsWith(root + path.sep);
+        if (!(inside(this.workspaceDir) || inside(this.stagingDir)) || !(await exists(absolute))) {
           task.status = 'attachment-missing';
           changed = true;
           break;
@@ -71,7 +77,7 @@ class SchedulerQueue {
     return this.withWrite(async () => {
       const active = this.tasks.filter((item) => ACTIVE.has(item.status));
       if (active.length >= MAX_QUEUE_SIZE) throw new Error(`Scheduler queue is full (maximum ${MAX_QUEUE_SIZE} active tasks).`);
-      if (!MODELS.has(task?.model)) throw new Error('Scheduled task must target claude, codex, or gemini.');
+      if (!MODELS.has(task?.model)) throw new Error(`Scheduled task must target ${providers.ids().join(', ')}.`);
       if (!String(task?.prompt || '').trim()) throw new Error('Scheduled task prompt is required.');
       if (!['quota-reset', 'fixed-time'].includes(task?.dispatchTrigger)) throw new Error('Scheduled task has an invalid dispatch trigger.');
       if (task.dispatchTrigger === 'fixed-time' && Number.isNaN(Date.parse(task.dispatchTime || ''))) throw new Error('Fixed-time tasks require an ISO dispatchTime.');
@@ -82,12 +88,17 @@ class SchedulerQueue {
       const scheduled = {
         id,
         model: task.model,
+        ...(task.projectId ? { projectId: String(task.projectId) } : {}),
+        ...(task.workspaceDir ? { workspaceDir: String(task.workspaceDir) } : {}),
         ...(task.modelId && task.modelId !== 'auto' ? { modelId: String(task.modelId) } : {}), // P17-X: exact tier for badges
         prompt: String(task.prompt),
         ...(task.chatId ? { chatId: String(task.chatId) } : {}), // resumes in that chat when it fires
         attachments,
         dispatchTrigger: task.dispatchTrigger,
         ...(task.dispatchTrigger === 'fixed-time' ? { dispatchTime: new Date(task.dispatchTime).toISOString() } : {}),
+        // "When the usage resets" is not "as soon as there is usage": the reset moment the model's quota reported when this
+        // was scheduled, so the task waits for it even while quota is left. Unknown reset: it goes by quota alone.
+        ...(task.dispatchTrigger === 'quota-reset' && Number.isFinite(Date.parse(task.notBefore || '')) ? { notBefore: new Date(task.notBefore).toISOString() } : {}),
         status: 'pending',
         retryCount: 0,
         createdAt: new Date().toISOString(),
@@ -202,7 +213,7 @@ class SchedulerQueue {
           destination = path.join(targetDir, name);
         }
         await fs.copyFile(sourcePath, destination);
-        result.push({ name, size: stat.size, relativePath: path.relative(this.workspaceDir, destination).split(path.sep).join('/'), mimeType: mimeFor(name) });
+        result.push({ name, size: stat.size, relativePath: path.relative(this.workspaceDir, destination).split(path.sep).join('/'), absolutePath: destination, mimeType: mimeFor(name) });
       }
       return result;
     } catch (error) {
@@ -221,6 +232,22 @@ class SchedulerQueue {
       return true;
     });
   }
+  async saveDraft(id, turn, files, editing) {
+    return this.update(id, async task => {
+      if (task.status !== 'pending') return;
+      // Stage into a fresh folder before replacing the original attachment list.
+      const signature = JSON.stringify(files);
+      const attachments = this.draftFiles.get(id) === signature ? task.attachments
+        : await this.stageAttachments(files, path.join(this.stagingDir, id, crypto.randomUUID(), 'attachments'));
+      this.draftFiles.set(id, signature);
+      task.prompt = String(turn?.text || '');
+      task.attachments = attachments;
+      if (turn?.modelId && turn.modelId !== 'auto') task.modelId = String(turn.modelId);
+      const model = require('./model-catalog').modelOption(task.modelId)?.agent;
+      if (MODELS.has(model)) task.model = model;
+      task.editing = editing === true;
+    });
+  }
 
   async withWrite(operation) {
     const next = this.writeTail.then(operation, operation);
@@ -237,11 +264,15 @@ class SchedulerQueue {
 }
 
 function copyTask(task) { return { ...task, attachments: task.attachments.map((attachment) => ({ ...attachment })) }; }
-function isDue(task, now) { return task.dispatchTrigger !== 'fixed-time' || Date.parse(task.dispatchTime) <= now; }
+function isDue(task, now) {
+  if (task.editing || !String(task.prompt || '').trim()) return false;
+  if (task.notBefore && Date.parse(task.notBefore) > now) return false;
+  return task.dispatchTrigger !== 'fixed-time' || Date.parse(task.dispatchTime) <= now;
+}
 async function exists(file) { try { await fs.access(file); return true; } catch { return false; } }
 function mimeFor(name) {
   const ext = path.extname(name).toLowerCase();
   return ({ '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.webp': 'image/webp', '.gif': 'image/gif', '.svg': 'image/svg+xml', '.pdf': 'application/pdf', '.json': 'application/json', '.md': 'text/markdown', '.txt': 'text/plain' })[ext] || 'application/octet-stream';
 }
 
-module.exports = { SchedulerQueue, MAX_QUEUE_SIZE, MAX_ATTACHMENT_BYTES, ACTIVE_STATUSES: [...ACTIVE] };
+module.exports = { SchedulerQueue, isDue, MAX_QUEUE_SIZE, MAX_ATTACHMENT_BYTES, ACTIVE_STATUSES: [...ACTIVE] };

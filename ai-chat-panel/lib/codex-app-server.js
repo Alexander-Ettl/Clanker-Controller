@@ -91,7 +91,7 @@ class CodexAppServer extends EventEmitter {
 
     try {
       await this.requestRaw('initialize', {
-        clientInfo: { name: 'astro-visual-editor-ai-chat-panel', title: 'Astro Visual Editor AI Chat', version: '1.0.0' },
+        clientInfo: { name: 'clanker-controller', title: 'Clanker Controller', version: '1.0.0' },
         capabilities: { experimentalApi: true },
       });
       this.notify('initialized', {});

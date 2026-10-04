@@ -3,7 +3,7 @@
 
   const vscode = acquireVsCodeApi();
 
-  const AGENT_IDS = ['claude', 'codex', 'gemini'];
+  const AGENT_IDS = window.PROVIDER_IDS || ['claude', 'codex', 'gemini']; // the extension's provider registry (agent-icons.js)
   const AGENT_NAMES = window.AGENT_NAMES || { claude: 'Claude Code', codex: 'Codex', gemini: 'Antigravity' };
   const terminalBtn = document.getElementById('terminalBtn');
   const newChatBtn = document.getElementById('newChatBtn');
@@ -46,7 +46,15 @@
   explorerBtn.addEventListener('click', () => vscode.postMessage({ type: 'openProjectExplorer' }));
   projectBar.append(projectBtn, explorerBtn);
   const topbar = document.querySelector('.topbar');
-  if (topbar) topbar.prepend(projectBar); else transcriptEl.before(projectBar);
+  const railScroll = document.querySelector('.rail-scroll');
+  if (railScroll) {
+    // The sidebar chat keeps its project at the top of the rail, labelled like the other sections.
+    projectBar.classList.add('launcher-section', 'is-rail');
+    const label = document.createElement('div');
+    label.className = 'launcher-label'; label.textContent = 'Project';
+    projectBar.prepend(label);
+    railScroll.prepend(projectBar);
+  } else if (topbar) topbar.prepend(projectBar); else transcriptEl.before(projectBar);
 
   const attachmentStrip = document.createElement('div');
   attachmentStrip.className = 'attachment-strip island-bud';
@@ -370,6 +378,18 @@
     if (on) vscode.postMessage({ type: 'verifyInfo' });
   }
   if (autoVerify) vscode.postMessage({ type: 'verifyInfo' });
+
+  // ---------- Smart routing ----------
+  // Who picks the model: you (Manual), you with a quiet note of what the router would have picked (Shadow), or a free AI
+  // (Auto, while the picker is on Auto). The host owns the mode (Visor's picker shares it); this only shows and sets it.
+  const ROUTING_MODES = [
+    ['manual', 'Manual', '<path d="M5.5 8V3.7a1 1 0 0 1 2 0V7M7.5 6.5V2.7a1 1 0 0 1 2 0V7M9.5 6.7V3.7a1 1 0 0 1 2 0V9a4.5 4.5 0 0 1-4.5 4.5H7A3.5 3.5 0 0 1 4 11.4L2.7 9.2a1 1 0 0 1 1.6-1.1l1.2 1.2"/>'],
+    ['shadow', 'Shadow', '<path d="M1.8 8S4 3.8 8 3.8 14.2 8 14.2 8 12 12.2 8 12.2 1.8 8 1.8 8z"/><circle cx="8" cy="8" r="1.8"/>'],
+    ['auto', 'Auto', '<path d="M8 2v3M8 11v3M2 8h3M11 8h3M4 4l1.6 1.6M10.4 10.4 12 12M12 4l-1.6 1.6M5.6 10.4 4 12"/>'],
+  ];
+  const ROUTE_SVG = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="4" cy="4" r="1.6"/><circle cx="12" cy="12" r="1.6"/><path d="M5.6 4h3.4a2.5 2.5 0 0 1 0 5H7a2.5 2.5 0 0 0 0 5h3.4"/></svg>';
+  let routingMode = 'manual';
+  let routingConnected = { cloudflare: false, groq: false };
 
   // ---------- P16-J: inline schedule toggle ----------
   // One input, not two: the composer's clock button arms "schedule instead
@@ -941,6 +961,7 @@
     else label.textContent = option.label;
     modelPickerBtn.title = `Model: ${option.label}`;
     for (const item of modelMenu.querySelectorAll('.model-option')) item.setAttribute('aria-selected', String(item.dataset.modelId === option.id));
+    renderRouting();
     if (scheduleChoice === false) scheduleChoice = null; // a "send anyway" was for the previous model
     refreshScheduleDefault(); // on if this model is out of usage; the placeholder names it
     if (slashMenu && !slashMenu.hidden) updateSlashMenu();
@@ -1017,9 +1038,46 @@
     verify.setAttribute('role', 'switch');
     verify.innerHTML = `<span class="model-verify-icon">${VERIFY_SVG}</span><span class="model-option-text"><span class="model-option-label">Auto-Verify</span><span class="model-option-hint">Check the work after every change, for every model</span></span><span class="model-verify-switch" aria-hidden="true"></span>`;
     verify.addEventListener('click', () => setAutoVerify(!autoVerify));
-    footer.appendChild(verify);
+    const routing = document.createElement('div');
+    routing.className = 'model-routing';
+    routing.innerHTML = `<div class="model-routing-head"><span class="model-verify-icon">${ROUTE_SVG}</span><span class="model-option-text"><span class="model-option-label">Smart routing</span><span class="model-option-hint"></span></span></div><div class="model-routing-modes pill-track" role="radiogroup" aria-label="Smart routing"></div><button type="button" class="model-routing-setup">Connect Cloudflare or Groq</button>`;
+    const modes = routing.querySelector('.model-routing-modes');
+    for (const [id, text, path] of ROUTING_MODES) {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.dataset.mode = id;
+      button.setAttribute('role', 'radio');
+      button.innerHTML = `<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${path}</svg><span>${text}</span>`;
+      button.addEventListener('click', () => { setRoutingMode(id); vscode.postMessage({ type: 'setRoutingMode', mode: id }); });
+      modes.appendChild(button);
+    }
+    routing.querySelector('.model-routing-setup').addEventListener('click', () => {
+      closeModelMenu();
+      openModal(settingsModal);
+      vscode.postMessage({ type: 'requestFleet' });
+      chatSettings.showTab('routing');
+    });
+    footer.append(routing, verify);
     modelMenu.appendChild(footer);
+    renderRouting();
     renderVerify();
+  }
+
+  function setRoutingMode(mode, connected = routingConnected) {
+    routingMode = mode;
+    routingConnected = connected;
+    renderRouting();
+  }
+  function renderRouting() {
+    const hint = routingMode === 'manual' ? 'You pick the model. Nothing is sent to a router.'
+      : routingMode === 'shadow' ? 'You pick. A redacted copy of your message goes to the router, which notes what it would have chosen.'
+      : activeModelId === 'auto' ? 'A free AI reads each message and picks the best model for it.'
+      : 'Choose Auto above and a free AI picks the model for each message.';
+    for (const row of modelMenu.querySelectorAll('.model-routing')) {
+      row.querySelector('.model-option-hint').textContent = hint;
+      for (const button of row.querySelectorAll('.model-routing-modes > button')) button.setAttribute('aria-checked', String(button.dataset.mode === routingMode));
+      row.querySelector('.model-routing-setup').hidden = routingMode === 'manual' || routingConnected.cloudflare || routingConnected.groq;
+    }
   }
 
   function placeModelMenu() {
@@ -1255,15 +1313,15 @@
     appendUserMessage(turn.text, undefined, turn.files);
     setBusy(true);
     dropUndo(); // the last turn's undo is only for the last turn
-    vscode.postMessage({ type: 'send', chatId: currentChatId, modelId: turn.modelId, text: turn.text, attachments: turn.attachments, submit: true, steer, verify: Boolean(turn.verify), pipeline: Boolean(turn.pipeline) });
+    vscode.postMessage({ type: 'send', chatId: currentChatId, modelId: turn.modelId, text: turn.text, attachments: turn.attachments, submit: true, steer, retry: Boolean(turn.retry), verify: Boolean(turn.verify), pipeline: Boolean(turn.pipeline) });
   }
 
-  function appendInterruptedPill() {
+  function appendInterruptedPill(reason) {
     foldSteps();
     const pill = document.createElement('div');
     pill.className = 'chat-notice is-interrupted';
     pill.innerHTML = STOP_SVG;
-    pill.append('Interrupted by user');
+    pill.append(reason === 'host_shutdown' ? 'Interrupted by IDE restart · Saved output restored' : 'Interrupted by user');
     turnHost().appendChild(pill);
     scrollTranscriptToEnd();
   }
@@ -1626,6 +1684,7 @@
   let lastSpeechAt = 0;
   let lastVolumeAt = 0;
   let voiceStopSent = false; // the auto-stop fires once per recording
+  let voiceHold = false; // started by the hold-to-talk hotkey: no auto-stop, the release ends it
   let lastVoiceDraft = null; // { original, raw }: what the transcript said, to learn from the user's fixes
   const REDUCED_MOTION = matchMedia('(prefers-reduced-motion: reduce)');
   function waveStep(now) {
@@ -2493,6 +2552,30 @@
     } catch { /* no audio device: silence is fine */ }
   }
 
+  // Dictation cues (aiChatPanel.voiceSounds), played once the microphone is really recording and when it stops: a rising
+  // pair of sine blips for "you are live", a single falling one for "got it".
+  function playMicCue(kind) {
+    try {
+      droidAudio = droidAudio || new AudioContext();
+      if (droidAudio.state === 'suspended') droidAudio.resume();
+      // [Hz, start s, length s]
+      const notes = kind === 'start' ? [[660, 0, 0.08], [990, 0.09, 0.11]] : [[760, 0, 0.12]];
+      const now = droidAudio.currentTime;
+      for (const [hz, start, length] of notes) {
+        const osc = droidAudio.createOscillator();
+        const gain = droidAudio.createGain();
+        osc.type = 'sine';
+        osc.frequency.setValueAtTime(hz, now + start);
+        gain.gain.setValueAtTime(0.0001, now + start);
+        gain.gain.exponentialRampToValueAtTime(0.12, now + start + 0.01);
+        gain.gain.exponentialRampToValueAtTime(0.0001, now + start + length);
+        osc.connect(gain).connect(droidAudio.destination);
+        osc.start(now + start);
+        osc.stop(now + start + length + 0.02);
+      }
+    } catch { /* no audio device: silence is fine */ }
+  }
+
   // Undo turn: the last reply gets one more action when its turn changed files (lib/turn-undo.js; /undo does the same).
   const UNDO_ICON = '<svg viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M3 8a5 5 0 1 0 1.6-3.7" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/><path d="M3 2.75v2.5h2.5" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>';
   function dropUndo() { transcriptEl.querySelectorAll('.undo-action').forEach((el) => el.remove()); }
@@ -2833,14 +2916,15 @@
     remote: lineIcon('<path d="M9 2 3.5 9H7.5L7 14l5.5-7h-4z"/>'),
   };
   // `host`: where the card goes (the agents viewer passes its own pane); default, the running turn.
-  function appendToolCard({ name, command, output, toolId, done, error, diff, host = null }) {
+  function appendToolCard({ name, command, output, toolId, done, error, diff, cancelled, host = null }) {
     if (!host) clearEmptyState();
     const kind = toolKind(name);
     // An edit's own "-"/"+" lines become its body and its +N -N count.
     const diffLines = kind === 'edit' && diff ? diff.split('\n') : null;
     if (diffLines) output = { ...output, added: diffLines.filter((l) => l[0] === '+').length, removed: diffLines.filter((l) => l[0] === '-').length };
     const details = document.createElement('details');
-    details.className = `tool-card tool-${kind}${done ? '' : ' is-running'}${error ? ' is-error' : ''}`;
+    details.className = `tool-card tool-${kind}${done ? '' : ' is-running'}${error ? ' is-error' : ''}${cancelled ? ' is-cancelled' : ''}`;
+    if (cancelled) details.title = 'Interrupted before a result was saved';
 
     const summary = document.createElement('summary');
     const icon = document.createElement('span');
@@ -3027,7 +3111,7 @@
     retryBtn.addEventListener('click', () => {
       if (busy || !lastTurn) return;
       card.remove();
-      dispatchTurn(lastTurn);
+      dispatchTurn({ ...lastTurn, retry: true });
     });
     actions.append(retryBtn);
     card.append(head, note, ...(detail ? [raw] : []), actions);
@@ -3367,7 +3451,7 @@
     let startedAt = null;
     let endedAt = null;
     const flush = () => { if (anchor) collapseTurn(anchor, startedAt && endedAt ? Date.parse(endedAt) - Date.parse(startedAt) : null); anchor = null; };
-    const storedTool = (message) => appendToolCard({ name: message.event?.name, command: message.event?.command || message.event?.file, output: { text: message.event?.output || '' }, done: true, error: message.error, diff: message.event?.diff });
+    const storedTool = (message) => appendToolCard({ name: message.event?.name, command: message.event?.command || message.event?.file, output: { text: message.event?.output || '' }, toolId: message.event?.toolId, done: message.done !== false || !running || message.interrupted, cancelled: message.interrupted, error: message.error, diff: message.event?.diff });
     const placed = new Set();
     let hiddenCompactTurn = false;
     restoringHistory = true;
@@ -3400,7 +3484,7 @@
         }
         appendAssistantDelta(text.slice(from), message.agent, message.modelLabel, message.roleName);
         if (index === live) return;
-        if (message.interrupted) appendInterruptedPill();
+        if (message.interrupted) appendInterruptedPill(message.interruptionReason);
         endAssistantTurn(message.at || null);
         endedAt = message.at;
       }
@@ -3749,12 +3833,14 @@
         break;
       }
       case 'micState': {
+        if (message.state === 'recording') voiceHold = Boolean(message.hold);
+        if (message.cue && (message.state === 'recording' || message.state === 'processing')) playMicCue(message.state === 'recording' ? 'start' : 'stop');
         micBtn.classList.toggle('recording', message.state === 'recording');
         micBtn.classList.toggle('is-busy', message.state === 'starting' || message.state === 'processing');
         micBtn.disabled = message.state === 'processing' || message.state === 'starting';
         micBtn.title =
           message.state === 'recording'
-            ? `Listening${message.device ? ` on ${message.device}` : ''}\u2026 stops by itself after a pause. Click to stop now, Esc to cancel`
+            ? `Listening${message.device ? ` on ${message.device}` : ''}\u2026 ${message.hold ? 'release the hotkey to transcribe' : 'stops by itself after a pause. Click to stop now'}, Esc to cancel`
             : message.state === 'processing'
               ? 'Transcribing and routing\u2026'
               : message.state === 'starting'
@@ -3776,7 +3862,7 @@
         // Hands-free end: once real speech has been heard, a pause of VOICE_SILENCE_MS stops and transcribes, like a click would.
         if (level > VOICE_SPEECH) { speechMs += lastVolumeAt ? Math.min(now - lastVolumeAt, 100) : 40; lastSpeechAt = now; }
         lastVolumeAt = now;
-        if (window.VOICE_SILENCE_MS && !voiceStopSent && speechMs >= VOICE_MIN_SPEECH_MS && now - lastSpeechAt > window.VOICE_SILENCE_MS) {
+        if (window.VOICE_SILENCE_MS && !voiceHold && !voiceStopSent && speechMs >= VOICE_MIN_SPEECH_MS && now - lastSpeechAt > window.VOICE_SILENCE_MS) {
           voiceStopSent = true;
           vscode.postMessage({ type: 'micToggle' });
         }
@@ -3974,12 +4060,22 @@
         break;
       case 'openHistory': if (toggleModal(historyModal)) vscode.postMessage({ type: 'requestHistory' }); break;
       case 'openSettings':
-        if (toggleModal(settingsModal)) {
+        if (message.updateAll) {
+          openModal(settingsModal);
+          chatSettings.showTab('general');
+          settingsModal.el.querySelector('.fs-modal-body').scrollTop = 0;
+          vscode.postMessage({ type: 'requestFleet' });
+          vscode.postMessage({ type: 'updateAllClis' });
+        } else if (toggleModal(settingsModal)) {
           vscode.postMessage({ type: 'requestFleet' });
           if (message.tab) chatSettings.showTab(message.tab);
         }
         break;
+      case 'routingMode': setRoutingMode(message.mode, message.connected); break;
       case 'fleet': chatSettings.fleet(message); break;
+      case 'voice': chatSettings.voice(message.voice); break;
+      case 'groqResult': chatSettings.groqResult(message); break;
+      case 'routingResult': chatSettings.routingResult(message); break;
       case 'cliStatus': chatSettings.cliStatus(message); break;
       case 'cliConnections':
         chatSettings.cliConnections(message);

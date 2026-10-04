@@ -1,32 +1,89 @@
 'use strict';
 
-// The composer's model picker. One entry per model + reasoning effort, grouped
-// by the agent (CLI) that runs it. `effort` maps to each CLI's own flag
-// (claude --effort, codex -c model_reasoning_effort); agy bakes it into the
-// model id (`agy models` lists gemini-3.8-flash-high/-medium/-low).
-// `brand` marks Opus for its own terminal and routing (P17-D); visually every
-// model wears its agent's mark, so all Claude models look alike.
-// Auto runs each agent's first entry here: Opus for UI, Sol for backend, Flash for docs.
-const MODEL_CATALOG = [
-  { id: 'claude-opus-5-5-medium', agent: 'claude', brand: 'opus', model: 'claude-opus-5-5', effort: 'medium', label: 'Claude Opus 5.5 Medium', shortLabel: 'Opus' },
-  { id: 'claude-sonnet-5-5-high', agent: 'claude', model: 'claude-sonnet-5-5', effort: 'high', label: 'Claude Sonnet 5.5 High', shortLabel: 'Sonnet' },
-  { id: 'gpt-6.1-sol-high', agent: 'codex', model: 'gpt-6.1-sol', effort: 'high', label: 'GPT 6.1 Sol High', shortLabel: 'Sol' },
-  { id: 'gpt-6-astra-high', agent: 'codex', model: 'gpt-6-astra', effort: 'high', label: 'GPT 6 Astra High', shortLabel: 'Astra' },
-  { id: 'gpt-6-luna-high', agent: 'codex', model: 'gpt-6-luna', effort: 'high', label: 'GPT 6 Luna High', shortLabel: 'Luna' },
-  { id: 'gemini-3.8-flash-high', agent: 'gemini', model: 'gemini-3.8-flash-high', effort: null, label: 'Gemini 3.8 Flash High', shortLabel: 'Flash' },
-];
+// Filled from CLI discovery and its persisted cache. Keep these arrays stable:
+// the picker, scheduler and running chats all hold references to them.
+const AVAILABLE_MODELS = [];
+const MODEL_CATALOG = [];
+let favorites = [];
+const providers = require('./providers'); // which agents exist; read at use, so one registered later counts
+let enabledAgents = new Set(providers.ids());
+const EFFORTS = ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'];
+const effortRank = (entry) => EFFORTS.indexOf(entry.effort || /-(none|minimal|low|medium|high|xhigh|max|ultra)$/.exec(entry.model)?.[1]);
+
+function displayName(name) {
+  return String(name || '').replace(/[-_]+/g, ' ').replace(/\((low|medium|high|xhigh|max|ultra)\)/gi, '$1')
+    .replace(/\s+/g, ' ').trim().split(' ').map((word) => /^(gpt|ai)$/i.test(word) ? word.toUpperCase() : word.charAt(0).toUpperCase() + word.slice(1)).join(' ');
+}
+
+function normalizeModels(entries) {
+  const unique = new Map();
+  const owners = providers.all();
+  const routes = new Map();
+  for (const entry of entries || []) {
+    if (!entry?.id || !entry.model || !providers.has(entry.agent)) continue;
+    if (!routes.has(entry.id)) routes.set(entry.id, new Set());
+    routes.get(entry.id).add(entry.agent);
+  }
+  for (const entry of entries || []) {
+    if (!entry?.id || !entry.model || !providers.has(entry.agent)) continue;
+    // The CLI is a route, not the model's maker. Cross-provider models may
+    // share their upstream id with a native route; keep both addressable.
+    const owner = owners.find((provider) => [provider.id, provider.cli].some((prefix) => entry.model === prefix || entry.model.startsWith(`${prefix}-`)));
+    const qualify = owner ? owner.id !== entry.agent : routes.get(entry.id).size > 1;
+    const id = qualify && !entry.id.startsWith(`${entry.agent}:`) ? `${entry.agent}:${entry.id}` : entry.id;
+    const label = displayName(entry.label || entry.model);
+    const base = label.replace(/\s+(none|minimal|low|medium|high|xhigh|max|ultra)$/i, '');
+    const family = base.replace(/^(Claude\s+|(?:GPT|Gemini)\s+[\d.]+\s+)/i, '').split(' ')[0];
+    unique.set(id, { ...entry, id, company: owner?.company || entry.company || providers.get(entry.agent).company, label, shortLabel: /^(GPT|Gemini)$/.test(family) ? base : family, ...(/^opus$/i.test(family) ? { brand: 'opus' } : {}) });
+  }
+  const order = providers.ids();
+  return [...unique.values()].sort((a, b) => order.indexOf(a.agent) - order.indexOf(b.agent)
+    || displayName(a.model.replace(/-(low|medium|high|xhigh|max|ultra)$/, '')).localeCompare(displayName(b.model.replace(/-(low|medium|high|xhigh|max|ultra)$/, '')), 'en', { numeric: true })
+    || effortRank(a) - effortRank(b));
+}
+
+function rebuildPicker() {
+  const available = new Map(AVAILABLE_MODELS.map((entry) => [entry.id, entry]));
+  const entries = favorites.filter((entry) => enabledAgents.has(entry.agent)).map((entry) => {
+    const found = available.get(entry.id);
+    return found?.agent === entry.agent ? found : AVAILABLE_MODELS.find((model) => model.agent === entry.agent && model.model === entry.model && model.effort === entry.effort)
+      || (!AVAILABLE_MODELS.some((model) => model.agent === entry.agent) ? entry : null);
+  }).filter(Boolean);
+  MODEL_CATALOG.splice(0, MODEL_CATALOG.length, ...normalizeModels(entries));
+}
+
+function setModelCatalog(entries) {
+  AVAILABLE_MODELS.splice(0, AVAILABLE_MODELS.length, ...normalizeModels(entries));
+  rebuildPicker();
+}
+
+function setFavoriteModels(entries) {
+  favorites = normalizeModels(entries);
+  rebuildPicker();
+}
+
+function setEnabledAgents(agents) {
+  enabledAgents = new Set(agents.filter((agent) => providers.has(agent)));
+  rebuildPicker();
+}
 
 function modelOption(id) {
-  return MODEL_CATALOG.find((option) => option.id === id) || (id === 'gpt-6-sol-high' ? MODEL_CATALOG.find((option) => option.id === 'gpt-6.1-sol-high') : null) || null;
+  return AVAILABLE_MODELS.find((option) => option.id === id) || MODEL_CATALOG.find((option) => option.id === id) || null;
 }
 
-// P17-A: a family word anywhere in a name ("opus", "Claude Opus 5.5", a
-// catalog id) picks that catalog entry, so callers that only know agents
-// (injectPrompt, Telegram /prompt) can target one model directly.
-const FAMILY = /\b(opus|sonnet|sol|astra|luna|flash)\b/i;
+function defaultModel(agent) {
+  if (!enabledAgents.has(agent)) return null;
+  return MODEL_CATALOG.find((option) => option.agent === agent && option.isDefault)
+    || MODEL_CATALOG.find((option) => option.agent === agent)
+    || AVAILABLE_MODELS.find((option) => option.agent === agent && option.isDefault)
+    || AVAILABLE_MODELS.find((option) => option.agent === agent) || null;
+}
+
 function resolveModel(name) {
-  const family = FAMILY.exec(String(name || '').replace(/[-_.]/g, ' '))?.[1].toLowerCase();
-  return modelOption(name) || (family && MODEL_CATALOG.find((option) => option.label.toLowerCase().includes(family))) || null;
+  const query = displayName(name).toLowerCase();
+  return modelOption(name) || [...MODEL_CATALOG, ...AVAILABLE_MODELS].find((option) => option.label.toLowerCase() === query
+    || option.label.replace(/\s+(none|minimal|low|medium|high|xhigh|max|ultra)$/i, '').toLowerCase() === query
+    || displayName(option.model).toLowerCase() === query || option.shortLabel.toLowerCase() === query) || null;
 }
 
-module.exports = { MODEL_CATALOG, modelOption, resolveModel };
+module.exports = { MODEL_CATALOG, AVAILABLE_MODELS, displayName, normalizeModels, setModelCatalog, setFavoriteModels, setEnabledAgents, defaultModel, modelOption, resolveModel };

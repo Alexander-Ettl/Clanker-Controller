@@ -10,6 +10,7 @@
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
+const providers = require('./providers');
 
 const EXTENSION_ROOTS = ['.antigravity-ide', '.antigravity', '.vscode'].map((dir) => path.join(os.homedir(), dir, 'extensions'));
 
@@ -34,19 +35,13 @@ function inExtensions(prefix, rel) {
   return found.sort((a, b) => b.name.localeCompare(a.name, undefined, { numeric: true })).map((entry) => entry.file);
 }
 
+/** Where a provider's binary may be, best first: the provider's own `locate()` (lib/providers) given the helpers it needs. */
 function candidates(agent) {
+  const provider = providers.get(agent);
+  if (!provider) return [];
   const local = process.env.LOCALAPPDATA || path.join(os.homedir(), 'AppData', 'Local');
   const npmGlobal = path.join(process.env.APPDATA || path.join(os.homedir(), 'AppData', 'Roaming'), 'npm');
-  if (agent === 'claude') {
-    return [...onPath('claude'), path.join(npmGlobal, 'claude.cmd'), path.join(local, 'Programs', 'Claude', 'claude.exe'), ...inExtensions('anthropic.claude-code-', path.join('resources', 'native-binary', 'claude.exe'))];
-  }
-  if (agent === 'codex') {
-    return [...onPath('codex'), ...inExtensions('openai.chatgpt-', path.join('bin', 'windows-x86_64', 'codex.exe')), ...inExtensions('openai.chatgpt-', path.join('bin', 'windows', 'codex.exe')), path.join(npmGlobal, 'codex.cmd')];
-  }
-  if (agent === 'gemini') {
-    return [...onPath('agy'), path.join(local, 'agy', 'bin', 'agy.exe'), path.join(os.homedir(), '.gemini', 'antigravity-ide', 'bin', 'agy.exe')];
-  }
-  return [];
+  return provider.locate({ onPath, inExtensions, join: path.join, home: os.homedir(), local, npmGlobal });
 }
 
 const cache = new Map();
@@ -80,7 +75,7 @@ function resolveShim(cmdFile) {
 /** PowerShell terminal line for a resolved binary (the call operator handles spaces). */
 function terminalCommand(agent, args = '') {
   const found = locate(agent).path;
-  const bin = found ? `& "${found}"` : { claude: 'claude', codex: 'codex', gemini: 'agy' }[agent];
+  const bin = found ? `& "${found}"` : providers.get(agent)?.cli || agent;
   return args ? `${bin} ${args}` : bin;
 }
 

@@ -1,0 +1,15 @@
+{
+  "name": "clanker-controller",
+  "private": true,
+  "bin": { "router": "scripts/router.cjs" },
+  "type": "module",
+  "description": "Clanker Controller, native voice routing, and CLI usage status.",
+  "scripts": {
+    "check": "node ai-chat-panel/test/check.js",
+    "test": "node --test ai-chat-panel/test/*.test.js antigravity-usage-statusbar/test/usage.test.js",
+    "render": "node ai-chat-panel/test/render.mjs",
+    "verify:models": "node scripts/verify-model-provider-identity.mjs",
+    "verify:bridge": "node scripts/verify-visor-bridge.mjs"
+  },
+  "devDependencies": { "playwright": "^1.55.0" }
+}

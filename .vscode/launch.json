@@ -1,0 +1,10 @@
+{
+  "version": "0.2.0",
+  "configurations": [{
+    "name": "Run Clanker Controller",
+    "type": "extensionHost",
+    "request": "launch",
+    "args": ["--extensionDevelopmentPath=${workspaceFolder}/ai-chat-panel"],
+    "outFiles": ["${workspaceFolder}/ai-chat-panel/**/*.js"]
+  }]
+}

@@ -95,7 +95,8 @@ async function main() {
     let batchFile = typeof args.batch === 'string' ? path.resolve(process.cwd(), args.batch) : null;
     if (!batchFile) {
       const candidates = [
-        path.resolve(HERE, '../../../site/.astro/session/batch-tasks.json'),
+        process.env.SITE_DIR && path.resolve(process.env.SITE_DIR, '.astro/session/batch-tasks.json'),
+        path.resolve(HERE, '../../Portfolio/2026/site/.astro/session/batch-tasks.json'),
         path.resolve(process.cwd(), 'site/.astro/session/batch-tasks.json'),
         path.resolve(process.cwd(), '.astro/session/batch-tasks.json'),
       ];

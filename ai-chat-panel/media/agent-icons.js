@@ -19,5 +19,16 @@
   };
   window.AGENT_ICONS = {};
   for (const [agent, svg] of Object.entries(LOGOS)) Object.defineProperty(window.AGENT_ICONS, agent, { enumerable: true, get: () => unique(svg) });
-  window.AGENT_NAMES = { claude: 'Claude Code', codex: 'Codex', gemini: 'Antigravity' };
+  // The providers come from the extension (lib/providers, injected as window.PROVIDERS): ids, names, and for one with no
+  // logo above its own SVG or, failing that, its initial in a ring. Everything else reads PROVIDER_IDS and AGENT_NAMES.
+  const list = window.PROVIDERS || [{ id: 'claude', name: 'Claude Code' }, { id: 'codex', name: 'Codex' }, { id: 'gemini', name: 'Antigravity' }];
+  const escapeXml = (text) => String(text).replace(/[&<>"']/g, (ch) => `&#${ch.charCodeAt(0)};`);
+  const monogram = (provider) => `<svg viewBox="0 0 24 24" class="agent-logo" aria-hidden="true" focusable="false"><circle cx="12" cy="12" r="9.5" fill="none" stroke="currentColor" stroke-width="1.8"/><text x="12" y="16.2" text-anchor="middle" font-size="11" font-weight="700" fill="currentColor" font-family="sans-serif">${escapeXml(provider.name.charAt(0).toUpperCase())}</text></svg>`;
+  window.PROVIDER_IDS = list.map((provider) => provider.id);
+  window.AGENT_NAMES = Object.fromEntries(list.map((provider) => [provider.id, provider.name]));
+  for (const provider of list) {
+    if (provider.id in LOGOS) continue;
+    const svg = provider.icon || monogram(provider);
+    Object.defineProperty(window.AGENT_ICONS, provider.id, { enumerable: true, get: () => unique(svg) });
+  }
 })();

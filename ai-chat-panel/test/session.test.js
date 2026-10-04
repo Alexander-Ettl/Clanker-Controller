@@ -19,6 +19,7 @@ const { TelegramBridge } = require('../lib/telegram-bridge.js');
 const { CodexCommandCatalog, methodNamesFromSchema, parseInvocation } = require('../lib/codex-commands.js');
 const { CodexAppServer, commandsForMethods } = require('../lib/codex-app-server.js');
 const { SlashCommandCatalog } = require('../lib/slash-commands.js');
+require('./model-fixture').seedModels();
 
 let failures = 0;
 
@@ -305,7 +306,7 @@ test('package.json declares the webview view, the injectPrompt command, and the 
   assert.ok(commandIds.includes('aiChatPanel.focusClaude'));
   assert.ok(commandIds.includes('aiChatPanel.focusCodex'));
   assert.ok(commandIds.includes('aiChatPanel.focusGemini'));
-  assert.equal(pkg.contributes.configuration.properties['aiChatPanel.models'].default.codex, 'gpt-6.1-sol');
+  assert.deepEqual(pkg.contributes.configuration.properties['aiChatPanel.models'].default, {});
 });
 
 test('P16-I: binary-locator finds the newest bundled CLI across IDE extension dirs and reports every path checked', () => {
@@ -505,16 +506,17 @@ test('Manage Chats: a chat is active while it runs or within five minutes of its
   assert.equal(never.active, false);
 });
 
-test('P13-H: auto-router applies role boundaries, quota fallback, and contract lock', () => {
+test('Auto selects a live favorite, avoids low quota, and leaves task scope unrestricted', () => {
   const { route } = require('../lib/auto-router.js');
   const ui = route('Improve the CSS layout animation', { claude: { remaining: 80 } }, 'auto');
-  assert.equal(ui.agent, 'claude');
-  assert.match(ui.prompt, /presentation\/UI/i);
+  assert.ok(require('../lib/model-catalog').MODEL_CATALOG.some(model => model.id === ui.modelId));
+  assert.equal(ui.prompt, 'Improve the CSS layout animation');
+  assert.equal(ui.directive, '');
   const backend = route('Fix the AST parser schema', { codex: { remaining: 10 } }, 'auto');
-  assert.equal(backend.agent, 'gemini');
+  assert.notEqual(backend.agent, 'codex');
   const split = route('Connect the UI CSS with the backend IPC parser', {}, 'auto');
-  assert.equal(split.split, true);
-  assert.match(split.contract, /CONTRACT LOCK/);
+  assert.equal(split.split, false);
+  assert.equal(split.contract, '');
   for (const agent of ['claude', 'codex', 'gemini']) {
     const manual = route('Change the UI and backend together', {}, agent);
     assert.equal(manual.agent, agent);
@@ -907,7 +909,7 @@ test('P17-D: a claude CLI that rejects Opus 5.5 reruns the turn once on Sonnet, 
   e.consumeLine("error: unknown option '--effort'", 'claude');
   assert.deepEqual(starts, [{ agent: 'claude', prompt: 'refactor', attachments: [], model: 'claude-sonnet-5-5', effort: 'high' }]);
   assert.equal(events[0].type, 'notice');
-  assert.match(events[0].text, /Opus 5\.5/);
+  assert.match(events[0].text, /selected Opus model/);
 
   e.consumeLine(JSON.stringify({ type: 'assistant', message: { content: [{ type: 'text', text: 'Working on it.' }] } }), 'claude');
   e.consumeLine('the model was not found in that file', 'claude');
@@ -1409,5 +1411,3 @@ test('compaction: StreamEngine flags compact turn and notifyReply suppresses chi
     else process.env.NO_CHIME = origNoChime;
   }
 });
-
-

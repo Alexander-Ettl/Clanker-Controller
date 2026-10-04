@@ -1,0 +1,23 @@
+node_modules/
+.migration-backup/
+out/
+
+# secrets and local session state, never commit
+.env
+.env.*
+!.env.example
+*.session-token.json
+voice-router/.recordings/
+
+# packaged / generated
+*.vsix
+*.log
+
+# local tool state
+.claude/settings.local.json
+.wrangler/
+
+# OS junk
+.DS_Store
+Thumbs.db
+desktop.ini

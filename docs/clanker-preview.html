@@ -1,0 +1,1994 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Clanker Controller — New Chat Interaction & Mascot Studio</title>
+  <style>
+    :root {
+      --bg: #090a0f;
+      --card-bg: rgba(18, 20, 28, 0.75);
+      --card-border: rgba(255, 255, 255, 0.08);
+      --card-highlight: rgba(255, 255, 255, 0.04);
+      --text-main: #f5f5f7;
+      --text-muted: #8e92a4;
+      --text-sub: #5c6072;
+      --accent: #ff4e00; /* Teenage Engineering Signal Orange */
+      --accent-glow: rgba(255, 78, 0, 0.25);
+      --clanker-body: #ffffff;
+      --clanker-screen: #141416;
+      --clanker-face: #ffffff;
+      --scanline-color: #60a5fa;
+      --font-sans: -apple-system, BlinkMacSystemFont, "SF Pro Display", "Inter", "Segoe UI", Roboto, sans-serif;
+      --font-mono: "SF Mono", "Fira Code", "Consolas", monospace;
+      --spring-smooth: cubic-bezier(0.16, 1, 0.3, 1);
+      --spring-bouncy: cubic-bezier(0.34, 1.56, 0.64, 1);
+    }
+
+    [data-theme="light"] {
+      --bg: #eceef2;
+      --card-bg: rgba(255, 255, 255, 0.85);
+      --card-border: rgba(0, 0, 0, 0.08);
+      --card-highlight: rgba(255, 255, 255, 0.9);
+      --text-main: #14161d;
+      --text-muted: #626677;
+      --text-sub: #9ea3b5;
+      --clanker-body: #1e2029;
+      --clanker-screen: #f2f3f7;
+      --clanker-face: #1e2029;
+      --scanline-color: #2563eb;
+    }
+
+    [data-theme="teenage-eng"] {
+      --bg: #d9d5cb;
+      --card-bg: rgba(230, 226, 217, 0.88);
+      --card-border: rgba(0, 0, 0, 0.15);
+      --card-highlight: rgba(255, 255, 255, 0.6);
+      --text-main: #1a1a18;
+      --text-muted: #5e5d57;
+      --text-sub: #87857e;
+      --accent: #ff4e00;
+      --clanker-body: #ffffff;
+      --clanker-screen: #191919;
+      --clanker-face: #ff4e00;
+      --scanline-color: #ff4e00;
+    }
+
+    [data-theme="cyberpunk"] {
+      --bg: #050b08;
+      --card-bg: rgba(8, 22, 14, 0.8);
+      --card-border: rgba(0, 255, 128, 0.2);
+      --card-highlight: rgba(0, 255, 128, 0.05);
+      --text-main: #50ffaa;
+      --text-muted: #2a945e;
+      --text-sub: #175435;
+      --accent: #00ff88;
+      --clanker-body: #102619;
+      --clanker-screen: #030805;
+      --clanker-face: #00ff88;
+      --scanline-color: #00ff88;
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      background: var(--bg);
+      color: var(--text-main);
+      font-family: var(--font-sans);
+      min-height: 100vh;
+      overflow-x: hidden;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: 24px 16px 60px;
+      transition: background 0.4s ease, color 0.4s ease;
+    }
+
+    .bg-glow {
+      position: fixed;
+      top: -150px;
+      left: 50%;
+      transform: translateX(-50%);
+      width: 900px;
+      height: 450px;
+      background: radial-gradient(ellipse at center, var(--accent-glow) 0%, transparent 70%);
+      opacity: 0.55;
+      pointer-events: none;
+      z-index: 0;
+    }
+
+    header {
+      position: relative;
+      z-index: 1;
+      text-align: center;
+      max-width: 960px;
+      margin-bottom: 24px;
+    }
+
+    .badge-top {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      font-family: var(--font-mono);
+      font-size: 11px;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      padding: 4px 12px;
+      border-radius: 999px;
+      background: rgba(255, 78, 0, 0.1);
+      border: 1px solid rgba(255, 78, 0, 0.25);
+      color: var(--accent);
+      margin-bottom: 12px;
+    }
+
+    .badge-top::before {
+      content: '';
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: var(--accent);
+      box-shadow: 0 0 8px var(--accent);
+    }
+
+    h1 {
+      font-size: 30px;
+      font-weight: 700;
+      letter-spacing: -0.02em;
+      margin-bottom: 8px;
+    }
+
+    p.subtitle {
+      font-size: 14px;
+      color: var(--text-muted);
+      line-height: 1.5;
+    }
+
+    /* Mode Navigation Tabs */
+    .view-mode-tabs {
+      display: flex;
+      gap: 8px;
+      margin-top: 18px;
+      justify-content: center;
+    }
+
+    .tab-btn {
+      background: rgba(255, 255, 255, 0.05);
+      border: 1px solid var(--card-border);
+      color: var(--text-muted);
+      padding: 8px 18px;
+      border-radius: 12px;
+      font-size: 13px;
+      font-weight: 600;
+      cursor: pointer;
+      backdrop-filter: blur(16px);
+      transition: all 0.2s var(--spring-smooth);
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .tab-btn:hover {
+      color: var(--text-main);
+      background: rgba(255, 255, 255, 0.09);
+    }
+
+    .tab-btn.active {
+      background: var(--text-main);
+      color: var(--bg);
+      border-color: var(--text-main);
+      box-shadow: 0 4px 16px rgba(0, 0, 0, 0.2);
+    }
+
+    /* Top Action Bar */
+    .top-actions {
+      display: flex;
+      gap: 10px;
+      margin-top: 14px;
+      justify-content: center;
+      flex-wrap: wrap;
+    }
+
+    .btn-pill {
+      background: var(--card-bg);
+      border: 1px solid var(--card-border);
+      color: var(--text-muted);
+      padding: 5px 12px;
+      border-radius: 999px;
+      font-size: 12px;
+      font-weight: 500;
+      cursor: pointer;
+      backdrop-filter: blur(16px);
+      transition: all 0.2s var(--spring-smooth);
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .btn-pill:hover {
+      color: var(--text-main);
+      border-color: rgba(255, 255, 255, 0.2);
+    }
+
+    .btn-pill.active {
+      background: var(--text-main);
+      color: var(--bg);
+      border-color: var(--text-main);
+      font-weight: 600;
+    }
+
+    /* VIEW 1: NEW CHAT INTERACTION SIMULATION LAYOUT */
+    .simulation-container {
+      position: relative;
+      z-index: 1;
+      width: 100%;
+      max-width: 1100px;
+      display: grid;
+      grid-template-columns: 460px 1fr;
+      gap: 32px;
+      align-items: start;
+      margin-top: 8px;
+    }
+
+    @media (max-width: 960px) {
+      .simulation-container {
+        grid-template-columns: 1fr;
+        justify-items: center;
+      }
+    }
+
+    /* THE REALISTIC AI CHAT PANEL FRAME */
+    .chat-sidebar-frame {
+      width: 100%;
+      max-width: 460px;
+      height: 720px;
+      background: #141417;
+      border: 1px solid rgba(255, 255, 255, 0.1);
+      border-radius: 24px;
+      display: flex;
+      flex-direction: column;
+      position: relative;
+      overflow: hidden;
+      box-shadow: 0 30px 80px rgba(0, 0, 0, 0.7), inset 0 1px 1px rgba(255, 255, 255, 0.08);
+      user-select: none;
+    }
+
+    .chat-frame-header {
+      padding: 16px 20px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+      background: rgba(20, 20, 23, 0.85);
+      backdrop-filter: blur(12px);
+      z-index: 10;
+    }
+
+    .chat-header-title {
+      font-size: 13px;
+      font-weight: 600;
+      color: #e4e4e7;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .mini-clanker-status {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 3px 8px;
+      border-radius: 999px;
+      background: rgba(255, 255, 255, 0.07);
+      border: 1px solid rgba(255, 255, 255, 0.12);
+      font-size: 11px;
+      color: #e4e4e7;
+      transition: all 0.4s var(--spring-smooth);
+    }
+
+    .status-dot-pulse {
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: #30d158;
+      box-shadow: 0 0 6px #30d158;
+    }
+
+    /* Empty state center viewport */
+    .chat-empty-state {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      padding: 24px;
+      text-align: center;
+      position: relative;
+      transition: opacity 0.35s ease, transform 0.4s var(--spring-smooth);
+    }
+
+    /* Ambient halo glow behind Clanker */
+    .clanker-halo-glow {
+      position: absolute;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -65%);
+      width: 280px;
+      height: 220px;
+      background: radial-gradient(circle at center, rgba(235, 75, 50, 0.22) 0%, transparent 70%);
+      pointer-events: none;
+      z-index: 1;
+      filter: blur(20px);
+      transition: opacity 0.3s;
+    }
+
+    /* Mascot in empty state: STABLE CHASSIS, LARGER ERGONOMIC SIZE */
+    .clanker-empty-mascot {
+      width: 140px;
+      height: 111px;
+      position: relative;
+      z-index: 2;
+      margin-bottom: 22px;
+      cursor: pointer;
+      transform-origin: center center;
+      transition: transform 0.45s var(--spring-smooth), opacity 0.4s ease, filter 0.4s ease;
+    }
+
+    svg.clanker-sim-rig {
+      width: 100%;
+      height: 100%;
+      overflow: visible;
+      filter: drop-shadow(0 10px 24px rgba(0,0,0,0.55));
+    }
+
+    /* TRANSFORM CONTRACT (SPEC S3) */
+    #sim-chassis-rig {
+      transform-box: view-box;
+      transform-origin: 187.4px 148.4px;
+      /* STABLE: No default hover bobbing! */
+      transform: none;
+      transition: transform 0.35s var(--spring-smooth);
+    }
+
+    #sim-face-rig {
+      transform-box: view-box;
+      transform-origin: 187.4px 115.0px;
+      transition: transform 0.1s ease-out;
+    }
+
+    #sim-brow-left-rig {
+      transform-box: view-box;
+      transform-origin: 121.8px 87.0px;
+      transition: transform 0.25s var(--spring-smooth);
+    }
+
+    #sim-brow-right-rig {
+      transform-box: view-box;
+      transform-origin: 215.11px 60.18px;
+      transition: transform 0.25s var(--spring-smooth);
+    }
+
+    #sim-eye-left-rig {
+      transform-box: view-box;
+      transform-origin: 132.0px 115.8px;
+      transition: transform 0.18s var(--spring-smooth);
+    }
+
+    #sim-eye-right-rig {
+      transform-box: view-box;
+      transform-origin: 236.9px 107.3px;
+      transition: transform 0.18s var(--spring-smooth);
+    }
+
+    /* -------------------------------------------------------------
+       THINKING STATE ANIMATIONS (SPEC S3 & ORIGINAL BENCH)
+       Triggered when paused typing or idle contemplation
+       ------------------------------------------------------------- */
+    #sim-scanline {
+      transform-box: view-box;
+      opacity: 0;
+      pointer-events: none;
+      stroke: var(--scanline-color);
+      stroke-width: 3.5;
+      transition: opacity 0.3s ease;
+    }
+
+    .clanker-empty-mascot.mascot-thinking #sim-chassis-rig {
+      animation: thinking-chassis 2.2s ease-in-out infinite;
+    }
+
+    .clanker-empty-mascot.mascot-thinking #sim-face-rig {
+      animation: thinking-scan 2.4s ease-in-out infinite;
+    }
+
+    .clanker-empty-mascot.mascot-thinking #sim-brow-right-rig {
+      transform: rotate(8deg) translateY(-5px) !important;
+    }
+
+    .clanker-empty-mascot.mascot-thinking #sim-brow-left-rig {
+      transform: rotate(-3deg) translateY(2px) !important;
+    }
+
+    .clanker-empty-mascot.mascot-thinking #sim-scanline {
+      opacity: 0.95;
+      stroke: var(--scanline-color);
+      filter: drop-shadow(0 0 8px var(--scanline-color)) drop-shadow(0 0 2px #ffffff);
+      animation: scanline-pass 1.8s linear infinite;
+    }
+
+    .clanker-empty-mascot.mascot-thinking #sim-visor-bg {
+      filter: drop-shadow(0 0 10px var(--scanline-color));
+      transition: all 0.35s ease;
+    }
+
+    [data-theme="dark"] .clanker-empty-mascot.mascot-thinking #sim-visor-bg { fill: #0c121e; }
+    [data-theme="teenage-eng"] .clanker-empty-mascot.mascot-thinking #sim-visor-bg { fill: #1c1410; }
+    [data-theme="cyberpunk"] .clanker-empty-mascot.mascot-thinking #sim-visor-bg { fill: #031409; }
+    [data-theme="light"] .clanker-empty-mascot.mascot-thinking #sim-visor-bg { fill: #e6ebf5; }
+
+    .clanker-halo-glow.mascot-thinking-halo {
+      background: radial-gradient(circle at center, var(--scanline-color) 0%, transparent 70%) !important;
+      opacity: 0.85 !important;
+      filter: blur(20px);
+      transition: all 0.4s ease;
+    }
+
+    @keyframes thinking-chassis {
+      0%, 100% { transform: translateY(0px) scale(1); }
+      50% { transform: translateY(-1.5px) scale(1.006); }
+    }
+
+    @keyframes thinking-scan {
+      0%, 100% { transform: translateX(-9.5px) translateY(1px); }
+      45%, 55% { transform: translateX(9.5px) translateY(1px); }
+    }
+
+    @keyframes scanline-pass {
+      0% { transform: translateY(45px); opacity: 0; }
+      12% { opacity: 0.95; }
+      88% { opacity: 0.95; }
+      100% { transform: translateY(182px); opacity: 0; }
+    }
+
+    /* -------------------------------------------------------------
+       LISTENING STATE ANIMATIONS (VOICE DICTATION)
+       Attentive puppy head-tilt, widened eyes, listening audio breath
+       ------------------------------------------------------------- */
+    .clanker-empty-mascot.mascot-listening #sim-chassis-rig {
+      animation: listening-chassis-tilt 2.2s ease-in-out infinite;
+    }
+
+    .clanker-empty-mascot.mascot-listening #sim-face-rig {
+      transform: translateY(-4px) !important;
+    }
+
+    .clanker-empty-mascot.mascot-listening #sim-brow-right-rig {
+      transform: translateY(-9px) rotate(12deg) !important;
+    }
+
+    .clanker-empty-mascot.mascot-listening #sim-brow-left-rig {
+      transform: translateY(-4px) !important;
+    }
+
+    .clanker-empty-mascot.mascot-listening #sim-eye-left-rig,
+    .clanker-empty-mascot.mascot-listening #sim-eye-right-rig {
+      animation: listening-eye-pulse 1.4s ease-in-out infinite alternate;
+    }
+
+    .clanker-halo-glow.mascot-listening-halo {
+      background: radial-gradient(circle at center, rgba(48, 209, 88, 0.28) 0%, transparent 70%) !important;
+      opacity: 0.9 !important;
+      filter: blur(22px);
+      transition: all 0.4s ease;
+    }
+
+    @keyframes listening-chassis-tilt {
+      0%, 100% { transform: rotate(7deg) translateY(-2px) scale(1); }
+      50% { transform: rotate(8.5deg) translateY(-4px) scale(1.02); }
+    }
+
+    @keyframes listening-eye-pulse {
+      0% { transform: scale(1.14); }
+      100% { transform: scale(1.22); }
+    }
+
+    .composer-icon-btn.is-listening {
+      color: #ff3b30 !important;
+      background: rgba(255, 59, 48, 0.15) !important;
+      box-shadow: 0 0 12px rgba(255, 59, 48, 0.4);
+      animation: mic-pulse 1.4s ease-in-out infinite;
+    }
+
+    @keyframes mic-pulse {
+      0%, 100% { transform: scale(1); }
+      50% { transform: scale(1.14); }
+    }
+
+    /* SEND & DISAPPEAR ANIMATION SEQUENCE */
+    .mascot-launching #sim-chassis-rig {
+      animation: anim-send-jump 0.35s var(--spring-bouncy) forwards;
+    }
+
+    @keyframes anim-send-jump {
+      0% { transform: translateY(0) scale(1); }
+      35% { transform: translateY(6px) scale(0.95, 0.9); }
+      100% { transform: translateY(-20px) scale(1.12); }
+    }
+
+    .mascot-disappearing {
+      transform: translateY(-90px) scale(0.3) !important;
+      opacity: 0 !important;
+      filter: blur(4px) !important;
+      pointer-events: none;
+    }
+
+    .empty-state-fading {
+      opacity: 0 !important;
+      transform: translateY(-12px) !important;
+      pointer-events: none;
+    }
+
+    /* Empty state typography */
+    .empty-state-title {
+      font-size: 16px;
+      font-weight: 600;
+      color: #e4e4e7;
+      margin-bottom: 6px;
+      position: relative;
+      z-index: 2;
+    }
+
+    .empty-state-sub {
+      font-size: 13px;
+      color: #71717a;
+      max-width: 320px;
+      line-height: 1.45;
+      margin-bottom: 20px;
+      position: relative;
+      z-index: 2;
+    }
+
+    /* Action pills from user screenshot */
+    .empty-state-pills {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+      justify-content: center;
+      position: relative;
+      z-index: 2;
+    }
+
+    .action-pill {
+      background: rgba(255, 255, 255, 0.05);
+      border: 1px solid rgba(255, 255, 255, 0.09);
+      border-radius: 999px;
+      padding: 6px 12px;
+      font-size: 12px;
+      color: #a1a1aa;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      transition: all 0.2s var(--spring-smooth);
+    }
+
+    .action-pill:hover {
+      background: rgba(255, 255, 255, 0.09);
+      color: #ffffff;
+      border-color: rgba(255, 255, 255, 0.18);
+      transform: translateY(-1px);
+    }
+
+    .action-pill:active {
+      transform: translateY(1px);
+    }
+
+    .action-pill .pill-icon {
+      font-family: var(--font-mono);
+      font-weight: 600;
+      color: #71717a;
+    }
+
+    /* ACTIVE CHAT STREAM (SHOWN ONCE DISAPPEARED) */
+    .chat-messages-container {
+      flex: 1;
+      padding: 20px;
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+      overflow-y: auto;
+      opacity: 0;
+      transform: translateY(16px);
+      transition: all 0.4s var(--spring-smooth);
+    }
+
+    .chat-messages-container.visible {
+      opacity: 1;
+      transform: translateY(0);
+    }
+
+    .user-msg-bubble {
+      align-self: flex-end;
+      max-width: 85%;
+      background: #27272a;
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      border-radius: 16px 16px 4px 16px;
+      padding: 10px 14px;
+      font-size: 13px;
+      color: #f4f4f5;
+      line-height: 1.45;
+    }
+
+    .assistant-msg-bubble {
+      align-self: flex-start;
+      max-width: 90%;
+      background: rgba(255, 255, 255, 0.04);
+      border: 1px solid rgba(255, 255, 255, 0.07);
+      border-radius: 16px 16px 16px 4px;
+      padding: 14px;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+
+    .assistant-msg-header {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 11px;
+      color: #a1a1aa;
+    }
+
+    .assistant-msg-text {
+      font-size: 13px;
+      color: #e4e4e7;
+      line-height: 1.5;
+    }
+
+    .btn-replay-newchat {
+      align-self: center;
+      margin-top: auto;
+      margin-bottom: 8px;
+      background: rgba(255, 78, 0, 0.12);
+      border: 1px solid rgba(255, 78, 0, 0.35);
+      color: var(--accent);
+      padding: 8px 16px;
+      border-radius: 999px;
+      font-size: 12px;
+      font-weight: 600;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      transition: all 0.2s var(--spring-smooth);
+    }
+
+    .btn-replay-newchat:hover {
+      background: var(--accent);
+      color: #ffffff;
+      transform: translateY(-2px);
+      box-shadow: 0 6px 20px var(--accent-glow);
+    }
+
+    /* REALISTIC BOTTOM COMPOSER (MATCHING USER SCREENSHOT) */
+    .chat-composer-wrap {
+      padding: 14px 16px 16px;
+      background: #141417;
+      border-top: 1px solid rgba(255, 255, 255, 0.06);
+      z-index: 10;
+    }
+
+    .chat-composer {
+      background: #1a1a1e;
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      border-radius: 20px;
+      padding: 8px 12px 8px 14px;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      transition: border-color 0.2s, box-shadow 0.2s;
+    }
+
+    .chat-composer:focus-within {
+      border-color: rgba(255, 255, 255, 0.22);
+      box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.1);
+    }
+
+    .composer-plus-btn {
+      background: none;
+      border: none;
+      color: #71717a;
+      font-size: 20px;
+      font-weight: 300;
+      cursor: pointer;
+      padding: 0 4px;
+      line-height: 1;
+      transition: color 0.15s;
+    }
+
+    .composer-plus-btn:hover {
+      color: #e4e4e7;
+    }
+
+    .composer-input {
+      flex: 1;
+      background: none;
+      border: none;
+      outline: none;
+      color: #ffffff;
+      font-family: var(--font-sans);
+      font-size: 13px;
+    }
+
+    .composer-input::placeholder {
+      color: #52525b;
+    }
+
+    .composer-right-cluster {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .composer-model-pill {
+      background: rgba(255, 255, 255, 0.05);
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      border-radius: 999px;
+      padding: 4px 10px;
+      font-size: 11px;
+      font-weight: 500;
+      color: #e4e4e7;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      gap: 5px;
+      transition: background 0.15s;
+    }
+
+    .composer-model-pill:hover {
+      background: rgba(255, 255, 255, 0.09);
+    }
+
+    .composer-icon-btn {
+      background: none;
+      border: none;
+      color: #71717a;
+      cursor: pointer;
+      padding: 6px;
+      border-radius: 50%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      transition: color 0.15s, background 0.15s;
+    }
+
+    .composer-icon-btn:hover {
+      color: #e4e4e7;
+      background: rgba(255, 255, 255, 0.06);
+    }
+
+    .composer-send-btn {
+      width: 28px;
+      height: 28px;
+      border-radius: 50%;
+      background: #27272a;
+      border: 1px solid rgba(255, 255, 255, 0.1);
+      color: #71717a;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      cursor: pointer;
+      transition: all 0.2s var(--spring-smooth);
+    }
+
+    .composer-send-btn.active {
+      background: #ffffff;
+      color: #090a0f;
+      border-color: #ffffff;
+      transform: scale(1.05);
+    }
+
+    /* RIGHT SIDE: HUMAN ACTION EMOTION CONTROLLER & TELEMETRY */
+    .sim-controls-panel {
+      display: flex;
+      flex-direction: column;
+      gap: 18px;
+    }
+
+    .sim-card {
+      background: var(--card-bg);
+      border: 1px solid var(--card-border);
+      border-radius: 20px;
+      padding: 22px;
+      backdrop-filter: blur(24px) saturate(180%);
+      box-shadow: 0 16px 40px rgba(0, 0, 0, 0.25), inset 0 1px 1px var(--card-highlight);
+    }
+
+    .sim-card h3 {
+      font-size: 13px;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: var(--text-muted);
+      margin-bottom: 12px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+
+    .action-triggers-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+      margin-top: 10px;
+    }
+
+    .trigger-btn {
+      background: rgba(255, 255, 255, 0.04);
+      border: 1px solid var(--card-border);
+      border-radius: 10px;
+      padding: 10px 12px;
+      color: var(--text-main);
+      font-size: 12px;
+      font-weight: 500;
+      text-align: left;
+      cursor: pointer;
+      display: flex;
+      flex-direction: column;
+      gap: 3px;
+      transition: all 0.2s var(--spring-smooth);
+    }
+
+    .trigger-btn:hover {
+      background: rgba(255, 255, 255, 0.08);
+      border-color: rgba(255, 255, 255, 0.18);
+      transform: translateY(-1px);
+    }
+
+    .trigger-btn.active {
+      border-color: var(--accent);
+      background: rgba(255, 78, 0, 0.12);
+      color: var(--accent);
+    }
+
+    .trigger-btn .t-title {
+      font-weight: 600;
+    }
+
+    .trigger-btn .t-desc {
+      font-size: 10px;
+      color: var(--text-muted);
+    }
+
+    /* Explanation list */
+    .emotion-story-item {
+      padding: 10px 0;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+      font-size: 12px;
+      line-height: 1.45;
+    }
+
+    .emotion-story-item:last-child {
+      border-bottom: none;
+    }
+
+    .emotion-story-item strong {
+      color: var(--accent);
+      display: block;
+      margin-bottom: 2px;
+    }
+
+    /* VIEW 2: FULL RIG & STUDIO BENCH (Toggled) */
+    .view-studio-section {
+      display: none;
+      width: 100%;
+      max-width: 1240px;
+      margin-top: 16px;
+    }
+
+    .view-studio-section.active-view {
+      display: block;
+    }
+
+    .simulation-container.active-view {
+      display: grid;
+    }
+  </style>
+</head>
+<body data-theme="dark">
+
+  <div class="bg-glow"></div>
+
+  <header>
+    <div class="badge-top">New Chat Empty-State Motion &bull; Spec S3 Compliance</div>
+    <h1>Clanker Controller Mascot Studio</h1>
+    <p class="subtitle">
+      First-interaction empty state companion for the AI Chat Panel in Antigravity IDE.<br>
+      Stable chassis, cursor gaze tracking, typing cognition, and celebratory launch disappearance.
+    </p>
+
+    <!-- View Mode Switcher -->
+    <div class="view-mode-tabs">
+      <button class="tab-btn active" id="tab-sim" onclick="switchViewMode('sim')">
+        <span>✨ New Chat Interaction Simulation</span>
+      </button>
+      <button class="tab-btn" id="tab-bench" onclick="switchViewMode('bench')">
+        <span>🛠️ Studio Rig & Calibration Bench</span>
+      </button>
+    </div>
+
+    <div class="top-actions">
+      <button class="btn-pill active" id="theme-dark" onclick="setTheme('dark')">OLED Dark</button>
+      <button class="btn-pill" id="theme-light" onclick="setTheme('light')">Ceramic Light</button>
+      <button class="btn-pill" id="theme-teenage" onclick="setTheme('teenage-eng')">Teenage Eng.</button>
+      <button class="btn-pill" id="theme-cyber" onclick="setTheme('cyberpunk')">Matrix Cyber</button>
+      <button class="btn-pill active" id="audio-toggle-btn" onclick="toggleAudio()">Sound: ON [M]</button>
+      <button class="btn-pill" onclick="pokeMascot()">Poke / Boop [Space]</button>
+    </div>
+  </header>
+
+  <!-- ============================================================== -->
+  <!-- 1. NEW CHAT INTERACTION SIMULATION (PRIMARY VIEW)              -->
+  <!-- ============================================================== -->
+  <main class="simulation-container active-view" id="sim-view-wrap">
+
+    <!-- LEFT: REALISTIC AI CHAT PANEL INTERFACE -->
+    <div class="chat-sidebar-frame" id="chat-frame">
+
+      <!-- Header bar -->
+      <div class="chat-frame-header">
+        <div class="chat-header-title">
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor" style="opacity: 0.7;"><path d="M20 2H4c-1.1 0-1.99.9-1.99 2L2 22l4-4h14c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2zM6 9h12v2H6V9zm8 5H6v-2h8v2zm4-6H6V6h12v2z"/></svg>
+          <span>AI Chat Panel</span>
+        </div>
+        <div id="chat-header-status">
+          <div class="mini-clanker-status" id="mini-clanker-header" style="opacity: 0; transform: scale(0.6);">
+            <div style="width: 18px; height: 14px;">
+              <svg viewBox="0 0 374.78 296.77" fill="currentColor">
+                <path fill-rule="evenodd" d="M294.4,258.9l-14.83-21.98-11.92-17.18c-3.31-4.77-8.94-8.16-15.05-8.17l-130.21-.08c-6.12.46-11.61,3.01-15.08,8.06l-14.18,20.6-22.55,33.33c-4.46,6.6-13.31,17.34-19.76,21.29-5.85,3.59-14.06,1.67-19.94-1.7-7.03-4.03-13.25-9.34-18.23-15.78C3.66,265.7.41,249.46.05,234.98c-.44-17.56,2.36-38.84,5.42-56.35,2.35-13.4,4.93-26.6,8.16-39.81l8.76-35.87,6.5-23.72,5.65-18.6c2.35-7.73,5.29-15.01,9.1-22.12,4.7-8.78,13.13-16.6,21.55-21.93C79.86,7.3,96.57,1.64,113.86.1c6.63-.59,11.53,1.52,15.29,6.84.25.35.79.65,1.4.65h113.64c.66,0,1.2-.4,1.48-.8,3.27-4.73,8.37-7.18,14.24-6.75,17,1.25,33.49,6.62,48.05,15.47,4.45,2.7,8.43,5.68,12.26,9.15,5.23,4.72,9.27,10.35,12.34,16.68,2.36,4.87,4.48,9.6,6.12,14.75l5.04,15.82,3.22,10.99,10.75,41.3,9.91,44.81c2.82,14.36,4.99,28.62,6.22,43.18l.93,18.76c.06,15.99-2.52,33.05-12.22,46.07-4.86,6.52-11,11.73-17.97,15.85-3.6,2.13-7.42,3.35-11.54,3.8-3.66.4-7.07-.55-10.02-2.68-6.15-4.43-14.5-14.31-18.86-20.73l-9.78-14.37ZM289.89,178.84c4.41-2.14,8.16-4.6,11.92-7.45,17.27-13.06,27.8-33.76,27.85-55.39l.05-18.27c.04-16.43-4.99-32.63-15.1-45.63-5.96-7.66-13.29-13.79-21.7-18.64-11.41-6.58-24.43-9.75-37.65-9.75l-131.94.04c-11.18-.35-22.27,1.27-32.63,5.43-18.47,7.42-33.75,22.36-40.7,41.11-2.98,8.04-4.94,16.18-4.95,24.82l-.03,20.9c.21,11.28,3.09,22.28,8.34,32.25,12.54,23.81,38.33,38.31,65.17,38.31h137.46c11.74,0,23.34-2.61,33.91-7.74Z"/>
+                <polygon points="247.93 135.7 225.69 135.73 225.67 129.79 219.72 129.76 219.72 124.52 214.18 124.48 214.15 118.35 208.41 118.3 208.41 96.74 214.06 96.71 214.2 90.39 219.74 90.31 219.83 85.05 225.68 85 225.74 78.95 247.94 78.93 248.02 85 253.78 85.01 253.81 90.22 259.49 90.31 259.6 96.44 265.38 96.51 265.33 118.13 259.57 118.11 259.56 124.17 253.91 124.16 253.83 129.61 247.98 129.62 247.93 135.7"/>
+                <polygon points="140.48 135.21 123.78 135.19 123.74 129.86 118.16 129.8 118.09 124.55 112.89 124.49 112.89 107.23 118.15 107.24 118.17 101.79 123.68 101.78 123.72 96.4 140.53 96.38 140.54 101.84 145.8 101.84 145.79 107.23 151.12 107.28 151.12 124.56 145.93 124.58 145.82 129.8 140.49 129.82 140.48 135.21"/>
+                <polygon points="272.16 74.13 255.05 57.3 216.17 60.18 215.11 49.48 258.94 46.27 279.64 66.68 272.16 74.13"/>
+                <polygon points="111.71 85.86 98.81 98.59 91.08 91.02 106.88 75.42 152.6 75.43 152.62 85.86 111.71 85.86"/>
+              </svg>
+            </div>
+            <span>Agent Active</span>
+            <span class="status-dot-pulse"></span>
+          </div>
+        </div>
+      </div>
+
+      <!-- CENTER EMPTY STATE AREA -->
+      <div class="chat-empty-state" id="chat-empty-state">
+        
+        <!-- Soft red/amber ambient halo glow from screenshot -->
+        <div class="clanker-halo-glow" id="halo-glow"></div>
+
+        <!-- CLANKER MASCOT: GROUNDED & STABLE CHASSIS -->
+        <div class="clanker-empty-mascot" id="clanker-empty-mascot" onclick="pokeMascot()">
+          <svg id="clanker-sim-svg" class="clanker-sim-rig" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 374.78 296.77">
+            <defs>
+              <clipPath id="sim-visor-clip">
+                <path d="M289.89,178.84c4.41-2.14,8.16-4.6,11.92-7.45,17.27-13.06,27.8-33.76,27.85-55.39l.05-18.27c.04-16.43-4.99-32.63-15.1-45.63-5.96-7.66-13.29-13.79-21.7-18.64-11.41-6.58-24.43-9.75-37.65-9.75l-131.94.04c-11.18-.35-22.27,1.27-32.63,5.43-18.47,7.42-33.75,22.36-40.7,41.11-2.98,8.04-4.94,16.18-4.95,24.82l-.03,20.9c.21,11.28,3.09,22.28,8.34,32.25,12.54,23.81,38.33,38.31,65.17,38.31h137.46c11.74,0,23.34-2.61,33.91-7.74Z"/>
+              </clipPath>
+            </defs>
+
+            <!-- 0. Visor Backdrop -->
+            <g clip-path="url(#sim-visor-clip)">
+              <rect id="sim-visor-bg" fill="#141416" x="0" y="0" width="374.78" height="296.77" />
+            </g>
+
+            <!-- 1. Controller Chassis: STABLE, NO HOVER BOBBING -->
+            <g id="sim-chassis-rig">
+              <path fill="#ffffff" fill-rule="evenodd" d="M294.4,258.9l-14.83-21.98-11.92-17.18c-3.31-4.77-8.94-8.16-15.05-8.17l-130.21-.08c-6.12.46-11.61,3.01-15.08,8.06l-14.18,20.6-22.55,33.33c-4.46,6.6-13.31,17.34-19.76,21.29-5.85,3.59-14.06,1.67-19.94-1.7-7.03-4.03-13.25-9.34-18.23-15.78C3.66,265.7.41,249.46.05,234.98c-.44-17.56,2.36-38.84,5.42-56.35,2.35-13.4,4.93-26.6,8.16-39.81l8.76-35.87,6.5-23.72,5.65-18.6c2.35-7.73,5.29-15.01,9.1-22.12,4.7-8.78,13.13-16.6,21.55-21.93C79.86,7.3,96.57,1.64,113.86.1c6.63-.59,11.53,1.52,15.29,6.84.25.35.79.65,1.4.65h113.64c.66,0,1.2-.4,1.48-.8,3.27-4.73,8.37-7.18,14.24-6.75,17,1.25,33.49,6.62,48.05,15.47,4.45,2.7,8.43,5.68,12.26,9.15,5.23,4.72,9.27,10.35,12.34,16.68,2.36,4.87,4.48,9.6,6.12,14.75l5.04,15.82,3.22,10.99,10.75,41.3,9.91,44.81c2.82,14.36,4.99,28.62,6.22,43.18l.93,18.76c.06,15.99-2.52,33.05-12.22,46.07-4.86,6.52-11,11.73-17.97,15.85-3.6,2.13-7.42,3.35-11.54,3.8-3.66.4-7.07-.55-10.02-2.68-6.15-4.43-14.5-14.31-18.86-20.73l-9.78-14.37ZM289.89,178.84c4.41-2.14,8.16-4.6,11.92-7.45,17.27-13.06,27.8-33.76,27.85-55.39l.05-18.27c.04-16.43-4.99-32.63-15.1-45.63-5.96-7.66-13.29-13.79-21.7-18.64-11.41-6.58-24.43-9.75-37.65-9.75l-131.94.04c-11.18-.35-22.27,1.27-32.63,5.43-18.47,7.42-33.75,22.36-40.7,41.11-2.98,8.04-4.94,16.18-4.95,24.82l-.03,20.9c.21,11.28,3.09,22.28,8.34,32.25,12.54,23.81,38.33,38.31,65.17,38.31h137.46c11.74,0,23.34-2.61,33.91-7.74Z"/>
+            </g>
+
+            <!-- 2. Face Rig (Clipped) -->
+            <g clip-path="url(#sim-visor-clip)">
+              <g id="sim-face-rig">
+                <!-- Left Eyebrow -->
+                <g id="sim-brow-left-rig">
+                  <polygon fill="#ffffff" points="111.71 85.86 98.81 98.59 91.08 91.02 106.88 75.42 152.6 75.43 152.62 85.86 111.71 85.86"/>
+                </g>
+                <!-- Right Eyebrow (Inquisitive Arch) -->
+                <g id="sim-brow-right-rig">
+                  <polygon fill="#ffffff" points="272.16 74.13 255.05 57.3 216.17 60.18 215.11 49.48 258.94 46.27 279.64 66.68 272.16 74.13"/>
+                </g>
+                <!-- Left Eye (Pixel Cluster) -->
+                <g id="sim-eye-left-rig">
+                  <polygon fill="#ffffff" points="140.48 135.21 123.78 135.19 123.74 129.86 118.16 129.8 118.09 124.55 112.89 124.49 112.89 107.23 118.15 107.24 118.17 101.79 123.68 101.78 123.72 96.4 140.53 96.38 140.54 101.84 145.8 101.84 145.79 107.23 151.12 107.28 151.12 124.56 145.93 124.58 145.82 129.8 140.49 129.82 140.48 135.21"/>
+                </g>
+                <!-- Right Eye (Pixel Cluster) -->
+                <g id="sim-eye-right-rig">
+                  <polygon fill="#ffffff" points="247.93 135.7 225.69 135.73 225.67 129.79 219.72 129.76 219.72 124.52 214.18 124.48 214.15 118.35 208.41 118.3 208.41 96.74 214.06 96.71 214.2 90.39 219.74 90.31 219.83 85.05 225.68 85 225.74 78.95 247.94 78.93 248.02 85 253.78 85.01 253.81 90.22 259.49 90.31 259.6 96.44 265.38 96.51 265.33 118.13 259.57 118.11 259.56 124.17 253.91 124.16 253.83 129.61 247.98 129.62 247.93 135.7"/>
+                </g>
+              </g>
+            </g>
+
+            <!-- 3. Visor Scanline (Sweeps across face & visor) -->
+            <g clip-path="url(#sim-visor-clip)">
+              <line id="sim-scanline" x1="45" y1="0" x2="330" y2="0" stroke="var(--scanline-color)" stroke-width="3.5" opacity="0" />
+            </g>
+          </svg>
+        </div>
+
+        <!-- Screenshot Exact Typography -->
+        <h3 class="empty-state-title" id="empty-title">What are we working on?</h3>
+        <p class="empty-state-sub" id="empty-sub">Claude, Codex and Gemini share this chat. Pick a model below, or leave it on Auto.</p>
+
+        <!-- Screenshot Exact Action Pills -->
+        <div class="empty-state-pills" id="empty-pills">
+          <button class="action-pill" id="pill-mention" onclick="triggerPillAction('mention')">
+            <span class="pill-icon">@</span> mention a file
+          </button>
+          <button class="action-pill" id="pill-action" onclick="triggerPillAction('action')">
+            <span class="pill-icon">/</span> run an action
+          </button>
+          <button class="action-pill" id="pill-image" onclick="triggerPillAction('image')">
+            <span class="pill-icon">+</span> attach an image
+          </button>
+        </div>
+      </div>
+
+      <!-- ACTIVE CHAT VIEW (APPEARS AFTER DISAPPEAR ANIMATION) -->
+      <div class="chat-messages-container" id="chat-messages-container">
+        <div class="user-msg-bubble">
+          <p id="user-msg-display">How do I implement Clanker mascot animations?</p>
+        </div>
+        <div class="assistant-msg-bubble">
+          <div class="assistant-msg-header">
+            <span style="color: #30d158;">●</span>
+            <strong id="assistant-model-tag">Gemini 3.8 Flash High</strong>
+          </div>
+          <div class="assistant-msg-text" id="assistant-stream-text">
+            Prompt received! Clanker has launched the task and transitioned into the top status bar. All test verifications pass.
+          </div>
+        </div>
+
+        <!-- Reset Button -->
+        <button class="btn-replay-newchat" onclick="resetNewChatSim()">
+          <span>🔄</span> Replay New Chat Flow (Mascot Returns)
+        </button>
+      </div>
+
+      <!-- REALISTIC BOTTOM COMPOSER (MATCHING USER SCREENSHOT) -->
+      <div class="chat-composer-wrap">
+        <div class="chat-composer">
+          <button class="composer-plus-btn" title="Add context" onclick="triggerPillAction('image')">+</button>
+          <input 
+            type="text" 
+            id="chat-input" 
+            class="composer-input" 
+            placeholder="Ask anything, @ to mention, / for actions" 
+            autocomplete="off"
+            onfocus="onComposerFocus()"
+            onblur="onComposerBlur()"
+            oninput="onComposerInput(event)"
+            onkeydown="onComposerKeyDown(event)"
+          />
+          <div class="composer-right-cluster">
+            <div class="composer-model-pill" id="composer-model-pill" onclick="cycleModel()" title="Switch Model">
+              <span style="font-size: 11px;">✨</span>
+              <span id="model-name-label">Gemini 3.8 Flash High</span>
+              <span style="font-size: 9px; opacity: 0.6;">^</span>
+            </div>
+            <button class="composer-icon-btn" id="btn-mic" onclick="toggleVoiceMode()" title="Voice Dictation">
+              <svg viewBox="0 0 24 24" width="15" height="15" fill="currentColor"><path d="M12 14c1.66 0 3-1.34 3-3V5c0-1.66-1.34-3-3-3S9 3.34 9 5v6c0 1.66 1.34 3 3 3zm5-3c0 2.76-2.24 5-5 5s-5-2.24-5-5H5c0 3.53 2.61 6.43 6 6.92V21h2v-3.08c3.39-.49 6-3.39 6-6.92h-2z"/></svg>
+            </button>
+            <button class="composer-icon-btn" id="btn-clock" onclick="toggleScheduleMode()" title="Schedule Timer">
+              <svg viewBox="0 0 24 24" width="15" height="15" fill="currentColor"><path d="M11.99 2C6.47 2 2 6.48 2 12s4.47 10 9.99 10C17.52 22 22 17.52 22 12S17.52 2 11.99 2zM12 20c-4.42 0-8-3.58-8-8s3.58-8 8-8 8 3.58 8 8-3.58 8-8 8zm.5-13H11v6l5.25 3.15.75-1.23-4.5-2.67z"/></svg>
+            </button>
+            <button class="composer-send-btn" id="btn-send" onclick="sendPrompt()" title="Send Prompt (Enter)">
+              <svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor"><path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"/></svg>
+            </button>
+          </div>
+        </div>
+      </div>
+
+    </div>
+
+    <!-- RIGHT: INTERACTION EMOTION TESTER & TELEMETRY -->
+    <aside class="sim-controls-panel">
+
+      <!-- Live Interaction State Badge -->
+      <div class="sim-card">
+        <h3>
+          <span>Live Mascot State</span>
+          <span style="font-family: var(--font-mono); font-size: 10px; color: var(--accent);" id="sim-gaze-coords">[0.0px, 0.0px]</span>
+        </h3>
+        <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 8px;">
+          <span class="status-dot-pulse" style="width: 8px; height: 8px;"></span>
+          <strong id="sim-state-name" style="font-size: 14px; color: #ffffff;">IDLE GAZE-TRACKING</strong>
+        </div>
+        <p id="sim-state-desc" style="font-size: 12px; color: var(--text-muted); line-height: 1.45;">
+          The controller body stays firmly stable in the center while pixel eyes follow your cursor anywhere inside the chat frame.
+        </p>
+      </div>
+
+      <!-- Human Action Triggers -->
+      <div class="sim-card">
+        <h3>
+          <span>Simulate Human Actions</span>
+          <span style="font-size: 11px; color: var(--text-sub);">CLICK TO TEST</span>
+        </h3>
+        <p style="font-size: 12px; color: var(--text-muted); margin-bottom: 10px;">
+          Try typing in the prompt box or click any action below to see Clanker's corresponding emotional response:
+        </p>
+
+        <div class="action-triggers-grid">
+          <button class="trigger-btn active" id="trig-gaze" onclick="triggerActionState('gaze')">
+            <span class="t-title">1. Mouse Hover</span>
+            <span class="t-desc">Stable body & eye track</span>
+          </button>
+
+          <button class="trigger-btn" id="trig-focus" onclick="triggerActionState('focus')">
+            <span class="t-title">2. Focus Input</span>
+            <span class="t-desc">Looks down attentively</span>
+          </button>
+
+          <button class="trigger-btn" id="trig-typing" onclick="triggerActionState('typing')">
+            <span class="t-title">3. Typing Prompt</span>
+            <span class="t-desc">Reads words & keystrokes</span>
+          </button>
+
+          <button class="trigger-btn" id="trig-thinking" onclick="triggerActionState('thinking')">
+            <span class="t-title">4. Deep Thinking</span>
+            <span class="t-desc">OLED scanline & token scan</span>
+          </button>
+
+          <button class="trigger-btn" id="trig-mention" onclick="triggerActionState('mention')">
+            <span class="t-title">5. Mention File (@)</span>
+            <span class="t-desc">Analytical inspection</span>
+          </button>
+
+          <button class="trigger-btn" id="trig-action" onclick="triggerActionState('action')">
+            <span class="t-title">6. Run Action (/)</span>
+            <span class="t-desc">High readiness / alert</span>
+          </button>
+
+          <button class="trigger-btn" id="trig-image" onclick="triggerActionState('image')">
+            <span class="t-title">7. Attach Image (+)</span>
+            <span class="t-desc">Delighted vision mode</span>
+          </button>
+
+          <button class="trigger-btn" id="trig-model" onclick="triggerActionState('model')">
+            <span class="t-title">8. Switch Model</span>
+            <span class="t-desc">Acknowledged wink & nod</span>
+          </button>
+
+          <button class="trigger-btn" id="trig-send" onclick="triggerActionState('send')">
+            <span class="t-title">9. Send & Launch</span>
+            <span class="t-desc">Spring pop & disappear</span>
+          </button>
+
+          <button class="trigger-btn" id="trig-listening" onclick="triggerActionState('listening')">
+            <span class="t-title">10. Voice Dictate</span>
+            <span class="t-desc">Puppy head-tilt & listening</span>
+          </button>
+        </div>
+      </div>
+
+      <!-- Emotion Story & Mapping Reference -->
+      <div class="sim-card">
+        <h3>
+          <span>Action-to-Emotion Matrix</span>
+        </h3>
+
+        <div class="emotion-story-item">
+          <strong>Initial Discovery (Stable Companion)</strong>
+          Chassis remains completely stable in the center of the empty screen so it doesn't distract. Eyes follow the user's cursor dynamically with periodic blinks.
+        </div>
+
+        <div class="emotion-story-item">
+          <strong>Focusing & Typing (Deep Cognition & Random Thinking)</strong>
+          When the human clicks into the composer, Clanker shifts gaze downward. As you type, the eyes scan across the input line while the cocked right brow arches. Organically while typing or upon pausing, Clanker's OLED scanline activates as he enters Deep Thinking mode to reason ahead through your tokens.
+        </div>
+
+        <div class="emotion-story-item">
+          <strong>Context Chips (@file, /action, +image)</strong>
+          Clicking or typing chips alters Clanker's expression: an analytical AST squint for code files, high alert for actions, and wide-eyed delight for images.
+        </div>
+
+        <div class="emotion-story-item">
+          <strong>Prompt Submission (Triumphant Launch)</strong>
+          Clanker squashes in anticipation, leaps upward in celebratory triumph ("Got it! Working on it!"), and smoothly floats up into the header bar status icon, clearing the workspace for the active prompt.
+        </div>
+      </div>
+
+    </aside>
+  </main>
+
+  <!-- ============================================================== -->
+  <!-- 2. STUDIO RIG & CALIBRATION BENCH VIEW (TOGGLED)               -->
+  <!-- ============================================================== -->
+  <section class="view-studio-section" id="bench-view-wrap">
+    <!-- Existing Stage & Telemetry from workbench -->
+    <div style="text-align: center; margin-bottom: 20px;">
+      <h2 style="font-size: 20px; font-weight: 700;">Full Mascot Rigging & Geometric Calibration Bench</h2>
+      <p style="font-size: 13px; color: var(--text-muted);">Inspect spec coordinates, test isolated keyframe cycles, and calibrate vector boundaries.</p>
+    </div>
+
+    <div style="background: var(--card-bg); border: 1px solid var(--card-border); border-radius: 20px; padding: 24px; text-align: center;">
+      <p style="font-size: 13px; color: var(--text-muted); margin-bottom: 12px;">
+        Switch back to <strong>New Chat Simulation</strong> above to preview the realistic first-interaction empty state.
+      </p>
+      <button class="tab-btn active" onclick="switchViewMode('sim')">
+        <span>✨ Return to New Chat Simulation</span>
+      </button>
+    </div>
+  </section>
+
+  <!-- Keyboard Shortcuts Guide -->
+  <footer style="margin-top: 36px; font-size: 12px; color: var(--text-sub); text-align: center; display: flex; gap: 16px; flex-wrap: wrap; justify-content: center;">
+    <span><kbd>Enter</kbd> Send Prompt & Disappear</span>
+    <span><kbd>Space</kbd> Poke / Boop</span>
+    <span><kbd>3</kbd> Test Deep Thinking</span>
+    <span><kbd>T</kbd> Cycle Themes</span>
+    <span><kbd>M</kbd> Mute / Unmute Audio</span>
+    <span><kbd>Esc</kbd> Reset New Chat</span>
+  </footer>
+
+  <!-- ============================================================== -->
+  <!-- SCRIPT ENGINE: STABLE CHASSIS, CURSOR TRACKING, INTERACTIONS   -->
+  <!-- ============================================================== -->
+  <script>
+    // State Variables
+    let currentSimAction = 'gaze';
+    let isMuted = false;
+    let audioCtx = null;
+    let isTyping = false;
+    let isThinking = false;
+    let isListening = false;
+    let thinkingTimeout = null;
+    let listeningTimer = null;
+    let idleThinkingTimer = null;
+    let keystrokesSinceThought = 0;
+    let typingTimer = null;
+    let blinkInterval = null;
+    let isDisappeared = false;
+
+    // Elements
+    const chatFrame = document.getElementById('chat-frame');
+    const emptyState = document.getElementById('chat-empty-state');
+    const clankerMascot = document.getElementById('clanker-empty-mascot');
+    const miniClankerHeader = document.getElementById('mini-clanker-header');
+    const chatMessagesContainer = document.getElementById('chat-messages-container');
+    const chatInput = document.getElementById('chat-input');
+    const btnSend = document.getElementById('btn-send');
+    const simGazeCoords = document.getElementById('sim-gaze-coords');
+    const simStateName = document.getElementById('sim-state-name');
+    const simStateDesc = document.getElementById('sim-state-desc');
+    const userMsgDisplay = document.getElementById('user-msg-display');
+
+    // Rig elements inside the simulation SVG
+    const simFaceRig = document.getElementById('sim-face-rig');
+    const simChassisRig = document.getElementById('sim-chassis-rig');
+    const simBrowRight = document.getElementById('sim-brow-right-rig');
+    const simBrowLeft = document.getElementById('sim-brow-left-rig');
+    const simEyeLeft = document.getElementById('sim-eye-left-rig');
+    const simEyeRight = document.getElementById('sim-eye-right-rig');
+    const simScanline = document.getElementById('sim-scanline');
+    const haloGlow = document.getElementById('halo-glow');
+
+    // Models list
+    const models = [
+      'Gemini 3.8 Flash High',
+      'Claude 3.7 Sonnet',
+      'Codex (GPT-5)',
+      'Auto (Adaptive Model)'
+    ];
+    let modelIndex = 0;
+
+    // Initialize Audio
+    function initAudio() {
+      if (!audioCtx) {
+        audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+      }
+      if (audioCtx.state === 'suspended') {
+        audioCtx.resume();
+      }
+    }
+
+    // Procedural Astromech Synthesizer
+    function playDroidSound(type) {
+      if (isMuted) return;
+      try {
+        initAudio();
+        if (!audioCtx) return;
+        const now = audioCtx.currentTime;
+        const osc = audioCtx.createOscillator();
+        const gain = audioCtx.createGain();
+        osc.connect(gain);
+        gain.connect(audioCtx.destination);
+
+        switch (type) {
+          case 'chirp':
+          case 'idle': {
+            osc.type = 'triangle';
+            osc.frequency.setValueAtTime(800, now);
+            osc.frequency.exponentialRampToValueAtTime(1500, now + 0.08);
+            osc.frequency.exponentialRampToValueAtTime(1100, now + 0.16);
+            gain.gain.setValueAtTime(0.12, now);
+            gain.gain.exponentialRampToValueAtTime(0.001, now + 0.2);
+            osc.start(now);
+            osc.stop(now + 0.2);
+            break;
+          }
+          case 'focus': {
+            osc.type = 'sine';
+            osc.frequency.setValueAtTime(950, now);
+            osc.frequency.exponentialRampToValueAtTime(1350, now + 0.1);
+            gain.gain.setValueAtTime(0.1, now);
+            gain.gain.exponentialRampToValueAtTime(0.001, now + 0.15);
+            osc.start(now);
+            osc.stop(now + 0.15);
+            break;
+          }
+          case 'typing': {
+            osc.type = 'sine';
+            osc.frequency.setValueAtTime(1200 + Math.random() * 400, now);
+            gain.gain.setValueAtTime(0.04, now);
+            gain.gain.exponentialRampToValueAtTime(0.001, now + 0.04);
+            osc.start(now);
+            osc.stop(now + 0.04);
+            break;
+          }
+          case 'thinking': {
+            // Dual-tone calculating frequency trill (1200Hz <-> 1600Hz)
+            const freqs = [1200, 1550, 1320, 1680];
+            freqs.forEach((freq, idx) => {
+              const o = audioCtx.createOscillator();
+              const g = audioCtx.createGain();
+              o.type = 'triangle';
+              o.connect(g);
+              g.connect(audioCtx.destination);
+              const t = now + idx * 0.055;
+              o.frequency.setValueAtTime(freq, t);
+              g.gain.setValueAtTime(0.08, t);
+              g.gain.exponentialRampToValueAtTime(0.001, t + 0.08);
+              o.start(t);
+              o.stop(t + 0.08);
+            });
+            break;
+          }
+          case 'mention': {
+            // Analytical 2-tone ping
+            osc.type = 'triangle';
+            osc.frequency.setValueAtTime(1400, now);
+            osc.frequency.setValueAtTime(1800, now + 0.06);
+            gain.gain.setValueAtTime(0.12, now);
+            gain.gain.exponentialRampToValueAtTime(0.001, now + 0.18);
+            osc.start(now);
+            osc.stop(now + 0.18);
+            break;
+          }
+          case 'action': {
+            // Alert ready chime
+            osc.type = 'sawtooth';
+            osc.frequency.setValueAtTime(900, now);
+            osc.frequency.exponentialRampToValueAtTime(1600, now + 0.12);
+            gain.gain.setValueAtTime(0.08, now);
+            gain.gain.exponentialRampToValueAtTime(0.001, now + 0.16);
+            osc.start(now);
+            osc.stop(now + 0.16);
+            break;
+          }
+          case 'image': {
+            // Bright cheerful double-chirp
+            [1046, 1318].forEach((f, idx) => {
+              const o = audioCtx.createOscillator();
+              const g = audioCtx.createGain();
+              o.type = 'triangle';
+              o.connect(g);
+              g.connect(audioCtx.destination);
+              const t = now + idx * 0.06;
+              o.frequency.setValueAtTime(f, t);
+              g.gain.setValueAtTime(0.12, t);
+              g.gain.exponentialRampToValueAtTime(0.001, t + 0.1);
+              o.start(t);
+              o.stop(t + 0.1);
+            });
+            break;
+          }
+          case 'wink': {
+            osc.type = 'sine';
+            osc.frequency.setValueAtTime(750, now);
+            osc.frequency.exponentialRampToValueAtTime(1250, now + 0.14);
+            gain.gain.setValueAtTime(0.12, now);
+            gain.gain.exponentialRampToValueAtTime(0.001, now + 0.18);
+            osc.start(now);
+            osc.stop(now + 0.18);
+            break;
+          }
+          case 'launch': {
+            // Ascending major fanfare
+            const notes = [523.25, 659.25, 783.99, 1046.50];
+            notes.forEach((freq, idx) => {
+              const o = audioCtx.createOscillator();
+              const g = audioCtx.createGain();
+              o.type = 'triangle';
+              o.connect(g);
+              g.connect(audioCtx.destination);
+              const t = now + idx * 0.065;
+              o.frequency.setValueAtTime(freq, t);
+              g.gain.setValueAtTime(0.15, t);
+              g.gain.exponentialRampToValueAtTime(0.001, t + 0.15);
+              o.start(t);
+              o.stop(t + 0.16);
+            });
+            break;
+          }
+        }
+      } catch (err) {
+        console.warn('Audio playback error:', err);
+      }
+    }
+
+    /* -------------------------------------------------------------
+       1. STABLE CHASSIS & CURSOR GAZE-TRACKING
+       Strict limit: X in [-11px, +11px], Y in [-7.5px, +7.5px]
+       ------------------------------------------------------------- */
+    chatFrame.addEventListener('mousemove', (e) => {
+      if (isDisappeared || isTyping || isThinking) return;
+
+      const rect = clankerMascot.getBoundingClientRect();
+      const mascotCenterX = rect.left + rect.width / 2;
+      const mascotCenterY = rect.top + rect.height / 2;
+
+      const deltaX = (e.clientX - mascotCenterX) / 200;
+      const deltaY = (e.clientY - mascotCenterY) / 220;
+
+      // Safe bounds
+      const maxSafeX = 11.0;
+      const maxSafeY = 7.5;
+
+      const targetX = Math.max(-maxSafeX, Math.min(maxSafeX, deltaX * maxSafeX));
+      const targetY = Math.max(-maxSafeY, Math.min(maxSafeY, deltaY * maxSafeY));
+
+      // Translate eyes inside visor
+      simFaceRig.style.transform = `translate(${targetX.toFixed(1)}px, ${targetY.toFixed(1)}px)`;
+      simGazeCoords.textContent = `[${targetX.toFixed(1)}px, ${targetY.toFixed(1)}px]`;
+
+      // Chassis stays grounded! (No rotation or translation)
+      simChassisRig.style.transform = 'none';
+    });
+
+    chatFrame.addEventListener('mouseleave', () => {
+      if (isDisappeared || isTyping || isThinking) return;
+      simFaceRig.style.transform = 'translate(0px, 0px)';
+      simGazeCoords.textContent = '[0.0px, 0.0px]';
+    });
+
+    // Natural periodic pixel blinks
+    function triggerPeriodicBlink() {
+      if (isDisappeared || isThinking) return;
+      simEyeLeft.style.transform = 'scaleY(0.08)';
+      simEyeRight.style.transform = 'scaleY(0.08)';
+      setTimeout(() => {
+        if (!isDisappeared) {
+          simEyeLeft.style.transform = '';
+          simEyeRight.style.transform = '';
+        }
+      }, 130);
+    }
+
+    // Set recurring blink timer
+    blinkInterval = setInterval(() => {
+      if (Math.random() > 0.35) {
+        triggerPeriodicBlink();
+      }
+    }, 4200);
+
+    /* -------------------------------------------------------------
+       2. TYPING & COMPOSER FOCUS INTERACTIONS
+       ------------------------------------------------------------- */
+    function onComposerFocus() {
+      if (isDisappeared || isListening) return;
+      if (isThinking) endThinkingMode(true);
+      clearTimeout(idleThinkingTimer);
+      updateStateLabel('FOCUSING INPUT', 'Clanker shifts gaze downward toward the composer, perking up his eyebrows in eager anticipation.');
+      highlightTriggerBtn('trig-focus');
+      // Look down toward composer
+      simFaceRig.style.transform = 'translate(0px, 7.5px)';
+      simBrowLeft.style.transform = 'translateY(-3px)';
+      simBrowRight.style.transform = 'translateY(-5px) rotate(4deg)';
+      playDroidSound('focus');
+      startIdleThinkingTimer();
+    }
+
+    function onComposerBlur() {
+      clearTimeout(idleThinkingTimer);
+      if (isDisappeared || isTyping || isThinking || isListening) return;
+      updateStateLabel('IDLE GAZE-TRACKING', 'The controller body stays firmly stable in the center while pixel eyes follow your cursor anywhere inside the chat frame.');
+      highlightTriggerBtn('trig-gaze');
+      simFaceRig.style.transform = 'translate(0px, 0px)';
+      simBrowLeft.style.transform = '';
+      simBrowRight.style.transform = '';
+      startIdleThinkingTimer();
+    }
+
+    /* -------------------------------------------------------------
+       2b. DEEP THINKING MODE (DETERMINISTIC WHEN PAUSED OR IDLE)
+       ------------------------------------------------------------- */
+    function triggerThinkingMode(source = 'manual', duration = 0) {
+      if (isDisappeared || isListening) return;
+
+      isThinking = true;
+      keystrokesSinceThought = 0;
+
+      // Apply CSS animation class to mascot and halo
+      clankerMascot.classList.remove('mascot-listening');
+      clankerMascot.classList.add('mascot-thinking');
+      haloGlow.classList.remove('mascot-listening-halo');
+      haloGlow.classList.add('mascot-thinking-halo');
+
+      // Reset inline manual transforms that would conflict with thinking keyframes
+      simFaceRig.style.transform = '';
+      simChassisRig.style.transform = '';
+      simBrowRight.style.transform = '';
+      simBrowLeft.style.transform = '';
+      simEyeLeft.style.transform = '';
+      simEyeRight.style.transform = '';
+
+      updateStateLabel(
+        'DEEP THINKING (ANALYZING)',
+        source === 'typing-random'
+          ? 'Clanker pauses mid-thought to analyze what you typed, firing up his OLED scanline.'
+          : (source === 'pause' || source === 'pause-random'
+              ? 'You paused typing. Clanker actively scans your prompt tokens with the OLED scanline.'
+              : (source === 'idle-scan'
+                  ? 'Inactivity scan: Clanker runs an OLED scanline cycle to reason ahead through your project.'
+                  : 'OLED scanline active. Clanker is reasoning through your prompt tokens and AST structures.'))
+      );
+      highlightTriggerBtn('trig-thinking');
+
+      playDroidSound('thinking');
+
+      clearTimeout(thinkingTimeout);
+      if (duration > 0) {
+        thinkingTimeout = setTimeout(() => {
+          endThinkingMode();
+        }, duration);
+      }
+    }
+
+    function endThinkingMode(force = false) {
+      if (!isThinking && !force) return;
+      isThinking = false;
+      clearTimeout(thinkingTimeout);
+
+      clankerMascot.classList.remove('mascot-thinking');
+      haloGlow.classList.remove('mascot-thinking-halo');
+
+      if (isDisappeared) return;
+
+      // Smoothly transition back to active typing reading or idle gaze
+      if (chatInput.value.trim().length > 0 && document.activeElement === chatInput) {
+        updateStateLabel('TYPING PROMPT (READING)', 'Clanker scans characters as you type with a cocked inquisitive brow and focused processing pulse.');
+        highlightTriggerBtn('trig-typing');
+        simFaceRig.style.transform = 'translate(0px, 7.5px)';
+        simBrowRight.style.transform = 'rotate(7deg) translateY(-5px)';
+        simBrowLeft.style.transform = 'translateY(-1px)';
+      } else {
+        updateStateLabel('IDLE GAZE-TRACKING', 'The controller body stays firmly stable in the center while pixel eyes follow your cursor anywhere inside the chat frame.');
+        highlightTriggerBtn('trig-gaze');
+        simFaceRig.style.transform = 'translate(0px, 0px)';
+        simBrowRight.style.transform = '';
+        simBrowLeft.style.transform = '';
+      }
+    }
+
+    function startIdleThinkingTimer() {
+      clearTimeout(idleThinkingTimer);
+      idleThinkingTimer = setTimeout(() => {
+        if (!isDisappeared && !isTyping && !isListening && !isThinking) {
+          triggerThinkingMode('idle-scan', 3200);
+        }
+      }, 5500);
+    }
+
+    function onComposerInput(e) {
+      if (isDisappeared) return;
+      if (isListening) toggleVoiceMode();
+      const text = chatInput.value.trim();
+      btnSend.classList.toggle('active', text.length > 0);
+
+      keystrokesSinceThought++;
+
+      // If already thinking, user continuing to type smoothly dismisses thinking after a key
+      if (isThinking) {
+        endThinkingMode(true);
+      }
+
+      isTyping = true;
+      updateStateLabel('TYPING PROMPT (READING)', 'Clanker scans characters as you type with a cocked inquisitive brow and focused processing pulse.');
+      highlightTriggerBtn('trig-typing');
+
+      // Scanning micro-motion while typing
+      const scanX = ((chatInput.value.length % 5) - 2) * 2.2;
+      simFaceRig.style.transform = `translate(${scanX.toFixed(1)}px, 7.5px)`;
+      simBrowRight.style.transform = 'rotate(7deg) translateY(-5px)';
+      simBrowLeft.style.transform = 'translateY(-1px)';
+
+      playDroidSound('typing');
+
+      clearTimeout(typingTimer);
+      clearTimeout(idleThinkingTimer);
+      typingTimer = setTimeout(() => {
+        // Paused typing for 700ms ("haven't typed for a while")
+        isTyping = false;
+        if (!isDisappeared && !isListening) {
+          if (chatInput.value.trim().length > 0) {
+            triggerThinkingMode('pause', 0);
+          } else {
+            updateStateLabel('AWAITING INPUT', 'You paused typing. Clanker glances up at you with an inquisitive blink.');
+            simFaceRig.style.transform = 'translate(0px, 2px)';
+            triggerPeriodicBlink();
+            startIdleThinkingTimer();
+          }
+        }
+      }, 700);
+    }
+
+    function onComposerKeyDown(e) {
+      if (e.key === 'Enter' && !e.shiftKey) {
+        e.preventDefault();
+        sendPrompt();
+      }
+    }
+
+    /* -------------------------------------------------------------
+       3. SEND PROMPT & DISAPPEAR MOVE ANIMATION
+       ------------------------------------------------------------- */
+    function sendPrompt() {
+      if (isDisappeared) return;
+      endThinkingMode(true);
+      const text = chatInput.value.trim() || 'How do I animate Clanker mascot in Astro?';
+      userMsgDisplay.textContent = text;
+      isDisappeared = true;
+
+      updateStateLabel('PROMPT SENT & LAUNCHING', 'Clanker performs a celebratory spring launch, then dissolves upward into the top header icon!');
+      highlightTriggerBtn('trig-send');
+
+      // 1. Triumphant Launch Reaction (0ms - 220ms)
+      clankerMascot.classList.add('mascot-launching');
+      simBrowLeft.style.transform = 'translateY(-7px) rotate(4deg)';
+      simBrowRight.style.transform = 'translateY(-9px) rotate(12deg)';
+      simEyeLeft.style.transform = 'scale(1.2)';
+      simEyeRight.style.transform = 'scale(1.2)';
+      playDroidSound('launch');
+
+      // 2. Disappear Transition (220ms - 650ms)
+      setTimeout(() => {
+        clankerMascot.classList.remove('mascot-launching');
+        clankerMascot.classList.add('mascot-disappearing');
+        haloGlow.style.opacity = '0';
+        document.getElementById('empty-title').classList.add('empty-state-fading');
+        document.getElementById('empty-sub').classList.add('empty-state-fading');
+        document.getElementById('empty-pills').classList.add('empty-state-fading');
+      }, 220);
+
+      // 3. Reveal Active Chat Stream (600ms)
+      setTimeout(() => {
+        emptyState.style.display = 'none';
+        chatMessagesContainer.style.display = 'flex';
+        // force reflow
+        void chatMessagesContainer.offsetWidth;
+        chatMessagesContainer.classList.add('visible');
+
+        // Reveal header mini-clanker
+        miniClankerHeader.style.opacity = '1';
+        miniClankerHeader.style.transform = 'scale(1)';
+
+        chatInput.value = '';
+        btnSend.classList.remove('active');
+      }, 620);
+    }
+
+    // Reset back to new chat
+    function resetNewChatSim() {
+      isDisappeared = false;
+      isTyping = false;
+      isListening = false;
+      clearTimeout(listeningTimer);
+      clearTimeout(idleThinkingTimer);
+      const btnMic = document.getElementById('btn-mic');
+      if (btnMic) btnMic.classList.remove('is-listening');
+      endThinkingMode(true);
+      keystrokesSinceThought = 0;
+
+      // Reset DOM elements
+      chatMessagesContainer.classList.remove('visible');
+      chatMessagesContainer.style.display = 'none';
+      emptyState.style.display = 'flex';
+
+      clankerMascot.className = 'clanker-empty-mascot';
+      haloGlow.style.opacity = '1';
+      document.getElementById('empty-title').className = 'empty-state-title';
+      document.getElementById('empty-sub').className = 'empty-state-sub';
+      document.getElementById('empty-pills').className = 'empty-state-pills';
+
+      miniClankerHeader.style.opacity = '0';
+      miniClankerHeader.style.transform = 'scale(0.6)';
+
+      simChassisRig.style.transform = 'none';
+      simFaceRig.style.transform = 'none';
+      simBrowLeft.style.transform = '';
+      simBrowRight.style.transform = '';
+      simEyeLeft.style.transform = '';
+      simEyeRight.style.transform = '';
+
+      updateStateLabel('IDLE GAZE-TRACKING', 'The controller body stays firmly stable in the center while pixel eyes follow your cursor anywhere inside the chat frame.');
+      highlightTriggerBtn('trig-gaze');
+      playDroidSound('chirp');
+    }
+
+    /* -------------------------------------------------------------
+       4. ACTION PILLS & MODEL INTERACTIONS
+       ------------------------------------------------------------- */
+    function triggerPillAction(type) {
+      if (isDisappeared) return;
+
+      switch (type) {
+        case 'mention': {
+          updateStateLabel('INSPECTING FILE (@)', 'Analytical AST scan stance: eyebrows knit in concentrated code inspection.');
+          highlightTriggerBtn('trig-mention');
+          simFaceRig.style.transform = 'translate(-4px, 4px)';
+          simBrowLeft.style.transform = 'rotate(-5deg) translateY(2px)';
+          simBrowRight.style.transform = 'rotate(10deg) translateY(-4px)';
+          simEyeLeft.style.transform = 'scaleY(0.7)';
+          simEyeRight.style.transform = 'scaleY(0.85)';
+          playDroidSound('mention');
+          chatInput.value = '@src/pages/index.astro ';
+          chatInput.focus();
+          break;
+        }
+        case 'action': {
+          updateStateLabel('ACTION READY (/)', 'Action stance: both eyebrows lift high with wide, bright eyes ready for /plan or /boost.');
+          highlightTriggerBtn('trig-action');
+          simFaceRig.style.transform = 'translate(0px, -3px)';
+          simBrowLeft.style.transform = 'translateY(-6px)';
+          simBrowRight.style.transform = 'translateY(-8px) rotate(8deg)';
+          simEyeLeft.style.transform = 'scale(1.15)';
+          simEyeRight.style.transform = 'scale(1.15)';
+          playDroidSound('action');
+          chatInput.value = '/plan ';
+          chatInput.focus();
+          break;
+        }
+        case 'image': {
+          updateStateLabel('VISION MODE (+IMG)', 'Vision mode: eyes widen in delight with an excited cocked eyebrow, welcoming visual input.');
+          highlightTriggerBtn('trig-image');
+          simFaceRig.style.transform = 'translate(0px, -2px)';
+          simBrowRight.style.transform = 'rotate(14deg) translateY(-8px)';
+          simEyeLeft.style.transform = 'scale(1.18)';
+          simEyeRight.style.transform = 'scale(1.18)';
+          playDroidSound('image');
+          chatInput.placeholder = 'Screenshot attached. Ask Clanker about this design...';
+          break;
+        }
+      }
+
+      setTimeout(() => {
+        if (!isDisappeared && !isTyping) {
+          simBrowLeft.style.transform = '';
+          simBrowRight.style.transform = '';
+          simEyeLeft.style.transform = '';
+          simEyeRight.style.transform = '';
+        }
+      }, 1600);
+    }
+
+    function cycleModel() {
+      modelIndex = (modelIndex + 1) % models.length;
+      const model = models[modelIndex];
+      document.getElementById('model-name-label').textContent = model;
+      document.getElementById('assistant-model-tag').textContent = model;
+
+      updateStateLabel('MODEL SWITCHED: ' + model, 'Clanker acknowledges the model change with a friendly wink and nod!');
+      highlightTriggerBtn('trig-model');
+
+      // Playful wink
+      simBrowRight.style.transform = 'rotate(12deg) translateY(-6px)';
+      simEyeRight.style.transform = 'scaleY(0.08)';
+      playDroidSound('wink');
+
+      setTimeout(() => {
+        simBrowRight.style.transform = '';
+        simEyeRight.style.transform = '';
+      }, 400);
+    }
+
+    function toggleVoiceMode() {
+      if (isDisappeared) return;
+      isListening = !isListening;
+      const btnMic = document.getElementById('btn-mic');
+      if (btnMic) btnMic.classList.toggle('is-listening', isListening);
+
+      if (isListening) {
+        endThinkingMode(true);
+        isTyping = false;
+        clearTimeout(typingTimer);
+        clearTimeout(idleThinkingTimer);
+        clankerMascot.classList.remove('mascot-thinking');
+        clankerMascot.classList.add('mascot-listening');
+        haloGlow.classList.remove('mascot-thinking-halo');
+        haloGlow.classList.add('mascot-listening-halo');
+        simFaceRig.style.transform = '';
+        simChassisRig.style.transform = '';
+        simBrowRight.style.transform = '';
+        simBrowLeft.style.transform = '';
+        simEyeLeft.style.transform = '';
+        simEyeRight.style.transform = '';
+
+        updateStateLabel('LISTENING (VOICE DICTATION)', 'Clanker tilts head attentively to the side like a listening puppy, breathing in sync with microphone volume.');
+        highlightTriggerBtn('trig-listening');
+        playDroidSound('focus');
+
+        clearTimeout(listeningTimer);
+        listeningTimer = setTimeout(() => {
+          if (isListening) {
+            if (!chatInput.value.trim()) {
+              chatInput.value = 'Refactor the Astro Visual Editor ast pipeline';
+              btnSend.classList.add('active');
+            }
+            setTimeout(() => {
+              if (isListening) toggleVoiceMode();
+            }, 1200);
+          }
+        }, 2200);
+      } else {
+        clearTimeout(listeningTimer);
+        clankerMascot.classList.remove('mascot-listening');
+        haloGlow.classList.remove('mascot-listening-halo');
+        if (btnMic) btnMic.classList.remove('is-listening');
+        if (chatInput.value.trim().length > 0) {
+          triggerThinkingMode('pause', 0);
+        } else {
+          onComposerBlur();
+        }
+      }
+    }
+
+    function toggleScheduleMode() {
+      updateStateLabel('SCHEDULE TIMER ACTIVE', 'Clanker enters steady pulse mode, monitoring timed tasks.');
+      playDroidSound('chirp');
+    }
+
+    function pokeMascot() {
+      if (isDisappeared) return;
+      initAudio();
+      simChassisRig.style.transform = 'scale(0.92, 0.88) translateY(6px)';
+      playDroidSound('chirp');
+      setTimeout(() => {
+        simChassisRig.style.transform = 'scale(1.08, 1.1) translateY(-8px)';
+        setTimeout(() => {
+          simChassisRig.style.transform = 'none';
+        }, 180);
+      }, 120);
+    }
+
+    /* -------------------------------------------------------------
+       5. SIMULATOR ACTION TRIGGER BUTTONS
+       ------------------------------------------------------------- */
+    function triggerActionState(state) {
+      if (state === 'send') {
+        sendPrompt();
+        return;
+      }
+      if (isDisappeared) {
+        resetNewChatSim();
+      }
+
+      highlightTriggerBtn('trig-' + state);
+
+      switch (state) {
+        case 'gaze':
+          onComposerBlur();
+          break;
+        case 'focus':
+          chatInput.focus();
+          break;
+        case 'typing':
+          chatInput.value = 'Refactor the Astro Visual Editor...';
+          onComposerInput();
+          break;
+        case 'thinking':
+          chatInput.value = 'Refactoring the Astro Visual Editor AST scan pipeline...';
+          btnSend.classList.add('active');
+          triggerThinkingMode('manual', 0);
+          break;
+        case 'listening':
+          toggleVoiceMode();
+          break;
+        case 'mention':
+          triggerPillAction('mention');
+          break;
+        case 'action':
+          triggerPillAction('action');
+          break;
+        case 'image':
+          triggerPillAction('image');
+          break;
+        case 'model':
+          cycleModel();
+          break;
+      }
+    }
+
+    function highlightTriggerBtn(btnId) {
+      document.querySelectorAll('.trigger-btn').forEach(b => b.classList.remove('active'));
+      const target = document.getElementById(btnId);
+      if (target) target.classList.add('active');
+    }
+
+    function updateStateLabel(name, desc) {
+      simStateName.textContent = name;
+      simStateDesc.textContent = desc;
+    }
+
+    /* -------------------------------------------------------------
+       6. GLOBAL THEMES & AUDIO TOGGLE
+       ------------------------------------------------------------- */
+    function setTheme(theme) {
+      document.body.setAttribute('data-theme', theme);
+      ['dark', 'light', 'teenage', 'cyber'].forEach(t => {
+        const b = document.getElementById(`theme-${t}`);
+        if (b) b.classList.remove('active');
+      });
+      const activeBtn = document.getElementById(theme === 'teenage-eng' ? 'theme-teenage' : (theme === 'cyberpunk' ? 'theme-cyber' : `theme-${theme}`));
+      if (activeBtn) activeBtn.classList.add('active');
+    }
+
+    function toggleAudio() {
+      isMuted = !isMuted;
+      const b = document.getElementById('audio-toggle-btn');
+      b.textContent = `Sound: ${isMuted ? 'MUTED' : 'ON [M]'}`;
+      b.classList.toggle('active', !isMuted);
+    }
+
+    function switchViewMode(mode) {
+      const simWrap = document.getElementById('sim-view-wrap');
+      const benchWrap = document.getElementById('bench-view-wrap');
+      const tabSim = document.getElementById('tab-sim');
+      const tabBench = document.getElementById('tab-bench');
+
+      if (mode === 'sim') {
+        simWrap.classList.add('active-view');
+        benchWrap.classList.remove('active-view');
+        tabSim.classList.add('active');
+        tabBench.classList.remove('active');
+      } else {
+        simWrap.classList.remove('active-view');
+        benchWrap.classList.add('active-view');
+        tabSim.classList.remove('active');
+        tabBench.classList.add('active');
+      }
+    }
+
+    // Keyboard Shortcuts
+    window.addEventListener('keydown', (e) => {
+      if (e.target.tagName === 'INPUT') {
+        if (e.key === 'Escape') {
+          chatInput.blur();
+        }
+        return;
+      }
+
+      if (e.code === 'Space') {
+        e.preventDefault();
+        pokeMascot();
+      } else if (e.key === '3' || e.key.toLowerCase() === 'k') {
+        triggerActionState('thinking');
+      } else if (e.key.toLowerCase() === 'm') {
+        toggleAudio();
+      } else if (e.key.toLowerCase() === 't') {
+        const themes = ['dark', 'light', 'teenage-eng', 'cyberpunk'];
+        const current = document.body.getAttribute('data-theme') || 'dark';
+        const next = themes[(themes.indexOf(current) + 1) % themes.length];
+        setTheme(next);
+      } else if (e.key === 'Escape') {
+        resetNewChatSim();
+      }
+    });
+  </script>
+</body>
+</html>
