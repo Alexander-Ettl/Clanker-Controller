@@ -1,0 +1,112 @@
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { chromium } from 'playwright';
+
+// Settings > Voice > Dictionary in a real browser with the real settings.js and stylesheets: search, add, rename, switch,
+// delete, scan and "Edit with AI" send the right messages, and the list copes with a narrow window and a full dictionary.
+const media = path.resolve(fileURLToPath(new URL('../media/', import.meta.url)));
+const read = (file) => fs.readFileSync(path.join(media, file), 'utf8');
+const html = `<!doctype html><meta charset="utf-8"><style>${['style.css', 'launcher.css', 'settings.css'].map(read).join('\n')}</style>
+<body style="margin:0;padding:12px;width:340px"><div class="fs-modal" style="position:static;display:block"><div class="fs-modal-sheet glass"><div class="fs-modal-body" id="csBody"></div></div></div>
+<script>window.sent = []; window.acquireVsCodeApi = () => ({ postMessage: (message) => window.sent.push(message) });</script>
+<script>${read('agent-icons.js')}</script><script>${read('model-prompts.js')}</script><script>${read('voice-hotkey.js')}</script><script>${read('settings.js')}</script>
+<script>window.api = window.initChatSettings({ vscode: window.acquireVsCodeApi(), body: document.getElementById('csBody') }); window.api.showTab('voice');</script>`;
+const limits = { entries: 500, scanned: 150, scanBatch: 60, promptTerms: 40, promptChars: 480, cleanupTerms: 150 };
+const word = (term, extra = {}) => ({ term, enabled: true, addedAt: 1, ...extra });
+const browser = await chromium.launch({ headless: true, channel: 'msedge' });
+try {
+  const page = await browser.newPage({ viewport: { width: 364, height: 900 } });
+  const errors = [];
+  page.on('pageerror', (error) => errors.push(error.message));
+  await page.setContent(html);
+  const sent = (type) => page.evaluate((type) => window.sent.filter((message) => message.type === type), type);
+  const lastSent = async (type) => (await sent(type)).at(-1);
+  const deliver = (entries, extra = {}) => page.evaluate(([entries, extra, limits]) => window.api.voiceDictionary({ entries, usage: { total: entries.length, enabled: entries.filter((e) => e.enabled).length, scanned: 0, inPrompt: Math.min(entries.length, 40), inCleanup: Math.min(entries.length, 150), limits }, ...extra }), [entries, extra, limits]);
+  const rows = () => page.locator('.cs-dict-row .cs-dict-term, .cs-dict-row .cs-dict-edit').count();
+
+  assert.ok((await sent('requestVoiceDictionary')).length >= 1, 'opening the Voice tab asks for the dictionary');
+  await deliver([]);
+  assert.match(await page.locator('.cs-dict-empty').innerText(), /No words yet/);
+
+  await deliver([word('SimTalk'), word('Tecnomatix', { enabled: false }), word('ChatWindowHost', { source: 'scan', project: 'Visor' })]);
+  assert.equal(await rows(), 3);
+  assert.equal(await page.locator('[data-role=dictTag]').innerText(), '3 / 500');
+
+  await page.fill('[data-role=dictSearch]', 'tec');
+  assert.equal(await rows(), 1, 'search narrows the list');
+  await page.fill('[data-role=dictSearch]', 'zzz');
+  assert.match(await page.locator('.cs-dict-empty').innerText(), /No word matches/);
+  await page.fill('[data-role=dictSearch]', '');
+
+  await page.fill('[data-role=dictNew]', '  Liquid Glass ');
+  await page.press('[data-role=dictNew]', 'Enter');
+  assert.deepEqual(await lastSent('voiceDictionaryAdd'), { type: 'voiceDictionaryAdd', term: 'Liquid Glass' });
+  assert.equal(await page.inputValue('[data-role=dictNew]'), '');
+  await page.click('[data-role=dictAdd]');
+  assert.match(await page.locator('[data-role=dictStatus]').innerText(), /Type a word/);
+
+  await page.locator('.cs-dict-row', { hasText: 'SimTalk' }).locator('button[aria-label^=Rename]').click();
+  await page.fill('.cs-dict-edit', 'SimTalk 2');
+  await page.press('.cs-dict-edit', 'Enter');
+  assert.deepEqual(await lastSent('voiceDictionaryEdit'), { type: 'voiceDictionaryEdit', term: 'SimTalk', next: 'SimTalk 2' });
+  await page.locator('.cs-dict-row', { hasText: 'Tecnomatix' }).locator('.cs-switch').click();
+  assert.deepEqual(await lastSent('voiceDictionaryEdit'), { type: 'voiceDictionaryEdit', term: 'Tecnomatix', enabled: true });
+  await page.locator('.cs-dict-row', { hasText: 'ChatWindowHost' }).locator('button[aria-label^=Delete]').click();
+  assert.deepEqual(await lastSent('voiceDictionaryRemove'), { type: 'voiceDictionaryRemove', term: 'ChatWindowHost' });
+
+  await page.evaluate(() => window.api.projectIcons([{ id: 'p1', name: 'Visor', root: 'C:/p/visor' }, { id: 'p2', name: 'No folder', root: '' }]));
+  assert.deepEqual(await page.locator('[data-role=dictProjects] button').allInnerTexts(), ['Visor', 'Choose folder…']);
+  await page.click('[data-role=dictProjects] button >> text=Visor');
+  assert.deepEqual(await lastSent('voiceDictionaryScan'), { type: 'voiceDictionaryScan', id: 'p1' });
+  assert.equal(await page.locator('[data-role=dictProjects] button').first().isDisabled(), true, 'one scan at a time');
+  await deliver([word('SimTalk')], { scanning: false, notice: 'Visor: added 12.' });
+  assert.equal(await page.locator('[data-role=dictProjects] button').first().isDisabled(), false);
+  assert.equal(await page.locator('[data-role=dictStatus]').innerText(), 'Visor: added 12.');
+  await deliver([word('SimTalk')], { error: 'The dictionary is full.' });
+  assert.match(await page.locator('[data-role=dictStatus]').getAttribute('class'), /is-error/);
+
+  await page.click('[data-role=dictAI]');
+  assert.ok(await lastSent('voiceDictionaryWithAI'));
+  await deliver([word('A', { source: 'scan' }), word('B', { source: 'scan' })]);
+  await page.click('[data-role=dictClearScanned]');
+  assert.ok(await lastSent('voiceDictionaryClearScanned'));
+
+  // A full dictionary: the list scrolls inside its card and nothing overflows the narrow window.
+  await deliver(Array.from({ length: 500 }, (_, index) => word(`Term${index}`, { source: index % 2 ? 'scan' : undefined })));
+  assert.match(await page.locator('[data-role=dictTag]').getAttribute('class'), /is-warn/);
+  assert.equal(await page.locator('.cs-dict-list').evaluate((el) => el.scrollHeight > el.clientHeight && el.clientHeight <= 270), true);
+  assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), true, 'no horizontal overflow at 364px');
+  // The shared project list stays editable only after expanding its compact General card.
+  await page.evaluate(() => {
+    window.api.showTab('general');
+    window.api.projectIcons([
+      { id: 'p1', name: 'Visor', root: 'C:/p/visor', icon: 'favicon.svg' },
+      ...Array.from({ length: 8 }, (_, i) => ({ id: `p${i + 2}`, name: `Long project name ${i}`, root: '' })),
+    ]);
+  });
+  const panel = page.locator('.cs-project-icons');
+  assert.equal(await panel.evaluate(el => el.open), false);
+  await panel.locator('summary').focus();
+  await page.keyboard.press('Enter');
+  for (const [label, type] of [['Choose', 'pickProjectIcon'], ['Detect', 'detectProjectIcon'], ['Ask AI', 'projectIconWithAI'], ['Clear', 'clearProjectIcon']]) {
+    await page.getByRole('button', { name: `${label} icon for Visor`, exact: true }).click();
+    assert.deepEqual(await lastSent(type), { type, id: 'p1' });
+  }
+  await page.setViewportSize({ width: 320, height: 900 });
+  assert.equal(await panel.locator('.cs-project-list').evaluate(el => el.scrollHeight > el.clientHeight && el.clientHeight <= 290), true);
+  const clear = page.getByRole('button', { name: 'Clear icon for Visor', exact: true });
+  await clear.scrollIntoViewIfNeeded();
+  assert.equal(await clear.evaluate(el => { const a = el.getBoundingClientRect(), b = el.closest('.cs-project-list').getBoundingClientRect(); return a.left >= b.left && a.right <= b.right; }), true, 'all actions fit at 320px');
+  await page.getByRole('button', { name: 'Choose icon for Long project name 7', exact: true }).click();
+  assert.deepEqual(await lastSent('pickProjectIcon'), { type: 'pickProjectIcon', id: 'p9' });
+  await page.evaluate(() => window.api.projectIcons([]));
+  assert.equal(await panel.evaluate(el => el.open), true, 'updates preserve expansion');
+  assert.match(await panel.locator('.cs-project-empty').innerText(), /Add a project/);
+  await panel.locator('summary').focus();
+  await page.keyboard.press('Space');
+  assert.equal(await panel.evaluate(el => el.open), false);
+  assert.deepEqual(errors, []);
+  console.log('Settings dictionary: search, add, rename, switch, delete, scan, AI and limits passed.');
+} finally { await browser.close(); }

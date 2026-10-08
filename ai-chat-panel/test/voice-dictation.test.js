@@ -6,6 +6,153 @@ const { fromKeyEvent, parse } = require('../media/voice-hotkey.js');
 const { createHotkeyHandlers, MIN_HOLD_MS } = require('../lib/voice-hotkey.js');
 const { parseDuration, parseRateHeaders, GroqAccount } = require('../lib/groq-account.js');
 
+test('dictation cleanup requests text processing only and retains dictionary hints', async () => {
+  const { cleanDictation } = await import('../../voice-router/lib/groq-client.mjs');
+  const previousFetch = global.fetch;
+  const previousKey = process.env.GROQ_API_KEY;
+  let request;
+  try {
+    process.env.GROQ_API_KEY = 'test-key-no-network';
+    global.fetch = async (url, options) => {
+      request = { url, ...JSON.parse(options.body) };
+      return { ok: true, json: async () => ({ choices: [{ message: { content: 'Fix the SimTalk method.' } }] }) };
+    };
+    assert.equal(await cleanDictation('fix the sim talk method', { dictionaryTerms: ['SimTalk'] }), 'Fix the SimTalk method.');
+    assert.match(request.messages[0].content, /EXCLUSIVELY a text processor/);
+    assert.doesNotMatch(request.messages[0].content, /primaryIntent|ui_aesthetics|backend_ast|targetModel/);
+    assert.match(request.messages[1].content, /SimTalk/);
+    assert.match(request.messages[1].content, /fix the sim talk method/);
+  } finally {
+    global.fetch = previousFetch;
+    if (previousKey === undefined) delete process.env.GROQ_API_KEY;
+    else process.env.GROQ_API_KEY = previousKey;
+  }
+});
+
+test('standalone cleanup rejects a provider response cut off by its output limit', async () => {
+  const { cleanDictation } = await import('../../voice-router/lib/groq-client.mjs');
+  const previousFetch = global.fetch, previousKey = process.env.GROQ_API_KEY;
+  try {
+    process.env.GROQ_API_KEY = 'test-key-no-network';
+    global.fetch = async () => ({ ok: true, json: async () => ({
+      choices: [{ finish_reason: 'length', message: { content: 'This sentence is cut' } }],
+    }) });
+    await assert.rejects(cleanDictation('This sentence is cut off, and here is the final sentence.'), /preserving the full raw transcript/);
+  } finally {
+    global.fetch = previousFetch;
+    if (previousKey === undefined) delete process.env.GROQ_API_KEY;
+    else process.env.GROQ_API_KEY = previousKey;
+  }
+});
+
+test('chat calls share Groq with Cloudflare: spill when nearly spent, back up on 429, and skip whichever has no key', async () => {
+  const { cleanDictation, setChatSpill } = await import('../../voice-router/lib/groq-client.mjs');
+  const previousFetch = global.fetch;
+  const env = ['GROQ_API_KEY', 'CLOUDFLARE_ACCOUNT_ID', 'CLOUDFLARE_API_TOKEN', 'CHAT_PROVIDER'];
+  const previous = Object.fromEntries(env.map((key) => [key, process.env[key]]));
+  const calls = [], tokens = [];
+  const answer = (usage) => { const body = { choices: [{ message: { content: 'Cleaned.' } }], usage }; return { ok: true, status: 200, headers: new Headers(), json: async () => body, clone() { return this; } }; };
+  try {
+    process.env.GROQ_API_KEY = 'groq-test'; process.env.CLOUDFLARE_ACCOUNT_ID = 'a'.repeat(32); process.env.CLOUDFLARE_API_TOKEN = 'cf-test'; delete process.env.CHAT_PROVIDER;
+    let spill = true, groqStatus = 200;
+    setChatSpill({ shouldSpill: () => spill, onGroqTokens: (n) => tokens.push(n) });
+    global.fetch = async (url, options) => {
+      const body = JSON.parse(options.body);
+      calls.push({ host: new URL(url).hostname, path: new URL(url).pathname, auth: options.headers.Authorization, model: body.model, max: body.max_tokens });
+      if (url.includes('cloudflare')) return answer({ prompt_tokens: 3, completion_tokens: 4 });
+      return groqStatus === 200 ? answer({ total_tokens: 42 }) : { ok: false, status: groqStatus, headers: new Headers(), text: async () => 'tokens per day' };
+    };
+    // Nearly spent: Cloudflare answers and Groq is not asked.
+    assert.equal(await cleanDictation('um cleaned'), 'Cleaned.');
+    assert.deepEqual(calls, [{ host: 'api.cloudflare.com', path: `/client/v4/accounts/${'a'.repeat(32)}/ai/v1/chat/completions`, auth: 'Bearer cf-test', model: '@cf/openai/gpt-oss-120b', max: 2048 }]);
+    calls.length = 0;
+    await cleanDictation('Keep the whole long recording. '.repeat(250));
+    assert.ok(calls[0].max > 2048, 'standalone Cloudflare honors the long transcript budget');
+    // Healthy: Groq answers, and what it spent is reported to the host.
+    calls.length = 0; spill = false;
+    assert.equal(await cleanDictation('um cleaned'), 'Cleaned.');
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.deepEqual(calls.map((c) => [c.host, c.auth, c.model]), [['api.groq.com', 'Bearer groq-test', 'openai/gpt-oss-120b']]);
+    assert.deepEqual(tokens, [42]);
+    // Groq's daily allowance is gone: Cloudflare is the backup.
+    calls.length = 0; groqStatus = 429;
+    assert.equal(await cleanDictation('um cleaned'), 'Cleaned.');
+    assert.deepEqual(calls.map((c) => c.host), ['api.groq.com', 'api.cloudflare.com']);
+    // No Groq key: Cloudflare alone.
+    calls.length = 0; delete process.env.GROQ_API_KEY;
+    assert.equal(await cleanDictation('um cleaned'), 'Cleaned.');
+    assert.deepEqual(calls.map((c) => c.host), ['api.cloudflare.com']);
+    // No Cloudflare: Groq's error stands.
+    calls.length = 0; process.env.GROQ_API_KEY = 'groq-test'; delete process.env.CLOUDFLARE_API_TOKEN;
+    await assert.rejects(cleanDictation('um cleaned'), /Chat API error 429/);
+    assert.deepEqual(calls.map((c) => c.host), ['api.groq.com']);
+  } finally {
+    setChatSpill({ shouldSpill: () => false, onGroqTokens: () => {} });
+    global.fetch = previousFetch;
+    for (const [key, value] of Object.entries(previous)) { if (value === undefined) delete process.env[key]; else process.env[key] = value; }
+  }
+});
+
+test('hosted dictation and titles share router budgets and saved credentials without duplicate calls', async () => {
+  const { cleanDictation, setChatSpill } = await import('../../voice-router/lib/groq-client.mjs');
+  const { runtime } = require('../lib/routing-runtime');
+  const fs = require('node:fs'), os = require('node:os'), path = require('node:path');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'routing-voice-budget-'));
+  const env = ['GROQ_API_KEY', 'CLOUDFLARE_ACCOUNT_ID', 'CLOUDFLARE_API_TOKEN'];
+  const previous = Object.fromEntries(env.map(key => [key, process.env[key]]));
+  const previousFetch = global.fetch, calls = [];
+  const values = {};
+  const keys = { groqApiKey: 'saved-groq', routingCloudflareAccount: 'a'.repeat(32), routingCloudflareToken: 'saved-cf' };
+  try {
+    for (const key of env) delete process.env[key];
+    const rt = runtime({ globalState: {
+      get: (key, fallback) => values[key] ?? fallback,
+      update: async (key, value) => { values[key] = value; },
+    }, secrets: { get: async key => keys[key] } }, () => [], dir);
+    rt.attachVoice({ setChatSpill });
+    let finishReason = 'stop';
+    let cleaned = 'Cleaned.';
+    global.fetch = async (url, init) => {
+      calls.push({ url, body: JSON.parse(init.body), auth: init.headers.Authorization });
+      return { ok: true, status: 200, json: async () => ({
+        choices: [{ finish_reason: finishReason, message: { content: cleaned } }],
+        usage: { total_tokens: 42, prompt_tokens: 30, completion_tokens: 12 },
+      }) };
+    };
+    assert.equal(await cleanDictation('um cleaned'), 'Cleaned.');
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].auth, 'Bearer saved-groq');
+    assert.equal(rt.router.usage().groq_requests, 1);
+    assert.equal(rt.router.usage().groq_tokens, 42);
+    const longTranscript = 'Please check the Astro website build. '.repeat(180) + 'Keep this final sentence intact.';
+    cleaned = longTranscript;
+    assert.equal(await cleanDictation(longTranscript), longTranscript);
+    assert.ok(calls[1].body.max_tokens > 2048);
+    assert.ok(calls[1].body.messages[1].content.includes('Keep this final sentence intact.'));
+    rt.router.usage().groq_tokens = 160000;
+    assert.equal(await cleanDictation(longTranscript), longTranscript);
+    assert.equal(calls.length, 3);
+    assert.equal(calls[2].auth, 'Bearer saved-cf');
+    assert.equal(calls[2].body.model, '@cf/openai/gpt-oss-120b');
+    assert.equal(calls[2].body.max_tokens, calls[1].body.max_tokens);
+    assert.ok(rt.router.usage().neurons > 0);
+    assert.equal(rt.router.usage().groq_requests, 2);
+    finishReason = 'length'; cleaned = 'Please check the Astro website';
+    await assert.rejects(cleanDictation(longTranscript), /output limit/);
+    assert.equal(calls.length, 5, 'both providers reject partial text before the caller falls back to raw');
+    finishReason = 'stop';
+    rt.router.usage().neurons = 10000;
+    rt.router.usage().groq_tokens = 200000;
+    await assert.rejects(cleanDictation('um cleaned'), /budget exhausted/);
+    assert.equal(calls.length, 5);
+  } finally {
+    setChatSpill({ callChat: null });
+    global.fetch = previousFetch;
+    for (const [key, value] of Object.entries(previous)) { if (value === undefined) delete process.env[key]; else process.env[key] = value; }
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test('hotkey: a key event becomes "Ctrl+Alt+Space", and only a usable combination counts', () => {
   assert.equal(fromKeyEvent({ code: 'Space', ctrlKey: true, altKey: true }), 'Ctrl+Alt+Space');
   assert.equal(fromKeyEvent({ code: 'KeyD', ctrlKey: true, shiftKey: true }), 'Ctrl+Shift+D');

@@ -14,16 +14,65 @@ const GROQ_CHAT_URL = 'https://api.groq.com/openai/v1/chat/completions';
 const GROQ_TRANSCRIPTION_URL = 'https://api.groq.com/openai/v1/audio/transcriptions';
 const DEFAULT_CHAT_MODEL = 'openai/gpt-oss-120b';
 const DEFAULT_TRANSCRIPTION_MODEL = 'whisper-large-v3-turbo';
+// The same open model on Cloudflare Workers AI: free within 10,000 Neurons a day, without training on prompts.
+const CLOUDFLARE_CHAT_MODEL = '@cf/openai/gpt-oss-120b';
+const CLOUDFLARE_MAX_TOKENS = 2048; // the model reasons first, and reasoning counts against the limit
 
 // Every Groq call goes through here so a host (the chat panel's Settings) can count requests and read the daily limit
 // Groq reports in the response headers. The listener gets { kind: 'chat' | 'transcription', status, headers }.
 let rateLimitListener = null;
 export function setRateLimitListener(listener) { rateLimitListener = listener; }
+export function reportRateLimit(event) {
+  try { rateLimitListener?.(event); } catch { /* accounting must never break a request */ }
+}
+
+// The host (the chat panel's router) tells chat calls when Groq is nearly used up and learns what they spend, so this
+// hosted calls use the router's budgets for both providers. Without a host, chat calls go to Groq first and move on a failure.
+let chatSpill = { shouldSpill: () => false, onGroqTokens: () => {}, callChat: null };
+export function setChatSpill(hooks) { chatSpill = { ...chatSpill, ...hooks }; }
+let groqPausedUntil = 0; // after a 429, Groq is skipped for a minute instead of being asked once per call
 
 async function groqFetch(url, init) {
   const response = await fetch(url, init);
-  try { rateLimitListener?.({ kind: url === GROQ_TRANSCRIPTION_URL ? 'transcription' : 'chat', status: response.status, headers: response.headers }); } catch { /* a listener must never break dictation */ }
+  const kind = url === GROQ_TRANSCRIPTION_URL ? 'transcription' : 'chat';
+  if (kind === 'chat' && response.status === 429) groqPausedUntil = Date.now() + 60000;
+  reportRateLimit({ kind, status: response.status, headers: response.headers });
+  if (kind === 'chat' && response.ok && typeof response.clone === 'function') response.clone().json().then((data) => chatSpill.onGroqTokens(data?.usage?.total_tokens)).catch(() => {});
   return response;
+}
+
+const cloudflareReady = () => Boolean(process.env.CLOUDFLARE_ACCOUNT_ID && process.env.CLOUDFLARE_API_TOKEN);
+
+async function cloudflareFetch(init) {
+  const body = JSON.parse(init.body);
+  const response = await fetch(`https://api.cloudflare.com/client/v4/accounts/${process.env.CLOUDFLARE_ACCOUNT_ID}/ai/v1/chat/completions`, {
+    ...init,
+    headers: { ...init.headers, Authorization: `Bearer ${process.env.CLOUDFLARE_API_TOKEN}` },
+    body: JSON.stringify({ ...body, model: CLOUDFLARE_CHAT_MODEL, max_tokens: body.max_tokens ?? CLOUDFLARE_MAX_TOKENS }),
+  });
+  if (!response.ok) return response;
+  const data = await response.json();
+  const payload = data?.result?.choices ? data.result : data; // the REST API sometimes wraps the answer in { result }
+  return { ok: true, status: response.status, json: async () => payload, text: async () => JSON.stringify(payload) };
+}
+
+// Chat calls (dictation cleanup, titles, Auto) use Groq. Cloudflare answers instead when Groq is nearly used up (as the
+// host reports), was out of its allowance a moment ago, or has no key here; and it is the backup when Groq answers 429
+// (daily allowance), 413, 5xx or is unreachable. Set CHAT_PROVIDER=cloudflare to prefer it. Transcription stays on Groq.
+async function chatFetch(url, init) {
+  if (chatSpill.callChat) {
+    const content = await chatSpill.callChat(JSON.parse(init.body));
+    return { ok: true, json: async () => ({ choices: [{ message: { content } }] }) };
+  }
+  if (!process.env.GROQ_API_KEY) return cloudflareFetch(init);
+  if (!cloudflareReady()) return groqFetch(url, init);
+  const first = process.env.CHAT_PROVIDER === 'cloudflare' || Date.now() < groqPausedUntil || chatSpill.shouldSpill();
+  const [primary, backup] = first ? [() => cloudflareFetch(init), () => groqFetch(url, init)] : [() => groqFetch(url, init), () => cloudflareFetch(init)];
+  try {
+    const response = await primary();
+    if (response.ok || !(first || response.status === 429 || response.status === 413 || response.status >= 500)) return response;
+  } catch { /* the other service answers */ }
+  return backup();
 }
 
 /** One-token chat request: the cheapest way to make Groq report the current limits (it counts as one request). */
@@ -103,7 +152,20 @@ CORE RULES:
 7. DEVELOPER JARGON: Ensure proper capitalization for technical acronyms and tools (Astro, CSS, HTML, API, AST, UI, UX, Git, GitHub, VS Code, JSON, Markdown). Do not rephrase developer slang (keep "adde", "commit", "push").
 8. REMOVE FILLERS: Cleanly strip verbal stutter, hesitations, and meaningless fillers (um, uh, äh, ähm, like, sozusagen, you know).
 9. CONTEXT REPAIR: Fix obvious phonetic transcription errors and homophones based on developer and software context.
-10. NO INVENTED FIXES OR DIAGNOSES: NEVER propose fixes, invent solutions, guess root causes, or add implementation steps. If the speaker describes a bug, issue, or symptom, output ONLY the speaker's description of that issue. Only include a fix or solution if the speaker explicitly dictates it.`;
+10. NO INVENTED FIXES OR DIAGNOSES: NEVER propose fixes, invent solutions, guess root causes, or add implementation steps. If the speaker describes a bug, issue, or symptom, output ONLY the speaker's description of that issue. Only include a fix or solution if the speaker explicitly dictates it.
+11. AI MESSAGES: Omit unnecessary courtesy phrases such as "thank you" or "thanks" in messages addressed to an AI, and never add polite sign-offs.`;
+
+// The composer's "Polish" button runs the writer's own typed draft through the same cleanup pass. Typed text is not
+// speech, so the spoken-form rules (digits, spoken punctuation, "new line") stay off and the structuring rules lead.
+const WRITTEN_ADDENDUM = `
+
+THIS INPUT WAS TYPED, NOT SPOKEN:
+The draft below is the user's own written prompt, often typed quickly and loosely. Rewrite it as a clearly structured prompt for an AI coding agent, in the user's own language(s), voice and level of detail.
+- Do NOT apply spoken-form conversions: leave words such as "one" or "period" as written, and treat "new line" as plain text.
+- Fix typos, grammar and capitalization. Merge repeated or rambling points. Order the points logically.
+- Use short paragraphs, and Markdown bullets or numbers for anything that is a list, steps, or several separate asks. Put the main goal first, then constraints.
+- Keep @mentions, file paths, URLs, commands, code, and any Markdown already present exactly as written.
+- Add nothing the user did not say: no new requirements, no solutions, no greeting or sign-off.`;
 
 function buildDictationUserPrompt(rawTranscript, context) {
   const lines = [];
@@ -130,15 +192,15 @@ function buildDictationUserPrompt(rawTranscript, context) {
     lines.push(context.dictionaryTerms.join(', '));
     lines.push('');
   }
-  lines.push(`[Raw spoken transcript to clean]\n"${rawTranscript}"`);
+  lines.push(context && context.written ? `[Typed draft to restructure]\n"${rawTranscript}"` : `[Raw spoken transcript to clean]\n"${rawTranscript}"`);
   return lines.join('\n');
 }
 
 /** Ask AI's dictation cleanup pass: same models, the real documented v1.1 prompt, plain text out. */
 export async function cleanDictation(rawTranscript, context = {}) {
-  const apiKey = requireApiKey();
+  const apiKey = requireChatKey();
 
-  const response = await groqFetch(GROQ_CHAT_URL, {
+  const response = await chatFetch(GROQ_CHAT_URL, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
@@ -147,8 +209,11 @@ export async function cleanDictation(rawTranscript, context = {}) {
     body: JSON.stringify({
       model: process.env.GROQ_MODEL || DEFAULT_CHAT_MODEL,
       temperature: 0,
+      // Leave room for the entire transcript, formatting and model reasoning.
+      // The host otherwise defaults to 512 tokens, cutting off long dictations.
+      max_tokens: Math.min(16384, Math.max(2048, Math.ceil(Buffer.byteLength(rawTranscript, 'utf8') / 2) + 1024)),
       messages: [
-        { role: 'system', content: DICTATION_SYSTEM_PROMPT },
+        { role: 'system', content: context.written ? DICTATION_SYSTEM_PROMPT + WRITTEN_ADDENDUM : DICTATION_SYSTEM_PROMPT },
         { role: 'user', content: buildDictationUserPrompt(rawTranscript, context) },
       ],
     }),
@@ -156,13 +221,22 @@ export async function cleanDictation(rawTranscript, context = {}) {
 
   if (!response.ok) {
     const body = await response.text().catch(() => '');
-    throw new Error(`Groq API error ${response.status}: ${body}`);
+    throw new Error(`Chat API error ${response.status}: ${body}`);
   }
 
   const payload = await response.json();
+  if (payload?.choices?.[0]?.finish_reason === 'length') throw new Error('Voice cleanup reached its output limit; preserving the full raw transcript.');
   const content = payload?.choices?.[0]?.message?.content;
-  if (!content || !content.trim()) throw new Error('Groq API returned no content.');
+  if (!content || !content.trim()) throw new Error('Chat API returned no content.');
   return content.trim();
+}
+
+/** The key a chat call needs: Groq's, or Cloudflare's when Groq is not set up. */
+function requireChatKey() {
+  if (chatSpill.callChat) return 'host-managed';
+  const apiKey = process.env.GROQ_API_KEY || (cloudflareReady() ? process.env.CLOUDFLARE_API_TOKEN : '');
+  if (!apiKey) throw new Error('Neither GROQ_API_KEY nor CLOUDFLARE_ACCOUNT_ID with CLOUDFLARE_API_TOKEN is set. Export one before running the router.');
+  return apiKey;
 }
 
 function requireApiKey() {
@@ -208,9 +282,9 @@ export async function transcribeAudio(filePath, options = {}) {
 
 /** Stage 2/3: single-pass cleaner + intent classifier via Groq chat completions. */
 export async function classify(rawTranscript, context = {}) {
-  const apiKey = requireApiKey();
+  const apiKey = requireChatKey();
 
-  const response = await groqFetch(GROQ_CHAT_URL, {
+  const response = await chatFetch(GROQ_CHAT_URL, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
@@ -229,18 +303,18 @@ export async function classify(rawTranscript, context = {}) {
 
   if (!response.ok) {
     const body = await response.text().catch(() => '');
-    throw new Error(`Groq API error ${response.status}: ${body}`);
+    throw new Error(`Chat API error ${response.status}: ${body}`);
   }
 
   const payload = await response.json();
   const content = payload?.choices?.[0]?.message?.content;
-  if (!content) throw new Error('Groq API returned no content.');
+  if (!content) throw new Error('Chat API returned no content.');
 
   let parsed;
   try {
     parsed = JSON.parse(content);
   } catch {
-    throw new Error(`Groq API returned non-JSON content: ${content}`);
+    throw new Error(`Chat API returned non-JSON content: ${content}`);
   }
 
   return {
@@ -341,10 +415,10 @@ Strict rules:
 
 /** Select an exact id from the live favorites, without fixed provider roles. */
 export async function selectFavoriteModel(task, candidates, quotas = {}, context = []) {
-  const response = await groqFetch(GROQ_CHAT_URL, {
+  const response = await chatFetch(GROQ_CHAT_URL, {
     method: 'POST',
     signal: AbortSignal.timeout(5000),
-    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${requireApiKey()}` },
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${requireChatKey()}` },
     body: JSON.stringify({
       model: process.env.GROQ_MODEL || DEFAULT_CHAT_MODEL,
       temperature: 0,
@@ -363,11 +437,11 @@ export async function selectFavoriteModel(task, candidates, quotas = {}, context
 
 /** Turn an initial prompt into a concise topic title (at most 5 words). */
 export async function generateTopicTitle(promptText) {
-  const apiKey = requireApiKey();
+  const apiKey = requireChatKey();
   const text = String(promptText || '').trim().slice(0, 1500);
   if (!text) return '';
 
-  const response = await groqFetch(GROQ_CHAT_URL, {
+  const response = await chatFetch(GROQ_CHAT_URL, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
@@ -386,7 +460,7 @@ export async function generateTopicTitle(promptText) {
 
   if (!response.ok) {
     const body = await response.text().catch(() => '');
-    throw new Error(`Groq API error ${response.status}: ${body}`);
+    throw new Error(`Chat API error ${response.status}: ${body}`);
   }
 
   const payload = await response.json();

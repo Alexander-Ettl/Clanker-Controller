@@ -50,10 +50,17 @@ try {
   assert.equal(await chassis.evaluate(el => getComputedStyle(el).transform), 'none');
   assert.equal(await page.locator('.clanker-rig').evaluate(el => Math.round(el.getBoundingClientRect().width)), 140);
   await page.mouse.move(999, 719);
-  await page.waitForFunction(() => document.querySelector('.clanker-face-rig').style.transform.includes('11px'));
-  assert.equal(await page.locator('.clanker-face-rig').evaluate(el => el.style.transform), 'translate(11px, 7.5px)');
+  const gazeNear = (x, y) => page.waitForFunction(([x, y]) => {
+    const m = document.querySelector('.clanker-face-rig').style.transform.match(/translate\(([-\d.]+)px, ([-\d.]+)px\)/);
+    return m && Math.abs(m[1] - x) < 0.1 && Math.abs(m[2] - y) < 0.1;
+  }, [x, y]);
+  await gazeNear(11, 7.5);
   assert.equal(await chassis.evaluate(el => getComputedStyle(el).transform), 'none');
   await page.waitForFunction(() => document.querySelector('.empty-state').classList.contains('mascot-blinking'), { timeout: 7000 });
+  await page.waitForFunction(() => document.querySelector('.clanker-eye-left-rig .clanker-eye-pixels').getAttribute('visibility') === 'visible', null, { timeout: 1000 });
+  if (process.argv[2]) await page.locator('.clanker-rig').screenshot({ path: path.join(process.argv[2], 'mascot-blink.png') });
+  await page.waitForFunction(() => document.querySelectorAll('.clanker-eye-left-rig .clanker-eye-pixels rect:not([visibility="hidden"])').length <= 7 && getComputedStyle(document.querySelector('.clanker-eye-left-rig .clanker-eye-solid')).display === 'none', null, { timeout: 1000 });
+  await page.waitForFunction(() => getComputedStyle(document.querySelector('.clanker-eye-left-rig .clanker-eye-solid')).display !== 'none', null, { timeout: 1000 });
   assert.equal(await page.evaluate(() => window.audioCreated), 0);
   const input = page.locator('#promptInput');
   await input.focus();
@@ -63,19 +70,55 @@ try {
   await input.pressSequentially(' ');
   assert.equal(await empty.getAttribute('data-mascot'), 'thinking');
   assert.equal(await chassis.evaluate(el => getComputedStyle(el).transform), 'none');
-  assert.equal(await page.locator('.clanker-scanline').evaluate(el => getComputedStyle(el).animationName), 'clanker-scan');
+  const scanOpacity = () => page.locator('.clanker-scanline').evaluate(el => Number(el.style.opacity));
+  await page.waitForFunction(() => Number(document.querySelector('.clanker-scanline').style.opacity) > 0.1);
 
   // Pause typing with text -> should stay in thinking state
   await input.fill('Write an Astro component');
   await page.waitForTimeout(800);
   assert.equal(await empty.getAttribute('data-mascot'), 'thinking');
-  assert.equal(await page.locator('.clanker-scanline').evaluate(el => getComputedStyle(el).animationName), 'clanker-scan');
+  await page.waitForFunction(() => Number(document.querySelector('.clanker-scanline').style.opacity) > 0.1);
+
+  // Easter egg: typing now and then turns the visor into a scrolling ASCII-bit ticker, then it fades out.
+  await page.evaluate(() => { window.realRandom = Math.random; Math.random = () => 0; });
+  await input.pressSequentially('abcdefghijklm');
+  await page.evaluate(() => { Math.random = window.realRandom; });
+  assert.equal(await empty.getAttribute('data-mascot'), 'decode');
+  await page.waitForFunction(() => Number(document.querySelector('.clanker-bits').style.opacity) > 0.9);
+  assert.ok((await page.locator('.clanker-bits').getAttribute('d')).length > 500);
+  await page.waitForTimeout(900);
+  assert.ok(Number(await page.locator('.clanker-brow-left-rig').evaluate(el => el.style.opacity)) < 0.2);
+  assert.ok(Number(await page.locator('.clanker-brow-right-rig').evaluate(el => el.style.opacity)) < 0.2);
+  if (process.argv[2]) await page.locator('.clanker-rig').screenshot({ path: path.join(process.argv[2], 'mascot-bits.png') });
+  const bitsX = () => page.locator('.clanker-bits').evaluate(el => el.style.transform);
+  const before = await bitsX();
+  await page.waitForTimeout(150);
+  assert.notEqual(await bitsX(), before);
+  await page.waitForFunction(() => document.querySelector('.empty-state').dataset.mascot !== 'decode', null, { timeout: 15000 });
+  await page.waitForFunction(() => Number(document.querySelector('.clanker-bits').style.opacity) < 0.05);
 
   // Voice dictation listening test
   await page.evaluate(() => window.dispatchEvent(new MessageEvent('message', { data: { type: 'micState', state: 'recording' } })));
   assert.equal(await empty.getAttribute('data-mascot'), 'listening');
   await page.evaluate(() => window.dispatchEvent(new MessageEvent('message', { data: { type: 'micState', state: 'idle' } })));
   assert.notEqual(await empty.getAttribute('data-mascot'), 'listening');
+  // Listening: the eyes wander, and leaving it fades the scan out instead of cutting it.
+  await page.evaluate(() => window.dispatchEvent(new MessageEvent('message', { data: { type: 'micState', state: 'recording' } })));
+  const gaze = () => page.locator('.clanker-eye-left-rig').evaluate(el => el.style.transform);
+  const first = await gaze();
+  await page.waitForFunction(first => document.querySelector('.clanker-eye-left-rig').style.transform !== first, first, { timeout: 3000 });
+  await page.evaluate(() => window.dispatchEvent(new MessageEvent('message', { data: { type: 'micState', state: 'idle' } })));
+  assert.ok(await scanOpacity() < 0.95);
+
+  // Scheduling: hovering the clock button turns the right eye into a ticking clock face.
+  await page.locator('#scheduleBtn').hover();
+  assert.equal(await empty.getAttribute('data-mascot'), 'scheduling');
+  await page.waitForFunction(() => Number(document.querySelector('.clanker-hand-min').style.opacity) > 0.5);
+  const hand = () => page.locator('.clanker-hand-min').evaluate(el => el.style.transform);
+  const tickedFrom = await hand();
+  await page.waitForFunction(from => document.querySelector('.clanker-hand-min').style.transform !== from, tickedFrom, { timeout: 2000 });
+  await page.mouse.move(999, 719);
+  await page.waitForFunction(() => document.querySelector('.empty-state').dataset.mascot !== 'scheduling');
 
   await empty.locator('[data-mascot-action="mention"]').click();
   assert.equal(await empty.getAttribute('data-mascot'), 'mention');
@@ -87,6 +130,13 @@ try {
   assert.equal(await page.evaluate(() => window.sent.filter(m => m.type === 'pickAttachments').length), 1);
   await page.locator('#modelPill').click();
   assert.equal(await empty.getAttribute('data-mascot'), 'model');
+  // Wink: the right eye breaks into pixels, drops out until a thin line is left, and the solid shape returns.
+  const eyeCells = () => page.evaluate(() => [...document.querySelectorAll('.clanker-eye-right-rig .clanker-eye-pixels rect')].filter(r => r.getAttribute('visibility') !== 'hidden').length);
+  await page.waitForFunction(() => document.querySelector('.clanker-eye-right-rig .clanker-eye-pixels').getAttribute('visibility') === 'visible');
+  await page.waitForFunction(() => document.querySelectorAll('.clanker-eye-right-rig .clanker-eye-pixels rect:not([visibility="hidden"])').length <= 10);
+  if (process.argv[2]) for (const [i, ms] of [0, 40, 120].entries()) { await page.waitForTimeout(ms); await page.locator('.clanker-rig').screenshot({ path: path.join(process.argv[2], `mascot-wink${i}.png`) }); }
+  assert.ok(await eyeCells() < 76);
+  await page.waitForFunction(() => getComputedStyle(document.querySelector('.clanker-eye-right-rig .clanker-eye-solid')).display !== 'none', null, { timeout: 3000 });
   await page.locator('.model-option[data-model-id="gpt-6.1-sol-high"]').click();
   assert.equal(await page.evaluate(() => window.audioCreated), 0);
   assert.equal(await page.locator('.topbar').innerHTML(), header);
