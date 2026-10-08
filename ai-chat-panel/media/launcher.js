@@ -101,7 +101,7 @@
     card.dataset.agent = agent;
     // Hovering the ring grows .ring-pill leftward out of it: both windows as bars with the exact % and reset (launcher.css).
     const pillRow = (label) => `<span class="ring-row"><span class="ring-row-name">${label}</span><i class="ring-bar"><b></b></i><span class="ring-row-pct"></span><span class="ring-row-eta"></span></span>`;
-    card.innerHTML = `<span class="ring" tabindex="0" title=""><span class="ring-pill" aria-hidden="true"><span class="ring-burn"><span class="ring-burn-label">BURN</span><b class="ring-burn-val"></b><i>%/h</i></span><span class="ring-rows">${pillRow('5h')}${pillRow('7d')}</span></span><svg viewBox="0 0 36 36" aria-hidden="true">${ringCircles(15)}${ringCircles(10)}</svg><span class="ring-logo">${ICONS[agent] || ''}</span></span><b class="model-card-5h"></b><span class="model-card-7d"></span><span class="model-card-reset"></span>`;
+    card.innerHTML = `<span class="ring" tabindex="0" title=""><span class="ring-pill" aria-hidden="true"><span class="ring-burn"><b class="ring-burn-val"></b><span class="ring-burn-label"></span></span><span class="ring-rows">${pillRow('5h')}${pillRow('7d')}</span></span><svg viewBox="0 0 36 36" aria-hidden="true">${ringCircles(15)}${ringCircles(10)}</svg><span class="ring-logo">${ICONS[agent] || ''}</span></span><b class="model-card-5h"></b><span class="model-card-7d"></span><span class="model-card-reset"></span>`;
     return updateModelCard(card, quota);
   }
 
@@ -129,7 +129,10 @@
     const burn = window.burnRate.describe(quota);
     const pace = window.burnRate.estimate(quota);
     const burnLabel = card.querySelector('.ring-burn');
-    burnLabel.querySelector('.ring-burn-val').textContent = pace ? Math.round(pace.perHour) : '–'; // the full sentence stays in the tooltip
+    // One line, "7m of Usage remaining": the time until the quota is spent at the pace so far, or "Lasts" when the window resets first.
+    // The full sentence stays in the tooltip.
+    burnLabel.querySelector('.ring-burn-label').textContent = pace?.resetsFirst ? 'until the reset' : pace?.minutesLeft === 0 ? 'Usage is spent' : 'of Usage remaining';
+    burnLabel.querySelector('.ring-burn-val').textContent = !pace ? '–' : pace.resetsFirst ? 'Lasts' : pace.minutesLeft === 0 ? 'Now' : window.burnRate.duration(pace.minutesLeft);
     burnLabel.classList.toggle('is-low', pace?.resetsFirst === false);
     const value = lastApiValue?.byAgent?.[agent];
     card.title = `${names[agent] || agent}: ${five === null ? 'no live quota' : `${five}% of the 5h window left`}${week === null ? '' : `, ${week}% of the week`}${quota?.resetsAt ? `, ${resetsIn(quota.resetsAt)}` : ''}${value > 0 ? `
@@ -180,7 +183,7 @@ API value so far: ≈ ${window.apiValue.formatUsd(value)} (at pay-per-token pric
   const peekShapes = new ResizeObserver((entries) => entries.forEach(({ target, contentRect }) => {
     if (!contentRect.width) return;
     const outline = window.bubbleOutline(contentRect.width, 46, 6);
-    target.querySelectorAll('path').forEach((path) => path.setAttribute('d', outline));
+    target.querySelectorAll('.history-peek-shape path').forEach((path) => path.setAttribute('d', outline));
   }));
 
   function historyPeek(session, rowClasses, agent, title) {
@@ -188,12 +191,11 @@ API value so far: ≈ ${window.apiValue.formatUsd(value)} (at pay-per-token pric
     const peek = document.createElement('div');
     peek.className = `history-peek ${rowClasses.replace('history-row', '').trim()}`;
     peek.setAttribute('aria-hidden', 'true');
-    peek.innerHTML = `<svg class="history-peek-shape"><defs><clipPath id="peek-clip-${id}"><path/></clipPath><linearGradient id="peek-sheen-${id}" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#fff" stop-opacity=".045"/><stop offset=".4" stop-color="#fff" stop-opacity="0"/></linearGradient></defs><g clip-path="url(#peek-clip-${id})"><path class="history-peek-fill"/><path fill="url(#peek-sheen-${id})"/><path class="history-peek-rim"/></g></svg><div class="history-peek-text"><div class="history-peek-title"></div><div class="history-peek-meta"><time class="history-peek-when"></time><span class="history-peek-last"></span></div></div><span class="history-peek-mark"></span>`;
+    peek.innerHTML = `<svg class="history-peek-shape"><defs><clipPath id="peek-clip-${id}"><path/></clipPath><linearGradient id="peek-sheen-${id}" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#fff" stop-opacity=".045"/><stop offset=".4" stop-color="#fff" stop-opacity="0"/></linearGradient></defs><g clip-path="url(#peek-clip-${id})"><path class="history-peek-fill"/><path fill="url(#peek-sheen-${id})"/><path class="history-peek-rim"/></g></svg><div class="history-peek-text"><div class="history-peek-title"></div><div class="history-peek-meta"><span class="history-peek-project"></span><span class="history-peek-last"></span></div></div><span class="history-peek-mark"></span>`;
     peek.querySelector('.history-peek-title').textContent = title;
-    const when = peek.querySelector('.history-peek-when');
-    when.dataset.at = session.updatedAt || '';
-    when.textContent = peekTime(session.updatedAt);
-    // Like the preview in Manage Chats: who spoke last, then what they said.
+    // Like the preview in Manage Chats: the project it last worked in, then who spoke last and what they said.
+    const project = peek.querySelector('.history-peek-project');
+    project.textContent = session.projectNames?.[0] || session.projectName || '';
     const last = peek.querySelector('.history-peek-last');
     const message = session.lastMessage;
     if (message?.text) {
@@ -212,9 +214,6 @@ API value so far: ≈ ${window.apiValue.formatUsd(value)} (at pay-per-token pric
     peekShapes.observe(peek);
     return peek;
   }
-
-  const peekTime = (iso) => window.chatTime.chatTime(iso, { locale: TIME_PREFS.locale, hourCycle: HOUR_CYCLE });
-  setInterval(() => historyList.querySelectorAll('.history-peek-when').forEach((label) => { label.textContent = peekTime(label.dataset.at); }), 30000);
 
   // Every row is just a provider mark, so a long history is a wall of look-alikes: the rail shows the live chats
   // and the latest few, and a "9+" chip opens Manage Chats (which also renames and deletes) for the rest.

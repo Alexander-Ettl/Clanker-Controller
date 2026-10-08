@@ -63,10 +63,160 @@ body.has-rail > .fs-modal { right: 85px; }
   pointer-events: none;
 }
 
-/* Project: the folder this chat works in (main.js moves its bar here from the old strip under the composer). The name is
-   a pill as wide as the rail, ellipsised when long (the tooltip has the full path); the folder button sits under it. */
+/* Project: one glass pill holding a squircle tile per project, built like the Recent pill below it (same tile size, rim,
+   and concentric corner: outer radius = tile radius + padding + border). The chat's own project has the white rim; a
+   ring turns around the project the agent is editing right now and glides when it moves on (main.js). The "Manage"
+   button under it renames, relocates and lists. */
 .project-toolbar.is-rail { flex-direction: column; align-items: center; gap: 8px; margin: 0; max-width: none; }
-.project-toolbar.is-rail .project-picker { width: 100%; box-sizing: border-box; padding: 7px 8px; border-radius: 14px; text-align: center; }
+.project-toolbar.is-rail .project-picker { width: 100%; box-sizing: border-box; padding: 6px 8px; border-radius: 14px; text-align: center; font-size: 11px; color: var(--text-secondary); }
+.project-pill { display: none; }
+.project-toolbar.is-rail .project-pill {
+  --tile-r: 9px;
+  --pad: 8px;
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  align-self: center;
+  gap: 10px;
+  padding: var(--pad);
+  border: 1px solid var(--eo-border);
+  border-radius: calc(var(--tile-r) + var(--pad) + 1px);
+  background: var(--rail-pill);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.05);
+}
+.project-item { position: relative; z-index: 1; flex: none; width: 40px; height: 40px; }
+.project-tile {
+  --rim: rgba(255, 255, 255, 0.14);
+  position: relative;
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 40px;
+  height: 40px;
+  padding: 0;
+  border: 0;
+  background: var(--rim);
+  clip-path: url(#squircle);
+  color: var(--text-primary);
+  cursor: pointer;
+  transition: background 0.15s var(--eo-ease);
+}
+.project-tile::before { content: ''; position: absolute; inset: 1px; background: var(--rail-tile); clip-path: url(#squircle); transition: background 0.15s var(--eo-ease); }
+.project-tile:hover::before { background: var(--rail-tile-hover); }
+.project-tile:focus-visible { outline: 0; --rim: var(--text-secondary); }
+:is(.project-tile, .project-peek).is-touched { --rim: rgba(100, 210, 255, 0.48); }
+:is(.project-tile, .project-peek).is-working { --rim: var(--auto-color); }
+:is(.project-tile, .project-peek).is-active { --rim: rgba(255, 255, 255, 0.85); }
+.project-tile.is-active { cursor: default; }
+.project-tile.is-active::before { background: var(--rail-tile-hover); }
+.project-mark { position: relative; z-index: 1; display: grid; place-items: center; font: 700 14px var(--font-text); letter-spacing: -0.02em; color: hsl(var(--hue, 220) 72% 80%); }
+.project-mark svg { width: 16px; height: 16px; }
+/* A favicon replaces the initials once it has loaded. */
+.project-icon { display: block; width: 24px; height: 24px; object-fit: contain; border-radius: 6px; pointer-events: none; user-select: none; }
+.project-icon.is-dark { box-sizing: border-box; padding: 3px; background: rgba(255, 255, 255, 0.9); }
+.is-add .project-tile { --rim: rgba(255, 255, 255, 0.1); }
+.is-add .project-tile::before { background: rgba(255, 255, 255, 0.03); }
+.is-add .project-mark { color: var(--text-secondary); }
+.is-add .project-tile:hover .project-mark { color: var(--text-primary); }
+/* Hover: the tile's left edge is pulled out over the chat into a card with the project's name beside its icon, the way a
+   chat in the Recent list grows into its preview (launcher.js redraws the squircle at every width the transition passes,
+   main.js sets --peek-w from the name). The icon stays at the right end; closing runs the motion backwards. */
+.rail:has(.project-item:is(:hover, .is-editing)) { z-index: 55; } /* over the chat and its panels (.fs-modal is 50) while open */
+.project-item:is(:hover, .is-editing) { z-index: 5; }
+.project-item:hover .project-live { opacity: 0; animation: none; } /* the card covers its corner; the × takes it */
+.project-peek {
+  --rim: rgba(255, 255, 255, 0.14);
+  position: absolute;
+  top: 0;
+  right: 0;
+  z-index: 2;
+  width: 40px;
+  height: 40px;
+  color: var(--text-primary);
+  cursor: pointer;
+  opacity: 0;
+  pointer-events: none;
+  transform-origin: right center;
+  transition: width 0.45s var(--eo-ease), opacity 0.15s var(--eo-ease) 0.3s, filter 0.25s var(--eo-ease), scale 0.3s var(--eo-ease);
+}
+/* It springs out: the width overshoots a little and settles, the card lifts, and it glows in the project's own hue. */
+.project-item:is(:hover, .is-editing) .project-peek {
+  width: var(--peek-w, 160px);
+  scale: 1.06;
+  opacity: 1;
+  pointer-events: auto;
+  filter: drop-shadow(0 10px 26px rgba(0, 0, 0, 0.5)) drop-shadow(0 0 14px hsl(var(--hue, 220) 80% 62% / 0.28));
+  transition: width 0.55s cubic-bezier(0.34, 1.5, 0.5, 1), opacity 0.1s var(--eo-ease), filter 0.25s var(--eo-ease), scale 0.45s cubic-bezier(0.34, 1.7, 0.5, 1);
+}
+.project-peek-shape { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; pointer-events: none; }
+.project-peek-fill { fill: rgb(26, 28, 34); } /* the charcoal of the Recent previews */
+.project-peek-rim { fill: none; stroke: var(--rim); stroke-width: 2; stroke-linejoin: round; } /* the outer half is clipped away: a 1px rim */
+.project-peek-text {
+  position: absolute;
+  top: 0;
+  left: 18px;
+  right: 74px; /* clear of the pencil and the icon */
+  height: 40px;
+  display: flex;
+  align-items: center;
+  overflow: hidden;
+  opacity: 0;
+  translate: 14px 0;
+  font: 600 13px/1.3 var(--font-text);
+  letter-spacing: -0.01em;
+  white-space: nowrap;
+  transition: opacity 0.1s var(--eo-ease), translate 0.1s var(--eo-ease);
+}
+.project-peek-text span { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.project-item:is(:hover, .is-editing) :is(.project-peek-text, .project-edit) { opacity: 1; translate: 0 0; transition: opacity 0.25s var(--eo-ease) 0.15s, translate 0.5s cubic-bezier(0.34, 1.4, 0.5, 1) 0.1s, background 0.15s var(--eo-ease), color 0.15s var(--eo-ease); }
+.project-peek-mark { position: absolute; top: 0; right: 0; width: 40px; height: 40px; display: grid; place-items: center; transition: scale 0.45s cubic-bezier(0.34, 1.7, 0.5, 1); }
+.project-item:is(:hover, .is-editing) .project-peek-mark { scale: 1.1; }
+.project-edit {
+  position: absolute; top: 8px; right: 42px; display: grid; place-items: center; width: 24px; height: 24px; padding: 0;
+  border: 0; border-radius: 50%; background: transparent; color: var(--text-tertiary); cursor: pointer;
+  opacity: 0; translate: 14px 0; transition: opacity 0.1s var(--eo-ease), translate 0.1s var(--eo-ease), background 0.15s var(--eo-ease), color 0.15s var(--eo-ease);
+}
+.project-edit svg { width: 12px; height: 12px; }
+.project-edit:hover, .project-edit:focus-visible { background: rgba(255, 255, 255, 0.14); color: var(--text-primary); outline: 0; }
+.project-item.is-editing .project-edit { display: none; }
+.project-item.is-editing .project-peek-text { right: 44px; }
+.project-rename {
+  width: 100%; min-width: 0; box-sizing: border-box; padding: 4px 8px; border: 1px solid var(--accent, #64d2ff); border-radius: 8px;
+  background: rgba(255, 255, 255, 0.07); color: var(--text-primary); font: inherit; letter-spacing: inherit; outline: 0;
+}
+.project-peek.is-active .project-peek-text { color: var(--text-primary); }
+.project-peek.is-working .project-peek-text { color: var(--auto-color); }
+.project-picker[hidden] { display: none; }
+
+/* The ring: a squircle 2px bigger all round, its conic rim turning once per 2.4s (the chat's thinking loop). It rides
+   under the tiles and slides to whichever project the agent is in. */
+@property --project-spin { syntax: '<angle>'; inherits: false; initial-value: 0deg; }
+.project-focus {
+  position: absolute;
+  top: 0;
+  left: calc(var(--pad) - 3px);
+  z-index: 0;
+  width: 46px;
+  height: 46px;
+  background: conic-gradient(from var(--project-spin), var(--auto-color), color-mix(in srgb, var(--auto-color) 12%, transparent) 55%, var(--auto-color));
+  clip-path: url(#squircle);
+  opacity: 0;
+  pointer-events: none;
+  transition: transform 0.6s cubic-bezier(0.34, 1.25, 0.64, 1), opacity 0.25s var(--eo-ease);
+  animation: project-spin 2.4s linear infinite;
+}
+.is-busy > .project-focus { opacity: 1; }
+@keyframes project-spin { to { --project-spin: 360deg; } }
+
+.project-live { position: absolute; top: -3px; right: -3px; z-index: 3; width: 9px; height: 9px; border-radius: 50%; background: #34d399; box-shadow: 0 0 0 2px rgb(26, 28, 34); animation: project-dot-pulse 2.4s ease-in-out infinite; }
+@keyframes project-dot-pulse { 50% { opacity: 0.35; } }
+.project-x { position: absolute; top: -5px; right: -5px; z-index: 4; display: grid; place-items: center; width: 16px; height: 16px; padding: 0 0 1px; border: 1px solid var(--eo-border); border-radius: 50%; background: rgb(26, 28, 34); color: var(--text-secondary); font: 400 12px/1 var(--font-text); cursor: pointer; opacity: 0; scale: 0.8; pointer-events: none; transition: opacity 0.15s var(--eo-ease), scale 0.15s var(--eo-ease), color 0.15s var(--eo-ease); }
+.project-item:is(:hover, .force) .project-x, .project-x:focus-visible { opacity: 1; scale: 1; pointer-events: auto; }
+.project-x:hover { color: #ff6961; }
+.project-x:focus-visible { outline: 2px solid var(--text-secondary); }
+
+@media (prefers-reduced-motion: reduce) { .project-focus { animation: none; transition: opacity 0.1s; } .project-live { animation: none; } .project-peek, .project-peek-text, .project-peek-mark, .project-edit { transition: none !important; } }
 .project-toolbar.is-rail .round-btn { width: 42px; height: 42px; }
 .project-toolbar.is-rail .round-btn svg { width: 20px; height: 20px; }
 
@@ -98,6 +248,11 @@ body.has-rail > .fs-modal { right: 85px; }
   line-height: 1.25;
   white-space: nowrap;
 }
+
+/* The loop timer uses the same stacked pill, with a smooth growth and return to its circle. */
+.launcher-actions .round-btn-loop { transition: height .35s cubic-bezier(.34, 1.36, .64, 1), padding .35s var(--eo-ease), color .2s var(--eo-ease); }
+.launcher-actions .round-btn-loop.is-pill { height: 64px; }
+@media (prefers-reduced-motion: reduce) { .launcher-actions .round-btn-loop { transition: none; } }
 
 /* A section is its label plus what it labels; the gap between sections is much wider than inside one. */
 .launcher-section { display: flex; flex-direction: column; gap: 8px; }
@@ -163,7 +318,7 @@ body.has-rail > .fs-modal { right: 85px; }
 /* Hover: the ring's circle grows leftward into a pill over the chat, out of the ring itself (one element, so it stays
    fused), the mark stays put at its right end. It's absolute, so the rail never stretches. Inside: the 5h and the week
    as bars, each with its exact % and time to reset. Un-hover runs the same motion backwards. */
-.rail:has(.ring:is(:hover, :focus-visible)) { z-index: 20; } /* over the chat while open */
+.rail:has(.ring:is(:hover, :focus-visible)) { z-index: 55; } /* over the chat and its panels (.fs-modal is 50) while open */
 .ring:is(:hover, :focus-visible) { z-index: 3; }
 .ring:focus-visible { outline: 1px solid var(--agent); outline-offset: 3px; border-radius: 50%; }
 .ring-pill {
@@ -201,26 +356,28 @@ body.has-rail > .fs-modal { right: 85px; }
 .ring-burn {
   --burn: color-mix(in srgb, var(--agent) 55%, #8e8e93);
   display: flex;
-  align-items: center;
+  flex-wrap: wrap; /* one line; wrapping only lets align-content centre it while the two texts share a baseline */
+  align-content: center;
+  align-items: baseline;
   justify-content: center;
-  gap: 4px;
+  column-gap: 5px;
   flex: none;
   box-sizing: border-box;
   height: calc(100% - 12px);
-  padding: 0 8px;
-  border: 1px solid color-mix(in srgb, var(--burn) 45%, transparent);
+  padding: 0 14px 0 12px;
+  border: 1px solid color-mix(in srgb, var(--burn) 42%, transparent);
   border-radius: 999px;
-  background: color-mix(in srgb, var(--burn) 12%, transparent);
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.07);
+  /* A faint wash of the agent colour that fades toward the right, a lit top edge, and a soft glow under the value. */
+  background: linear-gradient(100deg, color-mix(in srgb, var(--burn) 22%, transparent), color-mix(in srgb, var(--burn) 7%, transparent));
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.09), 0 0 14px -4px color-mix(in srgb, var(--burn) 45%, transparent);
   color: var(--text-primary);
   white-space: nowrap;
   line-height: 1;
 }
+.ring-burn-val { font: 700 15px var(--font-text); letter-spacing: -0.015em; font-variant-numeric: tabular-nums; color: color-mix(in srgb, var(--burn) 35%, white); }
+.ring-burn-label { font: 500 10px var(--font-text); letter-spacing: 0.005em; color: var(--text-secondary); }
 .ring-burn.is-low { --burn: var(--usage-low); }
-.ring-burn-label { font: 600 9px var(--font-text); color: var(--text-secondary); }
-.ring-burn-val { font: 700 13px var(--font-text); font-variant-numeric: tabular-nums; }
 .ring-burn.is-low .ring-burn-val { color: color-mix(in srgb, var(--burn) 70%, white); }
-.ring-burn i { font: 600 7px var(--font-text); font-style: normal; color: var(--text-secondary); }
 .ring-rows { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 6px; }
 .ring-row {
   display: grid;
@@ -250,7 +407,7 @@ body.has-rail > .fs-modal { right: 85px; }
 .ring-row.is-low .ring-bar b { background: var(--usage-low); }
 
 .model-cards:not(.is-loading) .ring:is(:hover, :focus-visible) > svg { opacity: 0; }
-.model-cards:not(.is-loading) .ring:is(:hover, :focus-visible) .ring-pill { width: min(300px, calc(100vw - 32px)); pointer-events: auto; }
+.model-cards:not(.is-loading) .ring:is(:hover, :focus-visible) .ring-pill { width: min(356px, calc(100vw - 32px)); pointer-events: auto; }
 .model-cards:not(.is-loading) .ring:is(:hover, :focus-visible) .ring-pill::before { opacity: 1; }
 .model-cards:not(.is-loading) .ring:is(:hover, :focus-visible) :is(.ring-row, .ring-burn) { opacity: 1; transition: opacity 0.25s var(--eo-ease) 0.2s; }
 .model-cards:not(.is-loading) .ring:is(:hover, :focus-visible) .ring-bar b { width: calc(var(--pct, 0) * 1%); transition: width 0.7s var(--eo-ease) 0.2s; }
@@ -416,7 +573,7 @@ body.has-rail > .fs-modal { right: 85px; }
    said what last), the way the usage rings grow into a pill. Same height and same tail, so only the left border moves, and
    the two left corners keep their curvature (launcher.js redraws the outline at every width the transition passes). The
    mark stays at the right end; closing runs the motion backwards. It sits over the tile, opaque, and takes over its click. */
-.rail:has(.history-item:hover) { z-index: 20; } /* over the chat while open */
+.rail:has(.history-item:hover) { z-index: 55; } /* over the chat and its panels (.fs-modal is 50) while open */
 .history-peek {
   --history-rim: rgba(255, 255, 255, 0.14);
   position: absolute;
@@ -432,7 +589,7 @@ body.has-rail > .fs-modal { right: 85px; }
   transition: width 0.6s cubic-bezier(0.32, 0.72, 0, 1), opacity 0.15s var(--eo-ease) 0.45s, filter 0.25s var(--eo-ease);
 }
 .history-item:hover .history-peek {
-  width: min(300px, calc(100vw - 32px));
+  width: min(356px, calc(100vw - 32px));
   opacity: 1;
   pointer-events: auto;
   filter: drop-shadow(0 8px 24px rgba(0, 0, 0, 0.35));
@@ -460,11 +617,10 @@ body.has-rail > .fs-modal { right: 85px; }
 .history-item:hover .history-peek-text { opacity: 1; transition: opacity 0.25s var(--eo-ease) 0.2s; }
 .history-peek-title { font: 600 13px/1.3 var(--font-text); letter-spacing: -0.01em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .history-peek-meta { display: flex; align-items: baseline; gap: 6px; font: 400 11.5px/1.3 var(--font-text); white-space: nowrap; }
-.history-peek-when { flex: none; font-weight: 600; font-variant-numeric: tabular-nums; color: var(--text-primary); opacity: 0.88; }
-.history-peek.is-recent .history-peek-when { color: #64d2ff; opacity: 1; }
-.history-peek.is-waiting .history-peek-when { color: #ffd60a; opacity: 1; }
+.history-peek-project { flex: none; max-width: 45%; overflow: hidden; text-overflow: ellipsis; font-weight: 600; color: var(--text-primary); opacity: 0.88; }
+.history-peek-project:empty { display: none; }
+.history-peek-project::after { content: '\00b7'; margin-left: 6px; font-weight: 400; color: var(--text-tertiary); }
 .history-peek-last { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; color: var(--text-secondary); }
-.history-peek-last::before { content: '\00b7'; margin-right: 6px; color: var(--text-tertiary); }
 .history-peek-last b { font-weight: 600; color: var(--text-primary); opacity: 0.9; }
 .history-peek-mark { position: absolute; top: 0; right: 0; width: 40px; height: 40px; display: grid; place-items: center; }
 .history-peek .agent-logo { width: 22px; height: 22px; }
@@ -480,10 +636,10 @@ body.has-rail > .fs-modal { right: 85px; }
    exact rectangle (64 x 40) and opens to the card. */
 .api-value { position: relative; align-items: center; }
 .api-value[hidden] { display: none; }
-.rail:has(.api-value-figure:is(:hover, :focus-visible)) { z-index: 20; } /* over the chat while open */
+.rail:has(.api-value-figure:is(:hover, :focus-visible)) { z-index: 55; } /* over the chat and its panels (.fs-modal is 50) while open */
 .api-value-figure {
   position: relative;
-  z-index: 2; /* over the usage rings' marks (z-index 1) when the card opens across them */
+  z-index: 4; /* over the active chat spinner (z-index 3) and usage marks (z-index 1) when the card opens across them */
   box-sizing: border-box;
   display: flex;
   flex-direction: column;

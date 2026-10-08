@@ -15,17 +15,21 @@
     const minutesLeft = remaining / perHour * 60;
     return { perHour, minutesLeft, resetsFirst: minutesLeft * 60000 >= reset - now };
   }
+  // 95 -> "1h 35m", 40 -> "40m", 3000 -> "2d 2h"
+  function duration(minutes) {
+    const total = Math.max(1, Math.round(minutes));
+    const days = Math.floor(total / 1440), hours = Math.floor(total % 1440 / 60), mins = total % 60;
+    if (days) return `${days}d${hours ? ` ${hours}h` : ''}`;
+    return hours ? `${hours}h${mins ? ` ${mins}m` : ''}` : `${mins}m`;
+  }
   function describe(quota, now = Date.now()) {
     const burn = estimate(quota, now);
     if (!burn) return 'Measuring burn rate…';
     if (burn.minutesLeft === 0) return 'Usage exhausted';
-    const minutes = Math.max(1, Math.round(burn.minutesLeft));
-    const hours = Math.floor(minutes / 60);
-    const duration = hours ? `${hours}h${minutes % 60 ? ` ${minutes % 60}m` : ''}` : `${minutes}m`;
     const rate = `${Number(burn.perHour.toFixed(1))}%/h`;
-    return burn.resetsFirst ? `Lasts until reset · ${rate}` : `≈ ${duration} left · ${rate}`;
+    return burn.resetsFirst ? `Lasts until reset · ${rate}` : `≈ ${duration(burn.minutesLeft)} left · ${rate}`;
   }
-  const api = { estimate, describe };
+  const api = { estimate, describe, duration };
   if (typeof module === 'object' && module.exports) module.exports = api;
   else root.burnRate = api;
 })(typeof window === 'object' ? window : globalThis);
