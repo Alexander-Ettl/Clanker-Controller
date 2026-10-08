@@ -3,10 +3,13 @@
 // looked at in one command instead of reloading the IDE. Not a test: nothing is asserted, you read the picture.
 //
 //   node test/render.mjs rail        the launcher's Recent list (states, spinners, times)
+//   node test/render.mjs projects    the Project pill at rest and with one tile open (hover held with .force)
 //   node test/render.mjs settings    the Chat Settings popup (tabs, pickers, close button)
+//   node test/render.mjs voice      Chat Settings > Voice (hotkey, microphone, dictionary, Groq)
 //   node test/render.mjs routing     Chat Settings > Routing (connect Cloudflare and Groq)
-//   node test/render.mjs model-menu  the composer menu's smart routing and Auto-Verify rows
+//   node test/render.mjs model-menu  Auto, models and Auto-Verify
 //   node test/render.mjs queue       queued-turn rows (model pills, photo previews)
+//   routing options: --connected=both|one|none (default both), --open=1 (expand the card and both services)
 //   options: --scale=4 (pixel ratio), --width=<css px> (window width), --chrome=<path> (else CHROME_PATH or a search)
 //
 // Fixtures are hand-written markup shaped like what launcher.js / main.js build, so keep them in step when those change.
@@ -45,7 +48,7 @@ const historyItem = (agent, state, time, running) =>
 const ringCircles = (r, pct) => `<circle class="ring-track" cx="18" cy="18" r="${r}"/><circle class="ring-fill" style="--pct:${pct}" cx="18" cy="18" r="${r}" pathLength="100"/>`;
 const ringRow = (name, pct, eta) => `<span class="ring-row" style="--pct:${pct}"><span class="ring-row-name">${name}</span><i class="ring-bar"><b></b></i><span class="ring-row-pct">${pct}%</span><span class="ring-row-eta">${eta}</span></span>`;
 const modelCard = (agent, five, week, rate, low, force) =>
-  `<div class="model-card model-card-${agent}" data-agent="${agent}"><span class="ring ${force ? 'force' : ''}"><span class="ring-pill"><span class="ring-burn ${low ? 'is-low' : ''}"><span class="ring-burn-label">BURN</span><b class="ring-burn-val">${rate}</b><i>%/h</i></span><span class="ring-rows">${ringRow('5h', five, '4h 53m')}${ringRow('7d', week, '6d 23h')}</span></span><svg viewBox="0 0 36 36">${ringCircles(15, five)}${ringCircles(10, week)}</svg><span class="ring-logo" data-logo="${agent}"></span></span><b class="model-card-5h">${five}%</b></div>`;
+  `<div class="model-card model-card-${agent}" data-agent="${agent}"><span class="ring ${force ? 'force' : ''}"><span class="ring-pill"><span class="ring-burn ${low ? 'is-low' : ''}"><b class="ring-burn-val">${rate}</b><span class="ring-burn-label">of Usage remaining</span></span><span class="ring-rows">${ringRow('5h', five, '4h 53m')}${ringRow('7d', week, '6d 23h')}</span></span><svg viewBox="0 0 36 36">${ringCircles(15, five)}${ringCircles(10, week)}</svg><span class="ring-logo" data-logo="${agent}"></span></span><b class="model-card-5h">${five}%</b></div>`;
 const apiRow = (agent, name, usd, pct) => `<div class="api-value-row" data-agent="${agent}" style="--pct:${pct}"><span class="api-value-mark"><span class="agent-mark" data-agent="${agent}"></span></span><span class="api-value-name">${name}</span><span class="api-value-bar"><b></b></span><span class="api-value-usd">${usd}</span></div>`;
 const apiValue = (force) => `<section class="launcher-section api-value"><div class="launcher-label">API value</div><div class="api-value-figure ${force ? 'force' : ''}" tabindex="0"><span class="api-value-amount">≈ $568</span><span class="api-value-note">not billed</span><div class="api-value-card"><div class="api-value-card-head"><span>API value</span><b>≈ $568</b></div><div class="api-value-range"><span>$454 – $682</span><i>±20%</i></div><p class="api-value-card-lead">What the work done here would have cost at the providers' pay-per-token API prices. Billing details aren't public, so this is an estimate. Your subscriptions cover it: a comparison, not a charge.</p><div class="api-value-rows">${apiRow('claude', 'Claude Code', '$497', 87)}${apiRow('codex', 'Codex', '$55', 10)}${apiRow('gemini', 'Antigravity', '$16', 3)}</div><p class="api-value-card-foot">This month ≈ $300 · since Sep 22, 2026 · prices updated Oct 1, 2026</p></div></div></section>`;
 
@@ -56,7 +59,7 @@ const queueRow = (brand, model, text, files) =>
 const roundBtn = '<button class="round-btn" type="button"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"><path d="M8 3v10M3 8h10"/></svg></button>';
 function sidebar(scrolled) {
   return `<div style="display:grid;grid-template-columns:minmax(0,1fr) 75px;height:420px;position:relative;margin:-12px"><div style="padding:20px;color:#777;font:12px sans-serif">chat</div><aside class="rail"><div class="rail-scroll">
-    <section class="launcher-section"><div class="launcher-label">Usage</div><div class="model-cards">${modelCard('claude', 99, 100, '8.2', false, scrolled)}${modelCard('codex', 41, 77, '31', true, false)}</div></section>
+    <section class="launcher-section"><div class="launcher-label">Usage</div><div class="model-cards">${modelCard('claude', 99, 100, 'Lasts', false, scrolled)}${modelCard('codex', 41, 77, '2h 10m', true, false)}</div></section>
     ${apiValue(false)}
     <div class="project-toolbar launcher-section is-rail"><div class="launcher-label">Project</div><button class="project-picker" type="button">2026</button><button class="round-btn" type="button"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3"><path d="M2 4a1 1 0 0 1 1-1h4l2 2h4a1 1 0 0 1 1 1v6a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1Z"/></svg></button></div>
     <div class="launcher-actions">${roundBtn}${roundBtn}${roundBtn}</div>
@@ -85,6 +88,15 @@ function cliFixture(confirm) {
 }
 
 const FIXTURES = {
+  projects: {
+    width: 320,
+    scripts: ['bubble-shape.js'],
+    body: `<div style="display:flex;justify-content:flex-end"><div class="project-toolbar launcher-section is-rail" style="width:64px"><div class="launcher-label">Project</div><div class="project-pill">${[
+      ['PW', 'Portfolio Website', 'is-active', ''], ['Vi', 'Visor', '', 'force'], ['CC', 'Clanker Controller', 'is-working', 'is-editing']].map(([mark, name, state, force], i) =>
+      `<div class="project-item ${force}" style="--hue:${i * 120 + 300};--peek-w:${Math.max(150, name.length * 7.4 + 98)}px"><button class="project-tile ${state}" type="button"><span class="project-mark">${mark}</span></button><div class="project-peek ${state}"><svg class="project-peek-shape"><defs><clipPath id="pc${i}"><path/></clipPath></defs><g clip-path="url(#pc${i})"><path class="project-peek-fill"/><path class="project-peek-rim"/></g></svg><div class="project-peek-text"><span>${force === 'is-editing' ? `<input class="project-rename" value="${name}">` : name}</span></div><button class="project-edit" type="button"><svg viewBox="7.99 7.95 496.01 496.06" fill="currentColor" aria-hidden="true"><path d="M339.24,100.59a8,8,0,0,0-11.32,0C21.76,406.75,39.26,388,37.51,393.51L8.76,483.11a16,16,0,0,0,20.13,20.13c97.07-31.14,92.2-28.84,96-32.67L411.41,184.08a8,8,0,0,0,0-11.32Z"/><path d="M403.22,25.29,361.86,66.65a8,8,0,0,0,0,11.31L434,150.14a8,8,0,0,0,11.31,0l41.36-41.36A58.65,58.65,0,0,0,504,67C504,14.85,440.44-11.93,403.22,25.29Z"/></svg></button><span class="project-peek-mark"><span class="project-mark">${mark}</span></span></div>${state ? '' : '<button class="project-x" type="button">×</button>'}</div>`).join('')
+    }<div class="project-item is-add"><button class="project-tile" type="button"><span class="project-mark">+</span></button></div></div></div></div>`,
+    init: `const shapes = new ResizeObserver((entries) => entries.forEach(({ target, contentRect }) => target.querySelectorAll('.project-peek-shape path').forEach((p) => p.setAttribute('d', window.bubbleOutline(contentRect.width, 40, 0))))); document.querySelectorAll('.project-peek').forEach((peek) => shapes.observe(peek));`,
+  },
   rail: {
     width: 100,
     body: `<div class="history-list">${[
@@ -101,14 +113,14 @@ const FIXTURES = {
   usage: {
     width: 380,
     body: `<div style="display:flex;justify-content:flex-end"><div style="display:flex;flex-direction:column;gap:22px;width:64px;align-items:stretch">
-      <section class="launcher-section"><div class="launcher-label">Usage</div><div class="model-cards">${modelCard('claude', 15, 95, '118', false, true)}${modelCard('codex', 41, 77, '31', true, false)}</div></section>
+      <section class="launcher-section"><div class="launcher-label">Usage</div><div class="model-cards">${modelCard('claude', 15, 95, '7m', false, true)}${modelCard('codex', 41, 77, '2h 10m', true, false)}</div></section>
       ${apiValue(false)}
     </div></div>`,
   },
   'api-value': {
     width: 380,
     body: `<div style="display:flex;justify-content:flex-end"><div style="display:flex;flex-direction:column;gap:22px;width:64px;align-items:stretch">
-      <section class="launcher-section"><div class="launcher-label">Usage</div><div class="model-cards">${modelCard('claude', 99, 100, '8.2', false, false)}${modelCard('codex', 41, 77, '31', true, false)}</div></section>
+      <section class="launcher-section"><div class="launcher-label">Usage</div><div class="model-cards">${modelCard('claude', 99, 100, 'Lasts', false, false)}${modelCard('codex', 41, 77, '2h 10m', true, false)}</div></section>
       ${apiValue(true)}
     </div></div>`,
   },
@@ -118,7 +130,7 @@ const FIXTURES = {
   'usage-rest': {
     width: 100,
     body: `<div style="display:flex;justify-content:flex-end"><div style="display:flex;flex-direction:column;gap:22px;width:64px;align-items:stretch">
-      <section class="launcher-section"><div class="launcher-label">Usage</div><div class="model-cards">${modelCard('claude', 99, 100, '8.2', false, false)}${modelCard('codex', 41, 77, '31', true, false)}</div></section>
+      <section class="launcher-section"><div class="launcher-label">Usage</div><div class="model-cards">${modelCard('claude', 99, 100, 'Lasts', false, false)}${modelCard('codex', 41, 77, '2h 10m', true, false)}</div></section>
       ${apiValue(false)}
     </div></div>`,
   },
@@ -154,7 +166,10 @@ const FIXTURES = {
     init: `const api = window.initChatSettings({ vscode: { postMessage() {} }, body: document.getElementById('csBody') });
       api.showTab('voice');
       api.voice({ hotkey: 'Ctrl+Alt+Space', mode: 'hold', sounds: true, hotkeyActive: true, supported: true, groq: { source: 'account', masked: 'gsk_…x9Qa', today: { day: '2026-10-02', calls: 41 },
-        limits: { chat: { limit: 1000, remaining: 612, resetsAt: Date.now() + 5.2 * 3600e3 }, transcription: { limit: 2000, remaining: 1960, resetsAt: Date.now() + 5.2 * 3600e3 } } } });`,
+        limits: { chat: { limit: 1000, remaining: 612, resetsAt: Date.now() + 5.2 * 3600e3 }, transcription: { limit: 2000, remaining: 1960, resetsAt: Date.now() + 5.2 * 3600e3 } } } });
+      api.projectIcons([{ id: 'a', name: 'Clanker Controller', root: 'C:/p/clanker' }, { id: 'b', name: 'Visor', root: 'C:/p/visor' }, { id: 'c', name: 'Portfolio', root: 'C:/p/portfolio' }]);
+      const word = (term, source, enabled = true) => ({ term, enabled, addedAt: 1, ...(source ? { source, project: 'Visor' } : {}) });
+      api.voiceDictionary({ entries: [word('SimTalk'), word('Tecnomatix'), word('OpenWhispr', 'learned', false), word('Astro'), word('ChatWindowHost', 'scan'), word('voiceDictionary', 'scan'), word('Liquid Glass', 'ai'), word('LauncherViewProvider', 'scan')], usage: { total: 8, enabled: 7, scanned: 3, inPrompt: 7, inCleanup: 7, limits: { entries: 500, scanned: 150, scanBatch: 60, promptTerms: 40, promptChars: 480, cleanupTerms: 150 } }, notice: 'Visor: found 41 technical words in 212 files, added 38.' });`,
   },
   // Chat Settings > Routing: connecting Cloudflare and Groq, drawn by the real settings.js. The mode itself is in the model menu.
   routing: {
@@ -163,12 +178,13 @@ const FIXTURES = {
     body: '<div class="fs-modal" id="settingsModal" style="position:static;display:block"><div class="fs-modal-sheet glass"><div class="fs-modal-body" id="csBody"></div></div></div>',
     init: `const api = window.initChatSettings({ vscode: { postMessage() {} }, body: document.getElementById('csBody') });
       api.showTab('routing');
-      api.fleet({ models: [], clis: {}, services: { routing: { config: ${JSON.stringify(ROUTING_DEFAULTS)}, usage: { neurons: 1200, groq_requests: 14, groq_tokens: 9000 }, models: ${JSON.stringify(SAMPLE_MODELS)}, connected: { cloudflare: false, groq: false }, reset: new Date(Date.now() + 5 * 3600e3).toISOString() } } });`,
+      api.fleet({ models: [], clis: {}, services: { routing: { config: ${JSON.stringify(ROUTING_DEFAULTS)}, usage: { neurons: 1200, groq_requests: 86, groq_tokens: 197631 }, models: ${JSON.stringify(SAMPLE_MODELS)}, connected: { cloudflare: ${flag('connected', 'both') !== 'none'}, groq: ${flag('connected', 'both') === 'both'} }, reset: new Date(Date.now() + 5 * 3600e3).toISOString() } } });
+      ${flag('open') ? "document.querySelectorAll('.cs-route-hero, .cs-svc').forEach((node) => { node.open = true; });" : ''}`,
   },
-  // The composer's model menu footer (main.js renderModelMenu): smart routing above Auto-Verify.
+  // The composer picker (main.js renderModelMenu): Auto, models and Auto-Verify.
   'model-menu': {
     width: 300,
-    body: `<div class="model-menu is-open glass" style="position:static;opacity:1;visibility:visible;transform:none;border-radius:16px"><div class="model-group"><button class="model-option" aria-selected="true"><span class="model-option-text"><span class="model-option-label">Auto</span><span class="model-option-hint">Best available favorite for each task</span></span></button></div><div class="model-group model-footer"><div class="model-routing"><div class="model-routing-head"><span class="model-verify-icon"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"><circle cx="4" cy="4" r="1.6"/><circle cx="12" cy="12" r="1.6"/><path d="M5.6 4h3.4a2.5 2.5 0 0 1 0 5H7a2.5 2.5 0 0 0 0 5h3.4"/></svg></span><span class="model-option-text"><span class="model-option-label">Smart routing</span><span class="model-option-hint">A free AI reads each message and picks the best model for it.</span></span></div><div class="model-routing-modes pill-track" role="radiogroup"><button role="radio" aria-checked="false"><span>Manual</span></button><button role="radio" aria-checked="false"><span>Shadow</span></button><button role="radio" aria-checked="true"><span>Auto</span></button></div><button class="model-routing-setup">Connect Cloudflare or Groq</button></div><button class="model-verify" role="switch" aria-checked="false"><span class="model-verify-icon"></span><span class="model-option-text"><span class="model-option-label">Auto-Verify</span><span class="model-option-hint">Check the work after every change, for every model</span></span><span class="model-verify-switch"></span></button></div></div>`,
+    body: `<div class="model-menu is-open glass" style="position:static;opacity:1;visibility:visible;transform:none;border-radius:16px"><div class="model-group"><button class="model-option" aria-selected="true"><span class="model-option-text"><span class="model-option-label">Auto</span><span class="model-option-hint">Picks a model for each task</span></span></button></div><div class="model-group"><div class="model-group-head">Claude Code</div><button class="model-option" aria-selected="false"><span class="model-option-text"><span class="model-option-label">Claude Sonnet 5.5 High</span></span></button></div><div class="model-group model-footer"><button class="model-verify" role="switch" aria-checked="false"><span class="model-verify-icon"></span><span class="model-option-text"><span class="model-option-label">Auto-Verify</span><span class="model-option-hint">Check the work after every change, for every model</span></span><span class="model-verify-switch"></span></button></div></div>`,
   },
   settings: {
     width: 440,
@@ -196,7 +212,7 @@ if (!fixture) {
 const width = Number(flag('width', fixture.width));
 
 const html = `<!doctype html><meta charset="utf-8"><style>
-${['style.css', 'launcher.css', 'settings.css'].map(read).join('\n').replaceAll(':is(:hover, :focus-visible)', ':is(:hover, :focus-visible, .force)')}
+${['style.css', 'launcher.css', 'settings.css'].map(read).join('\n').replaceAll(':is(:hover, :focus-visible)', ':is(:hover, :focus-visible, .force)').replaceAll('.project-item:is(:hover, .is-editing)', '.project-item:is(:hover, .is-editing, .force)')}
 *, *::before, *::after { animation: none !important; } /* a still picture, not a frame caught mid-entrance */
 body { margin: 0; padding: 12px; width: ${width}px; background: #0d0d10; }
 ${fixture.providers ? accentCss(fixture.providers) : ''}</style><body>${fixture.body}

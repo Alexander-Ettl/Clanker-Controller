@@ -18,6 +18,7 @@
 
   const svg = (paths) => `<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${paths}</svg>`;
   const ICON = {
+    loop: svg('<path d="M3 7.5V7a2.5 2.5 0 0 1 2.5-2.5H13M10.5 2l2.5 2.5-2.5 2.5M13 8.5V9a2.5 2.5 0 0 1-2.5 2.5H3M5.5 9 3 11.5 5.5 14"/>'),
     clock: svg('<circle cx="8" cy="8" r="5.5"/><path d="M8 5v3.2l2.1 1.3"/>'),
     terminal: svg('<path d="M3 4.5 6.5 8 3 11.5M8 11.5h5"/>'),
     telegram: svg('<path d="M14 2 2 6.8l4.6 2 2 4.6z"/><path d="M6.6 8.8 14 2"/>'),
@@ -28,6 +29,7 @@
     note: svg('<path d="M3 4.5h10M3 8h10M3 11.5h6"/>'),
     heart: svg('<path d="M8 13.6S2.2 10.2 2.2 6.3A3.1 3.1 0 0 1 8 4.8a3.1 3.1 0 0 1 5.8 1.5c0 3.9-5.8 7.3-5.8 7.3z"/>'),
     search: svg('<circle cx="7" cy="7" r="4.5"/><path d="m10.5 10.5 3 3"/>'),
+    close: svg('<path d="m4.5 4.5 7 7m0-7-7 7"/>'),
     mic: svg('<rect x="6" y="2" width="4" height="7" rx="2"/><path d="M3.5 7.5a4.5 4.5 0 0 0 9 0M8 12v2"/>'),
     key: svg('<circle cx="5.5" cy="10.5" r="2.5"/><path d="m7.3 8.7 6.2-6.2M11 5l1.8 1.8M9.5 6.5l1.5 1.5"/>'),
     chart: svg('<path d="M3 13V8M8 13V3M13 13V6"/>'),
@@ -49,6 +51,9 @@
     gauge: svg('<path d="M2.5 11.5a5.5 5.5 0 1 1 11 0M8 11 10.5 6.5"/>'),
     chevron: svg('<path d="m4 6 4 4 4-4"/>'),
     down: svg('<path d="M8 3v10M4 9l4 4 4-4"/>'),
+    book: svg('<path d="M3.5 3.2h6.3a2 2 0 0 1 2 2v8.1H5.5a2 2 0 0 1-2-2zM3.5 11.3a2 2 0 0 1 2-2h6.3"/>'),
+    plus: svg('<path d="M8 3.5v9M3.5 8h9"/>'),
+    pencil: svg('<path d="m10.2 3.3 2.5 2.5M3 13l.6-2.8 7-7 2.2 2.2-7 7z"/>'),
     copy: svg('<rect x="5.5" y="5.5" width="8" height="8" rx="2"/><path d="M10.5 5.5v-1a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v4a2 2 0 0 0 2 2h1"/>'),
   };
 
@@ -119,12 +124,18 @@
   };
 
   const MARKUP = `
+    <div class="cs-settings-search" data-role="settingsSearchBox">
+      <div class="cs-settings-search-field">${ICON.search}<input data-role="settingsSearch" type="search" role="combobox" aria-label="Search settings" aria-autocomplete="list" aria-expanded="false" aria-controls="cs-settings-search-results" placeholder="Search settings…" autocomplete="off" spellcheck="false"><button class="cs-icon-btn" data-role="settingsSearchClear" type="button" aria-label="Clear settings search" hidden>${ICON.close}</button></div>
+      <div class="cs-settings-search-results" id="cs-settings-search-results" data-role="settingsSearchResults" role="listbox" aria-label="Matching settings" hidden></div>
+      <p class="cs-settings-search-status" data-role="settingsSearchStatus" role="status" hidden></p>
+    </div>
     <div class="cs-tabs pill-track" role="tablist" aria-label="Clanker Controller settings">
-      <button class="cs-tab" role="tab" data-tab="general" aria-selected="true" type="button">${ICON.sliders}<span>General</span></button>
-      <button class="cs-tab" role="tab" data-tab="models" aria-selected="false" type="button">${ICON.cube}<span>Models</span></button>
-      <button class="cs-tab" role="tab" data-tab="routing" aria-selected="false" type="button">${ICON.server}<span>Routing</span></button>
-      <button class="cs-tab" role="tab" data-tab="voice" aria-selected="false" type="button">${ICON.mic}<span>Voice</span></button>
-      <button class="cs-tab" role="tab" data-tab="remote" aria-selected="false" type="button">${ICON.tunnel}<span>Remote</span></button>
+      <button class="cs-tab" role="tab" data-tab="general" aria-selected="true" aria-label="General" title="General" type="button">${ICON.sliders}<span>General</span></button>
+      <button class="cs-tab" role="tab" data-tab="models" aria-selected="false" aria-label="Models" title="Models" type="button">${ICON.cube}<span>Models</span></button>
+      <button class="cs-tab" role="tab" data-tab="routing" aria-selected="false" aria-label="Routing" title="Routing" type="button">${ICON.server}<span>Routing</span></button>
+      <button class="cs-tab" role="tab" data-tab="voice" aria-selected="false" aria-label="Voice" title="Voice" type="button">${ICON.mic}<span>Voice</span></button>
+      <button class="cs-tab" role="tab" data-tab="remote" aria-selected="false" aria-label="Remote" title="Remote" type="button">${ICON.tunnel}<span>Remote</span></button>
+      <button class="cs-tab" role="tab" data-tab="compliance" aria-selected="false" aria-label="Compliance" title="EU and GDPR compliance" type="button">${ICON.shield}<span>Compliance</span></button>
     </div>
 
     <div class="cs-pane" data-pane="general" role="tabpanel">
@@ -178,6 +189,16 @@
           <button class="cs-btn" data-role="openTerminal" type="button">Open</button>
         </div>
       </section>
+
+      <details class="cs-card cs-group cs-project-icons">
+        <summary class="cs-row">
+          <span class="cs-icon">${ICON.image}</span>
+          <div class="cs-info"><span class="cs-title">Project icons</span><span class="cs-desc">Customize the icons in your project rail.</span></div>
+          <span class="cs-tag" data-role="projectIconCount"></span>
+          ${ICON.chevron}
+        </summary>
+        <div class="cs-project-list" data-role="projectIcons"><p class="cs-project-empty" role="status">Loading projects…</p></div>
+      </details>
     </div>
 
     <div class="cs-pane" data-pane="voice" role="tabpanel" hidden>
@@ -200,6 +221,46 @@
           <span class="cs-icon">${ICON.sound}</span>
           <div class="cs-info"><span class="cs-title">Recording sounds</span><span class="cs-desc">A short tone when the microphone goes live and when it stops.</span></div>
           <button class="cs-switch" data-role="voiceSounds" role="switch" aria-checked="true" aria-label="Recording sounds" type="button"></button>
+        </div>
+        <div class="cs-row">
+          <span class="cs-icon">${ICON.sound}</span>
+          <div class="cs-info"><span class="cs-title">Pause background media</span><span class="cs-desc">Pause music and videos while you talk, then resume when recording ends. Works with Windows media controls.</span></div>
+          <button class="cs-switch" data-role="voicePauseMedia" role="switch" aria-checked="true" aria-label="Pause background media" type="button"></button>
+        </div>
+        <div class="cs-row">
+          <span class="cs-icon">${ICON.mic}</span>
+          <div class="cs-info"><span class="cs-title">Microphone</span><span class="cs-desc" data-role="micDesc">Used for dictation. A change applies to the next recording.</span></div>
+          <div class="cs-dd" data-role="micSelect">
+            <button class="cs-dd-trigger" type="button" aria-haspopup="listbox" aria-expanded="false" aria-label="Microphone"><span class="cs-dd-value"></span>${ICON.chevron}</button>
+            <div class="cs-dd-menu" role="listbox" aria-label="Microphone" hidden></div>
+          </div>
+        </div>
+      </section>
+
+      <section class="cs-card cs-dict" data-role="dictionary">
+        <div class="cs-row">
+          <span class="cs-icon">${ICON.book}</span>
+          <div class="cs-info"><span class="cs-title">Dictionary</span><span class="cs-desc" data-role="dictDesc">Names, tools and jargon dictation should spell your way.</span></div>
+          <span class="cs-tag" data-role="dictTag">0 words</span>
+        </div>
+        <div class="cs-dict-tools">
+          <label class="cs-model-search">${ICON.search}<input data-role="dictSearch" type="search" placeholder="Search words" aria-label="Search the dictionary" autocomplete="off" spellcheck="false"></label>
+          <div class="cs-dict-add">
+            <input class="cs-field" data-role="dictNew" type="text" maxlength="60" placeholder="Add a word or name…" aria-label="New dictionary word" autocomplete="off" spellcheck="false">
+            <button class="cs-btn is-primary is-small" data-role="dictAdd" type="button">${ICON.plus}<span>Add</span></button>
+          </div>
+        </div>
+        <div class="cs-dict-list" data-role="dictList" role="list" aria-label="Dictionary words"></div>
+        <p class="cs-status" data-role="dictStatus" role="status"></p>
+        <div class="cs-usage" data-role="dictUsage"></div>
+        <div class="cs-row cs-dict-scan">
+          <span class="cs-icon">${ICON.search}</span>
+          <div class="cs-info"><span class="cs-title">Scan a project</span><span class="cs-desc">Adds the class, function and package names a project uses, a limited number per scan. It runs on this computer and only reads files.</span></div>
+        </div>
+        <div class="cs-dict-projects" data-role="dictProjects"></div>
+        <div class="cs-actions cs-dict-actions">
+          <button class="cs-btn is-small" data-role="dictAI" type="button" title="Have a chat model edit the dictionary file for you">${ICON.bolt}<span>Edit with AI</span></button>
+          <button class="cs-btn is-small is-quiet" data-role="dictClearScanned" type="button" hidden>Remove scanned words</button>
         </div>
       </section>
 
@@ -229,6 +290,7 @@
       </section>
     </div>
 
+
     <div class="cs-pane" data-pane="remote" role="tabpanel" hidden>
       <section class="cs-card">
         <div class="cs-row">
@@ -253,6 +315,23 @@
           <button class="cs-btn is-primary" data-role="toggleTunnel" type="button">Start tunnel</button>
         </div>
       </section>
+    </div>
+
+    <div class="cs-pane" data-pane="compliance" role="tabpanel" hidden>
+      <p class="cs-note">Pointers for building in the EU and Germany. This is technical guidance, not legal advice: you stay responsible for what you publish, and a lawyer or your data protection officer has the last word.</p>
+      <section class="cs-card">
+        <div class="cs-row">
+          <span class="cs-icon">${ICON.shield}</span>
+          <div class="cs-info"><span class="cs-title">EU compliance check in loops</span><span class="cs-desc">One more scout and free text checks look for GDPR and TDDDG indicators: remote fonts, trackers, CDNs, embeds, a missing imprint or privacy page, forms without a notice, personal data in logs. They are listed for you to judge and never fixed automatically.</span></div>
+          <button class="cs-switch" data-role="complianceScout" role="switch" aria-checked="true" aria-label="EU compliance check in loops" type="button"></button>
+        </div>
+        <div class="cs-row">
+          <span class="cs-icon">${ICON.lock}</span>
+          <div class="cs-info"><span class="cs-title">Hide personal data from cloud models</span><span class="cs-desc">Before a loop sends project text to a cloud model, real-looking e-mail addresses, IBANs and phone numbers are replaced with placeholders. Your files and the loop's private copy keep the real values.</span></div>
+          <button class="cs-switch" data-role="complianceRedact" role="switch" aria-checked="true" aria-label="Hide personal data from cloud models" type="button"></button>
+        </div>
+      </section>
+      <div data-role="complianceBody"></div>
     </div>
 
     <div class="cs-pane" data-pane="models" role="tabpanel" hidden>
@@ -308,12 +387,12 @@
     // Credential inputs outlive every re-render, so a half-typed key survives a refresh of the page.
     const creds = { cloudflareAccount: credField('Account ID (32 characters)', 'Cloudflare Account ID'), cloudflareKey: credField('API token', 'Cloudflare API token'), groqKey: credField('gsk_…', 'Groq API key') };
 
-    const MODE_NAMES = { manual: 'Manual', shadow: 'Shadow', auto: 'Auto' };
+    const MODE_NAMES = { manual: 'Manual', auto: 'Auto' };
     const SERVICES = {
       cloudflare: {
         name: 'Cloudflare Workers AI', icon: ICON.tunnel, tint: '#f6821f',
-        blurb: 'Reads your message (and screenshots) and picks the model. Fast and free.',
-        note: 'Stay on the Workers Free plan (10,000 Neurons a day, no card needed) so overage can never be billed.',
+        blurb: 'Reads your message (and screenshots) and picks the model. Also takes over Groq\'s text work (GPT OSS 120B) when Groq is nearly used up.',
+        note: 'Stay on the Workers Free plan (10,000 Neurons a day, no card needed) so overage can never be billed. Cloudflare does not train on your prompts or share them with other customers.',
         steps: [
           ['Create a free Cloudflare account, or sign in.', ['Sign up', 'cfSignup']],
           ['Open <b>Workers AI</b>, press <b>Use REST API</b> and copy your <b>Account ID</b>.', ['Open Workers AI', 'cfAi']],
@@ -351,8 +430,9 @@
       const before = new Map([...routingPane.querySelectorAll('details[data-key]')].map((node) => [node.dataset.key, node.open]));
       const cfg = snapshot.config;
       const connected = snapshot.connected || {};
+      if(snapshot.configError)setRoutingStatus(snapshot.configError,'error');
       const save = (change) => { change(cfg); vscode.postMessage({ type: 'routingSave', config: cfg }); routingAction = { kind: 'save' }; setRoutingStatus('Saving…'); };
-      const labelled = (n, title, hint) => el('div', 'cs-section', `<span class="cs-step-no">${n}</span><span class="cs-section-title">${title}</span><span class="cs-section-hint">${hint}</span>`);
+      const labelled = (title, hint) => el('div', 'cs-section', `<span class="cs-section-title">${title}</span><span class="cs-section-hint">${hint}</span>`);
       const button = (label, onClick, className = '', icon = '') => { const node = el('button', `cs-btn ${className}`, `${icon}<span></span>`); node.type = 'button'; node.querySelector('span').textContent = label; node.addEventListener('click', onClick); return node; };
       const link = (label, key) => button(label, () => vscode.postMessage({ type: 'openRoutingLink', key }), 'is-small is-quiet', ICON.ext);
 
@@ -360,7 +440,7 @@
       const sw = (value, onChange, label) => { const node = el('button', 'cs-switch'); node.type = 'button'; node.setAttribute('role', 'switch'); node.setAttribute('aria-checked', String(!!value)); node.setAttribute('aria-label', label); node.addEventListener('click', () => { const next = node.getAttribute('aria-checked') !== 'true'; node.setAttribute('aria-checked', String(next)); onChange(next); }); return node; };
       const num = (value, name, onChange) => { const node = el('input', 'cs-num'); node.type = 'number'; node.min = '1'; if (TIER_CAPS[name]) node.max = String(TIER_CAPS[name]); node.value = value; node.addEventListener('change', () => onChange(Number(node.value))); return node; };
       const percent = (value, onChange) => {
-        const wrap = el('div', 'cs-slider'); const range = el('input'); range.type = 'range'; range.min = '5'; range.max = '95'; range.step = '1'; range.value = Math.round(value * 100);
+        const wrap = el('div', 'cs-slider'); const range = el('input'); range.type = 'range'; range.min = '0'; range.max = '100'; range.step = '1'; range.value = Math.round(value * 100);
         const out = el('output', '', `${range.value}%`); range.addEventListener('input', () => { out.textContent = `${range.value}%`; }); range.addEventListener('change', () => onChange(Number(range.value) / 100)); wrap.append(range, out); return wrap;
       };
       const pick = (choices, value, onChange, label) => { const node = el('select', 'cs-select'); node.setAttribute('aria-label', label); for (const [id, text] of choices) { const option = el('option'); option.value = id; option.textContent = text; node.append(option); } node.value = value; node.addEventListener('change', () => onChange(node.value)); return node; };
@@ -372,40 +452,39 @@
         const list = el('div', 'cs-set-list'); list.append(...rows); node.append(head, list); return node;
       };
 
-      // 1. What it is. The mode itself is switched in the chat's model menu, where it is used; here it is only shown.
-      const hero = el('section', 'cs-card cs-route-hero');
-      const chip = (name) => `<span class="cs-chip-state${connected[name] ? ' is-ok' : ''}"><i></i>${name === 'groq' ? 'Groq' : 'Cloudflare'} ${connected[name] ? 'connected' : 'not connected'}</span>`;
-      hero.innerHTML = `<div class="cs-row"><span class="cs-icon">${ICON.route}</span><div class="cs-info"><span class="cs-title">Smart routing</span><span class="cs-desc">A small, free AI reads each message and picks the best model for it, so easy tasks do not burn your best model's quota.</span></div></div><div class="cs-chip-states">${chip('cloudflare')}${chip('groq')}</div><p class="cs-mode-note"></p>`;
-      hero.querySelector('.cs-mode-note').textContent = `Mode: ${MODE_NAMES[cfg.router_mode]}. Switch it in the chat's model menu (Manual, Shadow or Auto). Connect a service below first.`;
-
-      // 2. Today's usage, in the bars the Voice tab uses.
+      // 1. Today's usage, in the bars the Voice tab uses. Compact: it is the part worth glancing at.
       const usage = snapshot.usage || {};
       const bar = (name, used, cap) => {
         const pct = Math.min(100, Math.round((used / cap) * 100));
         const row = el('div', 'cs-usage-row', `<div class="cs-usage-head"><span></span><span></span></div><div class="cs-usage-bar${pct >= 80 ? ' is-high' : ''}"><b style="--used:${pct}"></b></div>`);
         const [a, b] = row.querySelectorAll('.cs-usage-head span'); a.textContent = name; b.textContent = `${Math.round(used).toLocaleString()} of ${cap.toLocaleString()}`; return row;
       };
-      const usageCard = el('section', 'cs-card cs-route-usage', `<div class="cs-row"><span class="cs-icon">${ICON.chart}</span><div class="cs-info"><span class="cs-title">Used today</span><span class="cs-desc"></span></div></div>`);
-      usageCard.querySelector('.cs-desc').textContent = `Counted on this computer. Resets at ${new Date(snapshot.reset).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}.`;
+      const usageCard = el('section', 'cs-card cs-route-usage', `<div class="cs-usage-title"><span class="cs-title">Used today</span><span class="cs-desc"></span></div>`);
+      usageCard.querySelector('.cs-desc').textContent = `Counted on this computer. Resets at ${new Date(snapshot.reset).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`;
       const bars = el('div', 'cs-usage'); bars.append(bar('Cloudflare Neurons', usage.neurons || 0, cfg.cloudflare_neurons), bar('Groq requests', usage.groq_requests || 0, cfg.groq_rpd), bar('Groq tokens', usage.groq_tokens || 0, cfg.groq_tpd));
       usageCard.append(bars);
+      const counts = usage.destination_turns || {};
+      const distribution = el('p', 'cs-usage-foot');
+      distribution.textContent = `CLI tasks today: Claude ${counts.claude || 0} · Codex ${counts.codex || 0} · Gemini ${counts.gemini || 0}`;
+      distribution.title = 'Counts include manual sends; router benchmarks are excluded. Task counts are not token usage.';
+      usageCard.append(distribution);
 
-      // 3. Connect the services: a guide (open until connected) and the credentials.
-      const serviceCard = (name) => {
+      // 2. Smart routing and its two services in one card. Setup is done once, so each service is a single row that opens
+      // into the guide and the credentials only when wanted (and starts open until it is connected).
+      const serviceRow = (name) => {
         const info = SERVICES[name], ok = !!connected[name];
-        const card = el('section', 'cs-card cs-provider cs-service', `<div class="cs-row"><span class="cs-icon">${info.icon}</span><div class="cs-info"><div class="cs-title-line"><span class="cs-title"></span><span class="cs-tag">Free tier</span></div><span class="cs-desc"></span></div><span class="cs-tag ${ok ? 'is-ok' : 'is-warn'}">${ok ? 'Connected' : 'Not connected'}</span></div>`);
-        card.dataset.service = name;
-        card.style.setProperty('--tint', info.tint);
-        card.querySelector('.cs-title').textContent = info.name; card.querySelector('.cs-desc').textContent = info.blurb;
-        const guide = el('details', 'cs-guide'); guide.dataset.key = `guide:${name}`; guide.open = before.get(guide.dataset.key) ?? !ok;
-        guide.append(el('summary', '', `${ICON.chevron}<span>${ok ? 'Setup guide' : 'How to set this up'}</span>`));
+        const row = el('details', 'cs-svc'); row.dataset.key = `svc:${name}`; row.dataset.service = name; row.open = before.get(row.dataset.key) ?? !ok;
+        row.style.setProperty('--tint', info.tint);
+        const head = el('summary', '', `<span class="cs-icon">${info.icon}</span><span class="cs-title"></span><span class="cs-tag ${ok ? 'is-ok' : 'is-warn'}">${ok ? 'Connected' : 'Not connected'}</span>${ICON.chevron}`);
+        head.querySelector('.cs-title').textContent = info.name;
+        const inner = el('div', 'cs-svc-body');
+        const blurb = el('p', 'cs-guide-note'); blurb.textContent = info.blurb;
         const steps = el('ol', 'cs-steps');
         for (const [html, action] of info.steps) { const li = el('li', '', `<span>${html}</span>`); if (action) li.append(link(...action)); steps.append(li); }
         const note = el('p', 'cs-guide-note'); note.textContent = info.note;
-        guide.append(steps, note); card.append(guide);
-        const keyField = name === 'cloudflare' ? creds.cloudflareKey : creds.groqKey;
+        const keyField = creds[`${name}Key`];
         creds.cloudflareAccount.placeholder = ok ? 'Saved. Paste again to replace' : 'Account ID (32 characters)';
-        keyField.placeholder = ok ? 'Saved. Paste again to replace' : name === 'groq' ? 'gsk_…' : 'API token';
+        keyField.placeholder = ok ? 'Saved. Paste again to replace' : { groq: 'gsk_…' }[name] || 'API token';
         const fields = el('div', 'cs-cred');
         if (name === 'cloudflare') fields.append(creds.cloudflareAccount);
         fields.append(keyField);
@@ -415,13 +494,20 @@
         fields.lastChild.append(button('Save and test', () => {
           const account = creds.cloudflareAccount.value.trim(), key = keyField.value.trim();
           if (name === 'cloudflare' && !/^[a-f0-9]{32}$/i.test(account)) return setRoutingStatus('The Account ID is 32 letters and digits. Copy it from the Workers AI page.', 'error');
-          if (!key) return setRoutingStatus(name === 'groq' ? 'Paste your Groq key first.' : 'Paste your API token first.', 'error');
+          if (!key) return setRoutingStatus(name === 'cloudflare' ? 'Paste your API token first.' : `Paste your ${SERVICES[name].name} key first.`, 'error');
           routingAction = { kind: 'connect', provider: name }; setRoutingStatus('Saving…');
           vscode.postMessage({ type: 'routingConnect', provider: name, account, key });
         }, 'is-primary'), test);
-        card.append(fields);
-        return card;
+        inner.append(blurb, steps, note, fields);
+        row.append(head, inner);
+        return row;
       };
+      const anyConnected = TIERS.some((name) => connected[name]);
+      const routeCard = el('details', 'cs-card cs-route-hero'); routeCard.dataset.key = 'route'; routeCard.open = before.get('route') ?? !anyConnected;
+      const routeHead = el('summary', 'cs-row', `<span class="cs-icon">${ICON.route}</span><div class="cs-info"><span class="cs-title">Smart routing</span><span class="cs-desc"></span></div><span class="cs-dots">${TIERS.map((name) => `<i class="${connected[name] ? 'is-ok' : ''}" title="${SERVICES[name].name} ${connected[name] ? 'connected' : 'not connected'}"></i>`).join('')}</span>${ICON.chevron}`);
+      routeHead.querySelector('.cs-desc').textContent = `A free AI picks the model for each message. Mode: ${MODE_NAMES[cfg.router_mode]}.`;
+      const serviceList = el('div', 'cs-svc-list'); serviceList.append(serviceRow('cloudflare'), serviceRow('groq'));
+      routeCard.append(routeHead, serviceList);
 
       // 4. Which service is asked first. The order is the primary tier, then the rest; the local fallback is always last.
       const order = cfg.tiers.includes(cfg.primary) ? [cfg.primary, ...cfg.tiers.filter((t) => t !== cfg.primary && t !== 'deterministic')] : [];
@@ -449,11 +535,13 @@
       const pct = (v) => `${Math.round(v * 100)}%`;
       const privateArea = el('textarea', 'cs-area'); privateArea.rows = 3; privateArea.value = cfg.never_send.join('\n'); privateArea.placeholder = 'One project ID or path per line'; privateArea.setAttribute('aria-label', 'Private projects');
       privateArea.addEventListener('change', () => save((c) => { c.never_send = privateArea.value.split('\n').map((x) => x.trim()).filter(Boolean); }));
+      const textField=(value,label,change)=>{const node=el('input','cs-field');node.value=value;node.setAttribute('aria-label',label);node.addEventListener('change',()=>change(node.value));return node;};
       const groups = [
         group('g:decide', ICON.sliders, 'How it decides', `Confidence ${pct(cfg.confidence)} · ${cfg.retry ? 'retries' : 'no retry'} · ${cfg.switching ? 'may switch models' : 'keeps the model'}`, [
-          setting('Confidence needed', 'Below this, the router falls back to your default model.', percent(cfg.confidence, (v) => save((c) => { c.confidence = v; }))),
+          setting('Spread usage across providers', 'Aim for an even share of tasks when models fit similarly. Manual choices still win.', sw(cfg.balance_providers, (v) => save((c) => { c.balance_providers = v; }), 'Balance provider usage')),
+          setting('Confidence needed', 'Below this, the router uses your editable fallback policy or eligible default.', percent(cfg.confidence, (v) => save((c) => { c.confidence = v; }))),
           setting('Retry with the stronger Cloudflare model', 'When the quick answer is not confident enough.', sw(cfg.retry, (v) => save((c) => { c.retry = v; }), 'Retry low confidence')),
-          setting('Default model', 'Used when the router is unsure.', pick([['', 'First eligible model'], ...snapshot.models.map((m) => [m.id, m.label || m.id])], cfg.default_model, (v) => save((c) => { c.default_model = v; }), 'Default model')),
+          setting('Default model', 'Used when the router is unsure.', pick([['', 'Follow fallback policy'], ...snapshot.models.map((m) => [m.id, m.label || m.id])], cfg.default_model, (v) => save((c) => { c.default_model = v; }), 'Default model')),
           setting('Switch models within a provider', 'Lets the router move between models of the same CLI mid-chat.', sw(cfg.switching, (v) => save((c) => { c.switching = v; }), 'Allow switching')),
           setting('Switching threshold', 'How much better a model must fit before the router changes.', percent(cfg.hysteresis, (v) => save((c) => { c.hysteresis = v; }))),
         ]),
@@ -479,10 +567,33 @@
           setting('Groq requests a day', `Up to ${TIER_CAPS.groq_rpd.toLocaleString()}.`, num(cfg.groq_rpd, 'groq_rpd', (v) => save((c) => { c.groq_rpd = v; }))),
           setting('Groq tokens a minute', `Up to ${TIER_CAPS.groq_tpm.toLocaleString()}. Match your account's limit.`, num(cfg.groq_tpm, 'groq_tpm', (v) => save((c) => { c.groq_tpm = v; }))),
           setting('Groq tokens a day', `Up to ${TIER_CAPS.groq_tpd.toLocaleString()}.`, num(cfg.groq_tpd, 'groq_tpd', (v) => save((c) => { c.groq_tpd = v; }))),
+          setting('Move Groq work to Cloudflare at', 'Past this share of any Groq limit, text work (cleanup, titles, summaries, routing) goes to Cloudflare GPT OSS 120B, which also takes over whenever Groq refuses. It draws on the Neurons above.', percent(cfg.groq_spill, (v) => save((c) => { c.groq_spill = v; }))),
           setting('Answer simple tasks with Groq', 'When every CLI model is out of usage, Groq can answer short text-only tasks.', sw(cfg.groq_destination, (v) => save((c) => { c.groq_destination = v; }), 'Groq as destination')),
           setting('Give up after', `Milliseconds, up to ${TIER_CAPS.timeout_ms.toLocaleString()}.`, num(cfg.timeout_ms, 'timeout_ms', (v) => save((c) => { c.timeout_ms = v; }))),
         ]),
       ];
+
+      const profiles=cfg.task_profiles||{};
+      const profileRows=Object.entries(profiles).map(([id,p])=>{
+        const patch=(key,value)=>save(c=>{c.task_profiles[id]={...c.task_profiles[id],[key]:value};});
+        const rows=[
+          setting('Name','Shown to the classifier.',textField(p.label,'Profile name '+id,v=>patch('label',v))),
+          setting('Keywords','Comma-separated phrases that suggest this task.',textField(p.keywords.join(', '),'Keywords '+id,v=>patch('keywords',v.split(',').map(x=>x.trim()).filter(Boolean))),true),
+          setting('Excluded keywords','A match suppresses this profile.',textField(p.exclude_keywords.join(', '),'Excluded keywords '+id,v=>patch('exclude_keywords',v.split(',').map(x=>x.trim()).filter(Boolean))),true),
+          setting('Priority','Higher wins when several profiles match.',textField(p.priority,'Priority '+id,v=>patch('priority',Number(v)))),
+          setting('Complexity','Used by the local fallback.',percent(p.complexity,v=>patch('complexity',v))),
+          button('Remove profile',()=>save(c=>{delete c.task_profiles[id];for(const model of Object.values(c.models))for(const key of ['tasks','avoid_tasks'])if(model[key])model[key]=model[key].filter(x=>x!==id);}), 'is-quiet')
+        ];
+        return group('profile:'+id,ICON.sliders,p.label,id,rows);
+      });
+      profileRows.push(button('Add task profile',()=>{let id='custom';let n=1;while(profiles[id])id='custom_'+n++;save(c=>{c.task_profiles[id]={label:'Custom task',keywords:[],exclude_keywords:[],priority:0,complexity:.5};});}));
+      groups.push(group('g:profiles',ICON.sliders,'Task profiles','Editable hints and fallback assignments',profileRows));
+      const policyRows=Object.entries(cfg.policy||{}).map(([key,value])=>setting(key.replaceAll('_',' '),'Applied to routing decisions and request preparation.',textField(value,key,v=>save(c=>{c.policy[key]=Number(v);})))) ;
+      for(const agent of [...new Set(snapshot.models.map(m=>m.agent))])policyRows.push(setting(agent+' share weight','1 for each provider gives equal targets; 2 gives twice the target share.',textField(cfg.provider_weights?.[agent]||1,agent+' share weight',v=>save(c=>{c.provider_weights={...c.provider_weights,[agent]:Number(v)};}))));
+      policyRows.push(setting('Fallback order','Comma-separated: profiles, probabilities, capacity.',textField(cfg.fallback_order.join(', '),'Fallback order',v=>save(c=>{c.fallback_order=v.split(',').map(x=>x.trim()).filter(Boolean);})),true));
+      groups.push(group('g:policy',ICON.gauge,'Routing policy','Balance margins, quota cutoff and input limits',policyRows));
+      const json=el('textarea','cs-area');json.rows=12;json.value=JSON.stringify(cfg,null,2);json.setAttribute('aria-label','Routing configuration JSON');
+      groups.push(group('g:json',ICON.cube,'Full configuration','The same JSON used by the router',[json,button('Apply JSON',()=>{try{const next=JSON.parse(json.value);save(c=>{for(const key of Object.keys(c))delete c[key];Object.assign(c,next);});}catch(e){setRoutingStatus(e.message,'error');}})]));
 
       // Per-model capabilities, grouped by CLI.
       const modelRows = [];
@@ -497,9 +608,14 @@
           const node = el('details', 'cs-model-card'); node.dataset.key = `model:${model.id}`; node.open = before.get(node.dataset.key) ?? false;
           const summary = el('summary', '', `<span class="cs-model-label"></span>${own.enabled === false ? '<span class="cs-tag">Off</span>' : ''}${ICON.chevron}`); summary.querySelector('.cs-model-label').textContent = model.label || model.id;
           const text = el('input', 'cs-field'); text.value = own.description || model.description || ''; text.placeholder = 'Strengths, speed and cost'; text.addEventListener('change', () => patch('description', text.value));
-          const ctx = el('input', 'cs-num'); ctx.type = 'number'; ctx.min = '1024'; ctx.value = own.context || model.context || model.contextWindow || 128000; ctx.addEventListener('change', () => patch('context', Number(ctx.value)));
+          const ctx = el('input', 'cs-num'); ctx.type = 'number'; ctx.min = '1024'; ctx.value = own.context || model.context || model.contextWindow || cfg.policy?.default_context || 128000; ctx.addEventListener('change', () => patch('context', Number(ctx.value)));
+          const assigned=el('div');
+          for(const [id,p] of Object.entries(profiles)){const label=el('label','cs-set');const check=el('input');check.type='checkbox';check.checked=(own.tasks||[]).includes(id);check.addEventListener('change',()=>patch('tasks',check.checked?[...new Set([...(own.tasks||[]),id])]:(own.tasks||[]).filter(x=>x!==id)));label.append(check,document.createTextNode(p.label));assigned.append(label);}
           node.append(summary,
+            setting('Preferred tasks','Used by Clef and the local fallback. No assignments means general capacity ranking.',assigned,true),
+            setting('Avoid tasks','Comma-separated profile IDs.',textField((own.avoid_tasks||[]).join(', '),'Avoid tasks '+model.id,v=>patch('avoid_tasks',v.split(',').map(x=>x.trim()).filter(Boolean))),true),
             setting('Use this model', 'Off keeps the router from choosing it.', sw(own.enabled !== false, (v) => patch('enabled', v), 'Enabled')),
+            setting('Use in Auto', 'Off keeps this model available for manual selection only.', sw(own.auto_enabled !== false, (v) => patch('auto_enabled', v), 'Use in Auto')),
             setting('Understands images', 'Needed for screenshots.', sw(own.vision ?? model.vision ?? false, (v) => patch('vision', v), 'Vision supported')),
             setting('Context window', 'Tokens.', ctx),
             setting('Capability', 'How hard a task it should be given.', percent(own.complexity ?? .5, (v) => patch('complexity', v))),
@@ -512,16 +628,17 @@
       // Reset, export and import: rarely needed, so quiet and last.
       const footer = el('div', 'cs-footer');
       footer.append(
+        button('Open config',()=>vscode.postMessage({type:'openRoutingConfig'}),'is-quiet'),
+        button('Edit with AI',()=>vscode.postMessage({type:'editRoutingConfigWithAI'}),'is-quiet'),
         button('Reset to defaults', () => { routingAction = { kind: 'save' }; vscode.postMessage({ type: 'routingReset' }); }, 'is-quiet', ICON.reset),
         button('Export', () => { const a = document.createElement('a'); const url = URL.createObjectURL(new Blob([JSON.stringify(cfg, null, 2)], { type: 'application/json' })); a.href = url; a.download = 'routing-config.json'; a.click(); URL.revokeObjectURL(url); }, 'is-quiet', ICON.up),
         button('Import', () => { const file = document.createElement('input'); file.type = 'file'; file.accept = '.json'; file.onchange = async () => { try { routingAction = { kind: 'save' }; vscode.postMessage({ type: 'routingSave', config: JSON.parse(await file.files[0].text()) }); } catch { setRoutingStatus('That file is not valid JSON.', 'error'); } }; file.click(); }, 'is-quiet', ICON.down),
       );
 
       routingPane.replaceChildren(
-        routingStatus, hero, usageCard,
-        labelled(1, 'Connect', 'Either one is enough'), serviceCard('cloudflare'), serviceCard('groq'),
-        labelled(2, 'Order', 'Who is asked first'), orderCard,
-        labelled(3, 'Fine-tune', 'The defaults are fine'), ...groups, modelGroup, footer,
+        routingStatus, usageCard, routeCard,
+        labelled('Order', 'Who is asked first'), orderCard,
+        labelled('Fine-tune', 'The defaults are fine'), ...groups, modelGroup, footer,
       );
     }
     function routingResult(result) {
@@ -589,8 +706,102 @@
       // The CLIs are only asked for their model lists once, when the Models tab is first looked at.
       if (name === 'general' && !modelsRequested) { modelsRequested = true; vscode.postMessage({ type: 'refreshModels' }); }
       if (name === 'general') vscode.postMessage({ type: 'requestCliConnections' });
+      if (name === 'general') vscode.postMessage({ type: 'requestProjectIcons' });
+      if (name === 'voice') { // devices come and go and an AI may have edited the dictionary, so look each time the tab opens
+        vscode.postMessage({ type: 'requestMicDevices' });
+        vscode.postMessage({ type: 'requestVoiceDictionary' });
+        vscode.postMessage({ type: 'requestProjectIcons' }); // the project list the scan buttons are made from
+      }
     }
     tabs.forEach((tab) => tab.addEventListener('click', () => showTab(tab.dataset.tab)));
+
+    // Read the actual labels on each search, so newly loaded models and routing controls are searchable too.
+    const searchInput = $('settingsSearch'), searchResults = $('settingsSearchResults');
+    let searchMatches = [], searchActive = 0, searchHighlight = null, searchHighlightTimer;
+    const searchText = text => text.toLocaleLowerCase().normalize('NFKD').replace(/[\u0300-\u036f]/g, '').replace(/[^\p{L}\p{N}]+/gu, ' ').trim();
+    function closeSettingsSearch() {
+      searchResults.hidden = true; $('settingsSearchStatus').hidden = true;
+      searchInput.setAttribute('aria-expanded', 'false'); searchInput.removeAttribute('aria-activedescendant');
+    }
+    function selectSearchResult(index) {
+      const match = searchMatches[index];
+      if (!match?.target.isConnected) { renderSettingsSearch(); return; }
+      showTab(match.tab);
+      if (match.target.matches('.cs-prompt-head[aria-expanded="false"]')) match.target.click();
+      for (let node = match.target; node && node !== body; node = node.parentElement) {
+        if (node.tagName === 'DETAILS') node.open = true;
+        if (node.classList.contains('cs-prompt-editor') && node.hidden) node.parentElement.querySelector('.cs-prompt-head')?.click();
+      }
+      searchInput.value = ''; $('settingsSearchClear').hidden = true; closeSettingsSearch();
+      if (searchHighlight) searchHighlight.classList.remove('cs-search-target');
+      clearTimeout(searchHighlightTimer);
+      searchHighlight = match.target; searchHighlight.classList.add('cs-search-target');
+      searchHighlightTimer = setTimeout(() => searchHighlight?.classList.remove('cs-search-target'), 2200);
+      const control = match.target.matches('button, input, select, textarea, summary') ? match.target : match.target.querySelector('input:not([disabled]), select:not([disabled]), textarea:not([disabled]), button:not([disabled]), summary');
+      const focus = control || match.target;
+      if (!control) focus.setAttribute('tabindex', '-1');
+      focus.focus({ preventScroll: true });
+      match.target.scrollIntoView({ block: 'center', behavior: window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'instant' : 'smooth' });
+    }
+    function activateSearchResult(index) {
+      searchActive = index;
+      [...searchResults.children].forEach((option, i) => option.setAttribute('aria-selected', String(i === index)));
+      const option = searchResults.children[index];
+      if (option) { searchInput.setAttribute('aria-activedescendant', option.id); option.scrollIntoView({ block: 'nearest' }); }
+      else searchInput.removeAttribute('aria-activedescendant');
+    }
+    function renderSettingsSearch() {
+      const query = searchText(searchInput.value), words = query.split(' ');
+      $('settingsSearchClear').hidden = !searchInput.value;
+      if (!query) { closeSettingsSearch(); return; }
+      const matches = [], seen = new Set();
+      for (const label of body.querySelectorAll('.cs-pane .cs-title, .cs-pane .cs-section-title, .cs-pane .cs-model-label, .cs-pane label.cs-set, .cs-pane button[aria-label], .cs-pane input[aria-label], .cs-pane select[aria-label], .cs-pane textarea[aria-label], .cs-pane .cs-footer .cs-btn')) {
+        const pane = label.closest('.cs-pane');
+        const target = label.closest('.cs-set, .cs-row, summary, .cs-prompt-head, .cs-section, .cs-cli-heading, .cs-usage-title') || label;
+        let unavailable = label.hidden;
+        for (let n = label.parentElement; n && n !== pane; n = n.parentElement) if (n.hidden && !n.classList.contains('cs-prompt-editor')) unavailable = true;
+        if (seen.has(target) || unavailable) continue;
+        const name = (label.matches('[aria-label]') ? label.getAttribute('aria-label') : label.textContent).trim();
+        if (!name) continue;
+        seen.add(target);
+        const tab = pane.dataset.pane;
+        const path = [body.querySelector(`.cs-tab[data-tab="${tab}"]`)?.getAttribute('aria-label') || tab];
+        const modelName = target.closest('.cs-prompt-row')?.querySelector('.cs-model-label')?.textContent.trim();
+        if (modelName && modelName !== name) path.push(modelName);
+        for (let n = target.parentElement; n && n !== pane; n = n.parentElement) {
+          if (n.tagName === 'DETAILS') { const head = n.querySelector(':scope > summary'); const title = head?.querySelector('.cs-title, .cs-model-label'); if (title) path.splice(1, 0, title.textContent.trim()); }
+        }
+        const haystack = searchText(`${name} ${path.join(' ')} ${target.querySelector('.cs-desc')?.textContent || ''}`);
+        if (words.every(word => haystack.includes(word))) matches.push({ name, target, tab, path: path.join(' › '), rank: searchText(name) === query ? 0 : searchText(name).startsWith(query) ? 1 : 2 });
+      }
+      matches.sort((a, b) => a.rank - b.rank);
+      searchMatches = matches.slice(0, 12);
+      searchResults.replaceChildren(...searchMatches.map((match, i) => {
+        const option = document.createElement('div'); option.className = 'cs-settings-search-option'; option.id = `cs-settings-search-option-${i}`; option.setAttribute('role', 'option'); option.setAttribute('aria-selected', String(i === 0));
+        const name = document.createElement('span'); name.className = 'cs-title'; name.textContent = match.name;
+        const path = document.createElement('span'); path.className = 'cs-desc'; path.textContent = match.path;
+        option.append(name, path); option.addEventListener('mousedown', event => event.preventDefault()); option.addEventListener('click', () => selectSearchResult(i)); return option;
+      }));
+      searchResults.hidden = !searchMatches.length;
+      $('settingsSearchStatus').hidden = false;
+      $('settingsSearchStatus').textContent = matches.length ? `${matches.length} ${matches.length === 1 ? 'setting' : 'settings'} found${matches.length > 12 ? ' · showing the first 12' : ''}. Use ↑ ↓ and Enter to jump.` : 'No settings found. Try another name or keyword.';
+      searchInput.setAttribute('aria-expanded', String(Boolean(searchMatches.length)));
+      activateSearchResult(0);
+    }
+    searchInput.addEventListener('input', renderSettingsSearch);
+    searchInput.addEventListener('focus', renderSettingsSearch);
+    searchInput.addEventListener('keydown', event => {
+      if (event.isComposing) return;
+      if (event.key === 'Escape' && searchInput.value) { event.preventDefault(); event.stopPropagation(); searchInput.value = ''; renderSettingsSearch(); }
+      else if (event.key === 'Enter' && !searchResults.hidden) { event.preventDefault(); selectSearchResult(searchActive); }
+      else if (['ArrowDown', 'ArrowUp'].includes(event.key) && searchMatches.length && !searchResults.hidden) { event.preventDefault(); activateSearchResult((searchActive + (event.key === 'ArrowDown' ? 1 : -1) + searchMatches.length) % searchMatches.length); }
+    });
+    $('settingsSearchClear').addEventListener('click', () => { searchInput.value = ''; renderSettingsSearch(); searchInput.focus(); });
+    body.addEventListener('focusout', event => { if (!$('settingsSearchBox').contains(event.relatedTarget)) closeSettingsSearch(); });
+    body.addEventListener('click', event => { if (!$('settingsSearchBox').contains(event.target)) closeSettingsSearch(); });
+    new MutationObserver(changes => {
+      if (document.activeElement === searchInput && searchInput.value && changes.some(change => change.target.parentElement?.closest('.cs-pane'))) renderSettingsSearch();
+    }).observe(body, { childList: true, subtree: true, characterData: true });
 
     function setTag(el, state, text) {
       el.className = `cs-tag${state ? ` is-${state}` : ''}`; // ok | warn | (none = off)
@@ -1026,6 +1237,7 @@
 
       if (services.voice) voice(services.voice);
       $('statusBar').setAttribute('aria-checked', String(Boolean(services.statusBar)));
+      renderCompliance(services.compliance);
       const currentFormat = services.timeFormat || '24h';
       for (const pill of formatPills) pill.classList.toggle('active', pill.dataset.format === currentFormat);
       for (const pill of permissionPills) pill.classList.toggle('active', pill.dataset.mode === currentPermMode);
@@ -1064,6 +1276,72 @@
       vscode.postMessage({ type: 'setStatusBar', enabled: on });
     });
     $('openTerminal').addEventListener('click', () => vscode.postMessage({ type: 'openTerminal' }));
+
+    // ---------- Compliance: what leaves this computer, and what to settle before shipping something built here ----------
+    // Plain statements with no promises about any provider's certifications: those change, so each row links to the provider's own terms.
+    const DATA_FLOWS = [
+      { name: 'Claude Code', operator: 'Anthropic, USA', sends: 'Your messages, attached files and every project file the agent reads or edits. In a loop: scout, verifier and editor prompts.', link: ['anthropicDpa', 'Processing terms'] },
+      { name: 'Codex', operator: 'OpenAI, USA', sends: 'The same as Claude Code, through your OpenAI sign-in.', link: ['openaiDpa', 'Processing terms'] },
+      { name: 'Gemini (Antigravity)', operator: 'Google, USA', sends: 'The same as Claude Code, plus cropped screenshots when a loop reviews your pages.', link: ['googleDpa', 'Processing terms'] },
+      { name: 'Smart routing', operator: 'Cloudflare, USA', sends: 'The text of each message you send in Auto (secrets redacted when that is on) and, if you allow it, a downscaled screenshot.', link: ['cloudflareDpa', 'Processing terms'] },
+      { name: 'Dictation and routing', operator: 'Groq, USA', sends: 'Spoken audio for dictation, and message text for routing and summaries. Private projects are never sent.', link: ['groqPrivacy', 'Privacy policy'] },
+      { name: 'Telegram remote', operator: 'outside the EU', sends: 'The alerts and approval requests you set up, including any text they contain.', link: ['telegramPrivacy', 'Privacy policy'] },
+      { name: 'Stays on this computer', operator: '', sends: 'Project files and chat history, routing logs, the local rules router, and the private copy a loop works in.', local: true },
+    ];
+    const SHIP_LIST = [
+      ['Legal notice (Impressum)', 'A commercial website aimed at Germany links a legal notice that is reachable from every page (§ 5 DDG).'],
+      ['Privacy notice', 'Say who is responsible, what you collect and why, the legal basis, who receives it, transfers outside the EU, how long you keep it and what rights people have (Art. 12–14 GDPR).'],
+      ['Consent before trackers', 'Analytics, advertising and anything that reads or stores identifiers on the visitor’s device needs a prior, informed opt-in; declining must be as easy as accepting (§ 25 TDDDG, Art. 7 GDPR).'],
+      ['Self-host third-party resources', 'Fonts, scripts and libraries from external servers send every visitor’s IP address there. Serve them yourself, and load videos and maps only after a click.'],
+      ['Contracts with processors', 'Hosting, e-mail, forms, analytics and AI providers that handle other people’s data need a processing agreement (Art. 28 GDPR). Such agreements are usually offered for business, team and API accounts, not for personal chat subscriptions, so check which plan each CLI is signed in with before an agent reads real customer data.'],
+      ['Transfers outside the EU', 'Sending personal data to a provider in the USA needs a basis such as the EU–US Data Privacy Framework or standard contractual clauses (Art. 44–49 GDPR). Check the provider’s current status on the official list below.'],
+      ['Records and security', 'Keep a record of processing activities (Art. 30), use https and access control, keep secrets out of the repository (Art. 32), and know the 72-hour breach notice (Art. 33).'],
+      ['People’s rights', 'Build a way to export and delete what you store about a person, and set a retention period (Art. 15–17, Art. 5(1)(e)).'],
+      ['AI features you ship', 'Tell people when they talk to an AI or see AI-generated content (EU AI Act Art. 50; the transparency duties start applying in 2026, so check the current dates). Do not put personal data into prompts without a legal basis.'],
+      ['Accessibility', 'Online shops and other consumer services must be accessible (Barrierefreiheitsstärkungsgesetz, in force since 28 June 2025; very small service providers are exempt).'],
+      ['Software or devices you sell', 'The EU Cyber Resilience Act brings vulnerability reporting duties from 11 September 2026 and most other duties from 11 December 2027.'],
+    ];
+    const COMPLIANCE_LINKS = [['gdpr', 'GDPR text'], ['dpf', 'Data Privacy Framework list'], ['aiAct', 'AI Act text'], ['bfdi', 'German data protection authority']];
+    function renderCompliance(state = {}) {
+      $('complianceScout').setAttribute('aria-checked', String(state.scout !== false));
+      $('complianceRedact').setAttribute('aria-checked', String(state.redact !== false));
+      const section = (title, hint) => {
+        const node = el('div', 'cs-section', '<span class="cs-section-title"></span><span class="cs-section-hint"></span>');
+        node.querySelector('.cs-section-title').textContent = title; node.querySelector('.cs-section-hint').textContent = hint; return node;
+      };
+      const flows = el('section', 'cs-card');
+      for (const flow of DATA_FLOWS) {
+        const row = el('div', 'cs-set is-stack', '<div class="cs-info"><span class="cs-title"></span><span class="cs-desc"></span></div>');
+        row.querySelector('.cs-title').textContent = flow.operator ? `${flow.name} · ${flow.operator}` : flow.name;
+        row.querySelector('.cs-desc').textContent = flow.sends;
+        if (flow.local) row.querySelector('.cs-title').append(el('span', 'cs-tag is-ok', 'Local'));
+        else {
+          const open = el('button', 'cs-btn is-small is-quiet', `${ICON.ext}<span></span>`); open.type = 'button'; open.querySelector('span').textContent = flow.link[1];
+          open.addEventListener('click', () => vscode.postMessage({ type: 'openRoutingLink', key: flow.link[0] }));
+          row.append(open);
+        }
+        flows.append(row);
+      }
+      const ship = el('section', 'cs-card');
+      for (const [title, text] of SHIP_LIST) {
+        const row = el('div', 'cs-set is-stack', '<div class="cs-info"><span class="cs-title"></span><span class="cs-desc"></span></div>');
+        row.querySelector('.cs-title').textContent = title; row.querySelector('.cs-desc').textContent = text; ship.append(row);
+      }
+      const links = el('div', 'cs-footer');
+      for (const [key, label] of COMPLIANCE_LINKS) {
+        const open = el('button', 'cs-btn is-quiet', `${ICON.ext}<span></span>`); open.type = 'button'; open.querySelector('span').textContent = label;
+        open.addEventListener('click', () => vscode.postMessage({ type: 'openRoutingLink', key })); links.append(open);
+      }
+      $('complianceBody').replaceChildren(section('Data flows', 'Before an agent reads personal data'), flows, section('Before you ship', 'For sites and apps built here'), ship, links);
+    }
+    for (const [role, key] of [['complianceScout', 'scout'], ['complianceRedact', 'redact']]) {
+      $(role).addEventListener('click', () => {
+        const on = $(role).getAttribute('aria-checked') !== 'true';
+        $(role).setAttribute('aria-checked', String(on));
+        vscode.postMessage({ type: 'setCompliance', key, value: on });
+      });
+    }
+    renderCompliance();
 
     // ---------- Voice: the hotkey, how it behaves, the sounds, the Groq key and today's usage ----------
     const modePills = body.querySelectorAll('.mode-pill');
@@ -1108,6 +1386,59 @@
       }));
     }
 
+    // The microphone list comes from the host (ffmpeg's view of the Windows capture devices); the saved choice
+    // stays selectable, marked, when its device is unplugged, so opening Settings never silently changes it.
+    let micList = null;
+    const micRoot = $('micSelect');
+    const micTrigger = micRoot.querySelector('.cs-dd-trigger');
+    const micMenu = micRoot.querySelector('.cs-dd-menu');
+    function renderMics() {
+      const chosen = voiceState?.micDevice || '';
+      const missing = micList && chosen && !micList.includes(chosen);
+      const options = [['', 'Automatic'], ...(micList || (chosen ? [chosen] : [])).map((name) => [name, name]), ...(missing ? [[chosen, `${chosen} (not connected)`]] : [])];
+      micMenu.replaceChildren(...options.map(([value, text]) => {
+        const option = document.createElement('button');
+        option.type = 'button'; option.className = 'cs-dd-option'; option.setAttribute('role', 'option');
+        option.innerHTML = `<span class="cs-dd-text"></span>${ICON.check}`;
+        option.querySelector('.cs-dd-text').textContent = text;
+        option.dataset.value = value; option.title = text;
+        option.setAttribute('aria-selected', String(value === chosen));
+        option.classList.toggle('is-selected', value === chosen);
+        return option;
+      }));
+      const label = (options.find(([value]) => value === chosen) || options[0])[1];
+      micTrigger.querySelector('.cs-dd-value').textContent = label;
+      micTrigger.title = label;
+      $('micDesc').textContent = micList && !micList.length ? 'No microphone found. Plug one in and reopen this tab.'
+        : missing ? 'This microphone is not connected, so dictation uses the first one available.'
+          : 'Used for dictation. A change applies to the next recording.';
+    }
+    function setMicOpen(open) {
+      micRoot.classList.toggle('is-open', open);
+      micTrigger.setAttribute('aria-expanded', String(open));
+      micMenu.hidden = !open;
+      if (open) (micMenu.querySelector('.is-selected') || micMenu.firstElementChild)?.focus();
+    }
+    function pickMic(value) {
+      voiceState = { ...voiceState, micDevice: value };
+      renderMics();
+      setMicOpen(false);
+      micTrigger.focus();
+      vscode.postMessage({ type: 'setVoiceMic', device: value });
+    }
+    micTrigger.addEventListener('click', () => setMicOpen(micMenu.hidden));
+    micTrigger.addEventListener('keydown', (event) => { if (event.key === 'ArrowDown' || event.key === 'ArrowUp') { event.preventDefault(); setMicOpen(true); } });
+    micMenu.addEventListener('click', (event) => { const option = event.target.closest('.cs-dd-option'); if (option) pickMic(option.dataset.value); });
+    micMenu.addEventListener('keydown', (event) => {
+      const items = [...micMenu.children];
+      const at = items.indexOf(document.activeElement);
+      const move = { ArrowDown: at + 1, ArrowUp: at - 1, Home: 0, End: items.length - 1 }[event.key];
+      if (move != null) { event.preventDefault(); items[(move + items.length) % items.length]?.focus(); }
+      else if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); setMicOpen(false); micTrigger.focus(); }
+      else if (event.key === 'Tab') setMicOpen(false);
+    });
+    document.addEventListener('pointerdown', (event) => { if (!micMenu.hidden && !micRoot.contains(event.target)) setMicOpen(false); });
+
     function renderVoice() {
       const state = voiceState;
       if (!state) return;
@@ -1121,6 +1452,8 @@
       for (const pill of modePills) pill.classList.toggle('active', pill.dataset.mode === state.mode);
       $('modeDesc').textContent = MODE_TEXT[state.mode];
       $('voiceSounds').setAttribute('aria-checked', String(state.sounds));
+      $('voicePauseMedia').setAttribute('aria-checked', String(state.pauseMedia !== false));
+      renderMics();
       renderGroq(state.groq);
     }
 
@@ -1161,6 +1494,12 @@
       $('voiceSounds').setAttribute('aria-checked', String(on));
       vscode.postMessage({ type: 'setVoiceSounds', enabled: on });
     });
+    $('voicePauseMedia').addEventListener('click', () => {
+      const on = $('voicePauseMedia').getAttribute('aria-checked') !== 'true';
+      $('voicePauseMedia').setAttribute('aria-checked', String(on));
+      voiceState = { ...voiceState, pauseMedia: on };
+      vscode.postMessage({ type: 'setVoicePauseMedia', enabled: on });
+    });
 
     const groqStatus = (text, state = '') => { $('groqStatus').className = `cs-status${state ? ` is-${state}` : ''}`; $('groqStatus').textContent = text; };
     function saveGroqKey() {
@@ -1191,8 +1530,210 @@
       }
     }
     function voice(state) { voiceState = state; renderVoice(); }
+    function micDevices(devices) { micList = devices; renderMics(); }
+
+    // Dictionary: a searchable list of the words Whisper is biased toward. The host owns the file and answers every
+    // action with the whole list, so what an AI wrote into it shows up the same way. The limits arrive with the data.
+    const dictStatus = (text, state = '') => { $('dictStatus').className = `cs-status${state ? ` is-${state}` : ''}`; $('dictStatus').textContent = text; };
+    let dictEntries = [];
+    let dictUsage = null;
+    let dictProjects = [];
+    let dictEditing = null;
+    let dictReveal = '';
+    let dictScanning = false;
+
+    function dictRow(entry) {
+      const row = document.createElement('div');
+      row.className = 'cs-dict-row';
+      row.setAttribute('role', 'listitem');
+      row.classList.toggle('is-off', !entry.enabled);
+      const startEdit = () => { dictEditing = entry.term; renderDictionary(); };
+      let label;
+      if (dictEditing === entry.term) {
+        label = document.createElement('input');
+        label.className = 'cs-field cs-dict-edit'; label.type = 'text'; label.maxLength = 60; label.value = entry.term;
+        label.spellcheck = false; label.setAttribute('aria-label', `Rename ${entry.term}`);
+        const finish = (save) => {
+          if (dictEditing !== entry.term) return;
+          dictEditing = null;
+          const next = label.value.trim();
+          if (save && next && next !== entry.term) vscode.postMessage({ type: 'voiceDictionaryEdit', term: entry.term, next });
+          else renderDictionary();
+        };
+        label.addEventListener('keydown', (event) => {
+          if (event.key === 'Enter') { event.preventDefault(); finish(true); }
+          else if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); finish(false); }
+        });
+        label.addEventListener('blur', () => finish(true));
+        queueMicrotask(() => { label.focus(); label.select(); });
+      } else {
+        label = document.createElement('span');
+        label.className = 'cs-dict-term'; label.textContent = entry.term; label.title = entry.term;
+        label.addEventListener('dblclick', startEdit);
+      }
+      row.append(label);
+      if (entry.source === 'scan' || entry.source === 'ai') {
+        const tag = document.createElement('span');
+        tag.className = 'cs-dict-source'; tag.textContent = entry.source === 'scan' ? 'scan' : 'AI';
+        tag.title = entry.source === 'scan' ? `Found by scanning ${entry.project || 'a project'}` : 'Added by an AI';
+        row.append(tag);
+      }
+      const toggle = document.createElement('button');
+      toggle.type = 'button'; toggle.className = 'cs-switch is-small'; toggle.setAttribute('role', 'switch');
+      toggle.setAttribute('aria-checked', String(entry.enabled)); toggle.setAttribute('aria-label', `Use ${entry.term} in dictation`);
+      toggle.title = entry.enabled ? 'On: used in dictation' : 'Off: kept, but not used';
+      toggle.addEventListener('click', () => vscode.postMessage({ type: 'voiceDictionaryEdit', term: entry.term, enabled: !entry.enabled }));
+      const iconButton = (icon, title, className, onClick) => {
+        const button = document.createElement('button');
+        button.type = 'button'; button.className = `cs-icon-btn ${className}`; button.innerHTML = icon; button.title = title;
+        button.setAttribute('aria-label', `${title} ${entry.term}`);
+        button.addEventListener('click', onClick);
+        return button;
+      };
+      row.append(toggle, iconButton(ICON.pencil, 'Rename', '', startEdit),
+        iconButton(ICON.trash, 'Delete', 'is-danger', () => vscode.postMessage({ type: 'voiceDictionaryRemove', term: entry.term })));
+      if (entry.term === dictReveal) { dictReveal = ''; queueMicrotask(() => row.scrollIntoView({ block: 'nearest' })); }
+      return row;
+    }
+
+    function renderDictionary() {
+      const limits = dictUsage?.limits || {};
+      const query = $('dictSearch').value.trim().toLowerCase();
+      const shown = dictEntries.filter((entry) => !query || entry.term.toLowerCase().includes(query));
+      setTag($('dictTag'), limits.entries && dictEntries.length >= limits.entries ? 'warn' : '', limits.entries ? `${dictEntries.length} / ${limits.entries}` : `${dictEntries.length} words`);
+      $('dictDesc').textContent = dictEntries.length ? `${dictUsage?.enabled ?? dictEntries.length} on. Double-click a word to rename it.` : 'Names, tools and jargon dictation should spell your way.';
+      if (shown.length) $('dictList').replaceChildren(...shown.map(dictRow));
+      else {
+        const empty = document.createElement('p');
+        empty.className = 'cs-dict-empty';
+        empty.textContent = query ? `No word matches “${$('dictSearch').value.trim()}”.` : 'No words yet. Add one above, scan a project, or correct a dictated word in the composer and Clanker offers to keep it.';
+        $('dictList').replaceChildren(empty);
+      }
+      const scanned = dictEntries.filter((entry) => entry.source === 'scan').length;
+      $('dictClearScanned').hidden = !scanned;
+      $('dictClearScanned').textContent = `Remove ${scanned} scanned word${scanned === 1 ? '' : 's'}`;
+      const meters = dictUsage ? [['Sent to Whisper', dictUsage.inPrompt, limits.promptTerms], ['Used when cleaning up the text', dictUsage.inCleanup, limits.cleanupTerms]] : [];
+      $('dictUsage').hidden = !meters.length;
+      $('dictUsage').replaceChildren(...meters.map(([label, used, max]) => {
+        const row = document.createElement('div');
+        row.className = 'cs-usage-row';
+        row.innerHTML = '<div class="cs-usage-head"><span></span><span></span></div><div class="cs-usage-bar"><b></b></div>';
+        const [name, count] = row.querySelectorAll('.cs-usage-head span');
+        name.textContent = label; count.textContent = `${used} / ${max}`;
+        const bar = row.querySelector('.cs-usage-bar');
+        bar.style.setProperty('--used', max ? Math.min(100, (used / max) * 100).toFixed(1) : 0);
+        bar.classList.toggle('is-high', max > 0 && used >= max);
+        return row;
+      }));
+      if (dictUsage && dictUsage.enabled > dictUsage.inPrompt) {
+        const note = document.createElement('p');
+        note.className = 'cs-usage-foot';
+        note.textContent = `Whisper takes about ${limits.promptTerms} words at a time: yours first, scanned ones last. The rest still help the cleanup step.`;
+        $('dictUsage').append(note);
+      }
+      renderDictProjects();
+    }
+
+    function renderDictProjects() {
+      const scanButton = (label, title, id) => {
+        const button = document.createElement('button');
+        button.type = 'button'; button.className = 'cs-btn is-small'; button.textContent = label; button.title = title; button.disabled = dictScanning;
+        button.addEventListener('click', () => {
+          dictScanning = true;
+          renderDictProjects();
+          dictStatus(id ? `Scanning ${label}…` : 'Choose a folder to scan…');
+          vscode.postMessage({ type: 'voiceDictionaryScan', id });
+        });
+        return button;
+      };
+      $('dictProjects').replaceChildren(
+        ...dictProjects.filter((project) => project.root).map((project) => scanButton(project.name, `Scan ${project.root}`, project.id)),
+        scanButton('Choose folder…', 'Scan any folder, such as a project you have not added yet'),
+      );
+    }
+
+    function voiceDictionary({ entries = [], usage = null, error = '', notice = '', scanning }) {
+      dictEntries = entries; dictUsage = usage;
+      if (typeof scanning === 'boolean') dictScanning = scanning;
+      if (error) dictStatus(error, 'error'); else if (notice) dictStatus(notice, 'ok');
+      if (dictEditing && !entries.some((entry) => entry.term === dictEditing)) dictEditing = null;
+      renderDictionary();
+    }
+    function addDictWord() {
+      const term = $('dictNew').value.trim();
+      if (!term) { dictStatus('Type a word first.', 'error'); return; }
+      dictStatus('');
+      dictReveal = term;
+      $('dictSearch').value = '';
+      $('dictNew').value = '';
+      vscode.postMessage({ type: 'voiceDictionaryAdd', term });
+    }
+    $('dictAdd').addEventListener('click', addDictWord);
+    $('dictNew').addEventListener('keydown', (event) => { if (event.key === 'Enter') { event.preventDefault(); addDictWord(); } });
+    $('dictSearch').addEventListener('input', renderDictionary);
+    $('dictAI').addEventListener('click', () => vscode.postMessage({ type: 'voiceDictionaryWithAI' }));
+    $('dictClearScanned').addEventListener('click', () => vscode.postMessage({ type: 'voiceDictionaryClearScanned' }));
+
+    // Project icons: one row per registered project. The extension owns the storage (projects.json) and answers every
+    // action with a fresh 'projectIcons' list, so a favicon an AI wrote into the file appears here too.
+    const monogram = (name) => {
+      const words = String(name || '?').split(/[\s\-_.]+/).filter(Boolean);
+      return (words.length > 1 ? words[0][0] + words[1][0] : (words[0] || '?').slice(0, 2)).replace(/^./, (c) => c.toUpperCase());
+    };
+    function projectIcons(projects) {
+      dictProjects = projects;
+      renderDictProjects();
+      $('projectIconCount').textContent = `${projects.length}`;
+      $('projectIconCount').setAttribute('aria-label', `${projects.length} ${projects.length === 1 ? 'project' : 'projects'}`);
+      if (!projects.length) {
+        const empty = document.createElement('p');
+        empty.className = 'cs-project-empty'; empty.textContent = 'Add a project from the rail to customize its icon.';
+        $('projectIcons').replaceChildren(empty);
+        return;
+      }
+      $('projectIcons').replaceChildren(...projects.map((project) => {
+        const row = document.createElement('div');
+        row.className = 'cs-row cs-project';
+        const tile = document.createElement('span');
+        tile.className = 'cs-project-tile';
+        tile.textContent = monogram(project.name);
+        if (project.iconUri) { // the initials stay until the image has loaded, and if it never does
+          const img = document.createElement('img');
+          img.alt = '';
+          img.addEventListener('load', () => { img.classList.toggle('is-dark', Boolean(window.isDarkIcon?.(img))); tile.replaceChildren(img); });
+          img.src = project.iconUri;
+        }
+        const info = document.createElement('div');
+        info.className = 'cs-info';
+        const title = document.createElement('span');
+        title.className = 'cs-title'; title.textContent = project.name; title.title = project.name;
+        const desc = document.createElement('span');
+        desc.className = 'cs-desc';
+        desc.textContent = project.icon ? (project.iconUri ? project.icon : 'Image unavailable · using initials') : 'Using initials';
+        desc.title = project.icon || 'Choose an image, or detect one in the project folder.';
+        desc.classList.toggle('is-warn', Boolean(project.icon && !project.iconUri));
+        const actions = document.createElement('div');
+        actions.className = 'cs-project-actions';
+        const action = (label, title, type, hidden = false) => {
+          const button = document.createElement('button');
+          button.type = 'button'; button.className = 'cs-btn is-small'; button.textContent = label; button.title = title; button.hidden = hidden;
+          button.setAttribute('aria-label', `${label.replace('…', '')} icon for ${project.name}`);
+          button.addEventListener('click', () => vscode.postMessage({ type, id: project.id }));
+          return button;
+        };
+        actions.append(
+          action('Choose…', 'Pick an image file', 'pickProjectIcon'),
+          action('Detect', 'Look for a favicon or logo in the project folder', 'detectProjectIcon', !project.root),
+          action('Ask AI', 'Have the chat find it and save it for you', 'projectIconWithAI', !project.root),
+          action('Clear', 'Back to the initials', 'clearProjectIcon', !project.icon),
+        );
+        info.append(title, desc);
+        row.append(tile, info, actions);
+        return row;
+      }));
+    }
 
     showTab('general');
-    return { fleet, cliStatus, cliConnections, showTab, voice, groqResult, routingResult };
+    return { fleet, cliStatus, cliConnections, showTab, voice, micDevices, projectIcons, voiceDictionary, groqResult, routingResult };
   };
 })();

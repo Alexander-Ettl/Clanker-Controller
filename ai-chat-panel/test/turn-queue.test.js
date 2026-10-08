@@ -40,6 +40,106 @@ Module._load = load;
 
 const tick = () => new Promise(resolve => setImmediate(resolve));
 const settle = async () => { await tick(); await tick(); };
+
+test('local HTML links open in the browser while source line links stay in the editor', async t => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'clanker-file-links-'));
+  const html = path.join(root, 'router guide.html');
+  const source = path.join(root, 'source file.js');
+  fs.writeFileSync(html, '<h1>Router</h1>'); fs.writeFileSync(source, '// source');
+  const opened = [], edited = [], warnings = [];
+  const original = { window: vscodeStub.window, openExternal: vscodeStub.env.openExternal, Range: vscodeStub.Range, ViewColumn: vscodeStub.ViewColumn };
+  vscodeStub.env.openExternal = async uri => { opened.push(uri.fsPath); return true; };
+  vscodeStub.window = { showTextDocument: async (uri, options) => edited.push({ file: uri.fsPath, row: options.selection.row }), showWarningMessage: text => warnings.push(text) };
+  vscodeStub.Range = class { constructor(row) { this.row = row; } };
+  vscodeStub.ViewColumn = { One: 1 };
+  t.after(() => { vscodeStub.window = original.window; vscodeStub.env.openExternal = original.openExternal; vscodeStub.Range = original.Range; vscodeStub.ViewColumn = original.ViewColumn; fs.rmSync(root, { recursive: true, force: true }); });
+  const host = { deps: { workspaceDir: root } };
+  await ChatWindowHost.prototype.openFile.call(host, html);
+  await ChatWindowHost.prototype.openFile.call(host, 'router guide.html', 7);
+  await ChatWindowHost.prototype.openFile.call(host, 'source file.js', 3);
+  await ChatWindowHost.prototype.openFile.call(host, 'missing.html');
+  assert.deepEqual(opened, [html]);
+  assert.deepEqual(edited, [{ file: html, row: 6 }, { file: source, row: 2 }]);
+  assert.match(warnings[0], /File not found/);
+});
+
+test('routing receives the current task before the destination handoff is added', async t => {
+  const { Router, config } = require('../lib/routing');
+  const f = fixture(t), run = f.chat();
+  run.chat.messages.push({ role: 'user', text: 'Build a new application with architecture and authentication.' }, { role: 'assistant', text: 'The initial backend is ready.' });
+  const router = new Router({ getConfig: () => ({ tiers: ['deterministic'] }) });
+  const route = router.route.bind(router); let captured;
+  router.route = async (...args) => { captured = args[0]; return route(...args); };
+  run.deps.routing = { router, getConfig: () => config(), prepareSummary: async () => {} };
+  const latest = 'Adjust the spacing and typography on the existing page.';
+  await run.startTurn({ text: latest, modelId: 'claude-sonnet-5-5-high' });
+  assert.equal(captured.prompt, latest);
+  assert.equal(captured.recent_work.length, 2);
+  assert.match(captured.recent_work[0].text, /architecture/);
+  assert.match(run.streamEngine.runs[0].prompt, /CHAT CONTEXT/);
+  assert.ok(run.streamEngine.runs[0].prompt.endsWith(latest));
+  assert.equal(router.usage().destination_turns.claude,1);
+});
+
+test('routed Claude and Gemini sends deliver every original image to the chosen CLI',async t=>{
+  const {Router,config}=require('../lib/routing');
+  const f=fixture(t);
+  const original=path.join(f.deps.attachmentsDir,'original screenshot.png');
+  const second=path.join(f.deps.attachmentsDir,'second image.jpg');
+  const bytes=Buffer.from('original image contents');fs.writeFileSync(original,bytes);fs.writeFileSync(second,bytes);
+  for(const id of ['claude-opus-5-5-medium','claude-sonnet-5-5-high','gemini-3.8-flash-high']){
+    const run=f.chat();
+    run.deps.routing={router:new Router({getConfig:()=>({tiers:['deterministic']})}),getConfig:()=>config(),prepareSummary:async()=>{}};
+    await run.startTurn({text:'Inspect both screenshots',modelId:id,attachments:[original,second]});
+    const request=run.streamEngine.runs[0];
+    assert.deepEqual(request.attachments,[original,second]);
+    assert.equal(request.model,require('../lib/model-catalog').modelOption(id).model);
+    assert.deepEqual(fs.readFileSync(original),bytes);
+    run.streamEngine.complete();
+  }
+});
+
+test('routed prompt completes safely even if deps.routing lacks prepareSummary', async t => {
+  const { Router, config } = require('../lib/routing');
+  const f = fixture(t), run = f.chat();
+  const router = new Router({ getConfig: () => ({ tiers: ['deterministic'] }) });
+  run.deps.routing = { router, getConfig: () => config() };
+  await run.startTurn({ text: 'Simple task without prepareSummary', modelId: 'gpt-6.1-sol-high' });
+  assert.equal(run.streamEngine.runs.length, 1);
+});
+
+test('real routing runtime dispatches manual, Auto and queued turns without summary hooks', async t => {
+  const { runtime } = require('../lib/routing-runtime');
+  const { MODEL_CATALOG } = require('../lib/model-catalog');
+  for (const kind of ['manual', 'auto', 'queued']) {
+    for (const hook of ['missing', 'throws']) {
+      await t.test(`${kind}: ${hook}`, async t => {
+        const f = fixture(t), run = f.chat();
+        const values = { routingConfig: { tiers: ['deterministic'] } };
+        const context = { globalState: {
+          get: (key, fallback) => values[key] ?? fallback,
+          update: async (key, value) => { values[key] = value; },
+        }, secrets: { get: async () => '' } };
+        run.deps.routing = runtime(context, () => MODEL_CATALOG, f.deps.sessionDir);
+        let summaryCalls = 0;
+        if (hook === 'missing') delete run.deps.routing.prepareSummary;
+        else run.deps.routing.prepareSummary = () => { summaryCalls++; throw Error('Obsolete summary hook'); };
+        if (kind === 'queued') {
+          run.enqueue({ id: 'runtime-regression', text: 'Explain this function', modelId: 'gpt-6.1-sol-high', attachments: [], queued: true });
+          await settle();
+        } else {
+          await run.startTurn({ text: 'Explain this function', modelId: kind === 'auto' ? 'auto' : 'gpt-6.1-sol-high' });
+        }
+        assert.equal(run.streamEngine.runs.length, 1, 'the destination starts');
+        assert.equal(summaryCalls, 0, 'native sessions and transcript handoffs do not use the obsolete summary hook');
+        run.streamEngine.complete();
+        assert.equal(run.chat.taskState.latestRequest, 'Explain this function');
+        assert.equal(run.starting, false);
+      });
+    }
+  }
+});
+
 const turn = (id, extra = {}) => ({ id, text: 'Task ' + id, modelId: 'gpt-6.1-sol-high', attachments: [], queued: true, ...extra });
 
 test('scheduled turns use the favorite prompt and permission override', async (t) => {
@@ -87,6 +187,22 @@ test('startup discovery finishes before a manual queued model is resolved', asyn
   run.streamEngine.complete();
 });
 
+
+test('saved JSON attachments retain their bytes and reach the destination request', async t => {
+  const f = fixture(t), run = f.chat(), host = f.host(run);
+  const content = JSON.stringify({ feedback: 'Prefer Gemini for documentation', accepted: true });
+  host.saveAttachment({ chatId: run.chat.id, name: 'router feedback.json', mime: 'application/json', data: Buffer.from(content).toString('base64') });
+  const saved = host.messages.findLast(message => message.type === 'attachmentSaved').attachment;
+  assert.equal(fs.readFileSync(saved.path, 'utf8'), content);
+  await host.startTurn({ chatId: run.chat.id, text: 'Review this feedback', modelId: 'gpt-6.1-sol-high', attachments: [saved.path] });
+  const request = run.streamEngine.runs[0];
+  assert.deepEqual(request.attachments, [saved.path]);
+  const { attachmentPrompt } = require('../lib/attachments');
+  const prompt = attachmentPrompt(request.prompt, request.attachments);
+  const previews = JSON.parse(prompt.split('Attached document previews (JSON):\n')[1]);
+  assert.equal(previews[0].content, content);
+  run.streamEngine.complete();
+});
 
 test('registered projects isolate execution, context, attachments and restored chats', async t => {
   const f = fixture(t), projects = new ProjectRegistry(f.deps.sessionDir);
@@ -141,6 +257,21 @@ test('legacy chats require explicit project binding and preserve messages and pi
   assert.ok(bound.chat.messages[0].attachments[0].startsWith(bound.deps.attachmentsDir));
   assert.deepEqual(bound.chat.sessions, {});
   assert.throws(() => f.manager.bindProject(bound, project.id), /cannot be moved/);
+});
+
+test('a fresh chat moves to another project; one with history cannot', async t => {
+  const f = fixture(t), projects = new ProjectRegistry(f.deps.sessionDir);
+  const aRoot = path.join(f.deps.workspaceDir, 'a'), bRoot = path.join(f.deps.workspaceDir, 'b');
+  fs.mkdirSync(aRoot); fs.mkdirSync(bRoot);
+  const a = projects.add('A', aRoot), b = projects.add('B', bRoot);
+  Object.assign(f.manager.deps, { projects, defaultProjectId: a.id });
+  const fresh = f.manager.runFor(null, a.id);
+  assert.equal(fresh.chat.projectId, a.id);
+  const moved = f.manager.bindProject(fresh, b.id);
+  assert.equal(moved.chat.id, fresh.chat.id); assert.equal(moved.chat.projectId, b.id);
+  assert.equal(moved.deps.workspaceDir, fs.realpathSync.native(bRoot));
+  moved.chat.messages.push({ role: 'user', text: 'Hello' });
+  assert.throws(() => f.manager.bindProject(moved, a.id), /cannot be moved/);
 });
 
 test('scheduled work restores its pinned project and images after changing the workspace', async t => {
@@ -269,6 +400,67 @@ test('repeated new chats remove the empty predecessor and retain the active side
   }
 });
 
+test('typed drafts survive switching and restart, including text entered then erased', async t => {
+  const f = fixture(t), run = f.chat(), host = f.host(run);
+  await host.handleMessage({ type: 'saveDraft', chatId: run.chat.id, text: 'Unsent idea\nKeep this' });
+  host.attach(f.chat());
+  assert.equal(f.deps.chatStore.load(run.chat.id).draft, 'Unsent idea\nKeep this');
+  assert.ok(f.manager.listChats().some(chat => chat.id === run.chat.id));
+  const restarted = new ChatWindowManager('/panel', { ...f.deps, chatStore: new ChatStore(f.deps.sessionDir) });
+  await restarted.pruneEmptyChats();
+  clearTimeout(restarted.openTimer);
+  assert.equal(restarted.deps.chatStore.load(run.chat.id).draft, 'Unsent idea\nKeep this');
+  host.restoreChat(run.chat.id);
+  assert.equal(host.messages.filter(message => message.type === 'chatLoaded').at(-1).chat.draft, 'Unsent idea\nKeep this');
+  await host.handleMessage({ type: 'saveDraft', chatId: run.chat.id, text: '' });
+  host.attach(f.chat());
+  assert.equal(f.deps.chatStore.load(run.chat.id).draft, '');
+  assert.equal(f.deps.chatStore.load(run.chat.id).hasTypedMessage, true);
+});
+
+test('a draft is retained in slot five and removed with its backup when a sixth chat displaces it', async t => {
+  const f = fixture(t), store = f.deps.chatStore;
+  const draft = store.save({ ...store.create(), draft: 'Unsent idea' });
+  store.save(draft);
+  const addNewer = i => store.save({ ...store.create(), updatedAt: new Date().toISOString(), messages: [{ role: 'user', text: `Sent ${i}` }] });
+  // Give the draft an unambiguous older timestamp without depending on clock resolution.
+  const file = store.fileFor(draft.id);
+  fs.writeFileSync(file, JSON.stringify({ ...draft, updatedAt: '2000-01-01T00:00:00Z' }));
+  for (let i = 0; i < 4; i++) addNewer(i);
+  await f.manager.pruneEmptyChats();
+  assert.equal(f.manager.listChats()[4].id, draft.id);
+  assert.equal(store.load(draft.id).draft, 'Unsent idea');
+  addNewer(4);
+  await f.manager.pruneEmptyChats();
+  assert.equal(store.load(draft.id), null);
+  assert.equal(fs.readdirSync(store.dir).some(name => name.includes(draft.id)), false);
+  assert.equal(store.list().length, 5, 'sent conversations survive cleanup');
+});
+
+test('sidebar switches apply the same recent-five ordering as the rail', async t => {
+  const f = fixture(t), host = f.host(f.chat());
+  host.panel.sidebar = true;
+  f.manager.sidebar = host;
+  f.manager.deps.sidebarState = { update() {} };
+  const drafts = [];
+  for (let i = 0; i < 6; i++) {
+    drafts.push(host.chat.id);
+    await host.handleMessage({ type: 'saveDraft', chatId: host.chat.id, text: `Draft ${i}` });
+    host.attach(f.chat());
+  }
+  assert.equal(f.deps.chatStore.load(drafts[0]), null);
+  for (const id of drafts.slice(-4)) assert.ok(f.deps.chatStore.load(id));
+  assert.equal(f.manager.listChats().slice(0, 5)[0].id, host.chat.id);
+});
+
+test('late draft updates cannot write into the newly selected chat', async t => {
+  const f = fixture(t), old = f.chat(), host = f.host(old);
+  host.attach(f.chat());
+  await host.handleMessage({ type: 'saveDraft', chatId: old.chat.id, text: 'Late text' });
+  assert.equal(host.chat.draft, undefined);
+  assert.equal(f.deps.chatStore.load(old.chat.id), null);
+});
+
 test('an empty chat shared by two windows is deleted only after both leave it', t => {
   const f = fixture(t), empty = f.chat(), next = f.chat(), first = f.host(empty), second = f.host(empty);
   first.attach(next);
@@ -376,6 +568,52 @@ test('editing holds the original queue slot and saves text, model and images ind
   assert.deepEqual(saved[1].attachments, []);
   host.releaseQueueEdits();
   assert.equal(run.queue[1].editing, false, 'closing the editor releases its hold');
+});
+
+test('queue conversion preserves edits, images and project; Continue stays first and survives reload', async t => {
+  const f = fixture(t), run = f.chat();
+  f.deps.schedulerQueue = new SchedulerQueue({ workspaceDir: f.deps.workspaceDir, sessionDir: f.deps.sessionDir });
+  run.deps.schedulerQueue = f.deps.schedulerQueue;
+  const host = f.host(run);
+  run.pauseQueue(true);
+  const image = path.join(f.deps.attachmentsDir, 'schedule.png'); fs.writeFileSync(image, 'picture');
+  run.enqueue(turn('convert', { modelId: 'claude-sonnet-5-5-high', attachments: [image] }));
+  await host.handleMessage({ type: 'scheduleQueuedTurn', chatId: run.chat.id, id: 'convert', turn: { ...run.queue[0], text: 'Edited regulatory task' }, task: { dispatchTrigger: 'fixed-time', dispatchTime: '2099-01-01T00:00:00Z' } });
+  assert.equal(run.queue.length, 0);
+  let tasks = await f.deps.schedulerQueue.getQueue();
+  assert.equal(tasks[0].prompt, 'Edited regulatory task');
+  assert.equal(tasks[0].chatId, run.chat.id);
+  assert.equal(tasks[0].workspaceDir, run.deps.workspaceDir);
+  assert.equal(tasks[0].dispatchTrigger, 'fixed-time');
+  assert.equal(fs.readFileSync(tasks[0].attachments[0].absolutePath, 'utf8'), 'picture');
+  const schedule = prompt => host.scheduleTask({ task: { model: 'claude', prompt, dispatchTrigger: 'quota-reset', resumeHere: true } });
+  await Promise.all([schedule('continue'), schedule('continue')]);
+  await schedule('Next task');
+  tasks = await f.deps.schedulerQueue.getQueue();
+  assert.deepEqual(tasks.map(task => task.prompt), ['continue', 'Edited regulatory task', 'Next task']);
+  await f.deps.schedulerQueue.reorder(tasks.map(task => task.id).reverse());
+  const reloaded = new SchedulerQueue({ workspaceDir: f.deps.workspaceDir, sessionDir: f.deps.sessionDir });
+  assert.equal((await reloaded.getQueue())[0].prompt, 'continue');
+  await f.deps.schedulerQueue.update((await reloaded.getQueue())[0].id, task => { task.notBefore = '2099-01-01T00:00:00Z'; });
+  assert.equal(await f.deps.schedulerQueue.getNextPendingForModel('claude'), null, 'later prompts wait for the continuation even if already due');
+  const independent = await f.deps.schedulerQueue.enqueue({ chatId: 'another-chat', model: 'claude', prompt: 'Independent task', dispatchTrigger: 'quota-reset' });
+  assert.equal((await f.deps.schedulerQueue.getNextPendingForModel('claude')).id, independent.id, 'other chats are not blocked');
+  run.chat.messages.push({ role: 'assistant', agent: 'claude', text: "You've hit your session limit" }, { role: 'user', text: 'continue', scheduled: true });
+  const continuation = (await reloaded.getQueue())[0];
+  await f.deps.schedulerQueue.markCompleted(continuation.id);
+  await schedule('continue');
+  assert.equal((await f.deps.schedulerQueue.getQueue()).filter(task => task.prompt === 'continue').length, 1);
+});
+
+test('failed conversion keeps the queued prompt and releases the editor hold', async t => {
+  const f = fixture(t), run = f.chat();
+  f.deps.schedulerQueue = { enqueue: async () => { throw Error('Disk unavailable'); } };
+  const host = f.host(run);
+  run.pauseQueue(true); run.enqueue(turn('keep'));
+  await host.handleMessage({ type: 'scheduleQueuedTurn', chatId: run.chat.id, id: 'keep' });
+  assert.equal(run.queue[0].id, 'keep');
+  assert.equal(run.queue[0].editing, false);
+  assert.ok(host.messages.some(message => message.type === 'scheduleTaskFailed'));
 });
 
 test('queued turns finish FIFO after repeated chat switches with no window watching them', async t => {

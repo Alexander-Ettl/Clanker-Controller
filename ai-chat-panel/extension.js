@@ -24,6 +24,7 @@ const providers = require('./lib/providers'); // the coding-agent CLIs Clanker d
 const { VoiceHotkey, createHotkeyHandlers } = require('./lib/voice-hotkey.js');
 const { GroqAccount } = require('./lib/groq-account.js');
 const voiceDictionary = require('./lib/voice-dictionary.js');
+const { scanProject } = require('./lib/voice-scan.js');
 const { resolveSessionDir } = require('./lib/session-dir.js');
 const { writeMicroHandoff, formatMicroHandoffPrompt } = require('./lib/handoff.js');
 
@@ -33,13 +34,26 @@ const ROUTING_LINKS = {
   cfAi: 'https://dash.cloudflare.com/?to=/:account/ai/workers-ai',
   groqKeys: 'https://console.groq.com/keys',
   groqLimits: 'https://console.groq.com/dashboard/limits',
+  // Compliance tab: the provider's own terms and the official legal texts.
+  anthropicDpa: 'https://www.anthropic.com/legal/data-processing-addendum',
+  openaiDpa: 'https://openai.com/policies/data-processing-addendum/',
+  googleDpa: 'https://cloud.google.com/terms/data-processing-addendum',
+  cloudflareDpa: 'https://www.cloudflare.com/cloudflare-customer-dpa/',
+  groqPrivacy: 'https://groq.com/privacy-policy/',
+  telegramPrivacy: 'https://telegram.org/privacy',
+  gdpr: 'https://eur-lex.europa.eu/eli/reg/2016/679/oj',
+  aiAct: 'https://eur-lex.europa.eu/eli/reg/2024/1689/oj',
+  dpf: 'https://www.dataprivacyframework.gov/list',
+  bfdi: 'https://www.bfdi.bund.de/',
 };
+// Settings behind the Compliance tab's switches. Only these two can be written from the webview.
+const COMPLIANCE_SETTINGS = { scout: 'complianceScout', redact: 'complianceRedact' };
 const { execFile, spawn } = require('node:child_process');
 const { StreamEngine } = require('./lib/stream-engine.js');
 const { locate, refresh: refreshBinaries, resolveShim, terminalCommand } = require('./lib/binary-locator.js');
 const { ChatStore, markActive, ACTIVE_WINDOW_MS, deriveFallbackTitle, recoverInterruptedChat, ownedByAnotherHost } = require('./lib/chat-store.js');
 const { route, routeBest } = require('./lib/auto-router.js');
-const { runtime: routingRuntime, compactSource, projectStack } = require('./lib/routing-runtime.js');
+const { runtime: routingRuntime, projectStack } = require('./lib/routing-runtime.js');
 const { windowOf, GROQ_MODEL } = require('./lib/routing.js');
 const { MODEL_CATALOG, AVAILABLE_MODELS, defaultModel, modelOption, resolveModel } = require('./lib/model-catalog.js');
 const { CliHub } = require('./lib/cli-tools.js');
@@ -48,12 +62,14 @@ const { promptFor, permissionFor, appendInstructions } = require('./media/model-
 const { CostMeter, legacyChatCost, chatCost, LEDGER_VERSION } = require('./lib/api-cost.js');
 const { isLimitNotice } = require('./media/limit-notice.js');
 const { SchedulerQueue, ACTIVE_STATUSES, isDue } = require('./lib/scheduler-queue.js');
-const { ProjectRegistry, projectFiles } = require('./lib/projects.js');
+const { installInvestigations } = require('./lib/investigation-commands.js');
+const { createInvestigationBridge, investigationOptions } = require('./lib/investigation-bridge.js');
+const { ProjectRegistry, projectFiles, describe: describeProject, findIcon } = require('./lib/projects.js');
 const { TelegramBridge, DOCK_KEYBOARD, escapeHtml, markdownToTelegramHtml } = require('./lib/telegram-bridge.js');
 const { configureTelegram: setupTelegram, TOKEN_KEY, CHAT_KEY, OWNER_KEY } = require('./lib/telegram-setup.js');
 const { forwardRequest, bindTelegramControls } = require('./lib/telegram-control.js');
 const { resolveEditorTheme } = require('./lib/editor-theme.js');
-const { buildHandoff, buildCompactionHandoff, checkpointStart, estimateTokens, COMPACT_DIRECTIVE, COMPACT_TARGET_TOKENS } = require('./lib/chat-handoff.js');
+const { buildHandoff, buildCompactionHandoff, taskState, checkpointStart, estimateTokens, COMPACT_DIRECTIVE, COMPACT_TARGET_TOKENS } = require('./lib/chat-handoff.js');
 const { CodexCommandCatalog } = require('./lib/codex-commands.js');
 const { SlashCommandCatalog } = require('./lib/slash-commands.js');
 
@@ -126,8 +142,12 @@ class SchedulerWatchdog {
       // another); a headless run holds the watchdog until it ends.
       for (let guard = 0; guard < 50; guard++) {
         const queue = await this.queue.getQueue();
-        const next = queue.find((task) => task.status === 'pending' && this.isAgentEnabled(task.model) && isDue(task, Date.now()) && this.projectAvailable(task));
-        if (!next || !quotaAvailable(await readQuotas(), next.model)) return;
+        const due = queue.filter((task) => task.status === 'pending' && this.isAgentEnabled(task.model) && isDue(task, Date.now()) && this.projectAvailable(task));
+        if (!due.length) return;
+        // The first due task may wait on an exhausted model; it must not hold back tasks for models that still have quota.
+        const quotas = await readQuotas();
+        const next = due.find((task) => quotaAvailable(quotas, task.model));
+        if (!next) return;
         await this.dispatch(next);
         if (this.activeTaskId) return;
       }
@@ -292,10 +312,11 @@ function getVoiceRouterDir() {
   return path.join(__dirname, '..', 'voice-router');
 }
 const VOICE_ROUTER_DIR = getVoiceRouterDir();
+const POLISH_MAX_CHARS = 12000; // what the composer's Polish button sends to the cleanup model in one go
 
 // The AI bridge's version and what this provider implements (docs/ai-bridge-interface.md).
 const BRIDGE_API_VERSION = 1;
-const BRIDGE_CAPABILITIES = ['routePrompt', 'injectPrompt', 'runBatch', 'favoriteModels', 'routingMode'];
+const BRIDGE_CAPABILITIES = ['routePrompt', 'injectPrompt', 'runBatch', 'favoriteModels', 'routingMode', 'summarize'];
 
 // Clanker's own state (chats, attachments, scheduler queue, handoff, voice dictionary): its per-user storage,
 // resolved in activate() by lib/session-dir.js. Nothing here belongs to a project or to another extension.
@@ -375,6 +396,7 @@ function loadVoiceRouterEnv() {
 
 let voiceRouterModulesPromise = null;
 let groqAccount = null; // set in activate(): the saved Groq key and its usage (lib/groq-account.js)
+let routingRuntimeRef = null; // set in activate(): lets the voice client share Groq's limits with Cloudflare (lib/routing.js)
 function loadVoiceRouterModules() {
   if (!voiceRouterModulesPromise) {
     loadVoiceRouterEnv();
@@ -382,13 +404,12 @@ function loadVoiceRouterModules() {
     voiceRouterModulesPromise = Promise.all([
       import(pathToFileURL(path.join(libDir, 'quota-reader.mjs')).href),
       import(pathToFileURL(path.join(libDir, 'groq-client.mjs')).href),
-    ]).then((modules) => { groqAccount?.attach(modules[1]); return modules; }); // Settings counts the Groq requests from here on
+    ]).then((modules) => { groqAccount?.attach(modules[1]); routingRuntimeRef?.attachVoice(modules[1]); return modules; }); // Settings counts the Groq requests from here on
   }
   return voiceRouterModulesPromise;
 }
 
 // P17-ZA: Clanker's own voice dictionary (lib/voice-dictionary.js) plus OpenWhispr's custom words.
-const WHISPER_PROMPT_TERMS = 40; // Whisper's `prompt` holds ~224 tokens
 const voicePaths = () => ({ dictionaryFile: path.join(SESSION_DIR, 'voice-dictionary.json') });
 const voiceVocabulary = () => voiceDictionary.vocabulary(voicePaths());
 
@@ -452,13 +473,12 @@ async function planTurn(run, message, deps) {
     // still be used after its favorite is removed or its effort is changed.
     const candidates = MODEL_CATALOG.filter(m => !accounts || accounts.isEnabled(m.agent));
     if (option && !candidates.some(m => m.id === option.id)) candidates.push(option);
-    routingDecision = await deps.routing.router.route({ prompt: text, project: run.chat.projectId || deps.workspaceDir, project_aliases: [deps.workspaceDir, deps.projects?.get(run.chat.projectId)?.name], stack: projectStack(deps.workspaceDir), previous, manual_pick: option?.id, screenshot: attachments.some(f => /\.(png|jpe?g|webp)$/i.test(f)), attachments, context_tokens: run.chat.context?.tokens || 0, context_pct: previous ? (run.chat.context?.tokens || 0) / windowOf({...previous,...deps.routing.getConfig().models[previous.id]}) * 100 : 0, turns_since_switch: run.chat.routingTurns || 0, retry: message.retry === true, new_chat: message.newChat === true }, candidates, quotas);
+    routingDecision = await deps.routing.router.route({ prompt: text, project: run.chat.projectId || deps.workspaceDir, project_name: deps.projects?.get(run.chat.projectId)?.name, project_aliases: [deps.workspaceDir, deps.projects?.get(run.chat.projectId)?.name], stack: projectStack(deps.workspaceDir), language: vscode.env.language, recent_work: run.chat.messages.filter(m=>m.role==='user'||m.role==='assistant').slice(-deps.routing.getConfig().policy.recent_messages), previous, manual_pick: option?.id, screenshot: attachments.some(f => /\.(png|jpe?g|webp)$/i.test(f)), attachments, context_tokens: run.chat.context?.tokens || 0, context_pct: previous ? (run.chat.context?.tokens || 0) / windowOf({...previous,...deps.routing.getConfig().models[previous.id]},deps.routing.getConfig().policy.default_context) * 100 : 0, turns_since_switch: run.chat.routingTurns || 0, retry: message.retry === true, new_chat: message.newChat === true }, candidates, quotas);
     if (routingDecision.exhausted) throw new Error('No enabled model can accept this prompt with the remaining quota and image/context requirements.');
     option = modelOption(routingDecision.pick) || (routingDecision.pick === GROQ_MODEL.id ? GROQ_MODEL : null);
     if (previous?.id !== option?.id) run.chat.routingTurns = 0;
     else run.chat.routingTurns = (run.chat.routingTurns || 0) + 1;
     run.chat.routingModelId = option?.id;
-    void deps.routing.prepareSummary(run.chat, option, run.chat.projectId || deps.workspaceDir, [deps.workspaceDir, deps.projects?.get(run.chat.projectId)?.name]);
   }
   const dispatch = routingDecision
     ? { agent: option.agent, modelId: option.id, directive: '', contract: '', roleName: null, split: false }
@@ -490,9 +510,13 @@ async function planTurn(run, message, deps) {
   const session = routingDecision?.action === 'new' ? null : run.chat.sessions?.[dispatch.agent] || null;
   if (routingDecision?.action === 'new') run.chat.sessions = {};
   // Never further back than the last compaction: its summary stands in for everything before it.
-  const briefing = (from) => deps.routing
-    ? (run.chat.messages.length ? `PROJECT: ${run.chat.projectId || deps.workspaceDir}\nCOMPACT HANDOFF:\n${run.chat.routingSummary || compactSource(run.chat)}` : `PROJECT: ${run.chat.projectId || deps.workspaceDir}`)
-    : buildHandoff(run.chat.messages.slice(Math.max(from, checkpointStart(run.chat.messages))), dispatch.agent);
+  // The agent reads this, so it names the project; the registry id stays the router's key.
+  const projectLabel = deps.projects?.get(run.chat.projectId)?.name || deps.workspaceDir;
+  const briefing = (from) => [
+    `PROJECT: ${projectLabel}`,
+    !from && run.chat.messages.length ? `TASK STATE:\n${JSON.stringify(taskState(run.chat.messages))}` : '',
+    buildHandoff(run.chat.messages.slice(Math.max(from, checkpointStart(run.chat.messages))), dispatch.agent, { structured: true }),
+  ].filter(Boolean).join('\n\n');
   const manualReset = session?.id ? `${requested !== 'auto' ? 'The model was selected manually. ' : ''}Earlier Auto-mode role restrictions no longer apply. Follow the user's current request.` : '';
   const compose = (handoff, fresh) => [manualReset, fresh ? dispatch.directive : '', dispatch.contract, handoff, promptText].filter(Boolean).join('\n\n');
   const prompt = codexCommand ? codexCommand.prompt : slashAgent ? promptText : session?.id ? compose(briefing(session.seen || 0), false) : compose(briefing(0), true);
@@ -505,7 +529,7 @@ async function planTurn(run, message, deps) {
       user: { role: 'user', text, at: new Date().toISOString(), agent: dispatch.agent, modelId: message.modelId, attachments: Array.isArray(message.attachments) ? message.attachments : [], ...(message.scheduled ? { scheduled: true } : {}), ...(message.queued ? { queued: true } : {}), ...(message.pipelineBuild ? { pipelineBuild: true } : {}) },
       reply: { role: 'assistant', text: '', agent: dispatch.agent, modelId: used?.id, modelLabel: used?.label, roleName: session?.id ? undefined : dispatch.roleName, routing: routingDecision || (dispatch.split ? 'contract-lock' : undefined) },
       routing: { agentId: dispatch.agent, modelLabel: used?.label, roleName: session?.id ? null : dispatch.roleName, auto: requested === 'auto', split: dispatch.split },
-      run: { agent: dispatch.agent, prompt, freshPrompt, resume: session?.id || null, groqRouter: deps.routing?.router, contextWindow: used ? windowOf({ ...used, ...deps.routing?.getConfig().models[used.id] }) : undefined, codexCommand: codexCommand?.name || null, codexCommandArgs: codexCommand?.args || [], attachments: safeAttachmentPaths(deps, message.attachments), model: used?.model, effort: used?.effort, permissionMode: permissionFor(deps.getModelSettings?.(), used, deps.getPermissionMode?.() || 'fullAccess') },
+      run: { agent: dispatch.agent, prompt, freshPrompt, resume: session?.id || null, groqRouter: deps.routing?.router, contextWindow: used ? windowOf({ ...used, ...deps.routing?.getConfig().models[used.id] },deps.routing?.getConfig().policy.default_context) : undefined, codexCommand: codexCommand?.name || null, codexCommandArgs: codexCommand?.args || [], attachments: safeAttachmentPaths(deps, message.attachments), model: used?.model, effort: used?.effort, permissionMode: permissionFor(deps.getModelSettings?.(), used, deps.getPermissionMode?.() || 'fullAccess') },
     },
   };
 }
@@ -526,7 +550,7 @@ class ChatRun {
     this.turnAgent = null;
     this.turn = null; // the running turn's routing message, replayed when a window attaches
     this.pending = new Map(); // unanswered approval/question cards, replayed the same way
-    this.queue = Array.isArray(chat.turnQueue?.turns) ? chat.turnQueue.turns.map((turn) => ({ ...turn, queued: true, editing: false })) : [];
+    this.queue = Array.isArray(chat.turnQueue?.turns) ? chat.turnQueue.turns.map((turn) => ({ ...turn, queued: true, editing: false, scheduling: false })) : [];
     this.queuePaused = chat.turnQueue?.paused === true;
     this.starting = false; // a queued message is being planned; its turn hasn't begun yet
     this.planning = 0;
@@ -602,6 +626,7 @@ class ChatRun {
     this.streamEngine.permissionMode = this.deps.getPermissionMode?.() || 'fullAccess';
     this.streamEngine.turnBases = null; // set again by start(), unless the turn goes to a process that is already running
     this.streamEngine.start(run);
+    if (!reply.compact) this.deps.routing?.router.recordDestination?.(agent);
     // What "Undo turn" goes back to: the repos as this turn found them.
     const bases = this.streamEngine.turnBases;
     this.turnUndo = bases?.size && !reply.compact ? { bases: [...bases], startedAt: this.streamEngine.turnStartedAt } : null;
@@ -747,6 +772,7 @@ class ChatRun {
     const turns = this.queue.filter((next) => next.queued);
     const ordered = [...new Set(Array.isArray(ids) ? ids : [])].map((id) => turns.find((next) => next.id === id)).filter(Boolean);
     ordered.push(...turns.filter((next) => !ordered.includes(next)));
+    ordered.sort((a, b) => Number(/^\s*continue\s*[.!]?\s*$/i.test(b.text)) - Number(/^\s*continue\s*[.!]?\s*$/i.test(a.text)));
     this.queue = this.queue.map((next) => next.queued ? ordered.shift() : next);
     this.queueChanged();
   }
@@ -775,8 +801,14 @@ class ChatRun {
   /** FIFO: a message runs once every earlier one in this chat has finished. */
   enqueue(message) {
     if (message.queued && this.queue.some((next) => next.id === message.id)) return;
+    if (/^\s*continue\s*[.!]?\s*$/i.test(message.text)) {
+      this.queue.unshift(message);
+      this.queueChanged();
+      void this.drain();
+      return;
+    }
     // What you queued yourself goes before anything the scheduler sent in, whichever arrived first.
-    const firstScheduled = message.scheduled ? -1 : this.queue.findIndex((next) => next.scheduled);
+    const firstScheduled = message.scheduled ? -1 : this.queue.findIndex((next) => next.scheduled && !/^\s*continue\s*[.!]?\s*$/i.test(next.text));
     if (firstScheduled >= 0) this.queue.splice(firstScheduled, 0, message); else this.queue.push(message);
     this.queueChanged();
     void this.drain();
@@ -785,12 +817,12 @@ class ChatRun {
   drain() {
     if (this.turn || this.starting || this.queuePaused || !this.queue.length) return;
     const next = this.queue[0];
-    if (next.editing || !next.text.trim()) return;
+    if (next.editing || next.scheduling || !next.text.trim()) return;
     return this.startTurn({ ...next, steer: true }, { queued: next })
       .then((started) => { if (started === false) setImmediate(() => this.drain()); })
       .catch((error) => {
         console.error('[ai-chat-panel] queued turn failed to start:', error);
-        this.post({ type: 'notice', text: 'Could not start the queued task: ' + error.message + '. It is still in the queue.' });
+        this.post({ type: /out of usage/i.test(error.message) ? 'queueUsageWarning' : 'notice', chatId: this.chat.id, id: next.id, agent: modelOption(next.modelId)?.agent || this.activeAssistantMessage?.agent, text: 'Could not start the queued task: ' + error.message + ' It is still in the queue.' });
       })
       .finally(() => { this.deps.chatWindowManager.release(this); this.deps.notifyHistory(); });
   }
@@ -931,10 +963,6 @@ class ChatRun {
       this.turnAgent = null;
     }
     if (event.type === 'usage' && this.turnAgent === event.agent) this.chat.context = { agent: event.agent, tokens: event.contextTokens }; // P17-R: saved with the turn
-    if (event.type === 'usage' && this.deps.routing) {
-      const model = modelOption(this.chat.routingModelId);
-      if (model) void this.deps.routing.prepareSummary(this.chat, model, this.chat.projectId || this.deps.workspaceDir, [this.deps.workspaceDir, this.deps.projects?.get(this.chat.projectId)?.name]).then(() => this.save());
-    }
     if (event.type === 'delta' && this.activeAssistantMessage) this.activeAssistantMessage.text += event.text;
     // `offset`: how much reply text came before this tool, so a reload shows them in order.
     if (event.type === 'tool_start') this.chat.messages.push({ role: 'tool', event, offset: this.activeAssistantMessage?.text.length, done: Boolean(event.done) });
@@ -1011,6 +1039,7 @@ class ChatRun {
       this.continuePipeline(event, this.activeAssistantMessage);
       if (event.interrupted && this.activeAssistantMessage) this.activeAssistantMessage.interrupted = true;
       this.chat.lastRunAt = new Date().toISOString();
+      this.chat.taskState = taskState(this.chat.messages);
       this.save();
       this.activeAssistantMessage = null;
       this.turn = null;
@@ -1059,6 +1088,12 @@ class ChatWindowHost {
     this.activeModelId = 'auto'; // a MODEL_CATALOG id, or 'auto'
     this.lastRoutedAgent = 'claude';
     this.pollTimer = null;
+    this.investigationBridge = createInvestigationBridge({
+      getInvestigations: () => { const installed = deps.chatWindowManager.deps.investigations; return installed?.manager ? installed : null; },
+      getOptions: () => this.investigationOptions(),
+      review: request => this.reviewInNewChat(request),
+      post: (message) => panel.webview.postMessage(message),
+    });
     const launcherDeps = deps.chatWindowManager.launcherDeps;
     if (launcherDeps) {
       this.settingsPane = new LauncherViewProvider(extensionUri, launcherDeps);
@@ -1073,6 +1108,7 @@ class ChatWindowHost {
     panel.webview.html = this.renderHtml(panel.webview);
     panel.webview.onDidReceiveMessage((message) => this.handleMessage(message));
     panel.onDidDispose(() => {
+      this.investigationBridge.dispose();
       this.releaseQueueEdits();
       if (this.pollTimer) clearInterval(this.pollTimer);
       this.pollTimer = null;
@@ -1104,10 +1140,19 @@ class ChatWindowHost {
       // real VS Code terminal (only the Terminal button does). 'auto' is the
       // routing preference for the next `send`.
       case 'setModel': this.selectModel(message.modelId); break;
+      // Settings > Loops: validated requests to the investigation manager (lib/investigation-bridge.js).
+      case 'investigations': void this.investigationBridge.handle(message); break;
       // The composer's smart-routing switch. Every window and the settings pane follow through routing.onDidChange.
       case 'setRoutingMode': void this.deps.routing?.setMode(message.mode).catch(() => this.pushRoutingMode()); break;
       case 'requestRoutingMode': void this.pushRoutingMode(); break;
       case 'send': await this.startTurn(message); break;
+      case 'saveDraft': {
+        if (message.chatId !== this.chat.id || typeof message.text !== 'string') break;
+        this.chat.draft = message.text;
+        if (message.text.length) this.chat.hasTypedMessage = true;
+        this.deps.chatStore.checkpoint(this.chat);
+        break;
+      }
       case 'stop': this.run.stop(); break;
       case 'stopChat': this.deps.chatWindowManager.runs.get(message.id)?.stop(); break;
       case 'focusTerminal': {
@@ -1123,8 +1168,11 @@ class ChatWindowHost {
       case 'newChat': this.resetToFreshChat(); break;
       case 'requestProject': this.postProject(); break;
       case 'chooseProject': await this.chooseProject(); break;
+      case 'addProject': { const project = await this.addProject(); if (project) { this.postProject(); await this.openProject(project); } break; }
+      case 'removeProject': await this.removeProject(message.projectId); break;
+      case 'renameProject': await this.renameProject(message.projectId, message.name); break;
+      case 'openProject': { const project = this.deps.projects?.get(message.projectId); if (project && project.id !== this.chat.projectId) await this.openProject(project); break; }
       case 'manageProjects': await this.manageProjects(); break;
-      case 'openProjectExplorer': await this.openProjectExplorer(); break;
       case 'requestHistory': this.postHistory(); break;
       case 'restoreChat': this.restoreChat(message.id); break;
       case 'deleteChat': this.deps.chatWindowManager.deleteChat(message.id); break;
@@ -1190,8 +1238,29 @@ class ChatWindowHost {
       case 'requestQuotas': await this.pushQuotas(); break;
       case 'micToggle': await this.handleMicToggle(); break;
       case 'micCancel': await this.handleMicCancel(); break;
-      case 'voiceDraftSubmitted': await this.learnVoiceCorrections(message.original, message.edited); break;
+      case 'polishPrompt': await this.polishPrompt(message); break;
+      case 'voiceDraftEdited': {
+        const known = new Set(voiceDictionary.listEnabledTerms(voicePaths()));
+        const terms = learnedTerms(message.original, message.edited).filter(term => term.length <= 60 && !known.has(term));
+        this.panel.webview.postMessage({ type: 'voiceDictionarySuggestions', requestId: message.requestId, terms });
+        break;
+      }
+      case 'voiceDictionarySave': await this.learnVoiceCorrections(message.original, message.edited, message.term, message.requestId); break;
       case 'scheduleTask': await this.scheduleTask(message); break;
+      case 'scheduleQueuedTurn': {
+        const run = this.deps.chatWindowManager.runFor(message.chatId);
+        const turn = run?.queue.find(item => item.queued && item.id === message.id);
+        if (!turn || turn.scheduling) break;
+        turn.scheduling = true;
+        turn.editing = true; // Hold its slot until the scheduled copy is safely persisted.
+        const draft = message.turn || turn;
+        const model = modelOption(draft.modelId)?.agent || message.task?.model || message.agent || chatModelFor(run.chat, 'claude')?.agent || 'claude';
+        const saved = await this.scheduleTask({ task: { ...message.task, model, modelId: draft.modelId === 'auto' ? undefined : draft.modelId, prompt: draft.text, dispatchTrigger: message.task?.dispatchTrigger || 'quota-reset' }, attachments: draft.attachments, run });
+        if (saved) run.removeQueuedTurn(turn.id);
+        else { delete turn.scheduling; turn.editing = false; run.queueChanged(); }
+        this.queueEdits?.delete(`${message.chatId}:${turn.id}`);
+        break;
+      }
       case 'scheduleMode': this.deps.setScheduleMode?.(message.mode); break; // the mode the last scheduled prompt used
       case 'remoteControl': void this.run.toggleRemote(); break;
       case 'undoTurn': void this.undoLastTurn(); break;
@@ -1241,13 +1310,23 @@ class ChatWindowHost {
     this.run.post({ type: 'cardSettled', actionId: message.actionId, text: String(message.settled.text || ''), tone: message.settled.tone === 'allowed' ? 'allowed' : 'denied' }, { except: this });
   }
 
-  async scheduleTask({ task, attachments } = {}) {
+  async scheduleTask({ task, attachments, run = this.run } = {}) {
     // A limit-reset "continue" belongs to this chat (the webview may not know a fresh chat's id yet).
     // A scheduled prompt belongs to the chat it was written in (it comes back there, in the queue strip) and a "continue"
     // goes in front of the others.
-    task = { ...task, chatId: this.run.chat.id, projectId: this.chat.projectId, workspaceDir: this.deps.workspaceDir, modelId: task.modelId || (task.resumeHere ? chatModelFor(this.run.chat, task.model)?.id : undefined) };
+    task = { ...task, chatId: run.chat.id, projectId: run.chat.projectId, workspaceDir: run.deps.workspaceDir, modelId: task.modelId || chatModelFor(run.chat, task.model)?.id };
     try {
-      this.deps.projects?.context(this.chat.projectId);
+      const scope = this.deps.projects?.context(run.chat.projectId) || run.deps;
+      const continuing = /^\s*continue\s*[.!]?\s*$/i.test(task.prompt);
+      if (continuing) {
+        const existing = (await this.deps.schedulerQueue.getQueue()).find(item => item.chatId === task.chatId && item.model === task.model && ['pending', 'dispatched', 'interrupted'].includes(item.status) && /^\s*continue\s*[.!]?\s*$/i.test(item.prompt));
+        const lastLimit = run.chat.messages.findLastIndex(item => item.role === 'assistant' && isLimitNotice(item.text));
+        if (existing || (lastLimit >= 0 && run.chat.messages.slice(lastLimit + 1).some(item => item.role === 'user' && /^\s*continue\s*[.!]?\s*$/i.test(item.text)))) {
+          this.panel.webview.postMessage({ type: 'taskScheduled' });
+          this.deps.notifySchedulerQueue?.();
+          return true;
+        }
+      }
       // "When the usage resets" waits for that moment even while there is quota left; without this a prompt scheduled with
       // 3 hours to go was sent within seconds, because the watchdog only asked whether usage was available.
       if (task?.dispatchTrigger === 'quota-reset') {
@@ -1255,15 +1334,17 @@ class ChatWindowHost {
         const resetsAt = task.resetWindow === '7d' ? quota?.secondary?.resetsAt : quota?.resetsAt; // the week's reset, or the 5-hour window's
         if (typeof resetsAt === 'number' && resetsAt * 1000 > Date.now()) task = { ...task, notBefore: new Date(resetsAt * 1000).toISOString() };
       }
-      const saved = await this.deps.schedulerQueue.enqueue(task, this.safeAttachmentPaths(attachments));
-      if (task.resumeHere) {
+      const saved = await this.deps.schedulerQueue.enqueue(task, safeAttachmentPaths(scope, attachments));
+      if (continuing) {
         const mine = (await this.deps.schedulerQueue.getQueue()).filter((item) => item.status === 'pending' && item.chatId === task.chatId && item.id !== saved.id);
         await this.deps.schedulerQueue.reorder([saved.id, ...mine.map((item) => item.id)]);
       }
       this.panel.webview.postMessage({ type: 'taskScheduled' });
       this.deps.notifySchedulerQueue?.();
+      return true;
     } catch (error) {
       this.panel.webview.postMessage({ type: 'scheduleTaskFailed', error: error.message });
+      return false;
     }
   }
 
@@ -1327,21 +1408,56 @@ class ChatWindowHost {
       if (!picked) return;
       if (picked.manage) return this.manageProjects();
       const project = picked.project || await this.addProject(Boolean(picked.planning));
-      if (!project) return;
+      if (project) await this.openProject(project);
+    } catch (error) { vscode.window.showErrorMessage(`Clanker: ${error.message}`); }
+  }
+  /** Binds this chat (or opens the project's latest chat) to `project`; the picker and the rail's project list both land here. */
+  async openProject(project) {
+    try {
       const manager = this.deps.chatWindowManager;
       manager.selectedProjectId = project.id;
       void manager.deps.sidebarState?.update('selectedProjectId', project.id);
       this.panel.webview.postMessage({ type: 'chatLoading' });
-      if (!this.chat.projectId) {
+      // A chat without a project, or a fresh one nothing was sent in, moves to the clicked project (keeping the picked model);
+      // a chat with history opens the project's latest chat instead.
+      if (this.chat.projectId === project.id) this.replay();
+      else if (!this.chat.projectId || manager.isUntouched(this.run)) {
         const previous = this.run;
         const run = manager.bindProject(previous, project.id);
         for (const host of [...previous.hosts]) host.attach(run);
         if (this.run !== run) this.attach(run);
-      } else if (this.chat.projectId !== project.id) {
+      } else {
         const recent = manager.listChats().find(chat => chat.projectId === project.id);
         this.attach(manager.runFor(recent?.id || null, project.id));
-      } else this.replay();
+      }
       this.postHistory();
+      // Opening a project shows its folder in the Explorer (a folder not in the workspace yet is added, after the usual warning).
+      if (project.root) await this.openProjectExplorer(project.id);
+    } catch (error) { vscode.window.showErrorMessage(`Clanker: ${error.message}`); }
+  }
+  /** Renames a project from its card on the rail; the folder and the chats bound to it are untouched. */
+  async renameProject(id, name) {
+    try {
+      if (!String(name || '').trim()) return;
+      this.deps.projects?.update(id, { name });
+      for (const host of this.deps.chatWindowManager.hosts) host.postProject();
+      this.deps.notifyHistory();
+    } catch (error) { vscode.window.showErrorMessage(`Clanker: ${error.message}`); }
+  }
+  /** Takes a project off the rail after a confirmation; never touches its folder, and never the one this chat is bound to. */
+  async removeProject(id) {
+    try {
+      const project = this.deps.projects?.get(id);
+      if (!project || project.id === this.chat.projectId) return;
+      const manager = this.deps.chatWindowManager;
+      const runs = [...manager.runs.values()].filter(run => run.chat.projectId === id);
+      if (runs.some(run => run.turn || run.starting || run.remote || run.streamEngine.hasBackgroundAgents)) throw new Error('Finish or stop this project’s running work before removing it.');
+      const bound = manager.listChats().filter(chat => chat.projectId === id).length;
+      const confirmed = await vscode.window.showWarningMessage(`Remove "${project.name}" from Clanker?`, { modal: true, detail: `Its folder is not touched.${bound ? ` ${bound} chat${bound === 1 ? '' : 's'} bound to it will ask for another project when opened.` : ''}` }, 'Remove');
+      if (confirmed !== 'Remove') return;
+      this.deps.projects.remove(id);
+      for (const host of manager.hosts) host.postProject();
+      this.deps.notifyHistory();
     } catch (error) { vscode.window.showErrorMessage(`Clanker: ${error.message}`); }
   }
   async manageProjects() {
@@ -1413,7 +1529,8 @@ class ChatWindowHost {
   postProject() {
     if (!this.deps.projects) return;
     const project = this.deps.projects.get(this.chat.projectId);
-    this.panel.webview.postMessage({ type: 'project', project, required: !project });
+    const projects = this.deps.projects.list().map(describeProject);
+    this.panel.webview.postMessage({ type: 'project', project, projects, chatId: this.chat.id, required: !project });
   }
   focusProjectTerminal() {
     try {
@@ -1465,6 +1582,24 @@ class ChatWindowHost {
     void run.drain();
     for (const event of run.pending.values()) this.panel.webview.postMessage(event);
     if (run.subagentLog.length) this.panel.webview.postMessage({ type: 'subagentReplay', events: run.subagentLog });
+  }
+
+  /** What the Loops tab offers (lib/investigation-bridge.js decides which models are Flash and which may review). */
+  investigationOptions() {
+    const accounts = this.deps.chatWindowManager.launcherDeps?.cliAccounts;
+    return { ...investigationOptions({ projects: this.deps.projects?.list() || [], projectId: this.chat.projectId || null, models: AVAILABLE_MODELS, isEnabled: (agent) => Boolean(accounts?.isEnabled(agent)) }),
+      roles: this.deps.chatWindowManager.deps.investigations?.roleOptions?.() || {} };
+  }
+
+  /** "Review with…": a new chat bound to the report's project, the chosen model selected, the handoff as a draft. Nothing is sent. */
+  async reviewInNewChat({ projectId, prompt, modelId }) {
+    this.deps.projects.context(projectId); // throws when the project was removed or moved
+    this.attach(this.deps.chatWindowManager.runFor(null, projectId));
+    this.selectModel(modelId);
+    this.panel.webview.postMessage({ type: 'setActive', modelId });
+    this.panel.webview.postMessage({ type: 'prefillPrompt', text: prompt, closeSettings: true });
+    this.postHistory();
+    return { projectId, modelId };
   }
 
   resetToFreshChat() {
@@ -1569,8 +1704,12 @@ class ChatWindowHost {
   postHistory() { this.panel.webview.postMessage({ type: 'history', sessions: this.deps.chatWindowManager.listChats() }); }
   async pushSchedulerQueue() { if (this.deps.schedulerQueue) this.panel.webview.postMessage({ type: 'schedulerQueue', queue: await this.deps.schedulerQueue.getQueue() }); }
   safeAttachmentPaths(paths) { return safeAttachmentPaths(this.deps, paths); }
-  attachmentMetadata(file, mime = '') { const stat = fs.statSync(file); return { path: file, name: path.basename(file), size: stat.size, mime, uri: this.panel.webview.asWebviewUri(vscode.Uri.file(file)).toString() }; }
-  webviewFiles(paths) { return this.safeAttachmentPaths(paths).map((file) => this.attachmentMetadata(file, /\.(png|jpe?g|gif|webp|bmp)$/i.test(file) ? 'image/*' : '')); }
+  attachmentMetadata(file, mime = '') {
+    const stat = fs.statSync(file);
+    const types = { '.svg': 'image/svg+xml', '.pdf': 'application/pdf', '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.gif': 'image/gif', '.webp': 'image/webp', '.bmp': 'image/bmp' };
+    return { path: file, name: path.basename(file), size: stat.size, mime: types[path.extname(file).toLowerCase()] || mime, uri: this.panel.webview.asWebviewUri(vscode.Uri.file(file)).toString() };
+  }
+  webviewFiles(paths) { return this.safeAttachmentPaths(paths).map((file) => this.attachmentMetadata(file)); }
   postTurnQueue(run = this.run) {
     const state = run.queueState();
     this.panel.webview.postMessage({ type: 'turnQueue', chatId: run.chat.id, paused: state.paused, turns: state.turns.map((turn) => ({ ...turn, files: this.webviewFiles(turn.attachments) })) });
@@ -1600,7 +1739,7 @@ class ChatWindowHost {
     this.panel.reveal(undefined, false);
     this.panel.webview.postMessage({ type: 'insertMentions', paths });
   }
-  /** P17-P: a transcript file badge. Relative paths resolve against the workspace; text files open at the line. */
+  /** Transcript file links: HTML opens in the browser; source references open at the line. */
   async openFile(file, line) {
     if (typeof file !== 'string' || !file) return;
     let target = file.replace(/^file:\/\/\/?/i, '');
@@ -1608,6 +1747,10 @@ class ChatWindowHost {
     if (/^\/[a-z]:/i.test(target)) target = target.slice(1);
     const uri = vscode.Uri.file(path.isAbsolute(target) ? target : path.join(this.deps.workspaceDir, target));
     if (!fs.existsSync(uri.fsPath)) { vscode.window.showWarningMessage(`File not found: ${file}`); return; }
+    if (/\.html?$/i.test(uri.fsPath) && !line) {
+      if (!await vscode.env.openExternal(uri)) vscode.window.showWarningMessage(`Could not open in browser: ${file}`);
+      return;
+    }
     const row = Math.max(0, (Number(line) || 1) - 1);
     try {
       await vscode.window.showTextDocument(uri, { preview: true, viewColumn: vscode.ViewColumn.One, selection: new vscode.Range(row, 0, row, 0) });
@@ -1638,7 +1781,7 @@ class ChatWindowHost {
   async pickAttachments({ chatId } = {}) {
     const run = chatId ? this.deps.chatWindowManager.runFor(chatId) : this.run;
     if (!run) return;
-    const files = await vscode.window.showOpenDialog({ canSelectMany: true, openLabel: 'Attach', filters: { Images: ['png', 'jpg', 'jpeg', 'webp', 'svg'], Documents: ['md', 'json', 'ts', 'js', 'txt'] } });
+    const files = await vscode.window.showOpenDialog({ canSelectMany: true, openLabel: 'Attach', filters: { 'All files': ['*'], Images: ['png', 'jpg', 'jpeg', 'webp', 'svg'], Documents: ['md', 'json', 'jsonl', 'csv', 'yaml', 'pdf', 'ts', 'js', 'txt'] } });
     for (const uri of files || []) {
       const filename = path.basename(uri.fsPath).replace(/[^a-zA-Z0-9._-]/g, '_');
       const target = path.join(run.deps.attachmentsDir, `${Date.now()}_${filename}`);
@@ -1656,7 +1799,7 @@ class ChatWindowHost {
     let target = path.join(path.dirname(safe), `${stamp}${base}${ext}`);
     for (let n = 2; fs.existsSync(target) && target !== safe; n++) target = path.join(path.dirname(safe), `${stamp}${base} ${n}${ext}`);
     try { if (target !== safe) fs.renameSync(safe, target); } catch { return; }
-    this.panel.webview.postMessage({ type: 'attachmentRenamed', from: file, attachment: this.attachmentMetadata(target, /\.(png|jpe?g|gif|webp|bmp)$/i.test(target) ? 'image/*' : '') });
+    this.panel.webview.postMessage({ type: 'attachmentRenamed', from: file, attachment: this.attachmentMetadata(target) });
   }
   removeAttachment(file) { const [safe] = this.safeAttachmentPaths([file]); if (safe) fs.promises.unlink(safe).catch(() => {}); }
 
@@ -1671,12 +1814,15 @@ class ChatWindowHost {
     this.panel.webview.postMessage({ type: 'voiceError', message });
   }
 
-  /** P17-ZA: spellings the user fixed in a dictated draft go into the voice dictionary. */
-  async learnVoiceCorrections(original, edited) {
-    const terms = learnedTerms(original, edited);
-    if (!terms.length) return;
-    for (const term of terms) { try { voiceDictionary.addTerm(voicePaths(), term); } catch { /* too long or unwritable: skip */ } }
-    this.panel.webview.postMessage({ type: 'voiceTermsLearned', terms });
+  /** Save only the correction the user accepted; never report a failed write as learned. */
+  async learnVoiceCorrections(original, edited, term, requestId) {
+    if (!learnedTerms(original, edited).includes(term)) return;
+    try {
+      voiceDictionary.addTerm(voicePaths(), term, { replaceSpelling: true, source: 'learned' });
+      this.panel.webview.postMessage({ type: 'voiceTermsLearned', terms: [term], requestId });
+    } catch (error) {
+      this.panel.webview.postMessage({ type: 'voiceDictionaryError', term, requestId, message: `Could not save to voice dictionary: ${error.message}` });
+    }
   }
 
   /** Esc while listening: stop the capture and throw the recording away, no transcription. */
@@ -1699,7 +1845,7 @@ class ChatWindowHost {
       capture.onVolume = ({ rms, peak, level }) => this.panel.webview.postMessage({ type: 'micVolume', rms, peak, level });
       try {
         capture.owner = this; // the window the hotkey ends this recording in
-        await capture.start();
+        await capture.start({ pauseMedia: vscode.workspace.getConfiguration('aiChatPanel').get('voicePauseMedia', true) });
       } catch (error) {
         capture.onVolume = null;
         this.voiceError(error);
@@ -1720,23 +1866,44 @@ class ChatWindowHost {
     }
 
     try {
-      const [{ readQuotas: readVoiceQuotas }, { transcribeAudio, classify, buildRoutingOutput }] =
+      const [, { transcribeAudio, cleanDictation }] =
         await loadVoiceRouterModules();
 
       // P17-ZA: saved spellings bias Whisper's decoding and the cleanup pass repairs toward them.
-      const terms = await voiceVocabulary();
-      const rawTranscript = await transcribeAudio(wavPath, { vocabularyPrompt: terms.slice(0, WHISPER_PROMPT_TERMS).join(', ') });
-      const quotas = readVoiceQuotas();
-      const { cleanedPrompt, primaryIntent, confidence } = await classify(rawTranscript, { dictionaryTerms: terms });
-      const output = buildRoutingOutput({ cleanedPrompt, primaryIntent, confidence, quotas });
+      const terms = await voiceVocabulary(); // capped at what the models take (voiceDictionary.LIMITS), however long the dictionary is
+      const rawTranscript = await transcribeAudio(wavPath, { vocabularyPrompt: voiceDictionary.promptTerms(terms).join(', ') });
+      if (!rawTranscript.trim()) throw new Error('No speech detected. Try recording again.');
+      let output, warning;
+      try {
+        output = { cleanedPrompt: await cleanDictation(rawTranscript, { dictionaryTerms: terms.slice(0, voiceDictionary.LIMITS.cleanupTerms) }) };
+      } catch (error) {
+        output = { cleanedPrompt: rawTranscript };
+        warning = `Voice cleanup failed; your unformatted transcript is ready to edit. ${error.message}`;
+      }
 
-      // Never auto-sent: the draft lands in the composer for review (in Auto mode the router's pick preselects the model).
+      // Dictation produces a draft only. The current router selects a model when the user sends.
       this.panel.webview.postMessage({ type: 'micState', state: 'idle' });
-      this.panel.webview.postMessage({ type: 'voiceResult', output, rawTranscript, autoSend: false });
+      this.panel.webview.postMessage({ type: 'voiceResult', output, rawTranscript, warning, autoSend: false });
     } catch (error) {
       this.voiceError(error);
     } finally {
       fs.promises.unlink(wavPath).catch(() => {});
+    }
+  }
+
+  /** The composer's Polish button: the typed draft goes through the dictation cleanup (written mode) and comes back as text to review. */
+  async polishPrompt({ text, requestId }) {
+    const fail = (message) => this.panel.webview.postMessage({ type: 'polishResult', requestId, error: message });
+    const draft = String(text || '').trim();
+    if (!draft) return fail('Write something first, then polish it.');
+    if (draft.length > POLISH_MAX_CHARS) return fail(`That draft is too long to polish (${draft.length.toLocaleString('en')} of ${POLISH_MAX_CHARS.toLocaleString('en')} characters).`);
+    try {
+      const [, { cleanDictation }] = await loadVoiceRouterModules();
+      const terms = (await voiceVocabulary()).slice(0, voiceDictionary.LIMITS.cleanupTerms);
+      const polished = await cleanDictation(draft, { dictionaryTerms: terms, written: true });
+      this.panel.webview.postMessage({ type: 'polishResult', requestId, text: polished });
+    } catch (error) {
+      fail(`Could not polish the prompt: ${error.message}`);
     }
   }
 
@@ -1775,11 +1942,14 @@ class ChatWindowHost {
 
   renderHtml(webview) {
     const scriptUri = webview.asWebviewUri(vscode.Uri.joinPath(this.extensionUri, 'media', 'main.js'));
+    const attachmentPreviewUri = webview.asWebviewUri(vscode.Uri.joinPath(this.extensionUri, 'media', 'attachment-preview.js'));
     const mascotUri = webview.asWebviewUri(vscode.Uri.joinPath(this.extensionUri, 'media', 'clanker-mascot.js'));
     const iconsUri = webview.asWebviewUri(vscode.Uri.joinPath(this.extensionUri, 'media', 'agent-icons.js'));
     const styleUri = webview.asWebviewUri(vscode.Uri.joinPath(this.extensionUri, 'media', 'style.css'));
     const settingsStyleUri = webview.asWebviewUri(vscode.Uri.joinPath(this.extensionUri, 'media', 'settings.css'));
     const settingsUri = webview.asWebviewUri(vscode.Uri.joinPath(this.extensionUri, 'media', 'settings.js'));
+    const loopsStyleUri = webview.asWebviewUri(vscode.Uri.joinPath(this.extensionUri, 'media', 'investigations.css'));
+    const loopsUri = webview.asWebviewUri(vscode.Uri.joinPath(this.extensionUri, 'media', 'investigations.js'));
     const timerStyleUri = webview.asWebviewUri(vscode.Uri.joinPath(this.extensionUri, 'media', 'schedule-timer.css'));
     const bubbleUri = webview.asWebviewUri(vscode.Uri.joinPath(this.extensionUri, 'media', 'bubble-shape.js'));
     const chatTimeUri = webview.asWebviewUri(vscode.Uri.joinPath(this.extensionUri, 'media', 'chat-time.js'));
@@ -1802,17 +1972,18 @@ class ChatWindowHost {
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${webview.cspSource} 'unsafe-inline'; script-src 'nonce-${nonce}'; font-src ${webview.cspSource}; img-src ${webview.cspSource} data: blob:;">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${webview.cspSource} 'unsafe-inline'; script-src ${webview.cspSource} 'nonce-${nonce}' 'wasm-unsafe-eval'; worker-src ${webview.cspSource} blob:; connect-src ${webview.cspSource} data: blob:; font-src ${webview.cspSource} blob:; img-src ${webview.cspSource} data: blob:;">
 <link rel="stylesheet" href="${katexCssUri}">
 <link rel="stylesheet" href="${styleUri}">
 <link rel="stylesheet" href="${settingsStyleUri}">
+<link rel="stylesheet" href="${loopsStyleUri}">
 <link rel="stylesheet" href="${timerStyleUri}">
 <style>${providers.accentCss()}</style>
 ${rail ? `<link rel="stylesheet" href="${railStyleUri}">` : ''}
 <title>Clanker Controller</title>
 </head>
 <body${rail ? ' class="has-rail"' : ''}>
-${rail ? railMarkup(CHAT_BUTTONS) : `<div class="topbar"><div class="topbar-actions">${CHAT_BUTTONS.queue}${CHAT_BUTTONS.history}${CHAT_BUTTONS.newChat}</div></div>`}
+${rail ? railMarkup(CHAT_BUTTONS) : `<div class="topbar"><div class="topbar-actions">${CHAT_BUTTONS.queue}${CHAT_BUTTONS.loops}${CHAT_BUTTONS.history}${CHAT_BUTTONS.newChat}</div></div>`}
 
   <div class="transcript" id="transcript" aria-live="polite">
     <div class="empty-state"></div><!-- drawn by main.js (emptyState), the same for a fresh chat and a loaded empty one -->
@@ -1830,13 +2001,21 @@ ${rail ? railMarkup(CHAT_BUTTONS) : `<div class="topbar"><div class="topbar-acti
           <span class="model-picker-icon" aria-hidden="true"></span><span class="model-picker-label"></span>
           <svg class="model-picker-chevron" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M4.5 10 8 6.5l3.5 3.5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
         </button>
-        <button class="composer-icon-btn mic-pill" id="micBtn" title="Voice input (click to record)">
-          <svg viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
-            <path d="M8 1.5a2 2 0 0 0-2 2v4a2 2 0 0 0 4 0v-4a2 2 0 0 0-2-2Z" stroke="currentColor" stroke-width="1.2"/>
-            <path d="M4.5 7.5v.5a3.5 3.5 0 0 0 7 0v-.5" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/>
-            <path d="M8 11.5v2.5M6 14h4" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/>
-          </svg>
-        </button>
+        <span class="mic-wrap" id="micWrap">
+          <button class="composer-icon-btn polish-btn" id="polishBtn" type="button" title="Polish prompt: restructure what you typed (Ctrl+Z undoes it)" aria-label="Polish prompt">
+            <svg viewBox="0 0 16 16" fill="none" aria-hidden="true">
+              <path d="m3 13 6.2-6.2" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+              <path d="M11.2 1.8l.65 1.75 1.75.65-1.75.65-.65 1.75-.65-1.75-1.75-.65 1.75-.65.65-1.75ZM13.2 9l.35.95.95.35-.95.35-.35.95-.35-.95-.95-.35.95-.35.35-.95Z" fill="currentColor"/>
+            </svg>
+          </button>
+          <button class="composer-icon-btn mic-pill" id="micBtn" title="Voice input (click to record)">
+            <svg viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+              <path d="M8 1.5a2 2 0 0 0-2 2v4a2 2 0 0 0 4 0v-4a2 2 0 0 0-2-2Z" stroke="currentColor" stroke-width="1.2"/>
+              <path d="M4.5 7.5v.5a3.5 3.5 0 0 0 7 0v-.5" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/>
+              <path d="M8 11.5v2.5M6 14h4" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/>
+            </svg>
+          </button>
+        </span>
         <button class="composer-icon-btn send-btn" id="sendBtn" title="Send">
           <svg viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
             <path d="M2.5 8h10.5M8.5 3.5 13 8l-4.5 4.5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/>
@@ -1846,12 +2025,13 @@ ${rail ? railMarkup(CHAT_BUTTONS) : `<div class="topbar"><div class="topbar-acti
     </div>
   </div>
 
-  <script nonce="${nonce}">window.CLANKER_MARK = ${JSON.stringify(webview.asWebviewUri(vscode.Uri.joinPath(this.extensionUri, 'media', 'clanker-dark.svg')).toString())}; window.MODEL_CATALOG = ${JSON.stringify(MODEL_CATALOG)}; window.AVAILABLE_MODELS = ${JSON.stringify(AVAILABLE_MODELS.filter((entry) => this.deps.cliAccounts?.isEnabled(entry.agent) !== false))}; window.TIME_PREFS = ${timePrefs()}; window.SCHEDULE_MODE = ${JSON.stringify(this.deps.getScheduleMode?.() || 'reset')}; window.VOICE_SILENCE_MS = ${Math.max(0, Number(vscode.workspace.getConfiguration('aiChatPanel').get('voiceAutoStopSeconds', 2)) || 0) * 1000};</script>
+  <script nonce="${nonce}">window.CLANKER_MARK = ${JSON.stringify(webview.asWebviewUri(vscode.Uri.joinPath(this.extensionUri, 'media', 'clanker-dark.svg')).toString())}; window.MODEL_CATALOG = ${JSON.stringify(MODEL_CATALOG)}; window.AVAILABLE_MODELS = ${JSON.stringify(AVAILABLE_MODELS.filter((entry) => this.deps.cliAccounts?.isEnabled(entry.agent) !== false))}; window.TIME_PREFS = ${timePrefs()}; window.SCHEDULE_MODE = ${JSON.stringify(this.deps.getScheduleMode?.() || 'reset')}; window.VOICE_SILENCE_MS = ${Math.max(0, Number(vscode.workspace.getConfiguration('aiChatPanel').get('voiceAutoStopSeconds', 0)) || 0) * 1000};</script>
   <script nonce="${nonce}">window.PROVIDERS = ${JSON.stringify(providers.displayList()).replace(/</g, '\\u003c')};</script>
   <script nonce="${nonce}" src="${iconsUri}"></script>
   <script nonce="${nonce}" src="${katexUri}"></script>
   <script nonce="${nonce}" src="${modelPromptsUri}"></script>
   <script nonce="${nonce}" src="${voiceHotkeyUri}"></script>
+  <script nonce="${nonce}" src="${loopsUri}"></script>
   <script nonce="${nonce}" src="${settingsUri}"></script>
   <script nonce="${nonce}" src="${timerUri}"></script>
   ${rail ? `<script nonce="${nonce}">{ const api = acquireVsCodeApi(); window.acquireVsCodeApi = () => api; } /* a webview may acquire the API once; the chat and the rail share it */</script>` : ''}
@@ -1861,7 +2041,8 @@ ${rail ? railMarkup(CHAT_BUTTONS) : `<div class="topbar"><div class="topbar-acti
   <script nonce="${nonce}" src="${limitNoticeUri}"></script>
   <script nonce="${nonce}" src="${bubbleUri}"></script>
   <script nonce="${nonce}" src="${mascotUri}"></script>
-  <script nonce="${nonce}" src="${scriptUri}"></script>
+<script nonce="${nonce}" src="${attachmentPreviewUri}"></script>
+<script nonce="${nonce}" src="${scriptUri}"></script>
   ${rail ? `<script nonce="${nonce}" src="${railScriptUri}"></script>` : ''}
   <script nonce="${nonce}" src="${shikiUri}" defer></script>
 </body>
@@ -1947,8 +2128,13 @@ class ChatWindowManager {
       slashCommands: new SlashCommandCatalog({ codexCommands: this.deps.codexCommands, workspaceDir: context.workspaceDir, cacheFile: path.join(context.sessionDir, 'slash-commands.json') }),
     };
   }
+  /** A chat nothing has happened in yet: no messages, queue, running work or scheduled prompt that would stay behind in the old project. */
+  isUntouched(run) {
+    const scheduled = this.deps.schedulerQueue?.tasks.some(task => task.chatId === run.chat.id && !['done', 'cancelled'].includes(task.status));
+    return !run.chat.messages.length && !run.queue.length && !run.turn && !run.starting && !run.remote && !run.streamEngine.hasBackgroundAgents && !scheduled;
+  }
   bindProject(run, projectId) {
-    if (run.chat.projectId) throw new Error('An existing conversation cannot be moved between projects. Open a new chat instead.');
+    if (run.chat.projectId && !this.isUntouched(run)) throw new Error('An existing conversation cannot be moved between projects. Open a new chat instead.');
     const context = this.deps.projects.context(projectId);
     const copies = new Map();
     const copyFiles = files => (files || []).map(file => {
@@ -1973,19 +2159,21 @@ class ChatWindowManager {
     // Nor is one whose background agents are still working: disposing the engine would kill them mid-task.
     if (!run.host && !run.turn && !run.starting && !run.queue.length && !run.remote && !run.streamEngine.hasBackgroundAgents && this.runs.get(run.chat.id) === run) {
       run.streamEngine.dispose();
+      if (run.chat.hasTypedMessage || run.chat.draft?.length) run.save();
       this.runs.delete(run.chat.id);
-      const scheduled = this.deps.schedulerQueue?.tasks.some(task => task.chatId === run.chat.id && !['done', 'cancelled'].includes(task.status));
-      if (!run.chat.messages.length && !scheduled) {
-        this.deps.chatStore.delete(run.chat.id);
-        this.recentSelections.delete(run.chat.id);
-        this.notifyOpenChanged();
-      }
+      this.cleanupEmptyChats();
     }
   }
 
   /** Remove empty history left by older versions, after loading scheduled prompts from disk. */
   async pruneEmptyChats() {
     const tasks = await this.deps.schedulerQueue?.getQueue() || [];
+    this.cleanupEmptyChats(tasks);
+  }
+
+  /** Drafts survive while visible in the rail's five slots; live and scheduled work always survives. */
+  cleanupEmptyChats(tasks = this.deps.schedulerQueue?.tasks || []) {
+    const recent = new Set(this.listChats().slice(0, 5).map(session => session.id));
     const keep = new Set([
       ...this.runs.keys(),
       this.sidebar?.chat.id || this.deps.sidebarState?.get(SIDEBAR_CHAT_KEY),
@@ -1993,7 +2181,7 @@ class ChatWindowManager {
     ]);
     let removed = false;
     for (const session of this.deps.chatStore.list()) {
-      if (!session.empty || keep.has(session.id)) continue;
+      if (!session.empty || keep.has(session.id) || (session.hasTypedMessage && recent.has(session.id))) continue;
       this.deps.chatStore.delete(session.id);
       this.recentSelections.delete(session.id);
       removed = true;
@@ -2001,7 +2189,7 @@ class ChatWindowManager {
     if (removed) this.notifyOpenChanged();
   }
 
-  /** History for Manage Chats: conversations and the active empty chat, flagged with recent agent activity. */
+  /** History in rail order: selected, recently selected or running, then older chats. */
   listChats() {
     const live = new Map([...this.runs.values()].filter((run) => run.state).map((run) => [run.chat.id, run.state]));
     const now = Date.now();
@@ -2011,14 +2199,20 @@ class ChatWindowManager {
     const openIds = new Set([...this.hosts].map((host) => host.chat.id));
     const scheduledIds = new Set((this.deps.schedulerQueue?.tasks || []).filter(task => !['done', 'cancelled'].includes(task.status)).map(task => task.chatId));
     // Keep `open` for existing consumers; the rail uses the sidebar's single `selected` chat.
-    const sessions = this.deps.chatStore.list().filter(session => !session.empty || session.id === activeId || this.runs.get(session.id)?.starting || live.has(session.id) || scheduledIds.has(session.id));
+    const projectOf = this.deps.projects?.resolver();
+    const sessions = this.deps.chatStore.list(projectOf).filter(session => !session.empty || session.hasTypedMessage || session.id === activeId || this.runs.get(session.id)?.starting || live.has(session.id) || scheduledIds.has(session.id));
     return markActive(sessions, live, now).map((session) => ({
       ...session,
       projectName: this.deps.projects?.get(session.projectId)?.name || (this.deps.projects ? 'Choose project' : null),
+      // Every project the chat worked in, the latest first; the chat's own project stands in until a tool has touched a file.
+      projectNames: [...new Set([...session.touchedProjectIds, session.projectId])].map(id => this.deps.projects?.get(id)?.name).filter(Boolean),
       open: openIds.has(session.id),
       selected: session.id === selectedId,
       recentUntil: this.recentSelections.has(session.id) ? this.recentSelections.get(session.id) + ACTIVE_WINDOW_MS : null,
-    }));
+    })).sort((a, b) => {
+      const rank = session => session.selected ? 0 : session.recentUntil > now || session.state === 'running' ? 1 : 2;
+      return rank(a) - rank(b);
+    });
   }
 
   /** A chat still running with no window on it stops too; one open in a window keeps its thread in memory. */
@@ -2254,10 +2448,10 @@ class LauncherViewProvider {
    * The launcher is a slim rail, too narrow for the Scheduled queue and Settings. Both open as popups in the
    * chat itself (the same layer as Manage Chats): this shows the chat window and tells it which one.
    */
-  showInChat(type) {
+  showInChat(type, extra = {}) {
     const host = this.deps.chatWindowManager.getOrCreateActive();
     host.panel.reveal(undefined, false);
-    void host.panel.webview.postMessage({ type });
+    void host.panel.webview.postMessage({ type, ...extra });
   }
 
   /**
@@ -2276,6 +2470,76 @@ class LauncherViewProvider {
     webviewView.onDidChangeVisibility(openChat);
   }
 
+  /** Every chat window's rail and Settings popup learn about a change to the project registry. */
+  refreshProjects() {
+    for (const host of this.deps.chatWindowManager.hosts) { host.postProject(); host.settingsPane?.postProjectIcons(); }
+  }
+  /** The Voice tab's dictionary: every word, how many of them reach each model, and the limits. */
+  async postVoiceDictionary(extra = {}) {
+    if (!this.view) return;
+    const paths = voicePaths();
+    this.view.webview.postMessage({ type: 'voiceDictionary', entries: voiceDictionary.listTerms(paths), usage: await voiceDictionary.usage(paths), ...extra });
+  }
+  /** One dictionary action from Settings. A refusal (a duplicate, a full dictionary) goes back as a sentence to show. */
+  async changeVoiceDictionary(message) {
+    const paths = voicePaths();
+    let note = {};
+    try {
+      switch (message.type) {
+        case 'voiceDictionaryAdd': voiceDictionary.addTerm(paths, message.term); break;
+        case 'voiceDictionaryEdit': voiceDictionary.updateTerm(paths, message.term, { next: message.next, enabled: message.enabled }); break;
+        case 'voiceDictionaryRemove': voiceDictionary.removeTerm(paths, message.term); break;
+        case 'voiceDictionaryClearScanned': note = { notice: `Removed ${voiceDictionary.removeScanned(paths)} scanned words.` }; break;
+      }
+    } catch (error) { note = { error: error.message }; }
+    await this.postVoiceDictionary(note);
+  }
+  /** Reads a project's folder for technical words and adds the best ones, within the dictionary's limits. */
+  async scanVoiceDictionary(message) {
+    const registered = message.id ? this.deps.chatWindowManager.deps.projects?.get(message.id) : null;
+    let root = registered?.root, name = registered?.name;
+    if (!message.id) { // "Choose folder…": an existing folder that is not registered, or a new project not added yet
+      const picked = await vscode.window.showOpenDialog({ canSelectFiles: false, canSelectFolders: true, canSelectMany: false, openLabel: 'Scan this folder', title: 'Find technical words in a project' });
+      root = picked?.[0]?.fsPath; name = root && path.basename(root);
+      if (!root) { await this.postVoiceDictionary({ scanning: false }); return; }
+    }
+    if (!root) { await this.postVoiceDictionary({ scanning: false, error: 'That project has no folder to scan.' }); return; }
+    try {
+      const { terms, stats } = await scanProject(root, { name });
+      const result = voiceDictionary.addScanned(voicePaths(), terms, name);
+      const limit = result.full ? ' The dictionary reached its limit for scanned words, so the rest were left out.' : '';
+      await this.postVoiceDictionary({ scanning: false, notice: `${name}: found ${terms.length} technical words in ${stats.files} files, added ${result.added}${stats.truncated ? ' (a large project: the scan stopped early)' : ''}.${limit}` });
+    } catch (error) { await this.postVoiceDictionary({ scanning: false, error: `Could not scan ${name}: ${error.message}` }); }
+  }
+  refreshVoiceDictionary() {
+    for (const host of this.deps.chatWindowManager.hosts) void host.settingsPane?.postVoiceDictionary();
+  }
+  postProjectIcons() {
+    const registry = this.deps.chatWindowManager.deps.projects;
+    if (registry) this.view?.webview.postMessage({ type: 'projectIcons', projects: registry.list().map(describeProject) });
+  }
+  /** Applies `pick(project)` as the project's icon ('' clears it; null leaves it alone), then tells every window. */
+  setProjectIcon(id, pick) {
+    try {
+      const registry = this.deps.chatWindowManager.deps.projects;
+      const project = registry?.get(id);
+      if (!project) return;
+      const icon = pick(project);
+      if (icon !== null) registry.update(id, { icon });
+      this.refreshProjects();
+    } catch (error) { vscode.window.showErrorMessage(`Clanker: ${error.message}`); }
+  }
+  async pickProjectIcon(id) {
+    const project = this.deps.chatWindowManager.deps.projects?.get(id);
+    if (!project) return;
+    const picked = await vscode.window.showOpenDialog({
+      canSelectMany: false, openLabel: 'Use as icon', title: `Icon for ${project.name}`,
+      defaultUri: project.root ? vscode.Uri.file(project.root) : undefined,
+      filters: { Images: ['svg', 'png', 'ico', 'jpg', 'jpeg', 'webp', 'gif'] },
+    });
+    if (picked?.length) this.setProjectIcon(id, () => picked[0].fsPath);
+  }
+
   handleMessage(message) {
     if (/^routing(?:Get|Save|Reset|Connect|Test)$/.test(message.type) && this.deps.routing) {
       void this.deps.routing.handle(message).then(async result => {
@@ -2285,6 +2549,10 @@ class LauncherViewProvider {
       return;
     }
     switch (message.type) {
+      case 'openRoutingConfig':
+        void vscode.window.showTextDocument(vscode.Uri.file(this.deps.routing.configFile)).then(undefined,error=>vscode.window.showErrorMessage(error.message)); break;
+      case 'editRoutingConfigWithAI':
+        this.showInChat('prefillPrompt',{routingConfig:true,text:'Help me adjust my model routing configuration at '+this.deps.routing.configFile+'. First read it and the guide at '+path.join(this.extensionUri.fsPath,'..','docs','routing-config.md')+'. Preserve unrelated settings and existing model IDs. Task profiles, model tasks and avoid_tasks, fallback_order, provider_weights, prompts and policy are editable. Validate with ai-chat-panel/lib/routing.js config(). Do not put credentials in the config. My requested changes: '}); break;
       case 'newChatWindow': this.deps.chatWindowManager.open(undefined, { detached: true }); break; // the rail's button: another chat, in an editor tab
       case 'openScheduled': this.showInChat('openQueue'); break;
       case 'openHistory': this.showInChat('openHistory'); break;
@@ -2362,6 +2630,7 @@ class LauncherViewProvider {
       }
       case 'stopTunnel': void this.deps.stopTunnel?.().then(() => this.pushFleet()); break;
       case 'setStatusBar': void vscode.workspace.getConfiguration('aiChatPanel').update('showStatusBar', Boolean(message.enabled), vscode.ConfigurationTarget.Global); break;
+      case 'setCompliance': if (COMPLIANCE_SETTINGS[message.key]) void vscode.workspace.getConfiguration('aiChatPanel').update(COMPLIANCE_SETTINGS[message.key], Boolean(message.value), vscode.ConfigurationTarget.Global); break;
       case 'setTimeFormat': {
         if (message.format) {
           void vscode.workspace.getConfiguration('aiChatPanel').update('timeFormat', message.format, vscode.ConfigurationTarget.Global);
@@ -2372,6 +2641,29 @@ class LauncherViewProvider {
       case 'setVoiceHotkey': void vscode.workspace.getConfiguration('aiChatPanel').update('voiceHotkey', String(message.hotkey || ''), vscode.ConfigurationTarget.Global); break;
       case 'setVoiceMode': void vscode.workspace.getConfiguration('aiChatPanel').update('voiceHotkeyMode', message.mode === 'hold' ? 'hold' : 'toggle', vscode.ConfigurationTarget.Global); break;
       case 'setVoiceSounds': void vscode.workspace.getConfiguration('aiChatPanel').update('voiceSounds', Boolean(message.enabled), vscode.ConfigurationTarget.Global); break;
+      case 'setVoicePauseMedia': void vscode.workspace.getConfiguration('aiChatPanel').update('voicePauseMedia', Boolean(message.enabled), vscode.ConfigurationTarget.Global); break;
+      case 'setVoiceMic': void vscode.workspace.getConfiguration('aiChatPanel').update('voiceMicDevice', String(message.device || ''), vscode.ConfigurationTarget.Global); break;
+      // Settings > General > Project icons. The registry file is the storage; the watcher in activate() also covers an AI editing it.
+      case 'requestProjectIcons': this.postProjectIcons(); break;
+      case 'pickProjectIcon': void this.pickProjectIcon(message.id); break;
+      case 'detectProjectIcon': this.setProjectIcon(message.id, project => findIcon(project.root) || (vscode.window.showInformationMessage(`No favicon or logo found in ${project.name}. Choose one, or ask an AI.`), null)); break;
+      case 'clearProjectIcon': this.setProjectIcon(message.id, () => ''); break;
+      case 'projectIconWithAI': {
+        const project = this.deps.chatWindowManager.deps.projects?.get(message.id);
+        if (!project?.root) break;
+        this.showInChat('prefillPrompt', { closeSettings: true, text: `Find the best favicon or logo for my project "${project.name}" in ${project.root}. Look for favicon files and brand logos, pick a square-ish PNG, SVG or ICO under 256 KB, and set its absolute path as the "icon" field of this project's entry (id ${project.id}) in ${this.deps.chatWindowManager.deps.projects.file}. The file is a JSON array: keep every other field and entry as they are. The chat rail then shows the icon instead of the initials. If nothing suitable exists, say so rather than guessing.` });
+        break;
+      }
+      // Settings > Voice > Dictionary. The file in the session directory is the storage; an AI editing it shows up here too.
+      case 'requestVoiceDictionary': void this.postVoiceDictionary(); break;
+      case 'voiceDictionaryAdd': case 'voiceDictionaryEdit': case 'voiceDictionaryRemove': case 'voiceDictionaryClearScanned': void this.changeVoiceDictionary(message); break;
+      case 'voiceDictionaryScan': void this.scanVoiceDictionary(message); break;
+      case 'voiceDictionaryWithAI': {
+        const { LIMITS } = voiceDictionary;
+        this.showInChat('prefillPrompt', { closeSettings: true, text: `Help me edit my dictation dictionary, the spellings speech-to-text should favour. It is the JSON file ${voicePaths().dictionaryFile}: { "terms": [{ "term": "SimTalk", "enabled": true, "addedAt": 0, "source": "ai" }], "ignored": [] }. Read it first and keep every entry and field you are not asked to change (entries with "source": "scan" came from a project scan). A term is one word or short name of at most ${voiceDictionary.MAX_TERM_LENGTH} characters, spelled exactly as it should appear, and each term appears once, ignoring case. Keep the file under ${LIMITS.entries} entries; only the first ${LIMITS.promptTerms} enabled terms reach the transcription model, so put the most important ones first and set "enabled": false instead of deleting a word I might want back. Write valid JSON and nothing else to the file. My requested changes: ` });
+        break;
+      }
+      case 'requestMicDevices': void Promise.resolve(this.deps.listMicDevices?.()).then((devices) => this.view?.webview.postMessage({ type: 'micDevices', devices: [...new Set(devices || [])] })); break;
       case 'saveGroqKey': void this.deps.groqAccount.save(message.key).then((result) => this.view?.webview.postMessage({ type: 'groqResult', action: 'save', ...result })); break;
       case 'clearGroqKey': void this.deps.groqAccount.clear(); break;
       case 'checkGroqUsage':
@@ -2425,6 +2717,7 @@ class LauncherViewProvider {
       ...(this.deps.getServices?.() || {}),
       statusBar: vscode.workspace.getConfiguration('aiChatPanel').get('showStatusBar', false),
       permissionMode: vscode.workspace.getConfiguration('aiChatPanel').get('permissionMode', 'fullAccess'),
+      compliance: { scout: vscode.workspace.getConfiguration('aiChatPanel').get('complianceScout', true), redact: vscode.workspace.getConfiguration('aiChatPanel').get('complianceRedact', true) },
       voice: this.deps.getVoice?.(),
       routing: await this.deps.routing?.snapshot(),
     };
@@ -2459,11 +2752,16 @@ class LauncherViewProvider {
 
 /** The launcher rail, down the right edge of the sidebar chat: buttons, then usage, then chats (styled by launcher.css, driven by launcher.js). */
 /**
- * The chat's three header buttons: the Scheduled-prompts timer pill (hidden until something is queued), Manage chats
- * and New chat. main.js finds them by id, so it is the same three elements wherever they sit: in the rail of the
+ * The chat's header buttons: Scheduled prompts, Loops, Manage chats and New chat.
+ * main.js finds them by id, so they are the same elements wherever they sit: in the rail of the
  * sidebar chat, or in a topbar over a chat opened as an editor tab.
  */
 const CHAT_BUTTONS = {
+  loops: `<button class="round-btn round-btn-queue round-btn-loop" id="loopsBtn" type="button" aria-label="Loops" aria-haspopup="dialog" aria-controls="loopsModal" aria-expanded="false">
+      <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 8a5 5 0 0 1 8.7-3.4L13 6M13 3v3h-3M13 8a5 5 0 0 1-8.7 3.4L3 10M3 13v-3h3"/></svg>
+      <span class="queue-countdown" id="loopElapsed"></span>
+      <span class="round-btn-tip" aria-hidden="true">Loops</span>
+    </button>`,
   queue: `<button class="round-btn round-btn-queue" id="queueBtn" type="button" aria-label="Scheduled prompts" hidden>
         <svg viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><circle cx="8" cy="8.5" r="5.5" stroke="currentColor" stroke-width="1.2"/><path d="M8 5.5v3l2 1.2" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/></svg>
         <span class="queue-countdown" id="queueCountdown"></span>
@@ -2520,6 +2818,7 @@ function railMarkup(buttons) {
     </button>
     ${buttons.history}
     ${buttons.queue}
+    ${buttons.loops}
     <button class="round-btn" id="settingsBtn" type="button" title="Chat settings" aria-label="Chat settings">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
         <path d="M9.671 4.136a2.34 2.34 0 0 1 4.659 0 2.34 2.34 0 0 0 3.319 1.915 2.34 2.34 0 0 1 2.33 4.033 2.34 2.34 0 0 0 0 3.831 2.34 2.34 0 0 1-2.33 4.033 2.34 2.34 0 0 0-3.319 1.915 2.34 2.34 0 0 1-4.659 0 2.34 2.34 0 0 0-3.32-1.915 2.34 2.34 0 0 1-2.33-4.033 2.34 2.34 0 0 0 0-3.831A2.34 2.34 0 0 1 6.35 6.051a2.34 2.34 0 0 0 3.319-1.915"/>
@@ -2690,6 +2989,15 @@ function activate(context) {
     for (const host of chatWindowManager?.hosts || []) host.postHistory();
   }
   const watchdog = new SchedulerWatchdog({ queue: schedulerQueue, projects, workspaceDir, getModels, getPermissionMode, getModelPrompts: () => cliHub.prompts, getModelSettings: () => cliHub.modelSettings, telegram: null, onQueueChange: notifySchedulerQueue, chatStore, onHistoryChange: notifyHistory, notify, isAgentEnabled: (agent) => cliAccounts.isEnabled(agent), resumeInChat: (task) => chatWindowManager?.resumeChat(task) });
+  const investigations = installInvestigations({ vscode, context, storageDir: SESSION_DIR, projects,
+    availableModels: () => cliAccounts.isEnabled('gemini') ? AVAILABLE_MODELS.filter(model => model.agent === 'gemini').map(model => model.model) : [],
+    fixers: { isEnabled: agent => cliAccounts.isEnabled(agent), modelFor: agent => defaultModel(agent), readQuotas },
+    roles: { models: () => AVAILABLE_MODELS, isEnabled: agent => cliAccounts.isEnabled(agent), defaultModel },
+    // A loop that was running when the IDE closed resumes by itself; tell open windows as soon as the manager is up.
+    onReady: ready => { for (const host of chatWindowManager?.hosts || []) host.panel.webview.postMessage({ type: 'investigationsState', available: true, state: ready.manager.snapshot() }); },
+    isForegroundBusy: () => Boolean(watchdog.activeTaskId) || [...chatWindowManager.runs.values()].some(run => run.turn || run.starting || run.remote || run.streamEngine.hasBackgroundAgents) });
+  // Frontend work can subscribe to manager.change and call its API without another scheduler.
+  chatWindowManager.deps.investigations = investigations;
 
   function onTelegramEvent(run, event) {
     const bridge = telegram;
@@ -2827,7 +3135,7 @@ function activate(context) {
 
   // Live service state for the launcher's Settings tab.
   const routing = routingRuntime(context, () => MODEL_CATALOG, SESSION_DIR);
-  chatWindowManager.deps.routing = routing;
+  chatWindowManager.deps.routing = routing; routingRuntimeRef = routing;
   // The mode lives in the composer's picker, so a change from anywhere (a window, Visor, the settings pane) reaches every window.
   context.subscriptions.push(routing.onDidChange(() => {
     for (const host of chatWindowManager.hosts || []) void host.pushRoutingMode();
@@ -2901,8 +3209,9 @@ function activate(context) {
     onError: (reason) => vscode.window.showWarningMessage(`Clanker Controller:the dictation hotkey stopped (${reason}).`),
   });
   const voiceState = () => ({
+    pauseMedia: voiceConfig().get('voicePauseMedia', true),
     hotkey: voiceConfig().get('voiceHotkey', ''), mode: hotkeyMode(), sounds: voiceConfig().get('voiceSounds', true),
-    hotkeyActive: Boolean(voiceHotkey.child), supported: process.platform === 'win32', groq: groqAccount.snapshot(),
+    micDevice: voiceConfig().get('voiceMicDevice', ''), hotkeyActive: Boolean(voiceHotkey.child), supported: process.platform === 'win32', groq: groqAccount.snapshot(),
   });
   const broadcastVoice = () => { for (const host of chatWindowManager.hosts) void host.panel.webview.postMessage({ type: 'voice', voice: voiceState() }); };
   groqAccount = new GroqAccount({
@@ -2913,23 +3222,37 @@ function activate(context) {
   });
   void groqAccount.init();
   voiceHotkey.start(voiceConfig().get('voiceHotkey', ''));
+  voiceCapture.setPreferred(voiceConfig().get('voiceMicDevice', ''));
   context.subscriptions.push(
+    { dispose: () => { void voiceCapture.dispose(); } },
     { dispose: () => voiceHotkey.stop() },
     vscode.workspace.onDidChangeConfiguration((event) => {
       if (event.affectsConfiguration('aiChatPanel.voiceHotkey')) voiceHotkey.start(voiceConfig().get('voiceHotkey', ''));
-      if (['voiceHotkey', 'voiceHotkeyMode', 'voiceSounds'].some((name) => event.affectsConfiguration(`aiChatPanel.${name}`))) broadcastVoice();
+      if (event.affectsConfiguration('aiChatPanel.voiceMicDevice')) voiceCapture.setPreferred(voiceConfig().get('voiceMicDevice', ''));
+      if (['voiceHotkey', 'voiceHotkeyMode', 'voiceSounds', 'voicePauseMedia', 'voiceMicDevice'].some((name) => event.affectsConfiguration(`aiChatPanel.${name}`))) broadcastVoice();
     }),
   );
   const launcherDeps = {
-    groqAccount, getVoice: voiceState, routing,
+    groqAccount, getVoice: voiceState, listMicDevices: () => voiceCapture.listAudioDevices(), routing,
     cliHub, cliAccounts, chatStore, chatWindowManager, schedulerQueue, getModels, getPermissionMode, watchdog, notifySchedulerQueue, renameChat,
     getServices, configureTelegram, disconnectTelegram, startTunnel: () => tunnel.start(), stopTunnel: () => tunnel.stop(),
     getTelegramBridge: () => telegram, sessionManager, getCostMeter: () => costMeter,
   };
   launcher = new LauncherViewProvider(context.extensionUri, launcherDeps);
   chatWindowManager.launcherDeps = launcherDeps; // the chat windows' Chat Settings popup runs on the same handlers
+  // An icon set from Settings, by hand or by an AI editing projects.json, shows up in every rail without a reload.
+  try {
+    let refreshTimer;
+    const watcher = fs.watch(SESSION_DIR, (_event, name) => {
+      if (name !== 'projects.json' && name !== 'voice-dictionary.json') return;
+      clearTimeout(refreshTimer);
+      refreshTimer = setTimeout(() => (name === 'projects.json' ? launcher.refreshProjects() : launcher.refreshVoiceDictionary()), 250);
+    });
+    context.subscriptions.push({ dispose: () => { clearTimeout(refreshTimer); watcher.close(); } });
+  } catch { /* no watcher: a reload shows an icon that was set outside Settings */ }
   void setLauncherHeaderHidden(false); // a window closed while the launcher was showing leaves its header colour behind
   context.subscriptions.push(vscode.window.registerWebviewViewProvider('aiChatPanel.mainView', launcher));
+  context.subscriptions.push(vscode.commands.registerCommand('aiChatPanel.investigationsManage', () => launcher.showInChat('openLoops')));
   // The chat itself lives in the secondary sidebar. Kept alive while hidden so a streaming reply survives a toggle.
   context.subscriptions.push(vscode.window.registerWebviewViewProvider('aiChatPanel.chatView', { resolveWebviewView: (view) => chatWindowManager.attachSidebar(view) }, { webviewOptions: { retainContextWhenHidden: true } }));
   // Antigravity restores its own Agent panel into that sidebar on every start, so the chat claims it each time
@@ -2987,8 +3310,10 @@ function activate(context) {
       } else host = chatWindowManager.getOrCreateActive();
       host.revealAndInject(target.agentId, prompt, submit !== false, target.modelId);
     }),
-    // The smart-routing mode (manual / shadow / auto), for a caller with its own model picker. With a mode it sets it first.
+    // The routing mode (manual / auto), for a caller with its own model picker. With a mode it sets it first.
     vscode.commands.registerCommand('aiChatPanel.routingMode', (payload) => payload?.mode ? routing.setMode(payload.mode) : routing.mode()),
+    // A one-shot answer that comes back to the caller (no chat is created), for a status the caller shows itself.
+    vscode.commands.registerCommand('aiChatPanel.summarize', (payload) => require('./lib/summarize').summarizeText(payload?.instruction, payload?.text)),
     vscode.commands.registerCommand('aiChatPanel.routePrompt', (payload) => chatWindowManager.routePrompt(payload?.prompt, { newChat: payload?.newChat === true, attachments: payload?.attachments || [], ...(payload?.targetModel ? { targetModel: payload.targetModel } : {}), ...(payload?.projectId ? { projectId: payload.projectId } : {}) })),
   );
 

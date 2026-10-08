@@ -6,6 +6,7 @@ const path = require('node:path');
 const providers = require('./providers');
 
 const MAX_QUEUE_SIZE = 50;
+const RETRY_BACKOFF_MS = 60000;
 const MAX_ATTACHMENT_BYTES = 20 * 1024 * 1024;
 const MODELS = { has: (agent) => providers.has(agent) }; // any registered provider (lib/providers)
 // Statuses still shown in the Scheduled tab and counted against MAX_QUEUE_SIZE.
@@ -61,7 +62,9 @@ class SchedulerQueue {
         // Staged copies live in this queue's own folder (session/scheduler), outside the workspace: both are allowed.
         // Checking the workspace alone marked every scheduled prompt with an image as missing on the next reload.
         const absolute = path.resolve(this.workspaceDir, attachment.absolutePath || attachment.relativePath || '');
-        const inside = (root) => absolute.startsWith(root + path.sep);
+        // Windows paths ignore case (VS Code even varies the drive letter between sessions), so compare them that way.
+        const fold = (value) => (process.platform === 'win32' ? value.toLowerCase() : value);
+        const inside = (root) => fold(absolute).startsWith(fold(root + path.sep));
         if (!(inside(this.workspaceDir) || inside(this.stagingDir)) || !(await exists(absolute))) {
           task.status = 'attachment-missing';
           changed = true;
@@ -75,6 +78,10 @@ class SchedulerQueue {
   async enqueue(task, rawAttachments = []) {
     await this.load();
     return this.withWrite(async () => {
+      if (isContinue(task)) {
+        const existing = this.tasks.find(item => item.chatId === task.chatId && item.model === task.model && ACTIVE.has(item.status) && isContinue(item));
+        if (existing) return copyTask(existing);
+      }
       const active = this.tasks.filter((item) => ACTIVE.has(item.status));
       if (active.length >= MAX_QUEUE_SIZE) throw new Error(`Scheduler queue is full (maximum ${MAX_QUEUE_SIZE} active tasks).`);
       if (!MODELS.has(task?.model)) throw new Error(`Scheduled task must target ${providers.ids().join(', ')}.`);
@@ -103,7 +110,8 @@ class SchedulerQueue {
         retryCount: 0,
         createdAt: new Date().toISOString(),
       };
-      this.tasks.push(scheduled);
+      const firstInChat = isContinue(scheduled) ? this.tasks.findIndex(item => item.chatId === scheduled.chatId && item.status === 'pending') : -1;
+      if (firstInChat >= 0) this.tasks.splice(firstInChat, 0, scheduled); else this.tasks.push(scheduled);
       await this.persist();
       return { ...scheduled, attachments: scheduled.attachments.map((attachment) => ({ ...attachment })) };
     });
@@ -138,6 +146,12 @@ class SchedulerQueue {
       if (moving.length < 2) return false;
       const slots = this.tasks.map((task, index) => (moving.includes(task) ? index : -1)).filter((index) => index >= 0);
       slots.forEach((slot, i) => { this.tasks[slot] = moving[i]; });
+      // A continuation finishes the interrupted work before later prompts in that chat.
+      for (const task of this.tasks.filter(item => item.status === 'pending' && isContinue(item))) {
+        const first = this.tasks.findIndex(item => item.chatId === task.chatId && item.status === 'pending');
+        const index = this.tasks.indexOf(task);
+        if (first < index) { this.tasks.splice(index, 1); this.tasks.splice(first, 0, task); }
+      }
       await this.persist();
       return true;
     });
@@ -147,7 +161,8 @@ class SchedulerQueue {
     await this.load();
     if (!MODELS.has(model)) return null;
     const now = Date.now();
-    const task = this.tasks.find((item) => item.status === 'pending' && item.model === model && isDue(item, now));
+    const task = this.tasks.find((item) => item.status === 'pending' && item.model === model && isDue(item, now) &&
+      (isContinue(item) || !this.tasks.some(other => other.chatId === item.chatId && ACTIVE.has(other.status) && isContinue(other))));
     return task ? copyTask(task) : null;
   }
 
@@ -161,7 +176,7 @@ class SchedulerQueue {
     await this.update(taskIdValue, (task) => {
       if (task.status !== 'interrupted' && task.status !== 'failed') return;
       task.status = 'pending'; task.retryCount = 0; moved = true;
-      delete task.error; delete task.interruptedAt; delete task.interruptedReason; delete task.completedAt;
+      delete task.error; delete task.retryAfter; delete task.interruptedAt; delete task.interruptedReason; delete task.completedAt;
     });
     return moved;
   }
@@ -179,6 +194,7 @@ class SchedulerQueue {
         task.completedAt = new Date().toISOString();
       } else {
         task.status = 'pending';
+        task.retryAfter = new Date(Date.now() + RETRY_BACKOFF_MS * 4 ** (task.retryCount - 1)).toISOString(); // 1 min, then 4 min
       }
     });
   }
@@ -264,9 +280,11 @@ class SchedulerQueue {
 }
 
 function copyTask(task) { return { ...task, attachments: task.attachments.map((attachment) => ({ ...attachment })) }; }
+function isContinue(task) { return Boolean(task?.chatId) && /^\s*continue\s*[.!]?\s*$/i.test(task.prompt); }
 function isDue(task, now) {
   if (task.editing || !String(task.prompt || '').trim()) return false;
   if (task.notBefore && Date.parse(task.notBefore) > now) return false;
+  if (task.retryAfter && Date.parse(task.retryAfter) > now) return false; // backoff after a failed attempt
   return task.dispatchTrigger !== 'fixed-time' || Date.parse(task.dispatchTime) <= now;
 }
 async function exists(file) { try { await fs.access(file); return true; } catch { return false; } }

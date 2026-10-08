@@ -9,7 +9,12 @@
     "test": "node --test ai-chat-panel/test/*.test.js antigravity-usage-statusbar/test/usage.test.js",
     "render": "node ai-chat-panel/test/render.mjs",
     "verify:models": "node scripts/verify-model-provider-identity.mjs",
-    "verify:bridge": "node scripts/verify-visor-bridge.mjs"
+    "verify:investigations": "node scripts/investigation-smoke.cjs",
+    "verify:bridge": "node scripts/verify-visor-bridge.mjs",
+    "test:loops-ui": "node ai-chat-panel/test/investigations-ui.mjs",
+    "test:compliance-ui": "node ai-chat-panel/test/compliance-settings.mjs",
+    "test:ui": "node ai-chat-panel/test/ui-tester/run.mjs",
+    "test:ui-tester": "node ai-chat-panel/test/ui-tester.mjs"
   },
   "devDependencies": { "playwright": "^1.55.0" }
 }
