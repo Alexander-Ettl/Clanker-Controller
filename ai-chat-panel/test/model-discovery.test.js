@@ -11,6 +11,27 @@ const native = parseClaudeModels(JSON.stringify({ type: 'control_response', resp
 ] } } }));
 const hosted = parseAgyModels('claude-future-42-medium\tClaude Future 42 Medium');
 
+test('image-capable favorites expose vision metadata without overriding explicit discovery',()=>{
+  const models=normalizeModels([
+    {id:'sonnet',agent:'claude',model:'claude-sonnet-5-5'},
+    {id:'flash',agent:'gemini',model:'gemini-3.8-flash-high'},
+    {id:'disabled-vision',agent:'claude',model:'claude-opus-5-5',vision:false},
+    {id:'text-only',agent:'gemini',model:'gpt-oss-120b'},
+    {id:'sol',agent:'codex',model:'gpt-6.1-sol'},
+    {id:'codex',agent:'codex',model:'gpt-5.3-codex'},
+    {id:'codex-text-only',agent:'codex',model:'gpt-6.1-sol',vision:false},
+    {id:'unknown',agent:'codex',model:'future-model'},
+  ]);
+  assert.equal(models.find(m=>m.model==='claude-sonnet-5-5').vision,true);
+  assert.equal(models.find(m=>m.model==='gemini-3.8-flash-high').vision,true);
+  assert.equal(models.find(m=>m.model==='claude-opus-5-5').vision,false);
+  assert.notEqual(models.find(m=>m.model==='gpt-oss-120b').vision,true);
+  assert.equal(models.find(m=>m.id==='sol').vision,true);
+  assert.equal(models.find(m=>m.id==='codex').vision,true);
+  assert.equal(models.find(m=>m.id==='codex-text-only').vision,false);
+  assert.notEqual(models.find(m=>m.id==='unknown').vision,true);
+});
+
 test('identical upstream models retain both CLI routes in either discovery order', () => {
   for (const entries of [[...native, ...hosted], [...hosted, ...native]]) {
     const models = normalizeModels(entries);

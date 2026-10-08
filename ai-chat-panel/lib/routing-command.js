@@ -20,8 +20,8 @@ function serve(context,routing,getModels,dir,quotas) {
         if(busy) throw Error('A benchmark is already running');
         if(request.command==='confirm-smoke') { if(!context.globalState.get('routingSmokeReport'))throw Error('Generate and inspect the smoke report first'); await context.globalState.update('routingSmokeConfirmed',true);socket.end(JSON.stringify({checklist:['Smoke confirmation recorded; --n 50 is now available.']})+'\n');return; }
         if(request.command!=='benchmark')throw Error('Unknown command');busy=true;socket.setTimeout(0);
-        // Manual mode still benchmarks recommendations; shadow preserves current settings and evaluates router picks.
-        const result=await benchmark({router:routing.router,models:getModels(),source:dir,n:request.n??10,confirmed:context.globalState.get('routingSmokeConfirmed',false),out:path.join(dir,'router-report.html'),quotas:await quotas()});
+        // Benchmark recommendations without changing the user's routing mode or calling destination models.
+        const result=await benchmark({router:routing.router,models:getModels(),source:dir,n:request.n??10,confirmed:context.globalState.get('routingSmokeConfirmed',false),out:path.join(dir,'router-report.html'),quotas:await quotas(),feedbackFile:request.feedbackFile});
         await context.globalState.update('routingSmokeReport',result.file);
         socket.end(JSON.stringify({file:result.file,checklist:result.checklist})+'\n');
       }catch(error){socket.end(JSON.stringify({error:error.message})+'\n');}finally{busy=false;}

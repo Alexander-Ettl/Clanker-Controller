@@ -1,0 +1,34 @@
+# Routing configuration
+
+Open **Settings → Routing**. Task profiles define task names, matching keywords, excluded keywords, priority (higher wins), and fallback complexity. Assign preferred tasks and excluded tasks to any favorite model. Assignments use the current model IDs; the router does not interpret model names as task rules.
+
+**Open config** opens the shared `routing-config.json` in Clanker's private session storage. Settings writes this same file. External edits are read on the next routing request or Settings refresh, without a reload. Invalid JSON or invalid values leave the last valid configuration active and show an error in Settings. Credentials stay in SecretStorage.
+
+**Edit with AI** opens an unsent chat draft containing the config path. Add the changes you want, then send it using your selected model. The AI should read the current file, preserve unrelated values, and validate before saving. There is no automatic feedback training or background AI editing.
+
+Example request: “Add a translation profile and assign it to my new favorite model. Give Gemini twice the target task share of the other providers. Keep my confidence threshold.”
+
+## Editable fields
+
+- `models`: keyed by favorite ID. Overrides include `description`, `tasks`, `avoid_tasks`, `context`, `vision`, `complexity` (0–1), `speed`, `costTier`, `enabled`, and `auto_enabled`. Empty `tasks` means no preferred task profile. `avoid_tasks` excludes a model from Auto when that profile matches; manual selection still wins.
+- `task_profiles`: keyed by arbitrary IDs. Each profile has `label`, `keywords`, `exclude_keywords`, `priority`, and `complexity`. Matching uses word/phrase boundaries. Several matches resolve by priority. Profiles are advisory context for Clef and explicit preferences for local fallback.
+- `fallback_order`: ordered list of `profiles`, `probabilities`, and `capacity`. Unavailable steps are skipped. An explicitly configured eligible `default_model` wins in low-confidence fallback. API failures use the local steps, since probabilities are unavailable. If the list produces no candidate, capacity ranking remains the final safety net.
+- `provider_weights`: provider IDs and positive weights. Omitted providers have weight 1. All weights 1 target equal task shares; a weight of 2 targets twice the share. Balancing is among similarly suitable candidates, not forced allocation. Counts include real manual sends, exclude benchmarks, and reset daily UTC. They measure task count, not token usage.
+- `policy`: `default_complexity` and `groq_max_complexity` (0?1), `quota_low` (remaining percent), `probability_margin` and `fit_margin` (0–1), `default_context` and `long_context` (tokens), `prompt_chars`, `prompt_head`, `recent_messages`, `recent_chars`, `description_chars`. Input limits bound what is sent to the classifier; original destination attachments are preserved.
+- `prompts`: editable `choice`, `complexity`, `vision`, `long_context`, `continuation`, and `groq` instructions. Preserve the requested output format in the Groq prompt. The choice schema and returned candidate IDs remain validated.
+- `groq_spill` (0–1, default 0.8): the share of any Groq limit (tokens or requests, a day or a minute) past which Groq's text work (summaries, the Groq routing tier, the Groq destination, dictation cleanup and titles) goes to GPT OSS 120B on Cloudflare Workers AI instead. The same work also moves to Cloudflare whenever Groq refuses or fails, and Groq is skipped for a minute after a 429. Cloudflare chat uses the shared `cloudflare_neurons` budget (about 0.032 Neurons per input token and 0.068 per output token). Calls reserve the maximum output before dispatch and reconcile reported usage afterwards. Dictation and titles share both providers' counters and budget checks. Saved `openrouter` tiers and primary become `cloudflare` on load.
+
+Cloudflare says it does not train on Customer Content or share it with other customers; content may be stored if a storage service is used with Workers AI ([data policy](https://developers.cloudflare.com/workers-ai/platform/data-usage/)). Clanker calls Workers AI directly without a Cloudflare storage service. Use the Workers Free plan for a provider-enforced free cap; Clanker's counters cover calls made here, not other applications using the account.
+- Existing confidence, retry, tier order, session thresholds, screenshot, privacy, retention and budget controls remain available. Advanced JSON exposes every supported field. Provider API formats, secret handling, and free-tier safety ceilings remain code constraints.
+
+New installations use generic routing defaults. The one-time migration preserves the existing Opus/build, Sonnet/visual, Sol/backend, and Flash/information preferences as editable assignments; Sol High remains manual-only until changed. Reset clears those model-specific assignments.
+
+## Validate an AI edit
+
+Run this from the Clanker Controller repository, replacing the path with the config path shown in Settings:
+
+```powershell
+node -e "const fs=require('fs'); const {config}=require('./ai-chat-panel/lib/routing'); config(JSON.parse(fs.readFileSync(process.argv[1],'utf8'))); console.log('Valid routing config');" 'C:/path/to/routing-config.json'
+```
+
+Do not optimize confidence numbers alone. Compare final choices with independent user labels, and separately inspect classifier errors, retries, exclusions, fallback decisions and provider distribution.

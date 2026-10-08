@@ -10,6 +10,10 @@ let enabledAgents = new Set(providers.ids());
 const EFFORTS = ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'];
 const effortRank = (entry) => EFFORTS.indexOf(entry.effort || /-(none|minimal|low|medium|high|xhigh|max|ultra)$/.exec(entry.model)?.[1]);
 
+// These image-capable families are often discovered without modality metadata.
+// Explicit discovery/config values still win; hosted text-only models remain excluded.
+const visionSupported = entry => entry.vision ?? /^(?:claude-(?:opus|sonnet|haiku)-|gemini-|gpt-[56](?:[.-]|$))/i.test(entry.model || entry.id || '');
+
 function displayName(name) {
   return String(name || '').replace(/[-_]+/g, ' ').replace(/\((low|medium|high|xhigh|max|ultra)\)/gi, '$1')
     .replace(/\s+/g, ' ').trim().split(' ').map((word) => /^(gpt|ai)$/i.test(word) ? word.toUpperCase() : word.charAt(0).toUpperCase() + word.slice(1)).join(' ');
@@ -34,7 +38,7 @@ function normalizeModels(entries) {
     const label = displayName(entry.label || entry.model);
     const base = label.replace(/\s+(none|minimal|low|medium|high|xhigh|max|ultra)$/i, '');
     const family = base.replace(/^(Claude\s+|(?:GPT|Gemini)\s+[\d.]+\s+)/i, '').split(' ')[0];
-    unique.set(id, { ...entry, id, company: owner?.company || entry.company || providers.get(entry.agent).company, label, shortLabel: /^(GPT|Gemini)$/.test(family) ? base : family, ...(/^opus$/i.test(family) ? { brand: 'opus' } : {}) });
+    unique.set(id, { ...entry, ...(entry.vision == null && visionSupported(entry) ? { vision: true } : {}), id, company: owner?.company || entry.company || providers.get(entry.agent).company, label, shortLabel: /^(GPT|Gemini)$/.test(family) ? base : family, ...(/^opus$/i.test(family) ? { brand: 'opus' } : {}) });
   }
   const order = providers.ids();
   return [...unique.values()].sort((a, b) => order.indexOf(a.agent) - order.indexOf(b.agent)
@@ -86,4 +90,4 @@ function resolveModel(name) {
     || displayName(option.model).toLowerCase() === query || option.shortLabel.toLowerCase() === query) || null;
 }
 
-module.exports = { MODEL_CATALOG, AVAILABLE_MODELS, displayName, normalizeModels, setModelCatalog, setFavoriteModels, setEnabledAgents, defaultModel, modelOption, resolveModel };
+module.exports = { MODEL_CATALOG, AVAILABLE_MODELS, displayName, normalizeModels, visionSupported, setModelCatalog, setFavoriteModels, setEnabledAgents, defaultModel, modelOption, resolveModel };
