@@ -104,6 +104,8 @@
     }
     return mark;
   }
+  // The card's width comes from its name. It is set before the hover, so the width transition never has to change its target.
+  const sizePeek = (item) => { const label = item.querySelector('.project-peek-text span'); if (label) item.style.setProperty('--peek-w', `${Math.min(260, Math.max(150, label.scrollWidth + 18 + 34 + 40 + 6))}px`); };
   function renderProjectList() {
     if (projectEditing) return;
     const chat = railSessions.find((session) => session.id === railChatId);
@@ -137,7 +139,7 @@
       peek.querySelector('.project-peek-mark').append(projectMark(project));
       peek.addEventListener('click', () => tile.click());
       projectPeekShapes.observe(peek);
-      item.addEventListener('mouseenter', () => { if (!item.classList.contains('is-editing')) item.style.setProperty('--peek-w', `${Math.min(260, Math.max(150, label.scrollWidth + 18 + 34 + 40 + 6))}px`); });
+      item.addEventListener('mouseenter', () => { if (!item.classList.contains('is-editing')) sizePeek(item); });
       // The pencil turns the name into a field in place; Enter or leaving it saves, Escape keeps the old name.
       peek.querySelector('.project-edit').addEventListener('click', (event) => {
         event.stopPropagation();
@@ -174,6 +176,7 @@
     add.innerHTML = '<button type="button" class="project-tile" title="Add a project" aria-label="Add a project"><span class="project-mark"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" aria-hidden="true"><path d="M8 3.5v9M3.5 8h9"/></svg></span></button>';
     add.firstChild.addEventListener('click', () => { if (editingQueue) finishQueueEdit(); vscode.postMessage({ type: 'addProject' }); });
     projectList.replaceChildren(projectFocus, ...items, add);
+    items.forEach(sizePeek);
     projectList.classList.toggle('is-busy', Boolean(target));
     const focusItem = target && items.find((item) => item.dataset.id === target);
     if (focusItem) {
