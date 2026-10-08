@@ -23,6 +23,25 @@ require('./model-fixture').seedModels();
 
 let failures = 0;
 
+test('Claude and Gemini native requests point to every original image and request inspection',()=>{
+  const {StreamEngine}=require('../lib/stream-engine');
+  const original=path.join(TEST_CWD,'original screenshot.png');
+  const second=path.join(TEST_CWD,'second image.jpg');
+  const bytes=Buffer.from('original-image-bytes');fs.writeFileSync(original,bytes);fs.writeFileSync(second,bytes);
+  try{
+    for(const interactive of [false,true]){
+      const engine=new StreamEngine({cwd:TEST_CWD,interactive});
+      for(const agent of ['claude','gemini']){
+        const request=engine.commandFor(agent,'Inspect both images',[original,second]);
+        const prompt=agent==='gemini'?JSON.parse(request.input).message.content:interactive?JSON.parse(request.input).message.content:request.input;
+        assert.ok(prompt.includes(original));assert.ok(prompt.includes(second));
+        assert.match(prompt,/Open and inspect the attached original image files/);
+        assert.deepEqual(fs.readFileSync(original),bytes);
+      }
+    }
+  }finally{fs.unlinkSync(original);fs.unlinkSync(second);}
+});
+
 const pendingTests = [];
 function test(name, fn) {
   try {
@@ -155,6 +174,81 @@ test('Codex App Server kills a failed initializer and ignores that stale child a
   children[0].emit('close', 1);
   assert.equal(server.child, children[1], 'a superseded child cannot close the replacement connection');
   server.dispose();
+});
+
+test('JSON documents reach Claude, Gemini and Codex, including fresh Codex resume recovery', async () => {
+  const { StreamEngine } = require('../lib/stream-engine.js');
+  const file=path.join(TEST_CWD,'router feedback.json');
+  const content=JSON.stringify({feedback:[{note:'prefer Flash for documentation'}]});fs.writeFileSync(file,content);
+  try {
+    for(const interactive of [false,true]) {
+      const engine=new StreamEngine({cwd:TEST_CWD,interactive});
+      for(const agent of ['claude','gemini']) {
+        const spec=engine.commandFor(agent,'Read my feedback',[file]);
+        const prompt=agent==='gemini'?JSON.parse(spec.input).message.content:interactive?JSON.parse(spec.input).message.content:spec.input;
+        const docs=JSON.parse(prompt.split('Attached document previews (JSON):\n')[1]);
+        assert.equal(docs[0].content,content);
+      }
+    }
+    for(const recover of [false,true]) {
+      class Server extends EventEmitter {
+        calls=[];
+        async connect() {}
+        async request(method,params) {
+          this.calls.push({method,params});
+          if(method==='thread/resume')throw Error('Missing session');
+          return method==='thread/start'?{thread:{id:'fresh'}}:{turn:{id:'turn'}};
+        }
+        dispose() {}
+      }
+      const server=new Server(), engine=new StreamEngine({cwd:TEST_CWD,codexServerFactory:()=>server});
+      engine.start({agent:'codex',prompt:'Read my feedback',attachments:[file],...(recover?{resume:'gone',freshPrompt:'Fresh handoff and feedback'}:{})});
+      await new Promise(resolve=>setImmediate(resolve));
+      const text=server.calls.find(c=>c.method==='turn/start').params.input[0].text;
+      assert.equal(JSON.parse(text.split('Attached document previews (JSON):\n')[1])[0].content,content);
+      if(recover)assert.ok(text.startsWith('Fresh handoff and feedback'));
+      engine.dispose();
+    }
+  } finally { fs.unlinkSync(file); }
+});
+
+test('Codex sends original images as native inputs on new, resumed and recovered threads', async () => {
+  const { StreamEngine } = require('../lib/stream-engine');
+  const first = path.join(TEST_CWD, 'reference screenshot.PNG');
+  const second = path.join(TEST_CWD, 'second reference.webp');
+  const document = path.join(TEST_CWD, 'design notes.md');
+  const missing = path.join(TEST_CWD, 'missing reference.png');
+  const bytes = Buffer.from('original image bytes');
+  fs.writeFileSync(first, bytes); fs.writeFileSync(second, bytes);
+  fs.writeFileSync(document, 'Preserve the existing typography.');
+  try {
+    for (const mode of ['new', 'resume', 'recover']) {
+      class Server extends EventEmitter {
+        calls = [];
+        async connect() {}
+        async request(method, params) {
+          this.calls.push({ method, params });
+          if (method === 'thread/resume' && mode === 'recover') throw Error('Missing session');
+          return method.startsWith('thread/') ? { thread: { id: 'thread-images' } } : { turn: { id: 'turn-images' } };
+        }
+        dispose() {}
+      }
+      const server = new Server();
+      const engine = new StreamEngine({ cwd: TEST_CWD, codexServerFactory: () => server });
+      try {
+        engine.start({ agent: 'codex', prompt: 'Match these references', attachments: [first, document, second, missing],
+          ...(mode !== 'new' ? { resume: 'thread-images', freshPrompt: 'Recovered design brief' } : {}) });
+        await new Promise(resolve => setImmediate(resolve));
+        const input = server.calls.find(call => call.method === 'turn/start').params.input;
+        assert.deepEqual(input.slice(1), [{ type: 'localImage', path: first }, { type: 'localImage', path: second }]);
+        assert.ok(input[0].text.startsWith(mode === 'recover' ? 'Recovered design brief' : 'Match these references'));
+        assert.match(input[0].text, /Preserve the existing typography/);
+        assert.ok(input[0].text.includes(missing), 'missing files retain their diagnostic pointer');
+        assert.deepEqual(fs.readFileSync(first), bytes);
+        assert.deepEqual(fs.readFileSync(second), bytes);
+      } finally { engine.dispose(); }
+    }
+  } finally { fs.unlinkSync(first); fs.unlinkSync(second); fs.unlinkSync(document); }
 });
 
 test('Codex turns, native commands, approvals, and questions use one persistent App Server thread', async () => {
@@ -541,6 +635,7 @@ test('P15-F: SchedulerQueue stages attachments, preserves FIFO, and validates li
   await queue.markDispatched(task.id);
   await queue.markFailed(task.id, 'temporary outage');
   assert.equal((await queue.getQueue())[0].status, 'pending');
+  assert.equal(await queue.getNextPendingForModel('codex'), null, 'a failed attempt backs off before it is due again');
   await queue.markFailed(task.id, 'second');
   await queue.markFailed(task.id, 'third');
   assert.equal((await queue.getQueue())[0].status, 'failed');
@@ -667,6 +762,30 @@ test('P16-L: no microphone at all is a clear error', async () => {
   const { spawnImpl } = fakeFfmpeg({ devices: [], recording: 'ok' });
   const capture = new VoiceCapture({ config: { micDevice: '' }, spawnImpl });
   await assert.rejects(capture.start(), /No microphone found/);
+});
+
+test('dictation pauses media only when enabled and restores on stop, disposal and capture failure', async () => {
+  const { VoiceCapture } = require('../lib/voice-capture.js');
+  for (const mode of ['stop', 'dispose', 'disabled', 'exit-now', 'crash', 'no-mic']) {
+    let paused = false, pauses = 0;
+    const mediaControl = { pause: async () => { paused = true; pauses++; }, resume: () => { paused = false; } };
+    const { spawnImpl } = fakeFfmpeg({ devices: mode === 'no-mic' ? [] : ['Mic A'], recording: mode === 'exit-now' || mode === 'crash' ? mode : 'ok' });
+    const capture = new VoiceCapture({ config: { micDevice: '' }, spawnImpl, mediaControl });
+    if (mode === 'exit-now' || mode === 'no-mic') {
+      await assert.rejects(capture.start({ pauseMedia: true }));
+    } else {
+      await capture.start({ pauseMedia: mode !== 'disabled' });
+      assert.equal(paused, mode !== 'disabled');
+      assert.equal(pauses, mode === 'disabled' ? 0 : 1);
+      if (mode === 'crash') {
+        await new Promise(resolve => setTimeout(resolve, 120));
+        assert.equal(paused, false, 'a crashed recorder restores without another hotkey press');
+      }
+      if (mode === 'dispose') await capture.dispose();
+      else fs.unlinkSync(await capture.stop());
+    }
+    assert.equal(paused, false, mode);
+  }
 });
 
 test('CLI command lines use only flags the real CLIs accept, and stdin payloads they parse', () => {

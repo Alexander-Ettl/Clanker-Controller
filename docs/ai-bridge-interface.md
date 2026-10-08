@@ -29,6 +29,7 @@ Clanker through the bridge described here, and that is the only thing they share
 | `aiChatPanel.routePrompt` | `{ prompt: string, newChat?: boolean, targetModel?: string }` | `true` when queued | `routePrompt` |
 | `aiChatPanel.favoriteModels` | none | `{ id, label, agent }[]` | `favoriteModels` |
 | `aiChatPanel.routingMode` | `{ mode?: 'manual' \| 'shadow' \| 'auto' }` | `{ mode, connected: { cloudflare, groq } }` | `routingMode` |
+| `aiChatPanel.summarize` | `{ instruction: string, text: string, json?: boolean }` | the answer as a string (rejects when it fails) | `summarize` |
 | `aiChatPanel.injectPrompt` | `{ targetModel, prompt, submit? }` | nothing | `injectPrompt` |
 | `aiChatPanel.runNextBatchInCleanSession` | `{ targetModel, handoffSummary, batchPrompt }` | nothing | `runBatch` |
 
@@ -38,6 +39,10 @@ Clanker through the bridge described here, and that is the only thing they share
   and returns delivery confirmation to the editor. Failed deliveries stay in the editor batch for retry.
   Its selector defaults to Auto and lists the provider's favorites through `favoriteModels`. A selected
   `targetModel` uses that exact favorite, including reasoning effort; a removed favorite rejects delivery.
+- `summarize`: one stateless Gemini request (Flash, no tools, empty scratch folder) that returns a JSON object to the
+  caller and creates no chat. `text` is quoted data the model never obeys; `instruction` describes the answer. The reply
+  is `{ overview, items: [{ page, request, priority, comments }] }`; `json` is ignored. Visor's AI summary of client comments uses it and shows its
+  own progress; without the capability it says so instead of falling back to a chat.
 - `routingMode`: reads smart routing's mode, or sets it first when `mode` is given. The mode is the provider's own
   (one for all windows); a caller with its own model picker shows the same Manual / Shadow / Auto switch as the chat.
 - `injectPrompt`: type the prompt into a specific model's chat and, unless `submit` is false, send it.

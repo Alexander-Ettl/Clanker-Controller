@@ -39,6 +39,17 @@ try {
   await page.locator('#stopBtn').waitFor({ state: 'attached' });
   const send = message => page.evaluate(data => window.dispatchEvent(new MessageEvent('message', { data })), message);
 
+  const draftInput = page.locator('#promptInput');
+  await send({ type: 'chatLoaded', chat: { id: 'draft-chat', messages: [], draft: 'Stored unsent text' } });
+  assert.equal(await draftInput.inputValue(), 'Stored unsent text');
+  await draftInput.fill('Edited unsent text');
+  assert.deepEqual(await page.evaluate(() => window.sent.filter(item => item.type === 'saveDraft').at(-1)), { type: 'saveDraft', chatId: 'draft-chat', text: 'Edited unsent text' });
+  await send({ type: 'chatLoaded', chat: { id: 'other-chat', messages: [], draft: 'Other stored text' } });
+  assert.deepEqual(await page.evaluate(() => window.sent.filter(item => item.type === 'saveDraft').at(-1)), { type: 'saveDraft', chatId: 'other-chat', text: 'Other stored text' });
+  await send({ type: 'chatLoaded', chat: { id: 'draft-chat', messages: [], draft: 'Stored unsent text' } });
+  assert.equal(await draftInput.inputValue(), 'Edited unsent text');
+  await draftInput.fill('');
+  assert.equal(await page.evaluate(() => window.sent.filter(item => item.type === 'saveDraft').at(-1).text), '');
   await send({ type: 'chatLoaded', chat: { id: 'queue-chat', modelId: 'auto', messages: [], turnQueue: { turns: [], paused: true } } });
   const image = { path: '/attachments/qt.png', name: 'qt.png', mimeType: 'image/png', uri: 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/ZL8AAAAASUVORK5CYII=' };
   const turns = [
@@ -83,9 +94,31 @@ try {
   await input.fill('Scheduled other edited');
   await page.locator('#sendBtn').click();
   assert.equal(await input.inputValue(), 'Unsent composer draft');
+  await send({ type: 'turnQueue', chatId: 'queue-chat', turns, paused: true });
+  await edit('other');
+  await input.fill('Schedule the edited task');
+  await page.locator('#scheduleBtn').click();
+  await page.locator('#sendBtn').click();
+  const converted = await page.evaluate(() => window.sent.filter(item => item.type === 'scheduleQueuedTurn').at(-1));
+  assert.equal(converted.id, 'other');
+  assert.equal(converted.turn.text, 'Schedule the edited task');
+  assert.equal(converted.task.dispatchTrigger, 'quota-reset');
+
+  const limit = { role: 'assistant', agent: 'claude', text: 'I was checking the code. '.repeat(25) + "\nYou've hit your session limit · resets 2:10pm" };
+  await send({ type: 'chatLoaded', chat: { id: 'queue-chat', modelId: 'claude-sonnet-5-5-high', messages: [{ role: 'user', text: 'Original task' }, limit] } });
+  assert.equal(await page.locator('.continue-at-reset').count(), 1, 'partial replies also offer Continue after reload');
+  await send({ type: 'schedulerQueue', queue: [{ id: 'continued', chatId: 'queue-chat', model: 'claude', prompt: 'continue', status: 'pending', dispatchTrigger: 'quota-reset', attachments: [] }] });
+  assert.equal(await page.locator('.continue-at-reset').count(), 0);
+  await send({ type: 'schedulerQueue', queue: [] });
+  await send({ type: 'chatLoaded', chat: { id: 'queue-chat', modelId: 'claude-sonnet-5-5-high', messages: [{ role: 'user', text: 'Original task' }, limit, { role: 'user', text: 'continue', scheduled: true }] } });
+  assert.equal(await page.locator('.continue-at-reset').count(), 0, 'a sent Continue remains suppressed after restart');
+  await send({ type: 'queueUsageWarning', chatId: 'queue-chat', id: 'other', agent: 'claude', text: 'Claude is out of usage. The prompt is still queued.' });
+  await send({ type: 'queueUsageWarning', chatId: 'queue-chat', id: 'other', agent: 'claude', text: 'Claude is out of usage. The prompt is still queued.' });
+  assert.equal(await page.locator('.queue-usage-warning').count(), 1, 'retry warnings do not stack');
+  await page.getByRole('button', { name: 'Schedule at reset', exact: true }).click();
+  assert.equal(await page.evaluate(() => window.sent.filter(item => item.type === 'scheduleQueuedTurn').at(-1).id), 'other');
   assert.deepEqual(errors, []);
   console.log('Queue editor UI: separate prompts, edited text/model/images, original slots, saved edits, scheduled switching and independent composer draft passed.');
 } finally {
   await browser.close();
 }
-

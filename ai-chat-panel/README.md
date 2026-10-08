@@ -150,14 +150,37 @@ The mic button (one per chat window) records from the same mic device
 configured in
 [`voice-router/daemon.config.json`](../voice-router/daemon.config.json)
 (`ffmpeg`, same as the voice-router daemon), then runs it through
-`voice-router/lib/groq-client.mjs`'s transcribe → clean → classify →
-route pipeline (dynamically imported — this extension is CommonJS, that
-library is ESM) and sends the cleaned prompt through that window's own
-headless `send` pipeline, targeting whichever agent the classifier picked.
+`voice-router/lib/groq-client.mjs`'s transcription and cleanup functions
+(dynamically imported — this extension is CommonJS, that library is ESM).
+Whisper Large v3 Turbo transcribes; GPT-OSS 120B cleans the text without
+classifying intent. The cleaned prompt waits in the composer for review.
+Dictation preserves Auto or your manual model selection. When you send,
+the current chat router handles model selection; the microphone has no
+separate routing rules.
+Hovering the mic with a draft in the composer raises a small **Polish** button
+(also on keyboard focus). It runs what you typed through the same cleanup model
+in a typed-text mode (no spoken-form rules; it restructures, never adds
+requirements) and replaces the draft in place, so Ctrl+Z brings your original
+back. Drafts over 12,000 characters are refused, and a failure keeps your text.
 No clipboard, no window-title guessing, no real terminal involved.
 
 Needs `voice-router/.env` with `GROQ_API_KEY` set (loaded the same
-way `router.mjs` loads it).
+way `router.mjs` loads it), or a Groq key saved through Chat Settings. When Groq is nearly used up
+(80% of any limit by default, `groq_spill`) or answers 429, cleanup, titles and Auto go to GPT OSS 120B on
+Cloudflare Workers AI instead, using the Cloudflare connection under Settings → Routing (or `CLOUDFLARE_ACCOUNT_ID` and
+`CLOUDFLARE_API_TOKEN`). Dictation cleanup and titles share the router's budget checks and counters.
+Cloudflare [does not train on prompts or share them with other customers](https://developers.cloudflare.com/workers-ai/platform/data-usage/).
+Whisper transcription stays on Groq.
+
+Correct a misheard word in the composer. After a typing pause, a visible
+**Adding “word” to dictionary** notice starts a ten-second countdown. Click
+its trash button to cancel; otherwise the spelling saves automatically and
+a confirmation appears. The countdown pauses while the chat is hidden.
+**Settings → Voice → Dictionary** is the full list: search, add, rename, switch off or delete words, scan a
+project (or any folder) for its technical terms, or have a chat model edit it. Every list that reaches a model is
+capped. See the
+[microphone review and walkthrough](../docs/microphone-dictionary-review.md)
+for routing, storage, behavior and verification details.
 
 ## Voice router command integration
 

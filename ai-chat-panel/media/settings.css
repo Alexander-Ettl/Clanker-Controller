@@ -35,6 +35,23 @@
 #settingsModal .pill-track > :not(.active):not([aria-selected='true']):not([aria-checked='true']):hover { color: var(--text-primary); }
 
 .cs { display: flex; flex-direction: column; gap: 16px; padding: 14px 16px 18px; }
+.cs-settings-search { position: sticky; top: 0; z-index: 8; flex: none; border: 1px solid var(--eo-border); border-radius: 20px; background: rgb(26, 28, 34); box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.06), 0 6px 20px rgba(0, 0, 0, 0.15); }
+.cs-settings-search:focus-within { border-color: var(--accent); }
+.cs-settings-search-field { display: flex; align-items: center; gap: 10px; padding: 9px 12px; min-height: 24px; }
+.cs-settings-search-field > svg { width: 17px; height: 17px; flex: none; color: var(--text-secondary); }
+.cs-settings-search-field input { flex: 1; min-width: 0; border: 0; outline: none; padding: 0; background: transparent; color: var(--text-primary); font: 13px var(--font-text); }
+.cs-settings-search-field input::placeholder { color: var(--text-tertiary); }
+.cs-settings-search-field input::-webkit-search-cancel-button { display: none; }
+.cs-settings-search-field .cs-icon-btn { width: 24px; height: 24px; }
+.cs-settings-search-field .cs-icon-btn[hidden], .cs-settings-search-results[hidden], .cs-settings-search-status[hidden] { display: none; }
+.cs-settings-search-results { max-height: min(300px, 40vh); overflow-y: auto; overscroll-behavior: contain; scrollbar-width: thin; padding: 4px 6px; border-top: 1px solid var(--eo-border); }
+.cs-settings-search-option { display: flex; flex-direction: column; gap: 3px; padding: 9px 10px; border-radius: 12px; cursor: pointer; overflow-wrap: anywhere; }
+.cs-settings-search-option:hover { background: rgba(255, 255, 255, 0.06); }
+.cs-settings-search-option[aria-selected="true"] { background: rgba(10, 132, 255, 0.16); box-shadow: inset 0 0 0 1px rgba(10, 132, 255, 0.2); }
+.cs-settings-search-status { margin: 0; padding: 8px 12px 10px; font: 11px/1.4 var(--font-text); color: var(--text-secondary); }
+.cs-search-target { border-radius: 12px; animation: cs-search-highlight 2.2s var(--eo-ease); scroll-margin-block: 70px; }
+@keyframes cs-search-highlight { 0%, 60% { background-color: rgba(10, 132, 255, 0.14); box-shadow: inset 0 0 0 2px var(--accent); } }
+@media (prefers-reduced-motion: reduce) { .cs-search-target { animation: none; outline: 2px solid var(--accent); outline-offset: -2px; } }
 .cs > * { flex-shrink: 0; } /* the popup scrolls; its content never squeezes */
 
 .cs-tabs {
@@ -43,6 +60,7 @@
   padding: 3px;
   border-radius: var(--pill);
   background: rgba(255, 255, 255, 0.05);
+  container-type: inline-size;
 }
 .cs-tab {
   display: flex;
@@ -61,7 +79,8 @@
   transition: color 0.15s var(--eo-ease);
 }
 .cs-tab > svg { width: 15px; height: 15px; flex-shrink: 0; }
-@media (max-width: 380px) { .cs-tab { gap: 4px; padding-inline: 6px; font-size: 11px; } }
+/* Too narrow for six labels: the icons stay, the names go (each tab keeps its aria-label and tooltip). */
+@container (max-width: 540px) { .cs-tab > span { display: none; } }
 .cs-tab svg { width: 14px; height: 14px; flex: none; opacity: 0.8; }
 .cs-tab[aria-selected='true'] svg { opacity: 1; }
 .cs-tab:hover { color: var(--text-primary); }
@@ -467,37 +486,56 @@
 .cs-route-status { position: sticky; top: 0; z-index: 3; padding: 7px 12px; border-radius: 12px; background: rgba(32, 33, 39, 0.92); backdrop-filter: blur(10px); box-shadow: 0 0 0 1px var(--eo-border); }
 
 .cs-route-hero .cs-icon { color: var(--accent, #a3e635); background: rgba(163, 230, 53, 0.1); }
-.cs-chip-states { display: flex; flex-wrap: wrap; gap: 6px; padding: 0 14px 12px 60px; }
-.cs-chip-state { display: inline-flex; align-items: center; gap: 6px; padding: 3px 10px; border-radius: var(--pill); background: rgba(255, 255, 255, 0.06); font: 500 11px var(--font-text); color: var(--text-secondary); }
-.cs-chip-state i { width: 7px; height: 7px; border-radius: 50%; background: #ffb340; }
-.cs-chip-state.is-ok i { background: #34d399; }
-.cs-mode-note { margin: 0; padding: 10px 14px 12px; border-top: 1px solid rgba(255, 255, 255, 0.06); background: rgba(0, 0, 0, 0.1); font: 400 12px/1.5 var(--font-text); color: var(--text-secondary); }
+.cs-route-hero > summary { cursor: pointer; list-style: none; padding: 10px 12px; gap: 10px; }
+.cs-route-hero > summary::-webkit-details-marker { display: none; }
+.cs-route-hero > summary:hover { background: rgba(255, 255, 255, 0.03); }
+.cs-route-hero > summary > svg { width: 16px; height: 16px; flex: none; color: var(--text-tertiary); transition: transform 0.2s var(--eo-ease); transform: rotate(-90deg); }
+.cs-route-hero[open] > summary > svg { transform: none; }
+.cs-route-hero .cs-icon, .cs-svc .cs-icon { width: 28px; height: 28px; border-radius: 9px; }
+.cs-route-hero .cs-icon svg, .cs-svc .cs-icon svg { width: 15px; height: 15px; }
+.cs-dots { display: flex; gap: 4px; flex: none; }
+.cs-dots i { width: 7px; height: 7px; border-radius: 50%; background: #ffb340; }
+.cs-dots i.is-ok { background: #34d399; }
 
-.cs-route-usage .cs-usage { padding: 0 14px 14px; }
+.cs-route-usage { padding: 10px 14px 11px; }
+.cs-usage-title { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; margin-bottom: 8px; }
+.cs-usage-title .cs-desc { font-size: 11px; color: var(--text-tertiary); }
+.cs-route-usage .cs-usage { padding: 0; gap: 8px; }
+.cs-route-usage .cs-usage-bar { height: 4px; }
+.cs-usage-foot { margin: 9px 0 0; font: 400 11px var(--font-text); color: var(--text-tertiary); }
 
-/* A service: the same card as a CLI, with its own tint and a setup guide that is open until it is connected. */
-.cs-service .cs-icon { color: var(--tint); background: color-mix(in srgb, var(--tint) 14%, transparent); }
-.cs-guide { margin: 0 12px 10px; border-radius: 12px; background: rgba(0, 0, 0, 0.16); }
-.cs-guide > summary, .cs-model-card > summary { display: flex; align-items: center; gap: 7px; padding: 8px 10px; cursor: pointer; list-style: none; font: 600 12px var(--font-text); color: var(--text-secondary); }
-.cs-guide > summary::-webkit-details-marker, .cs-model-card > summary::-webkit-details-marker, .cs-group > summary::-webkit-details-marker { display: none; }
-.cs-guide > summary:hover, .cs-model-card > summary:hover { color: var(--text-primary); }
-summary:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; border-radius: 12px; }
-.cs-guide > summary svg, .cs-model-card > summary svg { width: 14px; height: 14px; flex: none; transition: transform 0.2s var(--eo-ease); transform: rotate(-90deg); }
-.cs-guide[open] > summary svg, .cs-model-card[open] > summary svg { transform: none; }
-.cs-steps { margin: 0; padding: 2px 12px 4px 34px; display: flex; flex-direction: column; gap: 9px; font: 400 12px/1.5 var(--font-text); color: var(--text-secondary); }
+/* A service: one row, opening into its guide and credentials; open until it is connected. */
+.cs-svc-list { border-top: 1px solid rgba(255, 255, 255, 0.06); }
+.cs-svc + .cs-svc { border-top: 1px solid rgba(255, 255, 255, 0.06); }
+.cs-svc > summary { display: flex; align-items: center; gap: 10px; padding: 8px 12px; cursor: pointer; list-style: none; }
+.cs-svc > summary::-webkit-details-marker { display: none; }
+.cs-svc > summary:hover { background: rgba(255, 255, 255, 0.03); }
+.cs-svc > summary .cs-title { flex: 1; min-width: 0; }
+.cs-svc > summary > svg { width: 14px; height: 14px; flex: none; color: var(--text-tertiary); transition: transform 0.2s var(--eo-ease); transform: rotate(-90deg); }
+.cs-svc[open] > summary > svg { transform: none; }
+.cs-svc .cs-icon { color: var(--tint); background: color-mix(in srgb, var(--tint) 14%, transparent); }
+.cs-svc-body { padding: 2px 0 4px; background: rgba(0, 0, 0, 0.12); }
+.cs-svc-body > .cs-guide-note:first-child { padding-top: 8px; }
+.cs-steps { margin: 0; padding: 4px 12px 2px 34px; display: flex; flex-direction: column; gap: 7px; font: 400 12px/1.45 var(--font-text); color: var(--text-secondary); }
 .cs-steps li::marker { font-weight: 700; color: var(--text-primary); }
 .cs-steps li { padding-left: 2px; }
-.cs-steps li > .cs-btn { margin-top: 5px; display: flex; width: fit-content; }
+.cs-steps li > .cs-btn { margin-top: 4px; display: flex; width: fit-content; }
 .cs-steps b { font-weight: 600; color: var(--text-primary); }
 .cs-steps code { padding: 1px 5px; border-radius: 5px; background: rgba(255, 255, 255, 0.08); font: 11px ui-monospace, 'Cascadia Mono', Consolas, monospace; color: var(--text-primary); }
-.cs-guide-note { margin: 0; padding: 4px 12px 11px 34px; font: 400 11.5px/1.45 var(--font-text); color: var(--text-tertiary); }
-.cs-cred { display: flex; flex-direction: column; gap: 8px; padding: 0 12px 12px; }
+.cs-guide-note { margin: 0; padding: 4px 12px 6px; font: 400 11.5px/1.45 var(--font-text); color: var(--text-tertiary); }
+.cs-cred { display: flex; flex-direction: column; gap: 6px; padding: 6px 12px 10px; }
 .cs-cred .cs-field { flex: none; width: 100%; box-sizing: border-box; }
 .cs-cred-actions { display: flex; gap: 8px; }
 .cs-cred-actions .cs-btn.is-primary { flex: 1; justify-content: center; }
+summary:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; border-radius: 12px; }
+.cs-model-card > summary { display: flex; align-items: center; gap: 7px; padding: 8px 10px; cursor: pointer; list-style: none; font: 600 12px var(--font-text); color: var(--text-secondary); }
+.cs-model-card > summary::-webkit-details-marker, .cs-group > summary::-webkit-details-marker { display: none; }
+.cs-model-card > summary:hover { color: var(--text-primary); }
+.cs-model-card > summary svg { width: 14px; height: 14px; flex: none; transition: transform 0.2s var(--eo-ease); transform: rotate(-90deg); }
+.cs-model-card[open] > summary svg { transform: none; }
 
 /* Order: numbered rows with a switch and arrows; the local fallback is pinned last. */
-.cs-order-row { display: flex; align-items: center; gap: 10px; padding: 10px 12px; }
+.cs-order-row { display: flex; align-items: center; gap: 10px; padding: 7px 12px; }
 .cs-order-row + .cs-order-row { border-top: 1px solid rgba(255, 255, 255, 0.06); }
 .cs-order-row.is-off .cs-icon, .cs-order-row.is-off .cs-title { opacity: 0.5; }
 .cs-order-row.is-fixed { background: rgba(0, 0, 0, 0.12); }
@@ -520,6 +558,28 @@ summary:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; 
 .cs-num { width: 104px; height: 30px; padding: 0 10px; text-align: right; font-variant-numeric: tabular-nums; }
 .cs-select { max-width: 200px; height: 30px; padding: 0 8px; }
 .cs-area { width: 100%; padding: 8px 10px; resize: vertical; }
+
+/* Custom dropdown (microphone): a pill trigger that opens a charcoal glass list, so the choices match the panel
+   instead of the browser's grey native popup. The card lifts its clipping while a list is open. */
+.cs-card:has(.cs-dd.is-open) { overflow: visible; position: relative; z-index: 6; }
+.cs-dd { position: relative; flex: 0 1 210px; min-width: 0; }
+.cs-dd-trigger { display: flex; align-items: center; justify-content: space-between; gap: 8px; width: 100%; height: 32px; padding: 0 10px 0 13px; border: 1px solid rgba(255, 255, 255, 0.14); border-radius: var(--pill); background: rgba(0, 0, 0, 0.22); color: var(--text-primary); font: 500 12.5px var(--font-text); cursor: pointer; transition: background 0.15s var(--eo-ease), border-color 0.15s var(--eo-ease); }
+.cs-dd-trigger:hover { background: rgba(255, 255, 255, 0.07); border-color: rgba(255, 255, 255, 0.22); }
+.cs-dd.is-open .cs-dd-trigger { border-color: var(--accent); background: rgba(10, 132, 255, 0.1); }
+.cs-dd-trigger:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.cs-dd-value { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cs-dd-trigger svg { width: 14px; height: 14px; flex: none; color: var(--text-secondary); transition: transform 0.2s var(--eo-ease); }
+.cs-dd.is-open .cs-dd-trigger svg { transform: rotate(180deg); color: var(--text-primary); }
+.cs-dd-menu { position: absolute; top: calc(100% + 6px); right: 0; z-index: 7; display: flex; flex-direction: column; gap: 2px; width: max-content; min-width: 100%; max-width: min(340px, calc(100vw - 48px)); max-height: 260px; overflow-y: auto; padding: 5px; border: 1px solid rgba(255, 255, 255, 0.14); border-radius: 16px; background: linear-gradient(180deg, rgba(255, 255, 255, 0.05), rgba(255, 255, 255, 0) 30%), rgb(26, 28, 34); box-shadow: 0 18px 40px rgba(0, 0, 0, 0.5), inset 0 1px 0 rgba(255, 255, 255, 0.08); transform-origin: top right; animation: cs-dd-in 0.16s var(--eo-ease); scrollbar-width: thin; }
+.cs-dd-menu[hidden] { display: none; }
+.cs-dd-option { display: flex; align-items: center; justify-content: space-between; gap: 10px; width: 100%; padding: 8px 10px 8px 12px; border: 0; border-radius: 11px; background: transparent; color: var(--text-primary); font: 500 12.5px/1.3 var(--font-text); text-align: left; cursor: pointer; transition: background 0.12s var(--eo-ease); }
+.cs-dd-text { min-width: 0; overflow-wrap: anywhere; }
+.cs-dd-option svg { width: 14px; height: 14px; flex: none; color: var(--accent); opacity: 0; }
+.cs-dd-option:hover, .cs-dd-option:focus-visible { background: rgba(255, 255, 255, 0.08); outline: 0; }
+.cs-dd-option.is-selected { background: rgba(10, 132, 255, 0.16); }
+.cs-dd-option.is-selected svg { opacity: 1; }
+@keyframes cs-dd-in { from { opacity: 0; transform: translateY(-4px) scale(0.97); } }
+@media (prefers-reduced-motion: reduce) { .cs-dd-menu { animation: none; } .cs-dd-trigger svg { transition: none; } }
 .cs-num:focus-visible, .cs-select:focus-visible, .cs-area:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .cs-slider { display: flex; align-items: center; gap: 10px; width: 150px; }
 .cs-slider input { flex: 1; min-width: 0; accent-color: #f2f2f7; }
@@ -530,4 +590,52 @@ summary:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; 
 .cs-model-card .cs-set { padding-left: 24px; }
 .cs-model-card .cs-field { flex: 1 1 100%; width: 100%; box-sizing: border-box; border-radius: 10px; }
 .cs-footer .cs-btn svg { width: 13px; height: 13px; }
-@media (prefers-reduced-motion: reduce) { .cs-guide > summary svg, .cs-group > summary > svg { transition: none; } }
+@media (prefers-reduced-motion: reduce) { .cs-svc > summary > svg, .cs-route-hero > summary > svg, .cs-group > summary > svg { transition: none; } }
+
+/* Settings > General > Project icons */
+.cs-project-icons > summary { padding: 10px 12px; gap: 10px; }
+.cs-project-icons > summary::-webkit-details-marker { display: none; }
+.cs-project-icons > summary .cs-icon { color: var(--accent); }
+.cs-project-icons > summary .cs-tag:empty { display: none; }
+.cs-project-list { max-height: 280px; overflow-y: auto; overscroll-behavior: contain; scrollbar-width: thin; border-top: 1px solid var(--eo-border); padding: 4px 6px; }
+.cs-project-list .cs-project { align-items: center; gap: 10px; padding: 8px 6px; border-radius: 10px; border-bottom: 0; transition: background 0.15s var(--eo-ease); }
+.cs-project:hover, .cs-project:focus-within { background: rgba(255, 255, 255, 0.04); }
+.cs-project .cs-title, .cs-project .cs-desc { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cs-project-empty { margin: 0; padding: 12px 8px; font: 12px/1.5 var(--font-text); color: var(--text-secondary); }
+.cs-project-tile { display: grid; place-items: center; flex-shrink: 0; width: 34px; height: 34px; overflow: hidden; border-radius: 11px; background: rgba(255, 255, 255, 0.07); box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.08); font: 700 13px var(--font-text); letter-spacing: -0.02em; color: var(--text-secondary); }
+.cs-project-tile img { width: 22px; height: 22px; object-fit: contain; border-radius: 5px; }
+.cs-project-tile img.is-dark { box-sizing: border-box; padding: 2px; background: rgba(255, 255, 255, 0.9); }
+.cs-project-actions { display: flex; flex-wrap: wrap; flex: none; gap: 4px; }
+.cs-project-actions .cs-btn { min-height: 28px; padding-inline: 9px; }
+@media (max-width: 520px) {
+  .cs-project-list .cs-project { flex-wrap: wrap; row-gap: 6px; }
+  .cs-project .cs-info { flex-basis: calc(100% - 44px); }
+  .cs-project-actions { flex: 0 1 calc(100% - 44px); min-width: 0; margin-left: 44px; }
+}
+@media (prefers-reduced-motion: reduce) { .cs-project { transition: none; } }
+
+/* Voice > Dictionary: search and add on top, a scrolling word list, the limits as two meters, then the scan buttons. */
+.cs-dict-tools { display: flex; flex-direction: column; gap: 8px; padding: 0 14px 10px; }
+.cs-dict-add { display: flex; align-items: center; gap: 8px; }
+.cs-dict-add .cs-field { height: 32px; }
+.cs-dict-list { display: flex; flex-direction: column; max-height: 264px; overflow-y: auto; margin: 0 8px 6px; padding: 0 6px; scrollbar-width: thin; }
+.cs-dict-row { display: flex; align-items: center; gap: 8px; min-height: 40px; padding: 4px 4px 4px 8px; border-radius: 10px; transition: background 0.15s var(--eo-ease); }
+.cs-dict-row:hover, .cs-dict-row:focus-within { background: rgba(255, 255, 255, 0.05); }
+.cs-dict-term { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font: 500 13px ui-monospace, 'Cascadia Mono', Consolas, monospace; color: var(--text-primary); cursor: text; }
+.cs-dict-row.is-off .cs-dict-term { color: var(--text-tertiary); text-decoration: line-through; text-decoration-color: rgba(255, 255, 255, 0.25); }
+.cs-dict-edit { flex: 1; height: 28px; border-radius: 9px; font: 500 13px ui-monospace, 'Cascadia Mono', Consolas, monospace; }
+.cs-dict-source { flex: none; padding: 1px 7px; border-radius: var(--pill); background: rgba(255, 255, 255, 0.07); font: 600 10px var(--font-text); letter-spacing: 0.02em; color: var(--text-secondary); }
+.cs-dict-row .cs-icon-btn { width: 26px; height: 26px; border-color: transparent; background: transparent; opacity: 0.55; }
+.cs-dict-row:hover .cs-icon-btn, .cs-dict-row:focus-within .cs-icon-btn { opacity: 1; }
+.cs-dict-empty { margin: 0; padding: 18px 10px; text-align: center; font: 400 12px/1.5 var(--font-text); color: var(--text-secondary); }
+.cs-switch.is-small { width: 32px; height: 20px; }
+.cs-switch.is-small::after { top: 3px; left: 3px; width: 14px; height: 14px; }
+.cs-switch.is-small[aria-checked='true']::after { transform: translateX(12px); }
+.cs-dict .cs-status { padding: 4px 14px 10px; }
+.cs-dict .cs-usage { padding: 4px 14px 14px; gap: 10px; }
+.cs-dict .cs-usage[hidden] { display: none; }
+.cs-dict .cs-usage-foot { margin: 0; }
+.cs-dict-scan { border-top: 1px solid rgba(255, 255, 255, 0.06); }
+.cs-dict-projects { display: flex; flex-wrap: wrap; gap: 6px; padding: 0 14px 12px 60px; }
+.cs-dict-actions { padding-left: 14px; padding-bottom: 14px; }
+@media (prefers-reduced-motion: reduce) { .cs-dict-row { transition: none; } }

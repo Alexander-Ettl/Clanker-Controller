@@ -51,6 +51,22 @@
         },
         "commands": [
             {
+                "command": "aiChatPanel.investigationsManage",
+                "title": "Clanker Controller: Open Loops"
+            },
+            {
+                "command": "aiChatPanel.investigationsOvernight",
+                "title": "Clanker Controller: Start Loop"
+            },
+            {
+                "command": "aiChatPanel.investigationsStop",
+                "title": "Clanker Controller: Stop All Investigations"
+            },
+            {
+                "command": "aiChatPanel.investigationsResults",
+                "title": "Clanker Controller: Show Investigation Results"
+            },
+            {
                 "command": "aiChatPanel.chooseProject",
                 "title": "Clanker Controller: Choose Project"
             },
@@ -75,6 +91,10 @@
             {
                 "command": "aiChatPanel.injectPrompt",
                 "title": "Clanker Controller:Inject Prompt"
+            },
+            {
+                "command": "aiChatPanel.summarize",
+                "title": "Clanker Controller:Summarize Text (returns the answer)"
             },
             {
                 "command": "aiChatPanel.routePrompt",
@@ -154,7 +174,7 @@
                 },
                 "aiChatPanel.voiceAutoStopSeconds": {
                     "type": "number",
-                    "default": 2,
+                    "default": 0,
                     "minimum": 0,
                     "markdownDescription": "Dictation stops and transcribes by itself after this many seconds of silence once you have spoken. `0` keeps recording until you stop it."
                 },
@@ -189,6 +209,54 @@
                     "default": false,
                     "markdownDescription": "Clanker's own sound when a turn ends: a rising astromech chirp when it's done, a low warble when the agent reports an error. Synthesized in the chat window (no audio files). Off by default; the completion chime your CLI hooks play is separate."
                 },
+                "aiChatPanel.investigationsMaxParallel": {
+                    "type": "integer",
+                    "default": 3,
+                    "minimum": 1,
+                    "maximum": 4,
+                    "markdownDescription": "How many loops may run at once, for example one per project. Each run still reserves its token allowance from the shared hourly limit and checks spare quota before it starts."
+                },
+                "aiChatPanel.investigationsMaxAgents": {
+                    "type": "integer",
+                    "default": 12,
+                    "minimum": 1,
+                    "maximum": 32,
+                    "markdownDescription": "How many model calls and fixers all loops together may have running at the same moment. One loop starts about ten scouts at once; lower this if your provider rate-limits you."
+                },
+                "aiChatPanel.investigationsModels": {
+                    "type": "object",
+                    "default": {},
+                    "additionalProperties": false,
+                    "properties": {
+                        "scout": { "type": "string", "markdownDescription": "Model for the scouts, verifiers and fix judges. `auto` (or unset) picks Gemini Flash, then Claude, then Codex, whichever is installed." },
+                        "editor": { "type": "string", "markdownDescription": "Model that makes backend fixes. `auto` picks Codex, then Claude. Gemini edits only when you choose it here, or when nothing else is installed." },
+                        "visualEditor": { "type": "string", "markdownDescription": "Model that makes layout and styling fixes. `auto` picks Claude, then Codex. Gemini edits only when you choose it here, or when nothing else is installed." },
+                        "vision": { "type": "string", "markdownDescription": "Model that looks at screenshots. Needs an Antigravity model." }
+                    },
+                    "markdownDescription": "Which model does which job in a loop. Each value is a model id (for example `gemini-3.8-flash-high`), an agent name (`gemini`, `claude`, `codex`) or `auto`. The Loops window changes this too."
+                },
+                "aiChatPanel.complianceScout": {
+                    "type": "boolean",
+                    "default": true,
+                    "markdownDescription": "Adds an EU compliance scout to every full loop and runs the free text checks for GDPR and TDDDG indicators (remote fonts, trackers, CDNs, embeds, missing imprint or privacy page, forms without a notice, personal data in logs). Findings are indicators for you to judge, never legal advice, and are never fixed automatically. Set in Chat Settings > Compliance."
+                },
+                "aiChatPanel.complianceRedact": {
+                    "type": "boolean",
+                    "default": true,
+                    "markdownDescription": "Before a loop sends project text to a cloud model, replaces real-looking e-mail addresses, IBANs and phone numbers with placeholders. Your own files and the private copy the editors work in are not changed. Set in Chat Settings > Compliance."
+                },
+                "aiChatPanel.investigationsVisualAgent": {
+                    "type": "string",
+                    "enum": ["claude", "codex"],
+                    "default": "claude",
+                    "markdownDescription": "Which agent fixes visual problems (layout, styling, rendering) in a fix loop. If it is off, not installed or short on quota, the other agent is used."
+                },
+                "aiChatPanel.investigationsBackendAgent": {
+                    "type": "string",
+                    "enum": ["claude", "codex"],
+                    "default": "codex",
+                    "markdownDescription": "Which agent fixes backend problems in a fix loop. If it is off, not installed or short on quota, the other agent is used."
+                },
                 "aiChatPanel.voiceHotkey": {
                     "type": "string",
                     "default": "",
@@ -204,6 +272,16 @@
                     "type": "boolean",
                     "default": true,
                     "markdownDescription": "Play a short tone when dictation starts recording and when it stops, so you know the microphone is live."
+                },
+                "aiChatPanel.voicePauseMedia": {
+                    "type": "boolean",
+                    "default": true,
+                    "markdownDescription": "Pause background music and videos while dictating, then resume the media dictation paused when recording ends. Applies to apps supporting Windows media controls."
+                },
+                "aiChatPanel.voiceMicDevice": {
+                    "type": "string",
+                    "default": "",
+                    "markdownDescription": "Microphone for dictation, by its Windows device name. Set it in Chat Settings > Voice. Empty: automatic (the first microphone Windows lists). A device that is not connected falls back to automatic."
                 },
                 "aiChatPanel.models": {
                     "type": "object",

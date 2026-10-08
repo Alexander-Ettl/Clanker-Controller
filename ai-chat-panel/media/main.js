@@ -19,6 +19,14 @@
   const promptInput = document.getElementById('promptInput');
   const sendBtn = document.getElementById('sendBtn');
   const micBtn = document.getElementById('micBtn');
+  const micWrap = document.getElementById('micWrap');
+  const polishBtn = document.getElementById('polishBtn');
+  function setComposerAction(action) {
+    micWrap.classList.toggle('polish-default', action === 'polish');
+    try { vscode.setState({ ...(vscode.getState() || {}), composerAction: action }); } catch {}
+  }
+  micWrap.classList.toggle('polish-default', vscode.getState()?.composerAction === 'polish');
+  polishBtn.disabled = !promptInput.value.trim();
   const transcriptEl = document.getElementById('transcript');
 
   let activeModelId = 'auto';
@@ -39,12 +47,141 @@
   projectBtn.type = 'button'; projectBtn.className = 'project-picker'; projectBtn.textContent = 'Choose project';
   projectBtn.setAttribute('aria-label', 'Choose project');
   projectBtn.addEventListener('click', () => { if (editingQueue) finishQueueEdit(); vscode.postMessage({ type: 'chooseProject' }); });
-  const explorerBtn = document.createElement('button');
-  explorerBtn.type = 'button'; explorerBtn.className = 'round-btn'; explorerBtn.title = 'Open project in Explorer';
-  explorerBtn.setAttribute('aria-label', 'Open project in Explorer');
-  explorerBtn.innerHTML = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" aria-hidden="true"><path d="M2 4a1 1 0 0 1 1-1h4l2 2h4a1 1 0 0 1 1 1v6a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1Z"/></svg>';
-  explorerBtn.addEventListener('click', () => vscode.postMessage({ type: 'openProjectExplorer' }));
-  projectBar.append(projectBtn, explorerBtn);
+  projectBar.append(projectBtn);
+  // The rail is one glass pill with a squircle tile per registered project, drawn like the chat tiles under it. The
+  // chat's own project wears the white rim. While a turn runs, a ring glides to the project the agent's tools are
+  // editing (matched by file path against the project roots), so a hop into Visor or Clanker shows itself as the
+  // ring. The chat stays bound to its own project. Fed by 'project' and the history snapshots.
+  const projectList = document.createElement('div');
+  projectList.className = 'project-pill'; projectList.setAttribute('role', 'list');
+  const projectFocus = document.createElement('span');
+  projectFocus.className = 'project-focus'; projectFocus.setAttribute('aria-hidden', 'true');
+  const railIconsLoaded = new Map(); // icon data URI -> whether it is too dark to read on the tile
+  // A mostly dark glyph (a black logo) vanishes on the dark tile, so it gets a light plate; coloured and light icons sit bare.
+  window.isDarkIcon = isDarkIcon; // Settings > Project icons judges its previews the same way
+  function isDarkIcon(image) {
+    try {
+      const canvas = document.createElement('canvas'); canvas.width = canvas.height = 16;
+      const context = canvas.getContext('2d', { willReadFrequently: true });
+      context.drawImage(image, 0, 0, 16, 16);
+      const data = context.getImageData(0, 0, 16, 16).data;
+      let light = 0, weight = 0;
+      for (let at = 0; at < data.length; at += 4) { const alpha = data[at + 3] / 255; light += alpha * (0.2126 * data[at] + 0.7152 * data[at + 1] + 0.0722 * data[at + 2]) / 255; weight += alpha; }
+      return weight > 0 && light / weight < 0.4;
+    } catch { return false; }
+  }
+  let railProjects = [], railActiveProject = null, railChatId = null, railSessions = [], railWorking = null, railWorkingShown = null;
+  const railPath = (file) => String(file || '').replace(/\\/g, '/').toLowerCase();
+  function noteWorkingFile(file) {
+    if (!file || !/^([a-z]:[\\/]|\/)/i.test(file)) return;
+    const target = railPath(file);
+    const hit = railProjects.filter((project) => project.root).map((project) => ({ id: project.id, root: railPath(project.root).replace(/\/$/, '') }))
+      .sort((a, b) => b.root.length - a.root.length).find((item) => target === item.root || target.startsWith(`${item.root}/`));
+    if (hit && hit.id !== railWorking) { railWorking = hit.id; renderProjectList(); }
+  }
+  const projectMonogram = (name) => {
+    const words = String(name || '?').split(/[\s\-_.]+/).filter(Boolean);
+    return (words.length > 1 ? words[0][0] + words[1][0] : (words[0] || '?').slice(0, 2)).replace(/^./, (c) => c.toUpperCase());
+  };
+  const projectHue = (id) => { let hash = 2166136261; for (const char of String(id)) hash = Math.imul(hash ^ char.charCodeAt(0), 16777619); return (hash >>> 0) % 360; };
+  let projectPeekCount = 0, projectEditing = false; // a rename in progress keeps the list as it is until it ends
+  const projectPeekShapes = new ResizeObserver((entries) => entries.forEach(({ target, contentRect }) => {
+    if (!contentRect.width || !window.bubbleOutline) return;
+    const outline = window.bubbleOutline(contentRect.width, 40, 0); // no tail: the tile's squircle at the card's width
+    target.querySelectorAll('.project-peek-shape path').forEach((path) => path.setAttribute('d', outline));
+  }));
+  function projectMark(project) {
+    const mark = document.createElement('span');
+    mark.className = 'project-mark'; mark.textContent = projectMonogram(project.name);
+    if (project.iconUri) {
+      // The project's own favicon replaces the initials once it has loaded; if it never does, the initials stay.
+      const icon = document.createElement('img');
+      icon.className = 'project-icon'; icon.alt = ''; icon.draggable = false;
+      const show = () => { icon.classList.toggle('is-dark', railIconsLoaded.get(project.iconUri)); mark.replaceChildren(icon); };
+      icon.addEventListener('load', () => { if (!railIconsLoaded.has(project.iconUri)) railIconsLoaded.set(project.iconUri, isDarkIcon(icon)); show(); });
+      icon.src = project.iconUri;
+      if (railIconsLoaded.has(project.iconUri)) show(); // a rebuild of the list never flashes the initials
+    }
+    return mark;
+  }
+  function renderProjectList() {
+    if (projectEditing) return;
+    const chat = railSessions.find((session) => session.id === railChatId);
+    const touched = new Set(chat?.touchedProjectIds || []);
+    const running = new Set(railSessions.filter((session) => session.state && session.id !== railChatId).map((session) => session.projectId));
+    const target = busy ? railWorking || railActiveProject : null;
+    const items = railProjects.map((project) => {
+      const active = project.id === railActiveProject;
+      const item = document.createElement('div');
+      item.className = 'project-item'; item.setAttribute('role', 'listitem'); item.dataset.id = project.id;
+      item.style.setProperty('--hue', projectHue(project.id));
+      const tile = document.createElement('button');
+      tile.type = 'button'; tile.className = 'project-tile';
+      tile.classList.toggle('is-active', active);
+      tile.classList.toggle('is-touched', !active && touched.has(project.id));
+      tile.classList.toggle('is-working', project.id === target);
+      tile.title = `${project.name}${project.root ? `\n${project.root}` : '\nPlanning project'}${project.id === target && !active ? '\nThe agent is working here' : ''}`;
+      tile.setAttribute('aria-label', `${project.name}${active ? ' (this chat)' : ''}${project.id === target ? ', working here now' : ''}`);
+      if (active) tile.setAttribute('aria-current', 'true');
+      else tile.addEventListener('click', () => { if (editingQueue) finishQueueEdit(); vscode.postMessage({ type: 'openProject', projectId: project.id }); });
+      tile.append(projectMark(project));
+      // Hover: the tile grows to the left into a card with the name beside the icon, drawn like a chat's preview in the Recent
+      // list (launcher.js historyPeek). Its width is set from the name, so a short name gets a short card.
+      const peek = document.createElement('div');
+      peek.className = 'project-peek'; peek.setAttribute('aria-hidden', 'true');
+      for (const state of ['is-active', 'is-touched', 'is-working']) peek.classList.toggle(state, tile.classList.contains(state));
+      const clipId = `project-peek-${++projectPeekCount}`;
+      peek.innerHTML = `<svg class="project-peek-shape"><defs><clipPath id="${clipId}"><path/></clipPath></defs><g clip-path="url(#${clipId})"><path class="project-peek-fill"/><path class="project-peek-rim"/></g></svg><div class="project-peek-text"><span></span></div><button type="button" class="project-edit" title="Rename project" aria-label="Rename project">${PENCIL_SVG}</button><span class="project-peek-mark"></span>`;
+      const label = peek.querySelector('.project-peek-text span');
+      label.textContent = project.name;
+      peek.querySelector('.project-peek-mark').append(projectMark(project));
+      peek.addEventListener('click', () => tile.click());
+      projectPeekShapes.observe(peek);
+      item.addEventListener('mouseenter', () => { if (!item.classList.contains('is-editing')) item.style.setProperty('--peek-w', `${Math.min(260, Math.max(150, label.scrollWidth + 18 + 34 + 40 + 6))}px`); });
+      // The pencil turns the name into a field in place; Enter or leaving it saves, Escape keeps the old name.
+      peek.querySelector('.project-edit').addEventListener('click', (event) => {
+        event.stopPropagation();
+        const input = document.createElement('input');
+        input.className = 'project-rename'; input.value = project.name; input.maxLength = 120; input.spellcheck = false;
+        input.setAttribute('aria-label', 'Project name');
+        let done = false;
+        const finish = (save) => {
+          if (done) return; done = true;
+          projectEditing = false; item.classList.remove('is-editing');
+          const name = input.value.trim();
+          if (save && name && name !== project.name) vscode.postMessage({ type: 'renameProject', projectId: project.id, name });
+          renderProjectList();
+        };
+        input.addEventListener('keydown', (key) => { if (key.key === 'Enter') finish(true); else if (key.key === 'Escape') finish(false); key.stopPropagation(); });
+        input.addEventListener('blur', () => finish(true));
+        input.addEventListener('click', (click) => click.stopPropagation());
+        projectEditing = true; item.classList.add('is-editing'); item.style.setProperty('--peek-w', '260px');
+        label.replaceChildren(input); input.focus(); input.select();
+      });
+      item.append(tile, peek);
+      if (running.has(project.id)) { const dot = document.createElement('i'); dot.className = 'project-live'; dot.title = 'A chat is running here'; item.append(dot); }
+      if (!active) {
+        const remove = document.createElement('button');
+        remove.type = 'button'; remove.className = 'project-x'; remove.textContent = '×';
+        remove.title = `Remove ${project.name} from Clanker`; remove.setAttribute('aria-label', remove.title);
+        remove.addEventListener('click', () => vscode.postMessage({ type: 'removeProject', projectId: project.id }));
+        item.append(remove);
+      }
+      return item;
+    });
+    const add = document.createElement('div');
+    add.className = 'project-item is-add'; add.setAttribute('role', 'listitem');
+    add.innerHTML = '<button type="button" class="project-tile" title="Add a project" aria-label="Add a project"><span class="project-mark"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" aria-hidden="true"><path d="M8 3.5v9M3.5 8h9"/></svg></span></button>';
+    add.firstChild.addEventListener('click', () => { if (editingQueue) finishQueueEdit(); vscode.postMessage({ type: 'addProject' }); });
+    projectList.replaceChildren(projectFocus, ...items, add);
+    projectList.classList.toggle('is-busy', Boolean(target));
+    const focusItem = target && items.find((item) => item.dataset.id === target);
+    if (focusItem) {
+      projectFocus.style.transform = `translateY(${focusItem.offsetTop - 4}px)`;
+      if (railWorkingShown && railWorkingShown !== target) focusItem.firstChild.animate([{ scale: '0.9' }, { scale: '1.06', offset: 0.55 }, { scale: '1' }], { duration: 520, easing: 'cubic-bezier(0.34, 1.36, 0.64, 1)' });
+    }
+    railWorkingShown = target;
+  }
   const topbar = document.querySelector('.topbar');
   const railScroll = document.querySelector('.rail-scroll');
   if (railScroll) {
@@ -53,6 +190,7 @@
     const label = document.createElement('div');
     label.className = 'launcher-label'; label.textContent = 'Project';
     projectBar.prepend(label);
+    projectBar.insertBefore(projectList, projectBtn);
     railScroll.querySelector('.launcher-actions').before(projectBar);
   } else if (topbar) topbar.prepend(projectBar); else transcriptEl.before(projectBar);
 
@@ -93,6 +231,7 @@
     const others = [...document.querySelectorAll('.fs-modal:not([hidden])')].filter((el) => el !== modal.el);
     if (!others.length) lastFocus = document.activeElement; // the first popup remembers where focus was; a switch keeps that
     others.forEach((el) => { el.hidden = true; });
+    document.getElementById('loopsBtn')?.setAttribute('aria-expanded', String(modal.el.id === 'loopsModal'));
     modal.el.hidden = false;
     modal.el.querySelector('.fs-modal-close').focus();
   }
@@ -105,6 +244,7 @@
   function closeModal(el) {
     if (el.hidden) return;
     el.hidden = true;
+    if (el.id === 'loopsModal') document.getElementById('loopsBtn')?.setAttribute('aria-expanded', 'false');
     if (el.id === 'cliSetupModal') vscode.postMessage({ type: 'completeCliSetup' });
     if (lastFocus && document.contains(lastFocus)) lastFocus.focus();
   }
@@ -358,6 +498,46 @@
   // Chat Settings: a popup like Manage Chats, opened from the launcher's gear. Its page is settings.js.
   const settingsModal = createModal('settingsModal', 'Chat Settings');
   const chatSettings = window.initChatSettings({ vscode, body: settingsModal.body });
+  const loopsModal = createModal('loopsModal', 'Loops');
+  loopsModal.body.classList.add('cs');
+  const loopsBtn = document.getElementById('loopsBtn');
+  const loopElapsed = document.getElementById('loopElapsed');
+  let loopState = null, loopWasActive = false, loopFinishedUntil = 0, loopFinishedLabel = '', loopTick = null;
+  function tickLoopElapsed() {
+    const activeIds = loopState?.activeRunIds || (loopState?.activeRunId ? [loopState.activeRunId] : []);
+    const jobs = (loopState?.jobs || []).filter(job => job.enabled || loopState.runs.some(run => run.jobId === job.id && activeIds.includes(run.id)));
+    const active = jobs.length > 0 || activeIds.length > 0;
+    if (active) {
+      const starts = jobs.map(job => job.startedAt || loopState.runs.find(run => run.jobId === job.id && run.status !== 'skipped')?.startedAt || job.createdAt);
+      starts.push(...loopState.runs.filter(run => activeIds.includes(run.id)).map(run => run.startedAt));
+      const started = Math.min(...starts.filter(Number.isFinite));
+      const seconds = Math.max(0, Math.floor((Date.now() - (Number.isFinite(started) ? started : Date.now())) / 1000));
+      const hours = Math.floor(seconds / 3600), minutes = Math.floor(seconds / 60) % 60;
+      loopElapsed.textContent = hours ? `${hours}h ${minutes}m` : `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')}`;
+      loopsBtn.title = `${jobs.length || activeIds.length} loop${(jobs.length || activeIds.length) === 1 ? '' : 's'} active · ${loopElapsed.textContent} elapsed`;
+      loopFinishedUntil = 0;
+    } else {
+      if (loopWasActive) {
+        loopFinishedUntil = Date.now() + 6000;
+        const last = (loopState.jobs || []).filter(job => job.startedAt || loopState.runs.some(run => run.jobId === job.id)).at(-1);
+        loopFinishedLabel = /paused|no new source/i.test(last?.reason || '') ? 'Paused' : /finished|limit reached|expired/i.test(last?.reason || '') ? 'Done' : 'Stopped';
+      }
+      loopElapsed.textContent = Date.now() < loopFinishedUntil ? loopFinishedLabel : '';
+      loopsBtn.title = loopElapsed.textContent ? `Loops · ${loopElapsed.textContent}` : 'Loops';
+    }
+    loopWasActive = active;
+    loopsBtn.classList.toggle('is-pill', Boolean(loopElapsed.textContent));
+    loopsBtn.classList.toggle('is-running', active);
+    loopsBtn.classList.toggle('is-finished', !active && Boolean(loopElapsed.textContent));
+    if (!active && !loopElapsed.textContent) { clearInterval(loopTick); loopTick = null; }
+  }
+  const investigations = window.initInvestigations({ vscode, root: loopsModal.body, onState: state => {
+    loopState = state; tickLoopElapsed();
+    if ((loopWasActive || loopFinishedUntil > Date.now()) && !loopTick) loopTick = setInterval(tickLoopElapsed, 1000);
+  } });
+  function openLoops() { openModal(loopsModal); investigations.show(); }
+  loopsBtn.addEventListener('click', () => { if (toggleModal(loopsModal)) investigations.show(); });
+  investigations.watch();
   const cliSetupModal = createModal('cliSetupModal', 'Welcome to Clanker');
   const cliSetup = window.initCliSetup({ vscode, body: cliSetupModal.body, onClose: () => closeModal(cliSetupModal.el) });
   let cliSetupSeen = false;
@@ -379,15 +559,7 @@
   }
   if (autoVerify) vscode.postMessage({ type: 'verifyInfo' });
 
-  // ---------- Smart routing ----------
-  // Who picks the model: you (Manual), you with a quiet note of what the router would have picked (Shadow), or a free AI
-  // (Auto, while the picker is on Auto). The host owns the mode (Visor's picker shares it); this only shows and sets it.
-  const ROUTING_MODES = [
-    ['manual', 'Manual', '<path d="M5.5 8V3.7a1 1 0 0 1 2 0V7M7.5 6.5V2.7a1 1 0 0 1 2 0V7M9.5 6.7V3.7a1 1 0 0 1 2 0V9a4.5 4.5 0 0 1-4.5 4.5H7A3.5 3.5 0 0 1 4 11.4L2.7 9.2a1 1 0 0 1 1.6-1.1l1.2 1.2"/>'],
-    ['shadow', 'Shadow', '<path d="M1.8 8S4 3.8 8 3.8 14.2 8 14.2 8 12 12.2 8 12.2 1.8 8 1.8 8z"/><circle cx="8" cy="8" r="1.8"/>'],
-    ['auto', 'Auto', '<path d="M8 2v3M8 11v3M2 8h3M11 8h3M4 4l1.6 1.6M10.4 10.4 12 12M12 4l-1.6 1.6M5.6 10.4 4 12"/>'],
-  ];
-  const ROUTE_SVG = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="4" cy="4" r="1.6"/><circle cx="12" cy="12" r="1.6"/><path d="M5.6 4h3.4a2.5 2.5 0 0 1 0 5H7a2.5 2.5 0 0 0 0 5h3.4"/></svg>';
+  // Routing is one picker choice. The host retains its mode API for Settings and Visor.
   let routingMode = 'manual';
   let routingConnected = { cloudflare: false, groq: false };
 
@@ -502,7 +674,7 @@
   scheduleBtn.addEventListener('click', () => { scheduleChoice = scheduleTimer.advance() !== null; refreshScheduleDefault(); promptInput.focus(); });
   setScheduleArmed(false);
 
-  function schedulePrompt(text) {
+  function schedulePrompt(text, queuedEdit = null) {
     const model = scheduleModel();
     pendingScheduleLabel = AGENT_LABELS[model];
     pendingScheduleWhen = scheduleTimer.describe();
@@ -514,7 +686,9 @@
     scheduleTimer.setPreferred(scheduleTimer.mode);
     vscode.postMessage({ type: 'scheduleMode', mode: scheduleTimer.mode });
     // resumeHere: it fires into this chat, with its context, not a fresh headless one.
-    vscode.postMessage({ type: 'scheduleTask', task: { model, modelId, prompt: text, ...trigger, resumeHere: true }, attachments: attachments.map((attachment) => attachment.path) });
+    const task = { model, modelId, prompt: text, ...trigger, resumeHere: true };
+    if (queuedEdit) queueAction('scheduleQueuedTurn', { chatId: queuedEdit.chatId, id: queuedEdit.turn.id, task, turn: { ...queuedEdit.turn, text, modelId: pendingModelId || activeModelId, attachments: attachments.map(file => file.path) } });
+    else vscode.postMessage({ type: 'scheduleTask', task, attachments: attachments.map((attachment) => attachment.path) });
   }
 
   // "Scheduled" confirmation: a bud of the composer pill (Dynamic Island), readable for a while,
@@ -560,15 +734,19 @@
 
   function formatSize(bytes) { return bytes < 1024 * 1024 ? `${Math.max(1, Math.round(bytes / 1024))} KB` : `${(bytes / 1024 / 1024).toFixed(1)} MB`; }
   // P17-J/K: one shared lightbox for composer chips and transcript images. The X, a click outside the image, or Esc closes it.
-  function openLightbox(src, caption = '') {
+  function openLightbox(src, caption = '', pdf = false) {
+    const previousFocus = document.activeElement;
     const box = document.createElement('div');
     box.className = 'image-lightbox';
     box.setAttribute('role', 'dialog');
     box.setAttribute('aria-modal', 'true');
     const frame = document.createElement('div');
     frame.className = 'image-lightbox-frame';
-    const image = document.createElement('img');
-    image.src = src; image.alt = caption;
+    const viewer = pdf ? window.attachmentPdf.viewer(src, caption) : null;
+    const image = viewer?.element || document.createElement('img');
+    if (!pdf) { image.src = src; image.alt = caption; if (/\.svg(?:\s|$)/i.test(caption)) image.classList.add('attachment-svg-preview'); }
+    else box.classList.add('is-pdf');
+    box.setAttribute('aria-label', caption || 'Attachment preview');
     const closeBtn = document.createElement('button');
     closeBtn.type = 'button';
     closeBtn.className = 'image-lightbox-close';
@@ -578,13 +756,23 @@
     const label = document.createElement('div');
     label.className = 'image-lightbox-caption'; label.textContent = caption;
     box.append(frame, label);
-    const close = () => { box.classList.remove('is-open'); document.removeEventListener('keydown', onKey, true); setTimeout(() => box.remove(), 220); };
+    let closed = false;
+    const close = () => { if (closed) return; closed = true; viewer?.dispose(); box.classList.remove('is-open'); document.removeEventListener('keydown', onKey, true); previousFocus?.focus({ preventScroll: true }); setTimeout(() => box.remove(), 220); };
     // Capture phase: Esc closes the preview before anything else sees it.
-    const onKey = (event) => { if (event.key === 'Escape') { event.preventDefault(); close(); } };
-    box.addEventListener('click', (event) => { if (event.target !== image) close(); });
+    const onKey = (event) => {
+      if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); close(); }
+      if (event.key === 'Tab') {
+        const buttons = [...box.querySelectorAll('button:not(:disabled)')];
+        const first = buttons[0], last = buttons[buttons.length - 1];
+        if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); }
+        else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
+      }
+    };
+    closeBtn.addEventListener('click', close);
+    box.addEventListener('click', (event) => { if (event.target === box || event.target === label) close(); });
     document.addEventListener('keydown', onKey, true);
     document.body.appendChild(box);
-    requestAnimationFrame(() => { box.classList.add('is-open'); closeBtn.focus({ preventScroll: true }); });
+    requestAnimationFrame(() => { if (!closed) { box.classList.add('is-open'); closeBtn.focus({ preventScroll: true }); } });
   }
   function renderAttachments() {
     attachmentStrip.replaceChildren(...attachments.map((attachment) => attachmentChip(attachment, () => {
@@ -618,20 +806,36 @@
   // A composer chip (with remove) or, without onRemove, a sent bubble's read-only pill.
   function attachmentChip(attachment, onRemove) {
     const chip = document.createElement('div'); chip.className = 'attachment-chip';
-    const isImage = attachment.mime?.startsWith('image/') && attachment.uri;
+    const isPdf = Boolean(attachment.uri && (attachment.mime === 'application/pdf' || /\.pdf$/i.test(attachment.name)));
+    const isSvg = /\.svg$/i.test(attachment.name) || attachment.mime === 'image/svg+xml';
+    const isImage = attachment.uri && (attachment.mime?.startsWith('image/') || isSvg);
     const label = document.createElement('span');
     const name = document.createElement('span'); name.className = 'attachment-name'; name.textContent = shownName(attachment.name);
     const meta = document.createElement('span'); meta.className = 'attachment-meta';
     const withPx = (dims) => (dims ? `${dims} px` : '');
     meta.textContent = isImage ? withPx(attachment.dims) : formatSize(attachment.size);
     label.append(name, meta);
-    if (isImage) {
-      const image = document.createElement('img'); image.src = attachment.uri; image.alt = '';
-      if (!attachment.dims) image.addEventListener('load', () => { attachment.dims = `${image.naturalWidth}×${image.naturalHeight}`; meta.textContent = withPx(attachment.dims); }, { once: true });
+    if (isImage || isPdf) {
+      const image = document.createElement('img'); image.alt = '';
+      if (isSvg) image.classList.add('attachment-svg');
+      if (isPdf) {
+        image.classList.add('attachment-pdf'); image.hidden = true;
+        const placeholder = document.createElement('span'); placeholder.className = 'attachment-preview-placeholder'; placeholder.textContent = 'PDF'; chip.append(placeholder);
+        meta.textContent = 'Loading preview…';
+        void window.attachmentPdf.thumbnail(attachment.uri).then(result => {
+          image.src = result.uri; image.hidden = false; placeholder.remove();
+          meta.textContent = `${result.pages} ${result.pages === 1 ? 'page' : 'pages'} · ${formatSize(attachment.size)}`;
+        }).catch(() => { meta.textContent = `${formatSize(attachment.size)} · Preview unavailable`; });
+      } else image.src = attachment.uri;
+      if (!isPdf && !attachment.dims) image.addEventListener('load', () => { attachment.dims = `${image.naturalWidth}×${image.naturalHeight}`; meta.textContent = withPx(attachment.dims); }, { once: true });
       chip.appendChild(image);
       chip.classList.add('is-previewable');
       chip.title = `Preview ${shownName(attachment.name)}`;
-      chip.addEventListener('click', () => openLightbox(attachment.uri, `${shownName(attachment.name)}  ${withPx(attachment.dims)}`.trim()));
+      chip.tabIndex = 0;
+      chip.setAttribute('aria-label', chip.title);
+      const preview = () => openLightbox(attachment.uri, `${shownName(attachment.name)}  ${isPdf ? '' : withPx(attachment.dims)}`.trim(), isPdf);
+      chip.addEventListener('click', preview);
+      chip.addEventListener('keydown', event => { if (event.target === chip && (event.key === 'Enter' || event.key === ' ')) { event.preventDefault(); preview(); } });
     }
     chip.append(label);
     if (onRemove) {
@@ -663,6 +867,7 @@
     } catch { return file; }
   }
   function readAttachment(file) {
+    if (!file) return;
     const chatId = currentChatId;
     void capImage(file).then((image) => {
       const reader = new FileReader();
@@ -671,14 +876,14 @@
     });
   }
   attachBtn.addEventListener('click', () => vscode.postMessage({ type: 'pickAttachments', chatId: currentChatId }));
-  promptInput.addEventListener('paste', (event) => { for (const item of event.clipboardData?.items || []) { if (item.type.startsWith('image/')) { event.preventDefault(); readAttachment(item.getAsFile()); } } });
+  promptInput.addEventListener('paste', (event) => { const files = [...(event.clipboardData?.items || [])].filter(item => item.kind === 'file'); if (files.length) { event.preventDefault(); for (const item of files) readAttachment(item.getAsFile()); } });
   // The whole window is one drop zone. The IDE only hands a drag to a webview while
   // Shift is held (otherwise its own "Upload to Agent" overlay takes it), so the
-  // overlay says what happens on release and the attach tooltip teaches the Shift.
+  // overlay and attach tooltip both explain the Shift gesture.
   const dropOverlay = document.createElement('div');
   dropOverlay.className = 'drop-overlay';
   dropOverlay.setAttribute('aria-hidden', 'true');
-  dropOverlay.innerHTML = '<div class="drop-overlay-card"><svg viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M8 2.5v8M4.75 7.25 8 10.5l3.25-3.25M3 13.5h10" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg><span>Drop to reference in this chat</span></div>';
+  dropOverlay.innerHTML = '<div class="drop-overlay-card"><svg viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M8 2.5v8M4.75 7.25 8 10.5l3.25-3.25M3 13.5h10" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg><span>Drop to reference in this chat<small>Hold <kbd>Shift</kbd> while hovering</small></span></div>';
   document.body.appendChild(dropOverlay);
   let dragDepth = 0;
   const endDrag = () => { dragDepth = 0; document.body.classList.remove('attachment-dragging'); };
@@ -950,17 +1155,13 @@
     pendingModelId = null;
     activeModelId = option.id;
     activeAgent = option.agent;
+    if (notifyExtension) {
+      routingMode = option.id === 'auto' ? 'auto' : 'manual';
+      vscode.postMessage({ type: 'setRoutingMode', mode: routingMode });
+    }
     modelPickerBtn.dataset.agent = option.agent;
     modelPickerBtn.dataset.brand = brandOf(option);
     modelPickerBtn.querySelector('.model-picker-icon').innerHTML = iconFor(brandOf(option));
-    // "Claude Opus 5.5 Medium": the family word hides first when the composer is narrow (the icon already says it).
-    const [family, ...rest] = option.label.split(' ');
-    const label = modelPickerBtn.querySelector('.model-picker-label');
-    label.replaceChildren();
-    if (rest.length) { const span = document.createElement('span'); span.className = 'model-picker-family'; span.textContent = `${family} `; label.append(span, rest.join(' ')); }
-    else label.textContent = option.label;
-    modelPickerBtn.title = `Model: ${option.label}`;
-    for (const item of modelMenu.querySelectorAll('.model-option')) item.setAttribute('aria-selected', String(item.dataset.modelId === option.id));
     renderRouting();
     if (scheduleChoice === false) scheduleChoice = null; // a "send anyway" was for the previous model
     refreshScheduleDefault(); // on if this model is out of usage; the placeholder names it
@@ -972,14 +1173,6 @@
       modelPickerBtn.dispatchEvent(new Event('clanker:model-change'));
       vscode.postMessage({ type: 'setModel', modelId: option.id });
     }
-  }
-
-  // An agent chosen from outside the picker (voice routing): keep the current
-  // model if it already runs on that agent, else that agent's first model.
-  function selectAgent(agentId) {
-    if (agentId === activeAgent) return;
-    const option = MODEL_OPTIONS.find((candidate) => candidate.agent === agentId);
-    if (option) selectModel(option.id, { notifyExtension: false });
   }
 
   function renderModelMenu() {
@@ -1038,45 +1231,37 @@
     verify.setAttribute('role', 'switch');
     verify.innerHTML = `<span class="model-verify-icon">${VERIFY_SVG}</span><span class="model-option-text"><span class="model-option-label">Auto-Verify</span><span class="model-option-hint">Check the work after every change, for every model</span></span><span class="model-verify-switch" aria-hidden="true"></span>`;
     verify.addEventListener('click', () => setAutoVerify(!autoVerify));
-    const routing = document.createElement('div');
-    routing.className = 'model-routing';
-    routing.innerHTML = `<div class="model-routing-head"><span class="model-verify-icon">${ROUTE_SVG}</span><span class="model-option-text"><span class="model-option-label">Smart routing</span><span class="model-option-hint"></span></span></div><div class="model-routing-modes pill-track" role="radiogroup" aria-label="Smart routing"></div><button type="button" class="model-routing-setup">Connect Cloudflare or Groq</button>`;
-    const modes = routing.querySelector('.model-routing-modes');
-    for (const [id, text, path] of ROUTING_MODES) {
-      const button = document.createElement('button');
-      button.type = 'button';
-      button.dataset.mode = id;
-      button.setAttribute('role', 'radio');
-      button.innerHTML = `<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${path}</svg><span>${text}</span>`;
-      button.addEventListener('click', () => { setRoutingMode(id); vscode.postMessage({ type: 'setRoutingMode', mode: id }); });
-      modes.appendChild(button);
-    }
-    routing.querySelector('.model-routing-setup').addEventListener('click', () => {
-      closeModelMenu();
-      openModal(settingsModal);
-      vscode.postMessage({ type: 'requestFleet' });
-      chatSettings.showTab('routing');
-    });
-    footer.append(routing, verify);
+    footer.appendChild(verify);
     modelMenu.appendChild(footer);
     renderRouting();
     renderVerify();
   }
 
   function setRoutingMode(mode, connected = routingConnected) {
-    routingMode = mode;
+    routingMode = mode === 'auto' ? 'auto' : 'manual';
     routingConnected = connected;
     renderRouting();
   }
   function renderRouting() {
-    const hint = routingMode === 'manual' ? 'You pick the model. Nothing is sent to a router.'
-      : routingMode === 'shadow' ? 'You pick. A redacted copy of your message goes to the router, which notes what it would have chosen.'
-      : activeModelId === 'auto' ? 'A free AI reads each message and picks the best model for it.'
-      : 'Choose Auto above and a free AI picks the model for each message.';
-    for (const row of modelMenu.querySelectorAll('.model-routing')) {
-      row.querySelector('.model-option-hint').textContent = hint;
-      for (const button of row.querySelectorAll('.model-routing-modes > button')) button.setAttribute('aria-checked', String(button.dataset.mode === routingMode));
-      row.querySelector('.model-routing-setup').hidden = routingMode === 'manual' || routingConnected.cloudflare || routingConnected.groq;
+    for (const row of modelMenu.querySelectorAll('.model-option')) {
+      row.setAttribute('aria-selected', String(row.dataset.modelId === activeModelId));
+      if (row.dataset.modelId === 'auto') {
+        row.querySelector('.model-option-hint').textContent = 'Picks a model for each task';
+        row.title = routingConnected.cloudflare || routingConnected.groq
+          ? 'Router chooses a favorite for each message; local fallback if unavailable'
+          : 'Chooses a favorite locally; connect an AI router in Settings';
+      }
+    }
+    const option = optionFor(activeModelId);
+    if (option) {
+        // The family word hides first when the composer is narrow; the icon already identifies it.
+        const [family, ...rest] = option.label.split(' ');
+        const label = modelPickerBtn.querySelector('.model-picker-label');
+        label.replaceChildren();
+        if (rest.length) { const span = document.createElement('span'); span.className = 'model-picker-family'; span.textContent = `${family} `; label.append(span, rest.join(' ')); }
+        else label.textContent = option.label;
+        modelPickerBtn.querySelector('.model-picker-icon').innerHTML = iconFor(brandOf(option));
+        modelPickerBtn.title = `Model: ${option.label}`;
     }
   }
 
@@ -1088,6 +1273,9 @@
     // The seam sits 1px into the composer, over its top hairline; the root hangs below it, clipped.
     modelMenuStage.style.bottom = `${window.innerHeight - composerTop - 1 - parseFloat(css.getPropertyValue('--menu-root'))}px`;
     modelMenuStage.style.right = `${Math.max(10, window.innerWidth - rect.right) - fillet}px`;
+    // A picker that sits left of centre in a narrow panel would push the menu off the left edge; keep 10px.
+    const overflow = 10 - (modelMenuStage.getBoundingClientRect().left + fillet);
+    if (overflow > 0) modelMenuStage.style.right = `${parseFloat(modelMenuStage.style.right) - overflow}px`;
     const menuLeft = modelMenuStage.getBoundingClientRect().left + fillet;
     modelMenuStage.style.setProperty('--bud-x', `${rect.left + rect.width / 2 - menuLeft}px`);
   }
@@ -1148,7 +1336,17 @@
   // layout never flip-flops per keystroke and the lift animation never replays.
   const composerEl = document.querySelector('.composer');
   const composerActions = composerEl.querySelector('.composer-actions');
+  let savedDraft = null;
+  function saveDraft() {
+    if (!currentChatId) return;
+    const text = editingQueue ? composerDraft?.text || '' : promptInput.value;
+    const signature = JSON.stringify([currentChatId, text]);
+    if (signature === savedDraft) return;
+    savedDraft = signature;
+    vscode.postMessage({ type: 'saveDraft', chatId: currentChatId, text });
+  }
   function autoGrow() {
+    saveDraft();
     const value = promptInput.value;
     // Empty is always the one-line pill. Measuring scrollHeight here would size
     // the box to the placeholder, which wraps whenever the pill is a little too
@@ -1213,8 +1411,11 @@
     if (!taskId) queueAction('editQueuedTurn', { turn, editing: true });
     renderAttachments(); autoGrow(); renderComposerState(); renderTurnQueue(); promptInput.focus();
   }
-  function finishQueueEdit() {
-    saveQueueEdit(true);
+  function finishQueueEdit({ schedule = false } = {}) {
+    if (schedule && editingQueue && !editingQueue.taskId && promptInput.value.trim()) {
+      schedulePrompt(promptInput.value.trim(), editingQueue);
+      editingQueue = null;
+    } else saveQueueEdit(true);
     const draft = composerDraft;
     composerDraft = null;
     promptInput.value = draft?.text || '';
@@ -1237,9 +1438,10 @@
     if (editingQueue) sendBtn.title = 'Save queue edits (Enter). Ctrl+Enter sends now.';
     // Stop and send together: send steps in left of the clock (style.css), so the clock under your pointer never moves.
     composerActions.classList.toggle('is-queueing', !stopBtn.hidden && !sendBtn.hidden);
+    polishBtn.disabled = micWrap.classList.contains('is-polishing') || !promptInput.value.trim();
     autoGrow(); // Stop/Queue buttons change the text column's width, so re-measure
   }
-  function setBusy(next) { busy = next; renderComposerState(); syncPending(); }
+  function setBusy(next) { busy = next; if (!next) railWorking = null; renderComposerState(); syncPending(); renderProjectList(); }
 
   // Pending indicator: the moment a turn starts, and again whenever the agent
   // goes quiet mid-turn (after a tool card), a glass "Thinking" pill sits at
@@ -1295,7 +1497,16 @@
   function syncPending() {
     const last = [...turnHost().children].reverse().find((el) => el !== pendingEl);
     const show = busy && !isCompacting && Boolean(last) && last !== currentAssistantBubble && !last.matches('.approval-card, .question-card');
-    if (show && turnHost().lastElementChild !== pendingEl) { turnHost().appendChild(pendingEl); scrollTranscriptToEnd(); }
+    if (show && turnHost().lastElementChild !== pendingEl) {
+      pendingEl.classList.toggle('is-entering', !pendingEl.isConnected);
+      turnHost().appendChild(pendingEl);
+      // Moving the pill restarts every CSS animation. Pinning the loops to the document timeline's zero keeps orb, glow
+      // and text sweep on one clock, so a move or a busy main thread never knocks them out of step or back to frame 0.
+      for (const anim of pendingEl.getAnimations({ subtree: true })) {
+        if (anim.animationName?.startsWith('pending-') && anim.animationName !== 'pending-in') anim.startTime = 0;
+      }
+      scrollTranscriptToEnd();
+    }
     else if (!show && pendingEl.isConnected) pendingEl.remove();
   }
   new MutationObserver(syncPending).observe(transcriptEl, { childList: true, subtree: true });
@@ -1569,8 +1780,9 @@
   }
 
   function sendPrompt({ steer = false } = {}) {
+    if (polishing) return; // the draft is being rewritten; sending now would send the old text
     let text = promptInput.value.trim();
-    if (editingQueue && !steer) { finishQueueEdit(); return; }
+    if (editingQueue && !steer) { finishQueueEdit({ schedule: scheduleArmed }); return; }
     if (!text) return;
     // /undo is Clanker's own: the host asks, then puts the last turn's file changes back.
     if (/^\/undo\s*$/i.test(text)) {
@@ -1651,8 +1863,44 @@
   });
 
   micBtn.addEventListener('click', () => {
+    setComposerAction('dictate');
     vscode.postMessage({ type: 'micToggle' });
   });
+
+  // Polish shares the mic's expanding action pill: the typed draft goes through dictation's cleanup and comes back
+  // structured. It replaces the text through the editing stack, so Ctrl+Z brings the original back.
+  let polishRequest = 0;
+  let polishing = false;
+  function setPolishing(on) {
+    polishing = on;
+    promptInput.readOnly = on;
+    polishBtn.disabled = on || !promptInput.value.trim();
+    micWrap.classList.toggle('is-polishing', on);
+    composerEl.classList.toggle('is-polishing', on);
+    voiceOverlay.hidden = false;
+    if (!on && (micBtn.classList.contains('recording') || micBtn.classList.contains('is-busy'))) return; // a recording took over the composer meanwhile
+    composerEl.classList.toggle('is-voice', on);
+    composerEl.classList.toggle('is-voice-processing', on);
+    if (!on) setTimeout(() => { if (!composerEl.classList.contains('is-voice')) voiceOverlay.hidden = true; }, 280);
+  }
+  polishBtn.addEventListener('click', () => {
+    const text = promptInput.value;
+    if (polishing || !text.trim()) return;
+    setComposerAction('polish');
+    setPolishing(true);
+    vscode.postMessage({ type: 'polishPrompt', text, requestId: ++polishRequest });
+  });
+  function applyPolished(text) {
+    resetVoiceCorrections(); lastVoiceDraft = null;
+    const from = promptInput.offsetHeight;
+    promptInput.focus();
+    promptInput.select();
+    if (!document.execCommand('insertText', false, text)) promptInput.value = text; // execCommand keeps the native undo stack
+    autoGrow(); renderComposerState();
+    const to = promptInput.offsetHeight;
+    if (!REDUCED_MOTION.matches) promptInput.animate([{ height: `${from}px`, opacity: 0 }, { height: `${to}px`, opacity: 1 }], { duration: 320, easing: 'cubic-bezier(0.16, 1, 0.3, 1)' });
+    promptInput.setSelectionRange(promptInput.value.length, promptInput.value.length);
+  }
   // Esc drops the recording without transcribing it.
   document.addEventListener('keydown', (event) => {
     if (event.key !== 'Escape' || !composerEl.classList.contains('is-voice') || composerEl.classList.contains('is-voice-processing')) return;
@@ -1664,7 +1912,7 @@
   // One symmetric voice meter: thin bars swell from the centre with the speaker's level and a soft ripple travels
   // outward; in silence they rest as an even row of dots. The edge fade is a CSS mask. The mic button's ring follows
   // the same level (--mic-level). Stop squeezes the bars into a shimmer beam while Whisper runs; the draft then
-  // fades in where the beam was. The recording also ends by itself after a pause in speech (VOICE_SILENCE_MS).
+  // fades in where the beam was. Silence only stops recording when explicitly enabled (VOICE_SILENCE_MS).
   const WAVE_BARS = 31;
   const voiceOverlay = document.createElement('div');
   voiceOverlay.id = 'composerVoiceOverlay'; voiceOverlay.className = 'voice-overlay'; voiceOverlay.hidden = true;
@@ -1686,6 +1934,87 @@
   let voiceStopSent = false; // the auto-stop fires once per recording
   let voiceHold = false; // started by the hold-to-talk hotkey: no auto-stop, the release ends it
   let lastVoiceDraft = null; // { original, raw }: what the transcript said, to learn from the user's fixes
+  let voiceEditTimer;
+  let voiceEditRequest = 0;
+  let voiceEditSnapshot = null;
+  const dismissedVoiceTerms = new Set();
+  const voiceDictionaryTimers = new Map();
+  const VOICE_DICTIONARY_CANCEL_MS = 10000;
+  let voiceDictionaryVisibilityAt = performance.now();
+  document.addEventListener('visibilitychange', () => { voiceDictionaryVisibilityAt = performance.now(); });
+  const voiceDictionaryBud = document.createElement('div');
+  voiceDictionaryBud.className = 'voice-dictionary-bud island-bud';
+  voiceDictionaryBud.hidden = true;
+  voiceDictionaryBud.setAttribute('aria-live', 'polite');
+  composerEl.before(voiceDictionaryBud);
+  function resetVoiceCorrections() {
+    clearTimeout(voiceEditTimer);
+    for (const timer of voiceDictionaryTimers.values()) clearInterval(timer);
+    voiceDictionaryTimers.clear();
+    voiceEditRequest++;
+    voiceEditSnapshot = null;
+    voiceDictionaryBud.replaceChildren();
+    voiceDictionaryBud.hidden = true;
+  }
+  function checkVoiceCorrections(edited = promptInput.value) {
+    clearTimeout(voiceEditTimer);
+    if (!lastVoiceDraft || !edited.trim()) return;
+    // Text typed before dictation is outside the learning region. Editing that prefix abandons learning.
+    if (!edited.startsWith(lastVoiceDraft.prefix)) return;
+    resetVoiceCorrections();
+    voiceEditSnapshot = { original: lastVoiceDraft.original, edited: edited.slice(lastVoiceDraft.prefix.length) };
+    vscode.postMessage({ type: 'voiceDraftEdited', ...voiceEditSnapshot, requestId: ++voiceEditRequest });
+  }
+  function showVoiceCorrections(terms) {
+    for (const timer of voiceDictionaryTimers.values()) clearInterval(timer);
+    voiceDictionaryTimers.clear();
+    voiceDictionaryBud.replaceChildren();
+    for (const term of terms.filter(term => !dismissedVoiceTerms.has(term))) {
+      const row = document.createElement('div'); row.className = 'voice-dictionary-row';
+      const label = document.createElement('span'); label.textContent = `Adding “${term}” to dictionary`;
+      label.className = 'voice-dictionary-label';
+      const countdown = document.createElement('span'); countdown.className = 'voice-dictionary-countdown'; countdown.textContent = '10s';
+      countdown.setAttribute('aria-live', 'off');
+      const retry = document.createElement('button'); retry.type = 'button'; retry.className = 'voice-dictionary-retry'; retry.textContent = 'Retry'; retry.hidden = true;
+      const dismiss = document.createElement('button'); dismiss.type = 'button'; dismiss.className = 'voice-dictionary-cancel';
+      dismiss.setAttribute('aria-label', `Cancel adding ${term} to voice dictionary`);
+      dismiss.title = 'Cancel dictionary addition';
+      dismiss.innerHTML = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 4h10M6 4V2h4v2M4 4l.7 9h6.6l.7-9M6.5 6.5v4M9.5 6.5v4"/></svg>';
+      const snapshot = { ...voiceEditSnapshot, requestId: voiceEditRequest };
+      function startCountdown() {
+        let remaining = VOICE_DICTIONARY_CANCEL_MS;
+        let lastTick = performance.now();
+        retry.hidden = true; countdown.textContent = '10s';
+        label.textContent = `Adding “${term}” to dictionary`;
+        row.style.setProperty('--dictionary-remaining', '1');
+        row.dataset.state = 'pending';
+        const timer = setInterval(() => {
+          const now = performance.now();
+          // Give the user ten seconds on screen; hidden windows do not consume the cancel window.
+          if (!document.hidden) remaining -= now - Math.max(lastTick, voiceDictionaryVisibilityAt);
+          lastTick = now;
+          countdown.textContent = `${Math.max(0, Math.ceil(remaining / 1000))}s`;
+          row.style.setProperty('--dictionary-remaining', String(Math.max(0, remaining / VOICE_DICTIONARY_CANCEL_MS)));
+          if (remaining > 0) return;
+          clearInterval(timer); voiceDictionaryTimers.delete(term);
+          row.dataset.state = 'saving'; label.textContent = `Saving “${term}” to dictionary…`;
+          countdown.textContent = ''; dismiss.disabled = true;
+          vscode.postMessage({ type: 'voiceDictionarySave', ...snapshot, term });
+        }, 100);
+        voiceDictionaryTimers.set(term, timer);
+      }
+      retry.addEventListener('click', startCountdown);
+      dismiss.addEventListener('click', () => {
+        clearInterval(voiceDictionaryTimers.get(term)); voiceDictionaryTimers.delete(term);
+        dismissedVoiceTerms.add(term); row.remove(); voiceDictionaryBud.hidden = !voiceDictionaryBud.childElementCount;
+        showToast(`Dictionary addition cancelled: ${term}`);
+      });
+      row.dataset.term = term;
+      row.append(label, countdown, retry, dismiss); voiceDictionaryBud.append(row);
+      startCountdown();
+    }
+    voiceDictionaryBud.hidden = !voiceDictionaryBud.childElementCount;
+  }
   const REDUCED_MOTION = matchMedia('(prefers-reduced-motion: reduce)');
   function waveStep(now) {
     const target = now - micLevelAt < 300 ? micLevel : 0;
@@ -1738,15 +2067,18 @@
     promptInput.focus();
     promptInput.setSelectionRange(promptInput.value.length, promptInput.value.length);
   }
-  // Called on send/schedule: whatever the user changed from the transcript teaches the dictionary.
+  // Sending ends edit monitoring; detected corrections retain their visible cancel window.
   function flushVoiceDraft(sent) {
     if (!lastVoiceDraft) return;
-    if (sent && sent !== lastVoiceDraft.original) vscode.postMessage({ type: 'voiceDraftSubmitted', original: lastVoiceDraft.original, edited: sent });
+    if (sent) checkVoiceCorrections(sent);
+    else resetVoiceCorrections();
     lastVoiceDraft = null;
   }
-  promptInput.addEventListener('input', () => { if (!promptInput.value.trim()) lastVoiceDraft = null; }); // cleared = abandoned
-  // Navigating away counts too: hiding the window keeps what was fixed so far (switching chats flushes in chatLoaded).
-  document.addEventListener('visibilitychange', () => { if (document.hidden) flushVoiceDraft(promptInput.value.trim()); });
+  promptInput.addEventListener('input', () => {
+    resetVoiceCorrections();
+    if (!promptInput.value.trim()) lastVoiceDraft = null;
+    if (lastVoiceDraft) voiceEditTimer = setTimeout(() => checkVoiceCorrections(), 700);
+  });
 
   // The pill is the way back to the prompts: it jumps to the chat holding the next one to go out; with scheduled prompts in
   // several chats, hovering lists them all (the same marks and names as Recent in the sidebar).
@@ -1849,7 +2181,7 @@
   }
 
   // P17-P: file references become badges: type icon, basename, full path on hover, click opens at the line.
-  const FILE_REF = /^(?:file:\/\/\/?)?([^\s<>"|?*]+\.([a-z][a-z0-9]{0,7}))(?:#L?(\d+)(?:-L?\d+)?|:(\d+)(?::\d+)?)?$/i;
+  const FILE_REF = /^(?:file:\/\/\/?)?([^<>"|?*\r\n]+\.([a-z][a-z0-9]{0,7}))(?:#L?(\d+)(?:-L?\d+)?|:(\d+)(?::\d+)?)?$/i;
   const fileSvg = (d) => `<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${d}</svg>`;
   const FILE_ICONS = {
     doc: fileSvg('<path d="M9.5 1.75H4.25a1 1 0 0 0-1 1v10.5a1 1 0 0 0 1 1h7.5a1 1 0 0 0 1-1V4.75z"/><path d="M9.5 1.75v3h3M5.5 8.5h5M5.5 11h3.5"/>'),
@@ -1858,15 +2190,15 @@
   };
   // Which FILE_ICONS glyph an extension gets; anything unlisted is a plain doc.
   const FILE_KIND = Object.fromEntries([
-    ...['js', 'mjs', 'cjs', 'ts', 'tsx', 'jsx', 'astro', 'css', 'scss', 'html', 'json', 'py', 'ps1', 'sh', 'bash', 'yml', 'yaml', 'toml'].map((ext) => [ext, 'code']),
+    ...['js', 'mjs', 'cjs', 'ts', 'tsx', 'jsx', 'astro', 'css', 'scss', 'html', 'htm', 'json', 'py', 'ps1', 'sh', 'bash', 'yml', 'yaml', 'toml'].map((ext) => [ext, 'code']),
     ...['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'avif'].map((ext) => [ext, 'image']),
   ]);
   const KNOWN_FILE_EXTENSIONS = new Set([
-    'js', 'mjs', 'cjs', 'ts', 'tsx', 'jsx', 'astro', 'css', 'scss', 'html', 
+    'js', 'mjs', 'cjs', 'ts', 'tsx', 'jsx', 'astro', 'css', 'scss', 'html', 'htm',
     'json', 'py', 'ps1', 'sh', 'bash', 'yml', 'yaml', 'md', 'txt', 'toml', 
     'png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'avif'
   ]);
-  function fileBadge(ref) {
+  function fileBadge(ref, label) {
     const match = FILE_REF.exec(ref);
     if (!match || /^(https?|mailto):/i.test(ref)) return null;
     let file = match[1];
@@ -1876,7 +2208,8 @@
     const line = match[3] || match[4] || '';
     const base = file.split(/[\\/]/).pop();
     const shown = file.replace(/^\/?[a-z]:\//i, '');
-    return `<button type="button" class="file-badge" data-ext="${escapeHtml(ext)}" data-path="${escapeHtml(file)}" data-line="${line}" title="${escapeHtml(shown + (line ? `:${line}` : ''))}">${FILE_ICONS[FILE_KIND[ext] || 'doc']}<span>${escapeHtml(base)}${line ? `<small>:${line}</small>` : ''}</span></button>`;
+    const browser = /^html?$/.test(ext) && !line;
+    return `<button type="button" class="file-badge" data-ext="${escapeHtml(ext)}" data-path="${escapeHtml(file)}" data-line="${line}" title="${escapeHtml((browser ? 'Open in browser: ' : '') + shown + (line ? `:${line}` : ''))}">${FILE_ICONS[FILE_KIND[ext] || 'doc']}<span>${escapeHtml(label || base)}${line ? `<small>:${line}</small>` : ''}</span></button>`;
   }
   transcriptEl.addEventListener('click', (event) => {
     const badge = event.target.closest?.('.file-badge');
@@ -1888,10 +2221,10 @@
     const hold = (html) => `\u0000${slots.push(html) - 1}\u0000`;
     let s = String(text)
       .replace(/(`+)([\s\S]*?[^`])\1(?!`)/g, (_, _ticks, code) => {
-        const badge = /[\\/]/.test(code) && !/\s/.test(code.trim()) ? fileBadge(code.trim()) : null;
+        const badge = /[\\/]/.test(code) ? fileBadge(code.trim()) : null;
         return hold(badge || `<code>${escapeHtml(code.trim())}</code>`);
       })
-      .replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, (whole, _label, target) => { const badge = fileBadge(target); return badge ? hold(badge) : whole; })
+      .replace(/\[([^\]\r\n]+)\]\((?:<([^<>\r\n]+)>|([^\r\n)]+))\)/g, (whole, label, wrapped, target) => { const badge = fileBadge((wrapped || target).trim(), label); return badge ? hold(badge) : whole; })
       .replace(/\$\$([^$]+?)\$\$/g, (_, tex) => hold(renderMath(tex, true)))
       .replace(/\\\((.+?)\\\)/g, (_, tex) => hold(renderMath(tex, false)))
       .replace(/(^|[\s([{])\$(?!\s|\$|\d)([^$\n`=;|+]{1,120}?)(?<!\s|\$)\$(?=[\s)\]},.:;!?]|$)/g, (whole, pre, tex) => {
@@ -2421,7 +2754,7 @@
       <h2 class="empty-title">What are we working on?</h2>
       <p class="empty-lead">Claude, Codex and Gemini share this chat. Pick a model below, or leave it on Auto.</p>
       <ul class="empty-tips"><li><button type="button" data-mascot-action="mention"><kbd>@</kbd>mention a file</button></li><li><button type="button" data-mascot-action="action"><kbd>/</kbd>run an action</button></li><li><button type="button" data-mascot-action="image"><kbd>+</kbd>attach an image</button></li></ul>`;
-    emptyMascot = window.createClankerMascot({ root: el, input: promptInput, modelPicker: modelPickerBtn, attach: attachBtn, mic: micBtn, transcript: transcriptEl });
+    emptyMascot = window.createClankerMascot({ root: el, input: promptInput, modelPicker: modelPickerBtn, attach: attachBtn, mic: micBtn, schedule: scheduleBtn, transcript: transcriptEl });
     return el;
   }
   transcriptEl.querySelector('.empty-state')?.replaceWith(emptyState());
@@ -2717,9 +3050,13 @@
   // "You have exhausted your daily quota" / RESOURCE_EXHAUSTED.
   let limitHitThisTurn = false; // an upstream_error card already said so
   let restoringHistory = false; // old limit replies in a restored transcript get no button; only the last may
+  let continueSentAfterLimit = false;
+  function hasQueuedContinue(agent) {
+    return continueSentAfterLimit || turnQueue.some(turn => /^\s*continue\s*[.!]?\s*$/i.test(turn.text)) || schedulerTasks.some(task => task.chatId === currentChatId && task.model === agent && ['pending', 'dispatched', 'interrupted'].includes(task.status) && /^\s*continue\s*[.!]?\s*$/i.test(task.prompt));
+  }
   function offerContinueAtReset(host) {
     const agent = turnRoutedAgent || lastReplyAgent(); // routing can be missed (reload mid-turn): the reply's own label
-    if (!host || !AGENT_IDS.includes(agent) || host.querySelector('.continue-at-reset')) return;
+    if (!host || !AGENT_IDS.includes(agent) || hasQueuedContinue(agent) || host.querySelector('.continue-at-reset')) return;
     const btn = document.createElement('button');
     btn.type = 'button';
     btn.className = 'continue-at-reset';
@@ -2731,7 +3068,7 @@
       vscode.postMessage({ type: 'scheduleTask', task: { model: agent, prompt: 'continue', dispatchTrigger: 'quota-reset', resumeHere: true }, attachments: [] });
       btn.disabled = true;
       btn.querySelector('span').textContent = 'Scheduled: "continue" sends when the limit resets';
-    }, { once: true });
+    });
     host.append(btn);
   }
 
@@ -2740,6 +3077,7 @@
     if (last && !last.querySelector('.msg-actions')) last.append(messageActions(at, () => last.dataset.raw.trim(), []));
     const limitHit = limitHitThisTurn || isLimitNotice(last?.dataset.raw);
     const replied = turnRoutedAgent || lastReplyAgent();
+    if (!restoringHistory && limitHit) continueSentAfterLimit = false;
     // Only when there is something to continue (the turn was cut off by the limit) and a reason to
     // wait: the usage display doesn't show headroom for that provider.
     if (!restoringHistory && limitHit && !hasHeadroom(replied)) offerContinueAtReset(last || turnHost());
@@ -2824,6 +3162,21 @@
   const TASK_TOOLS = /^(manage_?task)$/i;
   const AGENT_TOOLS = /^(agent|task|invoke_?subagent|manage_?subagents|define_?subagent)$/i;
 
+  // Classify at render time so saved chats and the agents viewer get the same cards.
+  // Claude has Skill/Read; Codex reads through its shell; Antigravity uses view_file.
+  function loadedSkillNames(name, command = '') {
+    if (/^(skill|load[ _-]?skill)$/i.test(name)) return command ? [command] : [];
+    let reads = [];
+    if (/^(read|view_file|read_file|view_content)$/i.test(name)) reads = [command];
+    else if (SHELL_TOOLS.test(name)) {
+      const shell = command.replace(/^.*?\s-(?:Command|c|lc)\s+(['"])([\s\S]*)\1\s*$/i, '$2');
+      reads = [...shell.matchAll(/(?:^|[;&|\n])\s*(?:Get-Content|cat|head|tail|more|type|sed\s+-n)\s+([^;&|\n]*)/gi)].map(match => match[1]);
+    }
+    const skills = reads.flatMap(read => [...read.replace(/\\+/g, '/').matchAll(/(?:^|\/)([^/"'\r\n*?<>|;]+)\/SKILL\.md(?=$|[\s"'`,)])/gi)].map(match => match[1].trim()));
+    if (!skills.length && reads.some(read => /^SKILL\.md$/i.test(read.trim()))) skills.push('SKILL.md');
+    return [...new Set(skills)];
+  }
+
   function toolKind(name) {
     const raw = String(name || '').trim();
     if (TASK_TOOLS.test(raw)) return 'task';
@@ -2846,7 +3199,7 @@
     ['question', /^(ask_?question|ask_?user_?question|ask_?followup_?question)$/i],
     ['todo', /^(todowrite|task(create|update|list|get)|update_plan)$/i],
     ['plan', /^(enter|exit)planmode$/i],
-    ['skill', /^skill$/i],
+    ['skill', /^(skill|load[ _-]?skill)$/i],
     ['schedule', /^(schedule|cron(create|delete|list)|schedulewakeup)$/i],
     ['monitor', /^(monitor|bashoutput|taskoutput)$/i],
     ['stop', /^(taskstop|killshell|kill_bash)$/i],
@@ -2859,6 +3212,7 @@
     const raw = String(name || '').trim();
     const clean = raw.toLowerCase().replace(/[-_]/g, '');
 
+    if (kind === 'skill') return 'Load Skill';
     if (kind === 'shell') return 'Run';
     if (kind === 'edit') return 'Edit';
     if (kind === 'read' || /^(viewfile|readfile|view|read|listdir|viewcontent)$/i.test(clean)) return 'View';
@@ -2878,7 +3232,6 @@
     if (/^(findbyname|findfile|glob)$/i.test(clean)) return 'Glob';
     if (/^(todowrite|taskcreate|taskupdate|tasklist|taskget|updateplan)$/i.test(clean)) return 'Todo';
     if (/^(enterplanmode|exitplanmode)$/i.test(clean)) return 'Plan';
-    if (/^(skill)$/i.test(clean)) return 'Skill';
     if (/^(monitor|bashoutput|taskoutput)$/i.test(clean)) return 'Monitor';
     if (/^(taskstop|killshell|killbash)$/i.test(clean)) return 'Stop';
     if (/^(enterworktree|exitworktree)$/i.test(clean)) return 'Worktree';
@@ -2918,7 +3271,8 @@
   // `host`: where the card goes (the agents viewer passes its own pane); default, the running turn.
   function appendToolCard({ name, command, output, toolId, done, error, diff, cancelled, host = null }) {
     if (!host) clearEmptyState();
-    const kind = toolKind(name);
+    const skills = loadedSkillNames(name, command || '');
+    const kind = skills.length ? 'skill' : toolKind(name);
     // An edit's own "-"/"+" lines become its body and its +N -N count.
     const diffLines = kind === 'edit' && diff ? diff.split('\n') : null;
     if (diffLines) output = { ...output, added: diffLines.filter((l) => l[0] === '+').length, removed: diffLines.filter((l) => l[0] === '-').length };
@@ -2951,7 +3305,7 @@
       dir.textContent = (path[1] || '').replace(/[\\/]$/, '');
       label.append(file, dir);
     } else {
-      label.textContent = command || '';
+      label.textContent = skills.length ? skills.join(', ') : command || '';
     }
     const meta = document.createElement('span');
     meta.className = 'tool-meta';
@@ -2975,6 +3329,12 @@
 
     const body = document.createElement('div');
     body.className = 'tool-body';
+    if (kind === 'skill' && SHELL_TOOLS.test(name) && !host) {
+      const full = document.createElement('div');
+      full.className = 'agents-tool-command';
+      full.textContent = command;
+      details.appendChild(full);
+    }
     if (diffLines) {
       details.dataset.diff = '1';
       body.classList.add('is-diff');
@@ -3430,6 +3790,8 @@
   /** `running`: the host's routing message for a turn still in progress. Its reply
    * so far stays open, and the stream picks up where it is. */
   function restoreChat(chat, running = null) {
+    const lastLimit = (chat.messages || []).findLastIndex(message => message.role === 'assistant' && isLimitNotice(message.text));
+    continueSentAfterLimit = lastLimit >= 0 && chat.messages.slice(lastLimit + 1).some(message => message.role === 'user' && /^\s*continue\s*[.!]?\s*$/i.test(message.text));
     currentChatId = chat.id;
     if (chat.modelId) selectModel(chat.modelId, { notifyExtension: false });
     try { vscode.setState({ ...(vscode.getState() || {}), chatId: chat.id }); } catch {} // reopened here after a restart
@@ -3571,7 +3933,7 @@
     const working = all.filter((session) => session.state).length;
     historyBtn.title = working ? `${working} chat${working === 1 ? '' : 's'} running` : 'Manage chats';
     const query = historySearch.value.trim().toLowerCase();
-    const list = query ? all.filter((session) => [session.title, session.projectName, session.preview, session.lastMessage?.text].some((field) => String(field || '').toLowerCase().includes(query))) : all;
+    const list = query ? all.filter((session) => [session.title, session.projectName, ...(session.projectNames || []), session.preview, session.lastMessage?.text].some((field) => String(field || '').toLowerCase().includes(query))) : all;
     historyModal.count.textContent = query ? `${list.length} of ${all.length}` : String(all.length);
     historySearch.hidden = !all.length;
     const scrolled = historyModal.body.scrollTop; // a live refresh keeps your place
@@ -3648,7 +4010,15 @@
       // chat-time.js, then how long the chat is. The label ages ("5 minutes ago"), so it is refreshed (see below).
       const meta = document.createElement('div');
       meta.className = 'history-meta';
-      if (session.projectName) { const project = document.createElement('span'); project.textContent = session.projectName; meta.append(project); }
+      // Every project the chat worked in, the latest first (they follow the chat as its tools touch other projects).
+      const projectNames = session.projectNames?.length ? session.projectNames : [session.projectName].filter(Boolean);
+      if (projectNames.length) {
+        const project = document.createElement('span');
+        project.className = 'history-projects';
+        project.textContent = projectNames.join(', ');
+        project.title = projectNames.join('\n');
+        meta.append(project);
+      }
       const when = document.createElement('time');
       when.className = 'history-when';
       when.dateTime = session.updatedAt || '';
@@ -3735,19 +4105,23 @@
       case 'history': {
         // A rename in progress would lose its text to a live refresh; its own save refreshes again.
         if (!historyModal.body.querySelector('input')) renderHistory(message.sessions);
+        railSessions = message.sessions || []; renderProjectList();
         break;
       }
       case 'project': {
         projectBar.hidden = false;
-        projectBtn.textContent = message.project?.name || 'Choose project';
+        railProjects = message.projects || []; railActiveProject = message.project?.id || null; railChatId = message.chatId || railChatId;
+        const tiles = projectList.isConnected && railProjects.length; // the tiles, + and × cover it; the button stays for an empty rail
+        projectBtn.hidden = Boolean(tiles); projectBtn.textContent = message.project?.name || 'Choose project';
+        renderProjectList();
         projectBtn.title = message.project ? (message.project.root || 'Planning project — attach a folder through Manage projects') : 'Select a project before sending this chat';
         projectBtn.classList.toggle('needs-project', Boolean(message.required));
-        explorerBtn.hidden = !message.project?.root;
         break;
       }
       case 'editorTheme': editorTheme = message.theme; void applyEditorTheme(); break;
       // A chat switch has started: the old thread goes, shimmering placeholders stand in until chatLoaded renders the new one.
       case 'chatLoading': {
+        resetVoiceCorrections(); lastVoiceDraft = null;
         if (editingQueue) finishQueueEdit();
         clearEmptyState();
         const bar = (width) => `<i class="skeleton" style="width:${width}%"></i>`;
@@ -3760,18 +4134,19 @@
       }
       case 'chatLoaded': {
         if (message.chat?.id !== currentChatId) {
+          resetVoiceCorrections(); lastVoiceDraft = null; dismissedVoiceTerms.clear();
           if (editingQueue) finishQueueEdit();
           if (currentChatId) chatDrafts.set(currentChatId, { text: promptInput.value, files: attachments.slice(), mentions: [...mentioned] });
           const draft = chatDrafts.get(message.chat?.id);
-          promptInput.value = draft?.text || '';
+          promptInput.value = draft?.text ?? message.chat?.draft ?? '';
           attachments = draft?.files || [];
           mentioned.clear();
           for (const mention of draft?.mentions || []) mentioned.add(mention);
           workspaceFiles = null; workspaceRoot = '';
+          currentChatId = message.chat?.id;
           closeSlashMenu(); renderAttachments(); renderMentions(); autoGrow();
         }
         // The extension keeps every chat's queue running, independently of the visible thread.
-        flushVoiceDraft(promptInput.value.trim());
         awaitingInterruptAck = false;
         const state = vscode.getState();
         // Migrate all old queues, including chats not currently shown. A host acknowledgement removes each old copy.
@@ -3802,6 +4177,8 @@
         if (message.chatId !== currentChatId) break;
         const transportFocused = document.activeElement?.matches('.queue-transport');
         turnQueue = message.turns || [];
+        for (const warning of transcriptEl.querySelectorAll('.queue-usage-warning')) if (!turnQueue.some(turn => turn.id === warning.dataset.queueId)) warning.remove();
+        for (const button of transcriptEl.querySelectorAll('.continue-at-reset')) if (hasQueuedContinue(button.dataset.resetAgent)) button.remove();
         queuePaused = message.paused === true;
         renderTurnQueue();
         renderComposerState();
@@ -3840,9 +4217,9 @@
         micBtn.disabled = message.state === 'processing' || message.state === 'starting';
         micBtn.title =
           message.state === 'recording'
-            ? `Listening${message.device ? ` on ${message.device}` : ''}\u2026 ${message.hold ? 'release the hotkey to transcribe' : 'stops by itself after a pause. Click to stop now'}, Esc to cancel`
+            ? `Listening${message.device ? ` on ${message.device}` : ''}\u2026 ${message.hold ? 'release the hotkey to transcribe' : window.VOICE_SILENCE_MS ? 'stops by itself after a pause. Click to stop now' : 'click or press the hotkey again to stop and transcribe'}, Esc to cancel`
             : message.state === 'processing'
-              ? 'Transcribing and routing\u2026'
+              ? 'Transcribing and cleaning up\u2026'
               : message.state === 'starting'
                 ? 'Opening microphone\u2026'
                 : 'Voice input (click to record)';
@@ -3872,19 +4249,49 @@
         showToast(message.message || 'Voice input failed.', { error: true });
         break;
       }
-      // P17-ZA: never auto-sent. The router's pick preselects the model; the text waits in the composer.
+      // Dictation never selects a model or sends: routing runs when the draft is submitted.
       case 'voiceResult': {
         const text = message.output?.cleanedPrompt || '';
-        // The router's pick only fills in for Auto; a model the user chose stays put.
-        if (activeModelId === 'auto' && message.output?.decision?.targetModel) selectAgent(message.output.decision.targetModel);
+        if (message.warning) showToast(message.warning, { error: true });
         if (text) {
+          resetVoiceCorrections(); dismissedVoiceTerms.clear();
+          const prefix = promptInput.value.trim() ? `${promptInput.value}\n` : '';
           insertVoiceDraft(text);
-          lastVoiceDraft = { original: promptInput.value.trim(), raw: message.rawTranscript || '' }; // includes any text typed before
+          lastVoiceDraft = { original: text, prefix, raw: message.rawTranscript || '' };
         }
+        break;
+      }
+      case 'polishResult': {
+        if (message.requestId !== polishRequest) break;
+        setPolishing(false);
+        if (message.error) { showToast(message.error, { error: true }); break; }
+        if (message.text && message.text !== promptInput.value) { applyPolished(message.text); showToast('Prompt polished. Ctrl+Z restores what you wrote.'); }
+        else showToast('Nothing to improve. The prompt is already clear.');
+        break;
+      }
+      case 'voiceDictionarySuggestions': {
+        if (message.requestId === voiceEditRequest) showVoiceCorrections(message.terms || []);
         break;
       }
       case 'voiceTermsLearned': {
         if (message.terms?.length) showToast(`Added to voice dictionary: ${message.terms.join(', ')}`);
+        if (message.requestId === voiceEditRequest) {
+          for (const row of [...voiceDictionaryBud.children]) if (message.terms?.includes(row.dataset.term)) row.remove();
+          voiceDictionaryBud.hidden = !voiceDictionaryBud.childElementCount;
+        }
+        break;
+      }
+      case 'voiceDictionaryError': {
+        showToast(message.message, { error: true });
+        if (message.requestId === voiceEditRequest) {
+          const row = [...voiceDictionaryBud.children].find(row => row.dataset.term === message.term);
+          if (row) {
+            row.dataset.state = 'error'; row.style.setProperty('--dictionary-remaining', '0');
+            row.querySelector('.voice-dictionary-label').textContent = `Could not add “${message.term}” to dictionary`;
+            row.querySelector('.voice-dictionary-retry').hidden = false;
+            row.querySelector('.voice-dictionary-cancel').disabled = false;
+          }
+        }
         break;
       }
       // aiChatPanel.injectPrompt with submit:false (e.g. a batch dispatch the
@@ -3897,6 +4304,7 @@
         break;
       }
       case 'prefillPrompt': {
+        if (message.routingConfig || message.closeSettings) closeModal(settingsModal.el);
         if (editingQueue) finishQueueEdit();
         promptInput.value = message.text || '';
         autoGrow();
@@ -3945,6 +4353,7 @@
       case 'tool_start': {
         if (isCompacting) break;
         foldThought();
+        noteWorkingFile(message.file);
         openToolCard = appendToolCard({ name: message.name, command: message.command || message.file, output: { text: '' }, toolId: message.toolId, done: message.done, diff: message.diff });
         break;
       }
@@ -3966,6 +4375,27 @@
       }
       case 'notice': {
         appendNotice(message.text || '');
+        break;
+      }
+      case 'queueUsageWarning': {
+        if (message.chatId && message.chatId !== currentChatId) break;
+        let warning = [...transcriptEl.querySelectorAll('.queue-usage-warning')].find(el => el.dataset.queueId === message.id);
+        if (!warning) {
+          warning = document.createElement('div');
+          warning.className = 'queue-usage-warning';
+          warning.dataset.queueId = message.id;
+          warning.setAttribute('role', 'alert');
+          warning.innerHTML = `${WARN_SVG}<span></span><button type="button" class="context-compact">Schedule at reset</button>`;
+          warning.querySelector('button').addEventListener('click', () => queueAction('scheduleQueuedTurn', { id: message.id, agent: message.agent }));
+          transcriptEl.append(warning);
+        }
+        warning.querySelector('span').textContent = message.text;
+        const last = [...transcriptEl.querySelectorAll('.msg-assistant')].pop();
+        if (last && isLimitNotice(last.dataset.raw)) {
+          turnRoutedAgent = message.agent || lastReplyAgent();
+          offerContinueAtReset(last);
+        }
+        scrollTranscriptToEnd();
         break;
       }
       // Answered in another window showing this chat: the card settles here exactly as it did there.
@@ -4060,22 +4490,32 @@
         break;
       case 'openHistory': if (toggleModal(historyModal)) vscode.postMessage({ type: 'requestHistory' }); break;
       case 'openSettings':
+        if (message.tab === 'loops') { openLoops(); break; } // older commands still reach the moved popup
         if (message.updateAll) {
           openModal(settingsModal);
           chatSettings.showTab('general');
           settingsModal.el.querySelector('.fs-modal-body').scrollTop = 0;
           vscode.postMessage({ type: 'requestFleet' });
           vscode.postMessage({ type: 'updateAllClis' });
+        } else if (message.tab) {
+          // Asked for by tab (a command): open it, never toggle it shut.
+          if (settingsModal.el.hidden) openModal(settingsModal);
+          vscode.postMessage({ type: 'requestFleet' });
+          chatSettings.showTab(message.tab);
         } else if (toggleModal(settingsModal)) {
           vscode.postMessage({ type: 'requestFleet' });
-          if (message.tab) chatSettings.showTab(message.tab);
         }
         break;
       case 'routingMode': setRoutingMode(message.mode, message.connected); break;
       case 'fleet': chatSettings.fleet(message); break;
       case 'voice': chatSettings.voice(message.voice); break;
+      case 'micDevices': chatSettings.micDevices(message.devices); break;
+      case 'projectIcons': chatSettings.projectIcons(message.projects); break;
+      case 'voiceDictionary': chatSettings.voiceDictionary(message); break;
       case 'groqResult': chatSettings.groqResult(message); break;
       case 'routingResult': chatSettings.routingResult(message); break;
+      case 'openLoops': openLoops(); break;
+      case 'investigationsResult': case 'investigationsState': investigations.message(message); break;
       case 'cliStatus': chatSettings.cliStatus(message); break;
       case 'cliConnections':
         chatSettings.cliConnections(message);
@@ -4095,6 +4535,7 @@
         break;
       case 'schedulerQueue': {
         schedulerTasks = Array.isArray(message.queue) ? message.queue : [];
+        for (const button of transcriptEl.querySelectorAll('.continue-at-reset')) if (hasQueuedContinue(button.dataset.resetAgent)) button.remove();
         renderQueueButton();
         if (!queueStrip.querySelector('.is-dragging')) renderTurnQueue();
         if (!queueModal.el.hidden && !queueModal.el.querySelector('textarea, .is-dragging')) renderQueue();
@@ -4105,6 +4546,10 @@
       case 'droid': playDroid(message.kind); break;
       case 'verifyInfo': verifyCommand = message.command || ''; renderVerify(); break;
       case 'userMessage': {
+        if (/^\s*continue\s*[.!]?\s*$/i.test(message.text || '')) {
+          continueSentAfterLimit = true;
+          transcriptEl.querySelectorAll('.continue-at-reset').forEach(button => button.remove());
+        }
         appendUserMessage(message.text || '', message.at || undefined, message.files || [], { scheduled: message.scheduled });
         break;
       }
@@ -4116,6 +4561,10 @@
         break;
       }
       case 'scheduleTaskFailed': {
+        for (const button of transcriptEl.querySelectorAll('.continue-at-reset')) {
+          button.disabled = false;
+          button.querySelector('span').textContent = `Continue when ${AGENT_LABELS[button.dataset.resetAgent]} resets`;
+        }
         showToast(message.error || 'Could not schedule task.', { error: true });
         break;
       }

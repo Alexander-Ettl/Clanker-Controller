@@ -62,6 +62,27 @@ function renderTurn(turn, { userChars = USER_CHARS, answerChars = ANSWER_CHARS, 
   return lines.join('\n');
 }
 
+function taskState(messages = []) {
+  const work = messages.filter(message => !message.compact);
+  const latest = work.findLast(message => message.role === 'user');
+  return {
+    version: 1,
+    messageCount: messages.length,
+    latestRequest: clip(latest?.text, 1400),
+    files: [...new Set(work.filter(message => message.role === 'tool').map(message => message.event?.file).filter(Boolean))].slice(-12),
+  };
+}
+
+function structuredTurn(turn, options) {
+  if (turn.answers.some(answer => answer.checkpoint)) return renderTurn(turn, options);
+  return JSON.stringify({
+    request: clip(turn.user.text, USER_CHARS),
+    reportedResponses: turn.answers.map(answer => ({ agent: answer.agent || turn.user.agent || null,
+      text: clip(answer.text, ANSWER_CHARS), interrupted: Boolean(answer.interrupted) })),
+    tools: [...new Set(turn.tools.map(toolLine))].slice(0, MAX_TOOLS),
+  });
+}
+
 /**
  * The briefing for `agent` about `missed` messages (the chat after this
  * agent's last turn), or '' when there is nothing it hasn't seen. Oldest
@@ -74,7 +95,7 @@ function buildHandoff(missed, agent, options = {}) {
   // Ordinary turns always receive the complete retained checkpoint. When
   // producing the next checkpoint, old context and new work share one budget.
   let checkpoint = checkpointTurn && !options.includeCheckpointInBudget ? renderTurn(checkpointTurn, options) : '';
-  const turns = all.map((turn) => renderTurn(turn, options));
+  const turns = all.map((turn) => options.structured ? structuredTurn(turn, options) : renderTurn(turn, options));
   if (!turns.length && !checkpoint && !checkpointTurn) return '';
   let size = 0;
   const recent = [];
@@ -118,4 +139,4 @@ function checkpointStart(messages) {
   return reply > 0 ? messages.findLastIndex((message, i) => i < reply && message.role === 'user') : 0;
 }
 
-module.exports = { buildHandoff, buildCompactionHandoff, turnsOf, checkpointStart, estimateTokens, COMPACT_DIRECTIVE, COMPACT_TARGET_TOKENS, COMPACT_TARGET_CHARS };
+module.exports = { buildHandoff, buildCompactionHandoff, taskState, turnsOf, checkpointStart, estimateTokens, COMPACT_DIRECTIVE, COMPACT_TARGET_TOKENS, COMPACT_TARGET_CHARS };

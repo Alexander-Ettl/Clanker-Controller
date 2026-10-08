@@ -72,6 +72,18 @@ function deriveFallbackTitle(messages) {
   return words.slice(0, 5).join(' ');
 }
 
+/** The projects whose files the chat's tools touched, the one touched last first. */
+function touchedProjects(messages, projectOf) {
+  const ids = [];
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const file = messages[i]?.role === 'tool' && messages[i].event?.file;
+    if (!file || typeof file !== 'string') continue;
+    const id = projectOf(file);
+    if (id && !ids.includes(id)) ids.push(id);
+  }
+  return ids;
+}
+
 function findLastMessage(messages) {
   if (!Array.isArray(messages)) return null;
   for (let i = messages.length - 1; i >= 0; i--) {
@@ -133,7 +145,8 @@ class ChatStore {
 
   flush() { for (const { chat } of [...this.checkpoints.values()]) this.save(chat); }
 
-  list() {
+  /** `projectOf(file)` names the project a file belongs to; each chat then lists the projects its tools touched, latest first. */
+  list(projectOf = null) {
     const names = [...new Set(fs.readdirSync(this.dir).filter((name) => /\.json(?:\.bak)?$/.test(name)).map((name) => name.replace(/\.bak$/, '')))];
     return names.map((name) => {
       try {
@@ -146,6 +159,7 @@ class ChatStore {
         return {
           id: chat.id,
           projectId: chat.projectId || null,
+          touchedProjectIds: projectOf ? touchedProjects(messages, projectOf) : [],
           title,
           customTitle: Boolean(chat.customTitle),
           lastMessage,
@@ -158,6 +172,7 @@ class ChatStore {
           // P16-K/M: which agents answered, for model badges on history cards.
           models: [...new Set(messages.map((message) => message.agent).filter((agent) => providers.has(agent)))],
           messageCount: messages.filter((message) => message.role === 'user' || message.role === 'assistant').length,
+          hasTypedMessage: Boolean(chat.hasTypedMessage || chat.draft?.length),
           empty: messages.length === 0 && !chat.turnQueue?.turns?.length,
         };
       } catch { return null; }
@@ -210,4 +225,3 @@ function markActive(sessions, live = new Map(), now = Date.now()) {
 }
 
 module.exports = { ChatStore, markActive, ACTIVE_WINDOW_MS, deriveFallbackTitle, findLastMessage, recoverInterruptedChat, ownedByAnotherHost };
-

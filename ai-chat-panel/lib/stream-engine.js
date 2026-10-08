@@ -9,6 +9,7 @@ const { locate, resolveShim } = require('./binary-locator.js');
 const { CodexAppServer } = require('./codex-app-server.js');
 const { AVAILABLE_MODELS, defaultModel } = require('./model-catalog.js');
 const { fromRateLimitEvent } = require('./claude-usage.js');
+const { attachmentPrompt, codexAttachmentInput } = require('./attachments.js');
 
 // P17-D: how an older claude CLI / API rejects the Opus 5.5 model id or the
 // --effort flag. Only checked before a turn has produced any output.
@@ -435,8 +436,7 @@ class StreamEngine extends EventEmitter {
     const effort = choice.effort || null;
     const resume = choice.resume || null;
     const model = choice.model || this.models[agent] || defaultModel(agent)?.model;
-    const pointers = attachments.map((file) => `Attachment available locally: ${file}`).join('\n');
-    const fullPrompt = pointers ? `${prompt}\n\n${pointers}` : prompt;
+    const fullPrompt = attachmentPrompt(prompt, attachments);
     const command = locate(agent).path;
     // Flags verified against each CLI's own --help (claude 2.1, codex exec,
     // agy). The prompt always goes over stdin, which is then closed.
@@ -557,8 +557,6 @@ class StreamEngine extends EventEmitter {
     const generation = ++this.codexGeneration;
     const turn = { agent: 'codex', prompt, attachments, model, effort, resume, freshPrompt, codexCommand, attempt, permissionMode, compact: Boolean(compact), autoCompact: Boolean(autoCompact) };
     this.resetCodexTurn(turn);
-    const pointers = attachments.map((file) => `Attachment available locally: ${file}`).join('\n');
-    const fullPrompt = pointers ? `${prompt}\n\n${pointers}` : prompt;
     const run = async () => {
       const server = this.getCodexServer();
       try {
@@ -577,7 +575,6 @@ class StreamEngine extends EventEmitter {
         if (generation !== this.codexGeneration || !this.codexActive) return;
         if (codexCommand) await this.runCodexCommand(server, codexCommand, turn.prompt, generation);
         else {
-          const text = freshPrompt && turn.prompt === freshPrompt ? freshPrompt : fullPrompt;
           const permMode = this.effectivePermissionMode('codex', permissionMode);
           const sandboxPolicy = permMode === 'fullAccess'
             ? { type: 'dangerFullAccess' }
@@ -585,7 +582,7 @@ class StreamEngine extends EventEmitter {
           const approvalPolicy = permMode === 'fullAccess' ? 'never' : (this.interactive ? 'on-request' : 'never');
           const result = await server.request('turn/start', {
             threadId: this.codexThreadId,
-            input: [{ type: 'text', text }],
+            input: codexAttachmentInput(turn.prompt, attachments),
             cwd: this.cwd,
             model,
             ...(effort ? { effort } : {}),
@@ -787,7 +784,7 @@ class StreamEngine extends EventEmitter {
           if (attachments.length || !groqRouter) throw new Error('Groq only supports text here');
           const text = await groqRouter.call('groq', { messages: [{role:'user', content:prompt}] });
           if(this.groqTurn === marker) this.emit('event',{type:'delta',text,agent});
-        } catch { if(this.groqTurn === marker) this.emit('event',{type:'delta',text:'Groq could not answer within the free budget or timeout. Choose an available CLI model or wait for the quota reset.',agent}); }
+        } catch { if(this.groqTurn === marker) this.emit('event',{type:'delta',text:'Groq and Cloudflare could not answer within the free budget or timeout. Choose an available CLI model or wait for the quota reset.',agent}); }
         finally { if(this.groqTurn === marker) { this.groqTurn=null;this.turn=null;this.emit('event',{type:'turn_complete',agent}); } }
       })();
       return;

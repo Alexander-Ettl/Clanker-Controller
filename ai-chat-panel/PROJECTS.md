@@ -3,8 +3,9 @@
 1. Open Clanker Controller. Click the project name at the top of the chat, or **Choose project**.
 2. Select **Add project…**, choose your folder wherever it lives, and give the project a name. Folders already open in VS Code are listed automatically.
 3. Write your prompt. This conversation, its queue, and its CLI sessions stay with that project.
+   Clicking a project on the rail moves a chat nothing was sent in yet to that project, so the model you picked stays and you can run a `/` command right there. A chat that already has messages stays with its project; clicking another project opens that project's latest chat.
 4. To work on another project alongside this one, run **Clanker Controller:New Chat Window** from the Command Palette, then select its project. Switching editor tabs won't change a chat's destination.
-5. Click the folder icon beside the project name to add its folder to VS Code's Explorer. Save the VS Code workspace if you want that Explorer layout again.
+5. Choosing a project shows its folder in VS Code's Explorer, adding it to the workspace if needed. Save the VS Code workspace if you want that Explorer layout again.
 
 Use **Manage projects…** in the project menu to rename a project or locate its folder after a move. Stop its running work before changing folders; chat history stays, while native CLI sessions restart in the new location.
 
