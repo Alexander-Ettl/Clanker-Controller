@@ -34,3 +34,8 @@ test('new reset windows immediately use their own pace', () => {
   assert.equal(estimate(window(50, 120), now).perHour, 25);
   assert.equal(estimate(window(95, 10), now).perHour, 30);
 });
+
+test('formats the time left for the rail chip', () => {
+  const { duration } = require('../media/burn-rate.js');
+  assert.deepEqual([0.2, 40, 95, 120, 3000].map(duration), ['1m', '40m', '1h 35m', '2h', '2d 2h']);
+});

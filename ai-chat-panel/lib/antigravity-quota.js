@@ -58,6 +58,7 @@ function discoverLanguageServer() {
     const raw = execSync(`powershell -NoProfile -EncodedCommand ${encoded}`, {
       encoding: 'utf8',
       stdio: ['pipe', 'pipe', 'ignore'],
+      windowsHide: true,
       timeout: 3000,
     });
     if (!raw.trim()) return null;
@@ -70,7 +71,7 @@ function discoverLanguageServer() {
     if (!csrfMatch) return null;
     const pid = String(target.ProcessId);
 
-    const netstat = execSync('netstat -ano -p tcp', { encoding: 'utf8', stdio: ['pipe', 'pipe', 'ignore'], timeout: 2000 });
+    const netstat = execSync('netstat -ano -p tcp', { encoding: 'utf8', stdio: ['pipe', 'pipe', 'ignore'], windowsHide: true, timeout: 2000 });
     const candidatePorts = [];
     for (const line of netstat.split(/\r?\n/)) {
       const parts = line.trim().split(/\s+/);

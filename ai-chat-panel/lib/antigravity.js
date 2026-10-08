@@ -60,6 +60,7 @@ function discoverLanguageServer() {
     const raw = execSync(`powershell -NoProfile -EncodedCommand ${encoded}`, {
       encoding: 'utf8',
       stdio: ['pipe', 'pipe', 'ignore'],
+      windowsHide: true,
       timeout: 3000,
     });
 
@@ -90,6 +91,7 @@ function discoverLanguageServer() {
     const netstatRaw = execSync('netstat -ano -p tcp', {
       encoding: 'utf8',
       stdio: ['pipe', 'pipe', 'ignore'],
+      windowsHide: true,
       timeout: 2000,
     });
 

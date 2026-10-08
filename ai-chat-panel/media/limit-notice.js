@@ -7,7 +7,10 @@
 
   function isLimitNotice(raw) {
     const text = String(raw || '').trim();
-    return text.length > 0 && text.length <= 400 && LIMIT_RE.test(text);
+    // A cut-off reply may contain substantial work before the CLI appends its own limit line.
+    const lastLine = text.split(/\r?\n/).map(line => line.trim()).filter(Boolean).at(-1) || '';
+    return (text.length > 0 && text.length <= 400 && LIMIT_RE.test(text)) ||
+      (lastLine.length <= 400 && /^you['’]ve hit your (?:session|usage|weekly|daily) limit\b/i.test(lastLine));
   }
 
   const api = { isLimitNotice, LIMIT_RE };
