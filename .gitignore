@@ -21,3 +21,9 @@ voice-router/.recordings/
 .DS_Store
 Thumbs.db
 desktop.ini
+
+# interface tester baselines (machine-specific pictures)
+.ui-tester/
+
+# stray screenshot written by test/mic-select.mjs
+/mic-select.png
