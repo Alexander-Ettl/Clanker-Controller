@@ -137,17 +137,18 @@ body.has-rail > .fs-modal { right: 85px; }
   cursor: pointer;
   opacity: 0;
   pointer-events: none;
-  transform-origin: right center;
-  transition: width 0.45s var(--eo-ease), opacity 0.15s var(--eo-ease) 0.3s, filter 0.25s var(--eo-ease), scale 0.3s var(--eo-ease);
+  transition: width 0.45s var(--eo-ease), opacity 0.15s var(--eo-ease) 0.3s;
 }
-/* It springs out: the width overshoots a little and settles, the card lifts, and it glows in the project's own hue. */
+/* It springs out: the width overshoots a little and settles, and it glows in the project's own hue. Only the width springs; the
+   card itself is never scaled and its shadow never animates, so the icon at the right end stays on the same pixels while the
+   card grows (a scale pivoting on the right edge slid the icon left and back, and a transitioning blur re-rasterised the card
+   at every frame). */
 .project-item:is(:hover, .is-editing) .project-peek {
   width: var(--peek-w, 160px);
-  scale: 1.06;
   opacity: 1;
   pointer-events: auto;
-  filter: drop-shadow(0 10px 26px rgba(0, 0, 0, 0.5)) drop-shadow(0 0 14px hsl(var(--hue, 220) 80% 62% / 0.28));
-  transition: width 0.55s cubic-bezier(0.34, 1.5, 0.5, 1), opacity 0.1s var(--eo-ease), filter 0.25s var(--eo-ease), scale 0.45s cubic-bezier(0.34, 1.7, 0.5, 1);
+  filter: drop-shadow(0 8px 16px rgba(0, 0, 0, 0.45)) drop-shadow(0 0 10px hsl(var(--hue, 220) 80% 62% / 0.28));
+  transition: width 0.55s cubic-bezier(0.34, 1.5, 0.5, 1), opacity 0.1s var(--eo-ease);
 }
 .project-peek-shape { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; pointer-events: none; }
 .project-peek-fill { fill: rgb(26, 28, 34); } /* the charcoal of the Recent previews */
@@ -170,7 +171,7 @@ body.has-rail > .fs-modal { right: 85px; }
 }
 .project-peek-text span { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .project-item:is(:hover, .is-editing) :is(.project-peek-text, .project-edit) { opacity: 1; translate: 0 0; transition: opacity 0.25s var(--eo-ease) 0.15s, translate 0.5s cubic-bezier(0.34, 1.4, 0.5, 1) 0.1s, background 0.15s var(--eo-ease), color 0.15s var(--eo-ease); }
-.project-peek-mark { position: absolute; top: 0; right: 0; width: 40px; height: 40px; display: grid; place-items: center; transition: scale 0.45s cubic-bezier(0.34, 1.7, 0.5, 1); }
+.project-peek-mark { position: absolute; top: 0; right: 0; width: 40px; height: 40px; display: grid; place-items: center; transition: scale 0.4s cubic-bezier(0.22, 1, 0.36, 1); }
 .project-item:is(:hover, .is-editing) .project-peek-mark { scale: 1.1; }
 .project-edit {
   position: absolute; top: 8px; right: 42px; display: grid; place-items: center; width: 24px; height: 24px; padding: 0;
