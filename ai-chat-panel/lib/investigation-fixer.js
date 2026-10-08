@@ -1,0 +1,82 @@
+'use strict';
+
+// Unattended editors and readers for the loop. Each runs with its working folder set to the loop's private copy of the
+// project, never the real checkout. Editing: Claude may only edit files (no shell, so no permission prompt can stall it),
+// Codex runs in its workspace-write sandbox with approvals off, Gemini (Antigravity) in accept-edits mode inside its
+// sandbox. Reading ("analyst"): no tools at all, or a read-only sandbox, so a reader cannot change anything.
+
+const fs = require('node:fs');
+const { locate } = require('./binary-locator');
+const { processOutput, usageTotal, extractJson, cliHelp } = require('./investigation-runner');
+const { shimmed } = require('./loop-exec');
+
+const withShim = (found, args, input) => { const spec = shimmed(found, args); return { command: spec.command, args: spec.args, env: spec.env, input }; };
+
+function fixerSpec(agent, { model, cwd, prompt }) {
+  const found = locate(agent).path;
+  if (!found) throw new Error(`The ${agent} CLI is not installed.`);
+  let args, input = `${prompt}\n`;
+  if (agent === 'claude') {
+    args = ['-p', '--output-format', 'stream-json', '--verbose', '--permission-mode', 'acceptEdits', '--no-session-persistence', ...(model && model !== 'claude' ? ['--model', model] : [])];
+  } else if (agent === 'codex') {
+    args = ['exec', '--json', '--sandbox', 'workspace-write', '-c', 'approval_policy="never"', '--skip-git-repo-check', '-C', cwd, ...(model ? ['-m', model] : []), '-'];
+  } else if (agent === 'gemini') {
+    // Antigravity edits in accept-edits mode; its sandbox restricts the terminal. Chosen only when the user picks Gemini as editor.
+    args = ['--model', model, '--mode', 'accept-edits', '--sandbox', '--disable-slash-commands', '--add-dir', cwd, '--input-format', 'stream-json', '--output-format', 'stream-json'];
+    input = `${JSON.stringify({ event: 'user', message: { content: prompt } })}\n`;
+  } else throw new Error(`No unattended editor recipe for ${agent}.`);
+  return withShim(found, args, input);
+}
+
+/** A reader: same CLIs, no edit rights and no tools. The task goes in the prompt; the reply must be one JSON object. */
+function readerSpec(agent, { model, cwd, prompt }) {
+  const found = locate(agent).path;
+  if (!found) throw new Error(`The ${agent} CLI is not installed.`);
+  let args;
+  if (agent === 'claude') {
+    // --safe-mode keeps the user's hooks (completion chimes) and CLAUDE.md out of ten parallel readers, when this CLI has it.
+    let safe = [];
+    try { if (cliHelp(found).includes('--safe-mode')) safe = ['--safe-mode']; } catch { /* older CLI */ }
+    args = ['-p', '--output-format', 'stream-json', '--verbose', '--tools', '', '--permission-mode', 'plan', '--no-session-persistence', ...safe, ...(model && model !== 'claude' ? ['--model', model] : [])];
+  } else if (agent === 'codex') {
+    args = ['exec', '--json', '--sandbox', 'read-only', '-c', 'approval_policy="never"', '--skip-git-repo-check', '--ephemeral', '-C', cwd, ...(model ? ['-m', model] : []), '-'];
+  } else throw new Error(`No reader recipe for ${agent}.`);
+  return withShim(found, args, `${prompt}\n`);
+}
+
+function parseLine(line, state) {
+  let raw; try { raw = JSON.parse(line); } catch { return; }
+  if (raw.type === 'result') { if (typeof raw.result === 'string') state.reply = raw.result; if (raw.is_error) state.errored = true; state.tokens = usageTotal(raw.usage) ?? state.tokens; } // claude
+  else if (raw.type === 'item.completed' && raw.item?.type === 'agent_message' && typeof raw.item.text === 'string') state.reply = raw.item.text; // codex
+  else if (raw.type === 'turn.completed') state.tokens = usageTotal(raw.usage) ?? state.tokens;
+  else if (raw.event === 'result') { // antigravity
+    if (raw.result?.status === 'ERROR') state.errored = true;
+    state.reply = raw.result?.response || state.reply; state.tokens = usageTotal(raw.result?.usage || raw.usage) ?? state.tokens;
+  }
+}
+
+async function runSpec(spec, agent, { cwd, signal, timeoutMs, idleMs, logFile, onActivity, onSpawn }) {
+  const state = { reply: '', tokens: null, errored: false };
+  const result = await processOutput(spec.command, spec.args, { cwd, signal, timeoutMs, idleMs, onActivity, onSpawn, env: spec.env, input: spec.input, maxBytes: 8 * 1024 * 1024,
+    onLine: line => {
+      if (logFile) try { fs.appendFileSync(logFile, line.slice(0, 100000) + '\n'); } catch { /* the log is a diagnostic aid only */ }
+      parseLine(line, state);
+    } });
+  if (result.code !== 0 || state.errored) throw new Error(`${agent} did not finish${result.stderr ? `: ${result.stderr.trim().split(/\r?\n/).pop().slice(0, 200)}` : '.'}`);
+  return state;
+}
+
+/** Runs one fix to completion. Resolves `{reply, tokens}` (tokens null when the CLI reports none); rejects on failure, timeout or abort. */
+async function runFixer({ agent, model, cwd, prompt, signal, timeoutMs, idleMs = 0, logFile, onActivity, onSpawn }) {
+  const state = await runSpec(fixerSpec(agent, { model, cwd, prompt }), agent, { cwd, signal, timeoutMs, idleMs, logFile, onActivity, onSpawn });
+  return { reply: state.reply, tokens: state.tokens };
+}
+
+/** Runs a read-only reader (Claude or Codex) and parses its last message as one JSON object. */
+async function runReader({ agent, model, cwd, prompt, signal, timeoutMs, idleMs = 0, logFile, onActivity, onSpawn }) {
+  const state = await runSpec(readerSpec(agent, { model, cwd, prompt }), agent, { cwd, signal, timeoutMs, idleMs, logFile, onActivity, onSpawn });
+  if (!state.reply) throw new Error(`${agent} returned no report.`);
+  return { report: extractJson(state.reply), tokens: state.tokens };
+}
+
+module.exports = { runFixer, runReader, fixerSpec, readerSpec };
