@@ -48,12 +48,12 @@
   const topbar = document.querySelector('.topbar');
   const railScroll = document.querySelector('.rail-scroll');
   if (railScroll) {
-    // The sidebar chat keeps its project at the top of the rail, labelled like the other sections.
+    // The sidebar chat keeps its project in the rail under the usage and API value, labelled like the other sections.
     projectBar.classList.add('launcher-section', 'is-rail');
     const label = document.createElement('div');
     label.className = 'launcher-label'; label.textContent = 'Project';
     projectBar.prepend(label);
-    railScroll.prepend(projectBar);
+    railScroll.querySelector('.launcher-actions').before(projectBar);
   } else if (topbar) topbar.prepend(projectBar); else transcriptEl.before(projectBar);
 
   const attachmentStrip = document.createElement('div');

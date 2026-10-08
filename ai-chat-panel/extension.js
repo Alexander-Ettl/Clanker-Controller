@@ -2487,29 +2487,9 @@ const CHAT_BUTTONS = {
 
 function railMarkup(buttons) {
   return `<aside class="rail" aria-label="Chats and usage">
-  <!-- Project (added by main.js), buttons, usage, then chats. Scheduled, Settings and Manage Chats all open as popups over the chat.
+  <!-- Usage, API value, Project (added by main.js), buttons, then chats. Scheduled, Settings and Manage Chats all open as popups over the chat.
        .rail-scroll scrolls them when the window is short. -->
   <div class="rail-scroll">
-  <div class="launcher-actions">
-    ${buttons.newChat}
-    <button class="round-btn" id="popOutBtn" type="button" aria-label="Open a new chat in an editor tab">
-      <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12.5 9v2.5a2 2 0 0 1-2 2h-6a2 2 0 0 1-2-2v-6a2 2 0 0 1 2-2H7"/><path d="M10 2.5h3.5V6M13.5 2.5 8 8"/></svg>
-      <span class="round-btn-tip" aria-hidden="true">Pop out</span>
-    </button>
-    ${buttons.history}
-    ${buttons.queue}
-    <button class="round-btn" id="settingsBtn" type="button" title="Chat settings" aria-label="Chat settings">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-        <path d="M9.671 4.136a2.34 2.34 0 0 1 4.659 0 2.34 2.34 0 0 0 3.319 1.915 2.34 2.34 0 0 1 2.33 4.033 2.34 2.34 0 0 0 0 3.831 2.34 2.34 0 0 1-2.33 4.033 2.34 2.34 0 0 0-3.319 1.915 2.34 2.34 0 0 1-4.659 0 2.34 2.34 0 0 0-3.32-1.915 2.34 2.34 0 0 1-2.33-4.033 2.34 2.34 0 0 0 0-3.831A2.34 2.34 0 0 1 6.35 6.051a2.34 2.34 0 0 0 3.319-1.915"/>
-        <circle cx="12" cy="12" r="3"/>
-      </svg>
-    </button>
-    <button class="round-btn round-btn-update" id="updatesBtn" type="button" aria-label="CLI updates" hidden>
-      <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 13V3M4 7l4-4 4 4"/></svg>
-      <span class="round-btn-tip" aria-hidden="true">Update</span>
-    </button>
-  </div>
-
   <section class="launcher-section">
     <div class="launcher-label">Usage</div>
     <div class="model-cards" id="modelCards" aria-label="Model quotas"></div>
@@ -2531,6 +2511,26 @@ function railMarkup(buttons) {
       </div>
     </div>
   </section>
+
+  <div class="launcher-actions">
+    ${buttons.newChat}
+    <button class="round-btn" id="popOutBtn" type="button" aria-label="Open a new chat in an editor tab">
+      <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12.5 9v2.5a2 2 0 0 1-2 2h-6a2 2 0 0 1-2-2v-6a2 2 0 0 1 2-2H7"/><path d="M10 2.5h3.5V6M13.5 2.5 8 8"/></svg>
+      <span class="round-btn-tip" aria-hidden="true">Pop out</span>
+    </button>
+    ${buttons.history}
+    ${buttons.queue}
+    <button class="round-btn" id="settingsBtn" type="button" title="Chat settings" aria-label="Chat settings">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <path d="M9.671 4.136a2.34 2.34 0 0 1 4.659 0 2.34 2.34 0 0 0 3.319 1.915 2.34 2.34 0 0 1 2.33 4.033 2.34 2.34 0 0 0 0 3.831 2.34 2.34 0 0 1-2.33 4.033 2.34 2.34 0 0 0-3.319 1.915 2.34 2.34 0 0 1-4.659 0 2.34 2.34 0 0 0-3.32-1.915 2.34 2.34 0 0 1-2.33-4.033 2.34 2.34 0 0 0 0-3.831A2.34 2.34 0 0 1 6.35 6.051a2.34 2.34 0 0 0 3.319-1.915"/>
+        <circle cx="12" cy="12" r="3"/>
+      </svg>
+    </button>
+    <button class="round-btn round-btn-update" id="updatesBtn" type="button" aria-label="CLI updates" hidden>
+      <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 13V3M4 7l4-4 4 4"/></svg>
+      <span class="round-btn-tip" aria-hidden="true">Update</span>
+    </button>
+  </div>
 
   <section class="launcher-section is-grow">
     <div class="launcher-label">Recent</div>
