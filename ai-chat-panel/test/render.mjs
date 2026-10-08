@@ -56,10 +56,10 @@ const queueRow = (brand, model, text, files) =>
 const roundBtn = '<button class="round-btn" type="button"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"><path d="M8 3v10M3 8h10"/></svg></button>';
 function sidebar(scrolled) {
   return `<div style="display:grid;grid-template-columns:minmax(0,1fr) 75px;height:420px;position:relative;margin:-12px"><div style="padding:20px;color:#777;font:12px sans-serif">chat</div><aside class="rail"><div class="rail-scroll">
-    <div class="project-toolbar launcher-section is-rail"><div class="launcher-label">Project</div><button class="project-picker" type="button">2026</button><button class="round-btn" type="button"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3"><path d="M2 4a1 1 0 0 1 1-1h4l2 2h4a1 1 0 0 1 1 1v6a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1Z"/></svg></button></div>
-    <div class="launcher-actions">${roundBtn}${roundBtn}${roundBtn}</div>
     <section class="launcher-section"><div class="launcher-label">Usage</div><div class="model-cards">${modelCard('claude', 99, 100, '8.2', false, scrolled)}${modelCard('codex', 41, 77, '31', true, false)}</div></section>
     ${apiValue(false)}
+    <div class="project-toolbar launcher-section is-rail"><div class="launcher-label">Project</div><button class="project-picker" type="button">2026</button><button class="round-btn" type="button"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3"><path d="M2 4a1 1 0 0 1 1-1h4l2 2h4a1 1 0 0 1 1 1v6a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1Z"/></svg></button></div>
+    <div class="launcher-actions">${roundBtn}${roundBtn}${roundBtn}</div>
     <section class="launcher-section"><div class="launcher-label">Recent</div><div class="history-list">${historyItem(null, '', 'Just now', false)}${historyItem('claude', 'is-selected', 'now', false)}</div></section>
   </div></aside></div>${scrolled ? '<script>document.querySelector(".rail-scroll").scrollTop = 9999;</script>' : ''}`;
 }
