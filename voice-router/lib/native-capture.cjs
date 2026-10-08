@@ -15,6 +15,7 @@ const { spawn } = require('node:child_process');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
+const { MediaPause } = require('./media-pause.cjs');
 
 const STARTUP_GRACE_MS = 400;
 
@@ -83,7 +84,7 @@ class AudioCaptureError extends Error {
 }
 
 class VoiceCapture {
-  constructor({ config, spawnImpl, onVolume } = {}) {
+  constructor({ config, spawnImpl, onVolume, mediaControl } = {}) {
     this.config = config || loadVoiceRouterConfig();
     this.spawn = spawnImpl || spawn;
     this.onVolume = onVolume || null; // ({ rms, peak }) about every 40ms while recording
@@ -92,7 +93,9 @@ class VoiceCapture {
     this.starting = null;
     this.devices = null;
     this.device = null;
+    this.preferred = ''; // the microphone chosen in Settings > Voice; empty falls back to daemon.config.json, then the first device
     this.exit = null; // { code, stderr } once the current ffmpeg process has exited
+    this.media = mediaControl || new MediaPause();
   }
 
   isRecording() {
@@ -114,19 +117,28 @@ class VoiceCapture {
     });
   }
 
-  /** The configured mic if this machine has it, else the first real capture device (cached). */
+  /** Choose the microphone for the next recording (empty: automatic). */
+  setPreferred(name) {
+    this.preferred = String(name || '');
+    this.device = null;
+  }
+
+  /** The chosen mic if this machine has it, else the configured one, else else the first real capture device (cached). */
   async resolveDevice(refresh = false) {
     if (this.device && !refresh) return this.device;
     this.devices = await this.listAudioDevices();
-    const wanted = this.config.micDevice;
+    const wanted = this.preferred || this.config.micDevice;
     this.device = this.devices.includes(wanted) ? wanted : this.devices[0] || wanted || null;
     return this.device;
   }
 
   /** Resolves once ffmpeg is really recording; rejects with AudioCaptureError if it can't. */
-  start() {
+  start({ pauseMedia = false } = {}) {
     if (this.isRecording()) return this.starting || Promise.resolve(this.device);
-    this.starting = this.doStart().finally(() => { this.starting = null; });
+    this.starting = (async () => {
+      if (pauseMedia) await this.media.pause();
+      return this.doStart();
+    })().catch(error => { this.media.resume(); throw error; }).finally(() => { this.starting = null; });
     return this.starting;
   }
 
@@ -168,8 +180,9 @@ class VoiceCapture {
     const failure = (reason) => new AudioCaptureError(`Could not open microphone "${device}": ${reason}`, { device, devices: this.devices || [], stderr: stderr.trim() });
     await new Promise((resolve, reject) => {
       const timer = setTimeout(resolve, STARTUP_GRACE_MS);
-      proc.once('error', (error) => { clearTimeout(timer); reject(failure(error.message)); });
+      proc.once('error', (error) => { this.media.resume(); clearTimeout(timer); reject(failure(error.message)); });
       proc.once('exit', (code) => {
+        this.media.resume();
         this.exit = { code, stderr: stderr.trim() };
         clearTimeout(timer);
         reject(failure(stderr.trim().split(/\r?\n/).pop() || `ffmpeg exited with code ${code}`));
@@ -184,6 +197,7 @@ class VoiceCapture {
 
   /** Stops ffmpeg gracefully (writes 'q' to its stdin) and resolves with the wav path. */
   stop() {
+    this.media.resume();
     return new Promise((resolve, reject) => {
       const proc = this.process;
       const wavPath = this.wavPath;
@@ -214,6 +228,14 @@ class VoiceCapture {
         proc.kill();
       }
     });
+  }
+
+  async dispose() {
+    try {
+      await this.starting;
+      if (this.process) fs.promises.unlink(await this.stop()).catch(() => {});
+    } catch { /* failed startup has already restored playback */ }
+    finally { this.media.resume(); }
   }
 }
 

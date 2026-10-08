@@ -1,5 +1,10 @@
 # Voice Router
 
+This document describes the standalone CLI and hotkey daemon's legacy routing.
+Clanker Controller's chat microphone uses only transcription and text cleanup
+from this package. Its model selection belongs to the current chat router;
+the legacy intent categories below do not apply to chat dictation.
+
 Voice-to-LLM quota-aware router. See [batch synthesis](../docs/batch-synthesis-workflow.md).
 
 Speak a prompt, and it transcribes (Groq Whisper), cleans it up and classifies
@@ -16,6 +21,15 @@ Two ways to use it: a manual CLI, or a background hotkey daemon.
    GROQ_API_KEY=your-key-here
    ```
    Get a key at console.groq.com.
+   Optional Cloudflare backup for text calls:
+   ```
+   CLOUDFLARE_ACCOUNT_ID=your-account-id
+   CLOUDFLARE_API_TOKEN=your-workers-ai-token
+   ```
+   Cloudflare serves `@cf/openai/gpt-oss-120b` when Groq returns 429, 413 or a server error,
+   or is unreachable. Set `CHAT_PROVIDER=cloudflare` to prefer it in the standalone router.
+   The chat panel uses its Routing settings and shared budgets instead, switching at 80% of
+   any tracked Groq limit by default. Whisper transcription still requires Groq.
 2. Node 18+ (uses native `fetch`/`FormData`). Nothing to `npm install` — no
    dependencies.
 3. For audio input, [ffmpeg](https://ffmpeg.org/) on `PATH` (already present
