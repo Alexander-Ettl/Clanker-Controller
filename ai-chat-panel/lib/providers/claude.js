@@ -21,6 +21,16 @@ function parseModels(text) {
   });
 }
 
+/** `claude auth status` names the plan; a claude.ai sign-in on the free plan (or none) cannot run Claude Code. */
+function entitlement({ result }) {
+  let status;
+  try { status = JSON.parse(result?.stdout || ''); } catch { return undefined; }
+  const plan = typeof status?.subscriptionType === 'string' ? status.subscriptionType.toLowerCase() : null;
+  if (status?.authMethod !== 'claude.ai' || !plan) return undefined; // the field is missing or null for some paying accounts: no verdict
+  if (!['free', 'none'].includes(plan)) return null;
+  return { kind: 'plan', reason: 'Needs Claude Pro or Max, or an API key.', detail: `subscriptionType: ${plan}. If you subscribed again, sign in again, then press Try again.` };
+}
+
 module.exports = {
   id: 'claude',
   name: 'Claude Code',
@@ -34,6 +44,7 @@ module.exports = {
   npmPackage: '@anthropic-ai/claude-code',
   login: ['auth', 'login'],
   authStatus: { args: ['auth', 'status'], interpret: (result) => (result.ok ? 'connected' : 'signin') },
+  entitlement,
   install: 'Invoke-RestMethod https://claude.ai/install.ps1 | Invoke-Expression; & "$env:USERPROFILE\\.local\\bin\\claude.exe" auth login',
   discoverModels: async ({ file, runCli }) => {
     const init = JSON.stringify({ type: 'control_request', request_id: 'model-discovery', request: { subtype: 'initialize' } }) + '\n';

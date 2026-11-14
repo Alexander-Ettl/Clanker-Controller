@@ -4,6 +4,8 @@
 // chat or a waiting task still points to is touched, nothing younger than the grace period is touched (an image
 // pasted into a draft has no chat yet), and chats themselves are never deleted here. Like git's pruning, it only
 // removes what nothing reaches any more, and only after it has been unreachable for a while.
+// `chats/` is never swept: chat snapshots, their tool-output blobs and `chats/transcripts/` (the plain-text copy a
+// cross-agent briefing points into) stay until the chat is deleted.
 
 const fs = require('node:fs');
 const path = require('node:path');

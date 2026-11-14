@@ -19,11 +19,12 @@ const IDLE_MS = 6 * 60000, CAP_MS = 25 * 60000;
  * Codex run with tools off or a read-only sandbox, with the task carried in the prompt. Validates the reply against `schema`
  * and `supplied` (the lines the reader was given). Resolves `{report, tokens}`.
  */
-async function analyze({ target, cwd, prompt, task, schema, supplied, signal, maxTokens, timeoutMs = CAP_MS, idleMs = IDLE_MS, logFile, onActivity, onSpawn, tools, readRoot, maxViews }, deps = {}) {
+async function analyze({ target, cwd, prompt, task, schema, supplied, signal, maxTokens, timeoutMs = CAP_MS, idleMs = IDLE_MS, logFile, onActivity, onStatus, onSpawn, tools, readRoot, maxViews }, deps = {}) {
   const flash = deps.flash || runFlash, reader = deps.reader || runReader;
   const call = async text => {
-    if (target.agent === 'gemini') return flash({ cwd, prompt: text, model: target.model, signal, maxTokens, timeoutMs, idleMs, onActivity, logFile, task, schema, tools, readRoot, maxViews });
-    return reader({ agent: target.agent, model: target.model, cwd, prompt: `${task}\n\n${text}`, signal, timeoutMs, idleMs, logFile, onActivity, onSpawn });
+    onStatus?.('waiting');
+    if (target.agent === 'gemini') return flash({ cwd, prompt: text, model: target.model, signal, maxTokens, timeoutMs, idleMs, onActivity, onStatus, logFile, task, schema, tools, readRoot, maxViews });
+    return reader({ agent: target.agent, model: target.model, cwd, prompt: `${task}\n\n${text}`, signal, timeoutMs, idleMs, logFile, onActivity, onStatus, onSpawn });
   };
   let note = '', last;
   for (let attempt = 0; attempt < 2; attempt++) {

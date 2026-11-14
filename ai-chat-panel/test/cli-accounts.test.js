@@ -11,7 +11,7 @@ function fixture(saved, existingUser = false) {
   let value = saved;
   const paths = { claude: 'C:/Program Files/Claude/claude.exe', codex: 'C:/Codex/codex.exe', gemini: null };
   const accounts = new CliAccounts({
-    store: { get: () => value, set: async next => { value = next; } }, existingUser, cwd: 'C:/Work space',
+    languageServer: async () => null, home: require('node:path').join(require('node:os').tmpdir(), 'clanker-no-home'), store: { get: () => value, set: async next => { value = next; } }, existingUser, cwd: 'C:/Work space',
     vscode: { window: { terminals, createTerminal(options) {
       const terminal = { options, show() {}, dispose() { terminals.splice(terminals.indexOf(terminal), 1); } };
       terminals.push(terminal); return terminal;
@@ -65,6 +65,27 @@ test('one or all CLIs open native sign-in; duplicate clicks reuse setup terminal
   assert.deepEqual(fixture(f.saved()).accounts.enabledAgents(), ['claude', 'gemini']);
 });
 
+const CRASH = `file:///C:/npm/codex.js:107
+  throw new Error(
+        ^
+
+Error: Missing optional dependency @openai/codex-win32-x64. Reinstall Codex: npm install -g @openai/codex@latest
+    at findCodexExecutable (file:///C:/npm/codex.js:107:9)
+
+Node.js v24.18.0`;
+
+test('a Codex install that cannot start shows its real error and the sign-in button repairs it', async () => {
+  const f = fixture();
+  f.accounts.run = async () => ({ ok: false, stdout: '', stderr: CRASH });
+  await f.accounts.connect('codex');
+  assert.equal(f.accounts.snapshot().providers.codex.auth, 'broken');
+  assert.match(f.accounts.snapshot().providers.codex.note, /Missing optional dependency @openai\/codex-win32-x64/);
+  assert.equal(f.terminals[0].options.shellPath, 'powershell.exe', 'the terminal reinstalls, then signs in');
+  assert.match(f.terminals[0].options.shellArgs.at(-1), /npm.cmd install -g @openai\/codex@latest.*login/);
+  f.accounts.run = async () => ({ ok: false, stdout: '', stderr: 'Not logged in' });
+  await f.accounts.check();
+  assert.equal(f.accounts.snapshot().providers.codex.auth, 'signin', 'signed out is not a damaged install');
+});
 test('native terminal specs quote shims and offer Windows installs without WSL', () => {
   assert.throws(() => terminalSpec('unknown', null), /Unknown/);
   assert.match(terminalSpec('claude', null, 'win32').shellArgs.at(-1), /claude.ai\/install.ps1/);
@@ -117,4 +138,119 @@ test('removing and readding a CLI preserves favorites and excludes it from Auto'
     hub.connectionsChanged();
     assert.equal(MODEL_CATALOG.length, 2);
   } finally { setEnabledAgents(['claude', 'codex', 'gemini']); }
+});
+
+test('a CLI whose plan ended drops out of the picker and Auto, stays listed in Settings, and comes back on request', async () => {
+  const f = fixture(undefined, true);
+  const store = { value: [{ id: 'claude-test', agent: 'claude', model: 'claude-test', effort: 'medium', label: 'Claude Test' }, { id: 'codex-test', agent: 'codex', model: 'gpt-test', effort: 'medium', label: 'GPT Test' }], get() { return this.value; }, set(next) { this.value = next; } };
+  const hub = new CliHub({ store, promptStore: { get: () => ({}), set() {} }, cacheStore: { get: () => store.value, set() {} }, broadcast() {}, accounts: f.accounts });
+  try {
+    await f.accounts.markUnavailable('codex', { kind: 'plan', reason: 'Your plan or subscription no longer covers it.', detail: 'not supported' });
+    hub.connectionsChanged();
+    assert.deepEqual(f.accounts.enabledAgents(), ['claude', 'gemini']);
+    assert.equal(f.accounts.isEnabled('codex'), false);
+    assert.equal(f.accounts.isUnavailable('codex'), true);
+    assert.deepEqual(MODEL_CATALOG.map(entry => entry.agent), ['claude']);
+    assert.deepEqual(hub.available().map(entry => entry.agent), ['claude']);
+    const provider = f.messages.at(-1).providers.codex;
+    assert.equal(provider.enabled, true, 'Settings still lists it as added');
+    assert.equal(provider.unavailable.kind, 'plan');
+    assert.equal(route('Fix the backend parser', {}, 'auto', f.accounts.enabledAgents()).agent, 'claude');
+    assert.equal(fixture(f.saved()).accounts.isUnavailable('codex'), true, 'remembered across restarts');
+    await f.accounts.check();
+    assert.equal(f.checks.some(check => check.file === f.paths.codex), true, 'its sign-in is still checked');
+    await f.accounts.restore('codex');
+    hub.connectionsChanged();
+    assert.equal(MODEL_CATALOG.length, 2);
+    assert.equal(f.accounts.snapshot().providers.codex.unavailable, null);
+    await f.accounts.markUnavailable('codex', { kind: 'auth', reason: 'x', detail: '' });
+    await f.accounts.connect('codex');
+    assert.equal(f.accounts.isUnavailable('codex'), false, 'signing in again clears it');
+    await f.accounts.markUnavailable('codex', { kind: 'auth', reason: 'x', detail: '' });
+    await f.accounts.remove('codex');
+    assert.equal(f.accounts.snapshot().providers.codex.unavailable, null, 'removing a CLI forgets it');
+    await f.accounts.markUnavailable('codex', { kind: 'plan', reason: 'x', detail: '' });
+    assert.equal(f.accounts.isUnavailable('codex'), false, 'a CLI that was not added cannot become unavailable');
+  } finally { setEnabledAgents(['claude', 'codex', 'gemini']); }
+});
+
+test('a signed-in CLI whose plan ended is hidden up front, and comes back once the plan does', async () => {
+  const fs = require('node:fs'), os = require('node:os'), path = require('node:path');
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'clanker-plan-'));
+  fs.mkdirSync(path.join(home, '.codex'));
+  const token = (plan) => `x.${Buffer.from(JSON.stringify({ 'https://api.openai.com/auth': { chatgpt_plan_type: plan } })).toString('base64url')}.y`;
+  const writeAuth = (plan) => fs.writeFileSync(path.join(home, '.codex', 'auth.json'), JSON.stringify({ auth_mode: 'chatgpt', tokens: { access_token: token(plan) } }));
+  try {
+    writeAuth('free');
+    let status = '{"loggedIn":true,"authMethod":"claude.ai","subscriptionType":"pro"}';
+    const f = fixture({ enabled: ['claude', 'codex'] });
+    f.accounts.home = home;
+    f.accounts.run = async () => ({ ok: true, stdout: status });
+    await f.accounts.check();
+    assert.deepEqual(f.accounts.enabledAgents(), ['claude'], 'Codex login still says signed in, the plan says Free');
+    assert.equal(f.accounts.unavailable.codex.kind, 'plan');
+    assert.match(f.accounts.snapshot().providers.codex.unavailable.reason, /Plus/);
+    assert.equal(f.saved().unavailable.codex.source, 'plan', 'remembered across restarts');
+
+    status = '{"loggedIn":true,"authMethod":"claude.ai","subscriptionType":"free"}';
+    await f.accounts.check();
+    assert.deepEqual(f.accounts.enabledAgents(), [], 'any provider can declare its own plan check');
+
+    writeAuth('plus'); status = '{"loggedIn":true,"authMethod":"claude.ai","subscriptionType":"max"}';
+    await f.accounts.check();
+    assert.deepEqual(f.accounts.enabledAgents(), ['claude', 'codex'], 'a plan flag clears itself');
+
+    await f.accounts.markUnavailable('codex', { kind: 'credits', reason: 'x', detail: '' });
+    await f.accounts.check();
+    assert.equal(f.accounts.isUnavailable('codex'), true, 'a failed-turn flag waits for Try again');
+    await f.accounts.restore('codex');
+    assert.equal(f.accounts.isUnavailable('codex'), false);
+
+    await f.accounts.markUnavailable('codex', { kind: 'credits', reason: 'x', detail: '' });
+    writeAuth('free');
+    await f.accounts.restore('codex'); // Try again while the plan is still missing
+    assert.equal(f.accounts.isUnavailable('codex'), true);
+  } finally { fs.rmSync(home, { recursive: true, force: true }); }
+});
+
+test('Antigravity is checked through its language server: a tier that unlocks no model is flagged', async () => {
+  const status = (tier, allowed) => ({ userStatus: { planStatus: { planInfo: { teamsTier: tier } }, cascadeModelConfigData: { clientModelConfigs: allowed.map(allowedTiers => ({ allowedTiers })) } } });
+  let answer = status('TEAMS_TIER_PRO', [['TEAMS_TIER_PRO', 'TEAMS_TIER_TEAMS'], ['TEAMS_TIER_TEAMS']]);
+  const f = fixture({ enabled: ['gemini'] });
+  f.paths.gemini = 'C:/agy/agy.exe';
+  f.accounts.languageServer = async (rpc) => (rpc === 'GetUserStatus' ? answer : null);
+  await f.accounts.check();
+  assert.equal(f.accounts.isUnavailable('gemini'), false, 'one allowed model is enough');
+  answer = status('TEAMS_TIER_FREE', [['TEAMS_TIER_PRO'], ['TEAMS_TIER_TEAMS']]);
+  await f.accounts.check();
+  assert.equal(f.accounts.unavailable.gemini.kind, 'plan');
+  answer = null; // Antigravity not running: no verdict, the flag stays as it was
+  await f.accounts.check();
+  assert.equal(f.accounts.isUnavailable('gemini'), true);
+  answer = status('TEAMS_TIER_PRO', [['TEAMS_TIER_PRO']]);
+  await f.accounts.check();
+  assert.equal(f.accounts.isUnavailable('gemini'), false, 'clears itself');
+});
+
+test('an added CLI that fails its status check carries the exit code and a one-click fix for the usage ring', async () => {
+  const f = fixture({ enabled: ['claude', 'codex', 'gemini'], completed: true });
+  f.paths.gemini = null;
+  f.accounts.run = async file => (file.includes('claude') ? { ok: true, code: 0, stdout: '{"loggedIn":true}' } : { ok: false, code: 1, stdout: '', stderr: 'private error detail' });
+  await f.accounts.check();
+  const { providers } = f.accounts.snapshot();
+  assert.equal(providers.claude.fault, null, 'a working CLI has no fault');
+  assert.deepEqual(providers.codex.fault, { kind: 'signin', expired: false, code: 1, title: 'Not signed in', detail: 'Codex has no signed-in account. Sign in with your browser and it works again.', action: 'fixCli', label: 'Sign in', steps: ['Press the button to open your browser and sign in.'] });
+  assert.deepEqual([providers.gemini.fault.title, providers.gemini.fault.code, providers.gemini.fault.label], ['Not installed', null, 'Install & sign in']);
+  assert.equal(JSON.stringify(f.messages).includes('private error detail'), false);
+
+  f.accounts.run = async () => ({ ok: false, code: 1, stdout: '', stderr: CRASH });
+  await f.accounts.check();
+  const broken = f.accounts.snapshot().providers.codex.fault;
+  assert.deepEqual([broken.title, broken.code, broken.label], ['Cannot start', 1, 'Repair & sign in']);
+  assert.match(broken.detail, /Missing optional dependency @openai\/codex-win32-x64/);
+
+  await f.accounts.markUnavailable('claude', { kind: 'plan', reason: 'Plan ended.', detail: 'Renew it.' });
+  assert.deepEqual(f.accounts.snapshot().providers.claude.fault, { kind: 'plan', code: null, title: 'Plan ended.', detail: 'Renew it.', action: 'restoreCli', label: 'Try again', steps: ['Fix the plan or subscription, then press the button.'] });
+  await f.accounts.remove('codex');
+  assert.equal(f.accounts.snapshot().providers.codex.fault, null, 'a removed CLI shows no ring at all');
 });

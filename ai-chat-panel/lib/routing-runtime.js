@@ -3,6 +3,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { execFile } = require('node:child_process');
 const { Router, config, redact, windowOf, privateProject } = require('./routing');
+const { NeuronLedger, WorkContextClassifier } = require('./work-context');
 
 // Native Windows image copy. The destination receives the original attachment.
 function imageCopy(state, c) {
@@ -37,6 +38,8 @@ function runtime(context, getModels, dir) {
   const secretEnv={groqApiKey:'GROQ_API_KEY',routingCloudflareAccount:'CLOUDFLARE_ACCOUNT_ID',routingCloudflareToken:'CLOUDFLARE_API_TOKEN'};
   const secrets={get:async key=>await context.secrets.get(key)||process.env[secretEnv[key]]||''};
   const router=new Router({getConfig,secrets,store:{get:()=>context.globalState.get('routingUsage',{}),set:u=>void context.globalState.update('routingUsage',u)},image:imageCopy,log});
+  // Off until the extension confirms the free-plan setting (extension.js wires enabled/isLive/onChange).
+  const workContext=new WorkContextClassifier({router,ledger:new NeuronLedger(path.join(dir,'work-context-usage.json')),enabled:()=>false});
   const summaryPending=new WeakSet();
   const listeners=new Set();
   const changed=()=>{for(const listener of listeners)listener();};
@@ -60,9 +63,9 @@ function runtime(context, getModels, dir) {
     } catch { /* local compact handoff remains available */ }
     finally { chat.routingSummaryAt=chat.messages?.length; summaryPending.delete(chat); }
   }
-  return {router,getConfig,attachVoice(client){
+  return {router,workContext,getConfig,attachVoice(client){
     router.onGroqResponse=response=>client.reportRateLimit?.({kind:'chat',status:response.status,headers:response.headers});
-    client.setChatSpill({callChat:body=>router.call('groq',{messages:body.messages,max_tokens:body.max_tokens,temperature:body.temperature})});
+    client.setChatSpill({callChat:(body,{timeoutMs}={})=>router.call('groq',{messages:body.messages,max_tokens:body.max_tokens,temperature:body.temperature,timeout_ms:timeoutMs})});
   },configFile:settings.file,prepareSummary,
     /** The composer's switch (and Visor's): the mode, and whether a service is connected to act on it. */
     async mode(){return {mode:getConfig().router_mode,connected:await connected()};},

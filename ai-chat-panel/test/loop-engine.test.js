@@ -87,6 +87,35 @@ test('find only never edits anything and finishes after one complete pass', asyn
   assert.equal(fs.existsSync(path.join(p.dir, 'investigations', 'run1', 'changes.patch')), false);
 });
 
+test('scouts stay paused or queued until admitted and await output before being shown as responding', async t => {
+  const p = project(t), h = harness(p, { scoutFindings: {} });
+  let enterGate, releaseGate;
+  const entered = new Promise(resolve => { enterGate = resolve; });
+  const held = new Promise(resolve => { releaseGate = resolve; });
+  let latest, calls = 0;
+  let scoutTokens = 0;
+  const onProgress = (_stage, live) => { latest = live; scoutTokens = live.scoutTokens || scoutTokens; };
+  const analyze = async options => {
+    calls++;
+    const id = path.basename(options.cwd);
+    assert.equal(latest.agents.find(agent => agent.id === id).state, 'waiting', 'an admitted request awaits model output');
+    if (calls === 1) assert.ok(latest.agents.some(agent => agent.state === 'queued'));
+    assert.match(latest.note, /awaiting response/);
+    options.onStatus('running');
+    assert.equal(latest.agents.find(agent => agent.id === id).state, 'running');
+    assert.match(latest.note, /responding/);
+    return h.deps.analyze(options);
+  };
+  const cycle = fullCycle(h.context({}, { onProgress, slots: new (require('../lib/loop-exec').Semaphore)(1), gate: () => { enterGate(); return held; } }), { ...h.deps, analyze });
+  await entered;
+  assert.ok(latest.agents.some(agent => agent.state === 'paused'));
+  assert.ok(latest.agents.every(agent => agent.state !== 'running' && agent.state !== 'waiting'));
+  releaseGate();
+  await cycle;
+  assert.ok(calls > 1);
+  assert.equal(scoutTokens, calls * 5000, 'completed scout usage is visible before the whole run finishes');
+});
+
 test('a candidate the verifier refutes is never fixed', async t => {
   const p = project(t); const h = harness(p);
   const refuting = async options => options.schema === CONFIRM_SCHEMA

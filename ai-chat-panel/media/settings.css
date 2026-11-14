@@ -1,6 +1,25 @@
 /* Chat Settings: the popup opened from the launcher's gear (see settings.js). Tokens and .pill-track
    come from style.css. Three tabs of glass cards; status is a small tag, actions are pills. */
 
+.cs-cloud-warmup { display: grid; gap: 14px; padding: 4px 16px 18px; min-width: 0; scroll-margin-top: 76px; }
+.cs-cloud-warmup[hidden] { display: none; }
+.cs-cloud-warmup p { margin: 0; overflow-wrap: anywhere; }
+.cs-cloud-warning { padding: 12px; border: 1px solid color-mix(in srgb, var(--accent) 35%, transparent); border-radius: 14px; background: color-mix(in srgb, var(--accent) 8%, transparent); }
+.cs-cloud-actions { flex-wrap: wrap; gap: 8px; }
+.cs-cloud-actions .cs-btn { white-space: normal; text-align: center; }
+.cs-cloud-calendar { display: grid; gap: 12px; min-width: 0; margin: 0; padding: 12px; border: 1px solid var(--border-subtle, rgba(128,128,128,.2)); border-radius: 16px; }
+.cs-cloud-calendar legend { font-size: 12px; font-weight: 600; padding: 0 5px; }
+.cs-cloud-zone { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; font-size: 12px; }
+.cs-cloud-zone .cs-area { padding: 7px 9px; width: 100%; }
+.cs-cloud-days { display: grid; gap: 12px; }
+.cs-cloud-day { display: grid; grid-template-columns: minmax(54px, 1fr) minmax(0, 1.15fr) minmax(0, 1.15fr); gap: 6px; align-items: center; }
+.cs-cloud-day label { display: flex; gap: 4px; align-items: center; min-width: 0; font-size: 11px; }
+.cs-cloud-day label:not(:first-child) { flex-direction: column; align-items: stretch; }
+.cs-cloud-day .cs-select { width: 100%; max-width: none; padding: 0 4px; }
+.cs-cloud-day input { margin: 0; accent-color: var(--accent); }
+.cs-cloud-preview { grid-column: 1 / -1; font-size: 10px; }
+.cs-cloud-providers .cs-row { padding: 10px 0; }
+
 /* The other popups set a count here; this one has none, and an empty badge is just a dark dot. */
 .cs-tabs { overflow-x: auto; }
 #settingsModal .fs-modal-count:empty { display: none; }
@@ -99,6 +118,10 @@
 .cs-row { display: flex; align-items: center; gap: 12px; padding: 13px 14px; }
 .cs-row + .cs-row { border-top: 1px solid rgba(255, 255, 255, 0.06); }
 .cs-row[hidden] { display: none; }
+/* A row whose control is wider than the narrow popup leaves room: the description keeps a readable width, and the control wraps below it. */
+.cs-row-wrap { flex-wrap: wrap; }
+.cs-row-wrap > .cs-info { flex: 1 1 150px; }
+.cs-row-wrap > .pill-track { margin-left: auto; max-width: 100%; }
 
 .cs-icon {
   display: grid;
@@ -316,6 +339,7 @@
 .cs-switch[aria-checked='true']::after { transform: translateX(16px); }
 .cs-switch:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .time-format-picker,
+.ring-source-picker,
 .voice-mode-picker,
 .permission-mode-picker {
   display: flex;
@@ -326,6 +350,7 @@
   border: 1px solid var(--eo-border);
 }
 .format-pill,
+.ring-source-pill,
 .mode-pill,
 .permission-pill {
   padding: 4px 10px;
@@ -338,11 +363,14 @@
   transition: color 0.15s var(--eo-ease);
 }
 .format-pill:hover,
+.ring-source-pill:hover,
 .mode-pill:hover,
 .permission-pill:hover { color: var(--text-primary); }
 .format-pill.active,
+.ring-source-pill.active,
 .mode-pill.active,
 .permission-pill.active { color: var(--text-primary); }
+.ring-source-pill { white-space: nowrap; padding-inline: 8px; }
 
 /* Voice: the hotkey as a key cap, the Groq key field, and the day's usage as bars like the quota rings'. */
 .cs-keycap { min-width: 96px; justify-content: center; font-variant-numeric: tabular-nums; }
@@ -563,6 +591,9 @@ summary:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; 
    instead of the browser's grey native popup. The card lifts its clipping while a list is open. */
 .cs-card:has(.cs-dd.is-open) { overflow: visible; position: relative; z-index: 6; }
 .cs-dd { position: relative; flex: 0 1 210px; min-width: 0; }
+.cs-row:has(> [data-role='micSelect']) { flex-wrap: wrap; row-gap: 8px; } /* "Automatic (device name)" is long: beside the text when there is room, else on a line of its own */
+.cs-row > [data-role='micSelect'] { flex: 1 1 290px; max-width: 380px; margin-left: auto; }
+.cs-row:has(> [data-role='micSelect']) .cs-info { flex: 1 1 200px; }
 .cs-dd-trigger { display: flex; align-items: center; justify-content: space-between; gap: 8px; width: 100%; height: 32px; padding: 0 10px 0 13px; border: 1px solid rgba(255, 255, 255, 0.14); border-radius: var(--pill); background: rgba(0, 0, 0, 0.22); color: var(--text-primary); font: 500 12.5px var(--font-text); cursor: pointer; transition: background 0.15s var(--eo-ease), border-color 0.15s var(--eo-ease); }
 .cs-dd-trigger:hover { background: rgba(255, 255, 255, 0.07); border-color: rgba(255, 255, 255, 0.22); }
 .cs-dd.is-open .cs-dd-trigger { border-color: var(--accent); background: rgba(10, 132, 255, 0.1); }
@@ -632,10 +663,11 @@ summary:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; 
 .cs-switch.is-small::after { top: 3px; left: 3px; width: 14px; height: 14px; }
 .cs-switch.is-small[aria-checked='true']::after { transform: translateX(12px); }
 .cs-dict .cs-status { padding: 4px 14px 10px; }
-.cs-dict .cs-usage { padding: 4px 14px 14px; gap: 10px; }
-.cs-dict .cs-usage[hidden] { display: none; }
-.cs-dict .cs-usage-foot { margin: 0; }
 .cs-dict-scan { border-top: 1px solid rgba(255, 255, 255, 0.06); }
 .cs-dict-projects { display: flex; flex-wrap: wrap; gap: 6px; padding: 0 14px 12px 60px; }
 .cs-dict-actions { padding-left: 14px; padding-bottom: 14px; }
+.cs-api-value-body { padding: 0 16px 16px; }
+.cs-api-value-total { margin: 8px 0 4px; font: 600 28px var(--font-text); color: var(--text-primary); font-variant-numeric: tabular-nums; }
+.cs-api-value-rows .cs-row { padding: 10px 0; justify-content: space-between; }
+.cs-api-value-amount { color: var(--text-secondary); font-variant-numeric: tabular-nums; }
 @media (prefers-reduced-motion: reduce) { .cs-dict-row { transition: none; } }

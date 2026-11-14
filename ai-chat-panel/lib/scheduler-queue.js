@@ -23,7 +23,8 @@ function safeName(name) {
 /** A small, disk-backed FIFO queue.  Attachments are copied before the task is
  * made visible, so a queued task never relies on a browser-temp file. */
 class SchedulerQueue {
-  constructor({ workspaceDir = process.cwd(), sessionDir } = {}) {
+  constructor({ workspaceDir = process.cwd(), sessionDir, keepAwake = null } = {}) {
+    this.keepAwake = keepAwake; this.awake = null; this.disposed = false;
     this.workspaceDir = path.resolve(workspaceDir);
     this.sessionDir = path.resolve(sessionDir || path.join(this.workspaceDir, '.clanker', 'session'));
     this.filePath = path.join(this.sessionDir, 'scheduler-queue.json');
@@ -72,7 +73,9 @@ class SchedulerQueue {
         }
       }
     }
+    if (alignClaudeResets(this.tasks)) changed = true;
     if (changed) await this.persist();
+    this.syncAwake();
   }
 
   async enqueue(task, rawAttachments = []) {
@@ -95,6 +98,7 @@ class SchedulerQueue {
       const scheduled = {
         id,
         model: task.model,
+        ...(task.dispatchTrigger === 'quota-reset' && task.resetWindow === '7d' ? { resetWindow: '7d' } : {}),
         ...(task.projectId ? { projectId: String(task.projectId) } : {}),
         ...(task.workspaceDir ? { workspaceDir: String(task.workspaceDir) } : {}),
         ...(task.modelId && task.modelId !== 'auto' ? { modelId: String(task.modelId) } : {}), // P17-X: exact tier for badges
@@ -161,8 +165,7 @@ class SchedulerQueue {
     await this.load();
     if (!MODELS.has(model)) return null;
     const now = Date.now();
-    const task = this.tasks.find((item) => item.status === 'pending' && item.model === model && isDue(item, now) &&
-      (isContinue(item) || !this.tasks.some(other => other.chatId === item.chatId && ACTIVE.has(other.status) && isContinue(other))));
+    const task = this.tasks.find((item) => item.status === 'pending' && item.model === model && isDue(item, now) && !waitsForContinue(item, this.tasks));
     return task ? copyTask(task) : null;
   }
 
@@ -260,7 +263,17 @@ class SchedulerQueue {
       task.attachments = attachments;
       if (turn?.modelId && turn.modelId !== 'auto') task.modelId = String(turn.modelId);
       const model = require('./model-catalog').modelOption(task.modelId)?.agent;
-      if (MODELS.has(model)) task.model = model;
+      if (MODELS.has(model)) {
+        if (model !== task.model && task.dispatchTrigger === 'quota-reset') {
+          // A reset deadline belongs to the exhausted provider, not the prompt.
+          task.dispatchTrigger = 'fixed-time';
+          task.dispatchTime = new Date().toISOString();
+          delete task.notBefore;
+          delete task.resetWindow;
+          delete task.retryAfter;
+        }
+        task.model = model;
+      }
       task.editing = editing === true;
     });
   }
@@ -272,15 +285,51 @@ class SchedulerQueue {
   }
 
   async persist() {
+    alignClaudeResets(this.tasks);
     await fs.mkdir(this.sessionDir, { recursive: true });
     const temporary = `${this.filePath}.${process.pid}.${Date.now()}.tmp`;
     await fs.writeFile(temporary, JSON.stringify(this.tasks, null, 2), 'utf8');
     await fs.rename(temporary, this.filePath);
+    this.syncAwake();
   }
+
+  syncAwake() {
+    const needed = !this.disposed && this.tasks.some(task => ['pending', 'dispatched'].includes(task.status));
+    if (needed && !this.awake && this.keepAwake) this.awake = this.keepAwake();
+    else if (!needed && this.awake) { this.awake.release(); this.awake = null; }
+  }
+
+  dispose() { this.disposed = true; this.syncAwake(); }
 }
 
+// Claude's /usage and cached reset readings can disagree by one minute. Keep one conservative deadline per batch.
+function alignClaudeResets(tasks) {
+  const groups = new Map();
+  for (const task of tasks) {
+    if (task.model !== 'claude' || task.status !== 'pending' || task.dispatchTrigger !== 'quota-reset' || !Number.isFinite(Date.parse(task.notBefore))) continue;
+    const key = JSON.stringify([task.chatId, task.resetWindow || '5h']);
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(task);
+  }
+  let changed = false;
+  for (const group of groups.values()) {
+    group.sort((a, b) => Date.parse(a.notBefore) - Date.parse(b.notBefore));
+    for (let start = 0; start < group.length;) {
+      let end = start + 1;
+      while (end < group.length && Date.parse(group[end].notBefore) - Date.parse(group[start].notBefore) <= 60000) end++;
+      const deadline = group[end - 1].notBefore;
+      for (let i = start; i < end; i++) if (Date.parse(group[i].notBefore) !== Date.parse(deadline)) { group[i].notBefore = deadline; changed = true; }
+      start = end;
+    }
+  }
+  return changed;
+}
 function copyTask(task) { return { ...task, attachments: task.attachments.map((attachment) => ({ ...attachment })) }; }
 function isContinue(task) { return Boolean(task?.chatId) && /^\s*continue\s*[.!]?\s*$/i.test(task.prompt); }
+/** Later prompts of a chat must not reach the model before that chat's "continue" has finished the interrupted work. */
+function waitsForContinue(task, tasks) {
+  return !isContinue(task) && tasks.some(other => other.chatId === task.chatId && ACTIVE.has(other.status) && isContinue(other));
+}
 function isDue(task, now) {
   if (task.editing || !String(task.prompt || '').trim()) return false;
   if (task.notBefore && Date.parse(task.notBefore) > now) return false;
@@ -293,4 +342,4 @@ function mimeFor(name) {
   return ({ '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.webp': 'image/webp', '.gif': 'image/gif', '.svg': 'image/svg+xml', '.pdf': 'application/pdf', '.json': 'application/json', '.md': 'text/markdown', '.txt': 'text/plain' })[ext] || 'application/octet-stream';
 }
 
-module.exports = { SchedulerQueue, isDue, MAX_QUEUE_SIZE, MAX_ATTACHMENT_BYTES, ACTIVE_STATUSES: [...ACTIVE] };
+module.exports = { SchedulerQueue, isDue, waitsForContinue, MAX_QUEUE_SIZE, MAX_ATTACHMENT_BYTES, ACTIVE_STATUSES: [...ACTIVE] };

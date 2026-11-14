@@ -117,6 +117,10 @@ try {
   // The choice survives panel reload; hovering the new default offers dictate at the top.
   await page.reload();
   assert.equal(await page.locator('#micWrap').evaluate(el => el.classList.contains('polish-default')), true);
+  await page.mouse.move(2, 2);
+  await page.waitForTimeout(450);
+  assert.equal(await page.locator('#micWrap').evaluate(el => getComputedStyle(el, '::before').opacity), '0', 'resting polish has no circle outline');
+  if (shot('default-rest')) await page.screenshot({ path: shot('default-rest'), clip: { x: 0, y: 360, width: 520, height: 200 } });
   await polish.hover();
   await page.waitForTimeout(450);
   const [polishDefault, dictateAlternate] = await Promise.all([polish.boundingBox(), mic.boundingBox()]);
@@ -127,6 +131,7 @@ try {
   assert.equal(await page.locator('#micWrap').evaluate(el => el.classList.contains('polish-default')), false, 'dictate restores the default');
   assert.equal(await visible(), false, 'polish retracts after restoring dictate');
   assert.equal(await page.evaluate(() => window.sent.filter(m => m.type === 'micToggle').length), 1);
+  await send({ type: 'micState', state: 'idle' }); // the click shows "opening the microphone" until the host answers; this harness has no host
   assert.ok(Math.abs((await mic.boundingBox()).y - polishDefault.y) < 1, 'dictate returns to the original position');
 
   // Keyboard users can reveal the same pill, and external recording keeps the mic accessible.

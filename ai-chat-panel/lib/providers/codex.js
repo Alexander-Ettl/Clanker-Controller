@@ -2,7 +2,26 @@
 
 // Codex (OpenAI). See lib/providers/index.js for what each field means.
 
-const { cap } = require('./shared.js');
+const fs = require('node:fs');
+const path = require('node:path');
+const { cap, launchFailure } = require('./shared.js');
+
+/**
+ * Codex needs ChatGPT Plus or above, and `login status` keeps saying "Logged in" after a plan ends. The plan is in the
+ * sign-in token Codex keeps on disk (refreshed whenever Codex runs), so it can be read without spending a prompt.
+ * Returns null when it is fine (API key sign-in, a paid plan) and undefined when it cannot be told.
+ */
+function entitlement({ home, env = process.env }) {
+  try {
+    const auth = JSON.parse(fs.readFileSync(path.join(env.CODEX_HOME || path.join(home, '.codex'), 'auth.json'), 'utf8'));
+    if (auth.OPENAI_API_KEY || (auth.auth_mode && auth.auth_mode !== 'chatgpt')) return null;
+    const claims = (token) => { try { return JSON.parse(Buffer.from(String(token).split('.')[1], 'base64url').toString('utf8'))['https://api.openai.com/auth'] || {}; } catch { return {}; } };
+    const plan = String(claims(auth.tokens?.access_token).chatgpt_plan_type || claims(auth.tokens?.id_token).chatgpt_plan_type || '').toLowerCase();
+    if (!plan) return undefined;
+    if (plan !== 'free') return null;
+    return { kind: 'plan', reason: 'Needs ChatGPT Plus or above.', detail: 'This account is on the Free plan (chatgpt_plan_type: free). If you subscribed again, sign in to Codex again, then press Try again.' };
+  } catch { return undefined; }
+}
 
 /** `codex debug models` JSON -> one entry per listed model and reasoning effort (normalized by the caller). */
 function parseModels(text) {
@@ -32,8 +51,10 @@ module.exports = {
   ],
   npmPackage: '@openai/codex',
   login: ['login'],
-  authStatus: { args: ['login', 'status'], interpret: (result) => (result.ok ? 'connected' : 'signin') },
-  install: 'npm.cmd install -g @openai/codex; if ($LASTEXITCODE -eq 0) { & "$env:APPDATA\\npm\\codex.cmd" login }',
+  authStatus: { args: ['login', 'status'], interpret: (result) => (result.ok ? 'connected' : launchFailure(result.stderr || result.stdout) ? 'broken' : 'signin') },
+  entitlement,
+  // Also the repair for a damaged install: an interrupted npm update leaves a `.codex-*` folder behind and drops the platform binary.
+  install: 'Remove-Item -Path "$env:APPDATA\\npm\\node_modules\\@openai\\.codex-*" -Recurse -Force -ErrorAction SilentlyContinue; npm.cmd install -g @openai/codex@latest; if ($LASTEXITCODE -eq 0) { & "$env:APPDATA\\npm\\codex.cmd" login }',
   discoverModels: async ({ file, runCli }) => {
     const result = await runCli(file, ['debug', 'models'], 30000);
     return result.ok ? parseModels(result.stdout) : null;

@@ -54,6 +54,12 @@
   // ring. The chat stays bound to its own project. Fed by 'project' and the history snapshots.
   const projectList = document.createElement('div');
   projectList.className = 'project-pill'; projectList.setAttribute('role', 'list');
+  let railPinnedProjects = [], projectModal = null;
+  let railProjectsLoaded = false;
+  // A pushpin standing upright: the head fills when the project is pinned (CSS), the needle stays a line.
+  const PIN_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path class="pin-head" d="M9.2 3.5h5.6l-.5 6 3.2 3.6H6.5l3.2-3.6z"/><path d="M12 13.1v7.4"/></svg>';
+  const SEARCH_SVG = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true"><circle cx="7" cy="7" r="4.5"/><path d="m10.5 10.5 3 3"/></svg>';
+  const PLUS_SVG = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" aria-hidden="true"><path d="M8 3v10M3 8h10"/></svg>';
   const projectFocus = document.createElement('span');
   projectFocus.className = 'project-focus'; projectFocus.setAttribute('aria-hidden', 'true');
   const railIconsLoaded = new Map(); // icon data URI -> whether it is too dark to read on the tile
@@ -104,15 +110,29 @@
     }
     return mark;
   }
+  // The rail's recent chats (launcher.js) wear the same project marks in their hover preview.
+  let railMarks = '';
+  window.railProjectsReady = () => railProjectsLoaded;
+  window.railProjectMark = (id) => {
+    const project = railProjects.find((item) => item.id === id);
+    if (!project) return null;
+    const icon = document.createElement('span');
+    icon.className = 'history-project-icon'; icon.style.setProperty('--hue', projectHue(id));
+    icon.append(projectMark(project));
+    return icon;
+  };
   // The card's width comes from its name. It is set before the hover, so the width transition never has to change its target.
   const sizePeek = (item) => { const label = item.querySelector('.project-peek-text span'); if (label) item.style.setProperty('--peek-w', `${Math.min(260, Math.max(150, label.scrollWidth + 18 + 34 + 40 + 6))}px`); };
   function renderProjectList() {
+    if (!railProjectsLoaded) return;
     if (projectEditing) return;
     const chat = railSessions.find((session) => session.id === railChatId);
     const touched = new Set(chat?.touchedProjectIds || []);
     const running = new Set(railSessions.filter((session) => session.state && session.id !== railChatId).map((session) => session.projectId));
     const target = busy ? railWorking || railActiveProject : null;
-    const items = railProjects.map((project) => {
+    const visible = [railProjects.find(project => project.id === railActiveProject), ...railPinnedProjects.map(id => railProjects.find(project => project.id === id))]
+      .filter((project, index, projects) => project && projects.findIndex(item => item?.id === project.id) === index).slice(0, 3);
+    const items = visible.map((project) => {
       const active = project.id === railActiveProject;
       const item = document.createElement('div');
       item.className = 'project-item'; item.setAttribute('role', 'listitem'); item.dataset.id = project.id;
@@ -171,30 +191,41 @@
       }
       return item;
     });
-    const add = document.createElement('div');
-    add.className = 'project-item is-add'; add.setAttribute('role', 'listitem');
-    add.innerHTML = '<button type="button" class="project-tile" title="Add a project" aria-label="Add a project"><span class="project-mark"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" aria-hidden="true"><path d="M8 3.5v9M3.5 8h9"/></svg></span></button>';
-    add.firstChild.addEventListener('click', () => { if (editingQueue) finishQueueEdit(); vscode.postMessage({ type: 'addProject' }); });
-    projectList.replaceChildren(projectFocus, ...items, add);
+    const all = document.createElement('div');
+    all.className = 'project-item is-all'; all.setAttribute('role', 'listitem');
+    const hiddenRunning = railProjects.filter(project => !visible.includes(project) && (running.has(project.id) || project.id === target)).length;
+    const label = `All projects · ${railProjects.length}${hiddenRunning ? ` · ${hiddenRunning} hidden project${hiddenRunning === 1 ? '' : 's'} running` : ''}`;
+    all.innerHTML = '<button type="button" class="project-tile" id="allProjectsBtn" aria-haspopup="dialog"><span class="project-mark"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true"><rect x="2" y="2" width="4.5" height="4.5" rx="1"/><rect x="9.5" y="2" width="4.5" height="4.5" rx="1"/><rect x="2" y="9.5" width="4.5" height="4.5" rx="1"/><rect x="9.5" y="9.5" width="4.5" height="4.5" rx="1"/></svg></span></button>';
+    all.firstChild.title = label; all.firstChild.setAttribute('aria-label', label);
+    all.firstChild.setAttribute('aria-expanded', String(projectModal?.el.hidden === false));
+    all.firstChild.addEventListener('click', () => { renderProjectGallery(); toggleModal(projectModal); });
+    if (hiddenRunning) { const dot = document.createElement('i'); dot.className = 'project-overflow-live'; all.append(dot); }
+    projectList.replaceChildren(projectFocus, ...items, all);
     items.forEach(sizePeek);
-    projectList.classList.toggle('is-busy', Boolean(target));
     const focusItem = target && items.find((item) => item.dataset.id === target);
+    projectList.classList.toggle('is-busy', Boolean(focusItem));
     if (focusItem) {
       projectFocus.style.transform = `translateY(${focusItem.offsetTop - 4}px)`;
       if (railWorkingShown && railWorkingShown !== target) focusItem.firstChild.animate([{ scale: '0.9' }, { scale: '1.06', offset: 0.55 }, { scale: '1' }], { duration: 520, easing: 'cubic-bezier(0.34, 1.36, 0.64, 1)' });
     }
     railWorkingShown = target;
+    renderProjectGallery();
   }
   const topbar = document.querySelector('.topbar');
   const railScroll = document.querySelector('.rail-scroll');
   if (railScroll) {
-    // The sidebar chat keeps its project in the rail under the usage and API value, labelled like the other sections.
+    // The sidebar chat keeps its project under the usage, labelled like the other sections.
     projectBar.classList.add('launcher-section', 'is-rail');
     const label = document.createElement('div');
     label.className = 'launcher-label'; label.textContent = 'Project';
     projectBar.prepend(label);
     projectBar.insertBefore(projectList, projectBtn);
-    railScroll.querySelector('.launcher-actions').before(projectBar);
+    projectBar.hidden = false;
+    projectBtn.hidden = true;
+    projectList.setAttribute('aria-busy', 'true');
+    projectList.setAttribute('aria-label', 'Projects');
+    projectList.innerHTML = Array.from({ length: 3 }, () => '<div class="project-item rail-skeleton" aria-hidden="true"><i class="rail-skeleton-tile skeleton"></i></div>').join('');
+    railScroll.querySelector('.launcher-section.is-grow').before(projectBar);
   } else if (topbar) topbar.prepend(projectBar); else transcriptEl.before(projectBar);
 
   const attachmentStrip = document.createElement('div');
@@ -233,9 +264,15 @@
   function openModal(modal) {
     const others = [...document.querySelectorAll('.fs-modal:not([hidden])')].filter((el) => el !== modal.el);
     if (!others.length) lastFocus = document.activeElement; // the first popup remembers where focus was; a switch keeps that
-    others.forEach((el) => { el.hidden = true; });
+    others.forEach((el) => {
+      if (['historyModal', 'projectsModal', 'agentsModal'].includes(el.id)) closeModal(el);
+      else el.hidden = true;
+    });
     document.getElementById('loopsBtn')?.setAttribute('aria-expanded', String(modal.el.id === 'loopsModal'));
+    document.getElementById('allProjectsBtn')?.setAttribute('aria-expanded', String(modal.el.id === 'projectsModal'));
     modal.el.hidden = false;
+    if (modal === historyModal) renderHistory(historySessions);
+    if (modal === projectModal) renderProjectGallery();
     modal.el.querySelector('.fs-modal-close').focus();
   }
   /** Opens the popup, or closes it when it is the one showing. Returns whether it is open now. */
@@ -246,10 +283,93 @@
   }
   function closeModal(el) {
     if (el.hidden) return;
+    el.querySelector('.history-card input, .project-gallery input')?.blur();
     el.hidden = true;
+    if (el.id === 'historyModal') historyModal.body.replaceChildren();
+    if (el.id === 'agentsModal') { agentPane.replaceChildren(); agentLog = null; }
+    if (el.id === 'projectsModal') projectModal.body.querySelector('.project-gallery').replaceChildren();
     if (el.id === 'loopsModal') document.getElementById('loopsBtn')?.setAttribute('aria-expanded', 'false');
+    if (el.id === 'projectsModal') document.getElementById('allProjectsBtn')?.setAttribute('aria-expanded', 'false');
     if (el.id === 'cliSetupModal') vscode.postMessage({ type: 'completeCliSetup' });
     if (lastFocus && document.contains(lastFocus)) lastFocus.focus();
+    else if (el.id === 'projectsModal') document.getElementById('allProjectsBtn')?.focus();
+  }
+  projectModal = createModal('projectsModal', 'All projects');
+  projectModal.body.innerHTML = `<div class="project-gallery-tools"><label class="project-gallery-searchbox">${SEARCH_SVG}<input class="project-gallery-search cs-field" type="search" aria-label="Search projects" placeholder="Find a project…"></label><span class="project-gallery-quota" title="Pinned favorites">${PIN_SVG}<span></span></span></div><p class="project-gallery-note">Pin up to two favorites. The current project always stays visible, and the others keep running.</p><div class="project-gallery"></div><div class="project-gallery-actions"><button type="button" class="cs-btn" data-action="add">${PLUS_SVG}Add project</button><button type="button" class="cs-btn is-quiet" data-action="manage">Manage projects</button></div>`;
+  const projectSearch = projectModal.body.querySelector('.project-gallery-search');
+  projectSearch.addEventListener('input', () => renderProjectGallery());
+  for (const action of ['add', 'manage']) projectModal.body.querySelector(`[data-action="${action}"]`).addEventListener('click', () => {
+    closeModal(projectModal.el);
+    if (editingQueue) finishQueueEdit();
+    vscode.postMessage({ type: action === 'add' ? 'addProject' : 'manageProjects' });
+  });
+  let galleryEditing = false;
+  function renderProjectGallery(focusAfter) {
+    if (!projectModal || projectModal.el.hidden || document.hidden) return;
+    if (!projectModal || galleryEditing) return; // a rename in progress keeps its field; its own save redraws
+    const grid = projectModal.body.querySelector('.project-gallery');
+    const focusId = focusAfter || document.activeElement.closest('.project-gallery-card')?.dataset.id;
+    const focusSelector = focusAfter ? '.project-gallery-edit' : ['.project-gallery-pin', '.project-gallery-edit', '.project-gallery-remove'].find(selector => document.activeElement.matches(selector)) || '.project-gallery-open';
+    const query = projectSearch.value.trim().toLocaleLowerCase();
+    const projects = railProjects.filter(project => `${project.name} ${project.root || ''}`.toLocaleLowerCase().includes(query));
+    projectModal.count.textContent = String(railProjects.length);
+    const quota = projectModal.body.querySelector('.project-gallery-quota');
+    quota.lastElementChild.textContent = `${railPinnedProjects.length} / 2`;
+    quota.classList.toggle('is-full', railPinnedProjects.length >= 2);
+    grid.replaceChildren(...projects.map(project => {
+      const card = document.createElement('div'); card.className = 'project-gallery-card'; card.dataset.id = project.id;
+      card.style.setProperty('--hue', projectHue(project.id));
+      const open = document.createElement('button'); open.type = 'button'; open.className = 'project-gallery-open';
+      const active = project.id === railActiveProject;
+      const sessions = railSessions.filter(session => session.projectId === project.id && session.state);
+      const state = sessions.some(session => session.state === 'waiting') ? 'Needs input' : sessions.length || (busy && (railWorking || railActiveProject) === project.id) ? 'Running' : '';
+      open.classList.toggle('is-active', active); if (active) open.setAttribute('aria-current', 'true');
+      open.title = `${project.name}${project.root ? `\n${project.root}` : '\nPlanning project'}`;
+      const name = document.createElement('span'); name.className = 'project-gallery-name'; name.textContent = project.name;
+      const status = document.createElement('span'); status.className = 'project-gallery-status'; status.classList.toggle('is-running', Boolean(state));
+      status.classList.toggle('is-waiting', state === 'Needs input');
+      status.textContent = active ? `Current project${state ? ` · ${state}` : ''}` : state || (project.root ? 'Ready' : 'Planning project');
+      const text = document.createElement('span'); text.className = 'project-gallery-text'; text.append(name, status);
+      open.append(projectMark(project), text);
+      open.addEventListener('click', () => {
+        closeModal(projectModal.el);
+        if (!active) { if (editingQueue) finishQueueEdit(); vscode.postMessage({ type: 'openProject', projectId: project.id }); }
+      });
+      const pin = document.createElement('button'); pin.type = 'button'; pin.className = 'project-gallery-pin'; pin.innerHTML = PIN_SVG;
+      const pinned = railPinnedProjects.includes(project.id);
+      card.classList.toggle('is-pinned', pinned);
+      pin.setAttribute('aria-pressed', String(pinned)); pin.setAttribute('aria-label', `${pinned ? 'Unpin' : 'Pin'} ${project.name}`);
+      pin.disabled = !pinned && railPinnedProjects.length >= 2;
+      pin.title = pin.disabled ? 'Unpin a favorite first' : `${pinned ? 'Unpin' : 'Pin'} ${project.name}`;
+      pin.addEventListener('click', () => vscode.postMessage({ type: 'pinProject', projectId: project.id, pinned: !pinned }));
+      // Rename and Remove appear when the row is hovered or focused, left of the pin. The chat's own project cannot be removed.
+      const more = document.createElement('span'); more.className = 'project-gallery-more';
+      const tool = (cls, icon, label) => { const button = document.createElement('button'); button.type = 'button'; button.className = `project-gallery-tool ${cls}`; button.innerHTML = icon; button.title = label; button.setAttribute('aria-label', label); more.append(button); return button; };
+      tool('project-gallery-edit', PENCIL_SVG, `Rename ${project.name}`).addEventListener('click', () => {
+        const input = document.createElement('input');
+        input.className = 'project-gallery-rename'; input.value = project.name; input.maxLength = 120; input.spellcheck = false;
+        input.setAttribute('aria-label', 'Project name');
+        let done = false;
+        const finish = (save, refocus) => {
+          if (done) return; done = true; galleryEditing = false;
+          const next = input.value.trim();
+          if (save && next && next !== project.name) { project.name = next; vscode.postMessage({ type: 'renameProject', projectId: project.id, name: next }); }
+          renderProjectGallery(refocus ? project.id : undefined);
+        };
+        input.addEventListener('keydown', (key) => {
+          if (key.key === 'Enter' || key.key === 'Escape') key.preventDefault(); // else Enter would also press the pencil focus returns to
+          if (key.key === 'Enter') finish(true, true); else if (key.key === 'Escape') finish(false, true);
+          key.stopPropagation();
+        });
+        input.addEventListener('blur', () => finish(true));
+        galleryEditing = true; card.classList.add('is-editing'); card.append(input); input.focus(); input.select();
+      });
+      if (!active) tool('project-gallery-remove is-danger', TRASH_SVG, `Remove ${project.name} from Clanker`).addEventListener('click', () => vscode.postMessage({ type: 'removeProject', projectId: project.id }));
+      card.append(open, more, pin);
+      return card;
+    }));
+    if (!projects.length) { const empty = document.createElement('p'); empty.className = 'project-gallery-note'; empty.textContent = query ? 'No matching projects.' : 'Add a project to get started.'; grid.append(empty); }
+    if (focusId) [...grid.children].find(card => card.dataset.id === focusId)?.querySelector(focusSelector)?.focus();
   }
   document.addEventListener('keydown', (event) => {
     if (event.key !== 'Escape') return;
@@ -276,8 +396,23 @@
   // When a task will actually fire: its fixed time, else its model's next quota reset.
   function fireTimeOf(task) {
     if (task.dispatchTrigger === 'fixed-time') return Date.parse(task.dispatchTime) || null;
+    // Keep the reset this task was scheduled for, even after the provider starts a new window.
+    const saved = Date.parse(task.notBefore);
+    if (Number.isFinite(saved)) return saved;
     const resetsAt = lastQuotas[task.model]?.resetsAt;
     return typeof resetsAt === 'number' ? resetsAt * 1000 : null;
+  }
+  function resetWaiting(task) {
+    return task?.dispatchTrigger === 'quota-reset' && (Date.parse(task.notBefore) > Date.now() || lastQuotas[task.model]?.remaining === 0 || lastQuotas[task.model]?.secondary?.remaining === 0);
+  }
+  function resetLabel(task) {
+    const at = fireTimeOf(task);
+    return at && at > Date.now() ? `at reset · ${formatCountdown(at - Date.now())}` : resetWaiting(task) ? 'waiting for usage' : 'ready · sends when chat is idle';
+  }
+  function turnQueueTitle() {
+    const scheduled = scheduledHere();
+    const ready = scheduled.filter(task => task.dispatchTrigger === 'quota-reset' ? !resetWaiting(task) && fireTimeOf(task) <= Date.now() : fireTimeOf(task) <= Date.now()).length;
+    return [turnQueue.length && `${turnQueue.length}${queuePaused ? ' queued · paused' : ' queued · sends after this turn'}`, scheduled.length - ready && `${scheduled.length - ready} scheduled`, ready && `${ready} ready`].filter(Boolean).join(' · ');
   }
   function formatCountdown(ms) {
     const s = Math.max(0, Math.floor(ms / 1000));
@@ -317,7 +452,7 @@
   let queuePinned = false; // opened from the launcher's clock: it stays open (empty) when the queue drains
   // P17-X: a live 1s countdown to whichever task (any agent) fires first.
   function tickQueueCountdown() {
-    const times = activeTasks().filter((task) => task.status === 'pending').map(fireTimeOf).filter(Boolean);
+    const times = activeTasks().filter((task) => task.status === 'pending').map(fireTimeOf).filter(at => at > Date.now());
     const next = times.length ? Math.min(...times) : null;
     const lines = next ? countdownLines(next - Date.now()) : [];
     const key = lines.length;
@@ -327,8 +462,19 @@
     queueCountdown.title = next ? formatCountdown(next - Date.now()) : '';
     document.querySelectorAll('.turn-queue-item.is-scheduled').forEach((row) => { // the strip's own countdowns
       const task = schedulerTasks.find((item) => item.id === row.dataset.taskId); const at = task && fireTimeOf(task);
-      if (at && task.dispatchTrigger === 'quota-reset') row.querySelector('.turn-queue-when').textContent = `at reset · ${formatCountdown(at - Date.now())}`;
+      if (task) renderQueueMark(row, true);
+      if (task?.dispatchTrigger === 'quota-reset') row.querySelector('.turn-queue-when').textContent = resetLabel(task);
     });
+    document.querySelectorAll('.turn-queue-item .is-primary').forEach(button => {
+      const row = button.closest('.turn-queue-item'), entry = row.queueEntry;
+      const agent = optionFor(entry?.modelId)?.agent;
+      button.disabled = row.classList.contains('is-scheduled') ? resetWaiting(entry) : !entry?.scheduled && schedulerTasks.some(task => task.status === 'pending' && task.chatId === currentChatId && task.model === agent && resetWaiting(task));
+    });
+    document.querySelectorAll('.queue-card .queue-take[data-reset-send]').forEach(button => {
+      button.disabled = resetWaiting(schedulerTasks.find(task => task.id === button.dataset.resetSend));
+    });
+    const heading = document.querySelector('.turn-queue-head > span');
+    if (heading && heading.textContent !== turnQueueTitle()) heading.textContent = turnQueueTitle();
     queueBtn.classList.toggle('is-pill', Boolean(next));
   }
   function renderQueueButton() {
@@ -444,13 +590,14 @@
     const take = (icon, label, title, type) => {
       const btn = document.createElement('button');
       btn.type = 'button'; btn.className = 'queue-delete queue-take'; btn.title = title; btn.innerHTML = `${icon}<span>${label}</span>`;
+      if (type === 'dispatchNowWithAutoRoute') { btn.dataset.resetSend = task.id; btn.disabled = resetWaiting(task); }
       btn.addEventListener('click', () => { card.classList.add('is-leaving'); vscode.postMessage({ type, taskId: task.id }); closeModal(queueModal.el); });
       return btn;
     };
     head.append(position, modelPill(task.model, task.modelId), when);
     if (pending) { // a dispatched task is already running
       head.append(
-        take(QUEUE_ICONS.steer, 'Send Now', 'Unschedule and send now via Auto (routes to a model with quota left)', 'dispatchNowWithAutoRoute'),
+        take(QUEUE_ICONS.steer, 'Send Now', 'Send when this prompt is ready', 'dispatchNowWithAutoRoute'),
         take(QUEUE_ICONS.unschedule, 'Unschedule', 'Move back into the composer as an editable draft', 'unscheduleToComposer'),
         remove);
     }
@@ -464,6 +611,7 @@
       promptEl.addEventListener('keydown', (event) => { if (event.key === 'Enter') { event.preventDefault(); beginEdit(card, task); } });
     }
     card.append(head, promptEl);
+    if (task.files?.length) card.append(queuedFilesBadge(task.files));
     return card;
   }
   // Drag-to-reorder within one agent's bundle; the store swaps only these tasks among their own slots.
@@ -501,6 +649,7 @@
   // Chat Settings: a popup like Manage Chats, opened from the launcher's gear. Its page is settings.js.
   const settingsModal = createModal('settingsModal', 'Chat Settings');
   const chatSettings = window.initChatSettings({ vscode, body: settingsModal.body });
+  vscode.postMessage({ type: 'requestApiValue' });
   const loopsModal = createModal('loopsModal', 'Loops');
   loopsModal.body.classList.add('cs');
   const loopsBtn = document.getElementById('loopsBtn');
@@ -611,7 +760,7 @@
     let text = '';
     if (scheduleTimer.mode) text = scheduleTimer.short();
     else {
-      const sent = activeTasks().filter((task) => task.status === 'pending' && task.chatId === currentChatId).map(fireTimeOf).filter(Boolean);
+      const sent = activeTasks().filter((task) => task.status === 'pending' && task.chatId === currentChatId && task.model === scheduleModel()).map(fireTimeOf).filter(at => at > Date.now());
       if (sent.length) text = countdownClock(Math.min(...sent) - Date.now());
     }
     if (scheduleTime.textContent !== text) scheduleTime.textContent = text;
@@ -621,6 +770,7 @@
 
   const AGENT_LABELS = AGENT_NAMES;
   const DEFAULT_PLACEHOLDER = promptInput.placeholder;
+  let editingQueue = null;
   let scheduleArmed = false;
   let pendingScheduleLabel = null;
   let pendingScheduleWhen = '';
@@ -646,8 +796,7 @@
       : armed ? `The next message is scheduled ${modeName}. Click for the next mode: usage reset, timer, calendar, off.` : 'Schedule the next message: click to choose when (usage reset, timer or calendar)';
     document.querySelector('.composer').classList.toggle('is-scheduled', armed);
     promptInput.placeholder = armed
-      ? `Schedule prompt for ${AGENT_LABELS[scheduleModel()]} (will auto-dispatch ${scheduleTimer.describe() || 'when quota resets'})\u2026` // the clock is drawn by CSS (.composer.is-scheduled)
-      : DEFAULT_PLACEHOLDER;
+      ? `Schedule prompt for ${AGENT_LABELS[scheduleModel()]} (will auto-dispatch ${scheduleTimer.describe() || 'when quota resets'})\u2026`      : DEFAULT_PLACEHOLDER;
     renderScheduleTime();
   }
 
@@ -668,7 +817,7 @@
   }
   // A reply that *is* the CLI's limit notice (one or two short lines), not an answer that happens to
   // talk about limits: those used to match too, and put "Continue when … resets" under normal replies.
-  const { isLimitNotice, LIMIT_RE } = window.limitNotice; // limit-notice.js, shared with the extension
+  const { isLimitNotice, LIMIT_RE, limitActive } = window.limitNotice; // limit-notice.js, shared with the extension
   function refreshScheduleDefault() {
     const outOfUsage = isOutOfUsage(scheduleModel());
     setScheduleArmed(scheduleChoice ?? outOfUsage, { outOfUsage: scheduleChoice === null && outOfUsage });
@@ -736,8 +885,118 @@
   }
 
   function formatSize(bytes) { return bytes < 1024 * 1024 ? `${Math.max(1, Math.round(bytes / 1024))} KB` : `${(bytes / 1024 / 1024).toFixed(1)} MB`; }
+  const COPY_ICON = '<svg viewBox="0 0 16 16" fill="none" aria-hidden="true"><rect x="5.5" y="5.5" width="8" height="8" rx="2" stroke="currentColor" stroke-width="1.3"/><path d="M10.5 3.5A1.5 1.5 0 0 0 9 2.5H4A1.5 1.5 0 0 0 2.5 4v5A1.5 1.5 0 0 0 3.5 10.5" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>';
+  const CHECK_ICON = '<svg viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="m3.5 8.5 3 3 6-7" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+  const DOWNLOAD_ICON = '<svg viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M8 2.5v7.25M5.25 7.25 8 10l2.75-2.75M3.25 12.75h9.5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+  // Files are stored as "<timestamp>_<name>" (or "<uuid>_<timestamp>_<name>"); people read and download the clean name.
+  const shownName = (name) => String(name || '').replace(/^(?:[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}[_-]|\d{10,}_)+/i, '');
+
+  function downloadAttachment(attachment) {
+    if (!attachment) return;
+    const name = shownName(attachment.name) || 'image.png';
+    if (attachment.path) {
+      vscode.postMessage({ type: 'downloadAttachment', path: attachment.path, name });
+      return;
+    }
+    if (!attachment.uri) return;
+    const a = document.createElement('a');
+    a.href = attachment.uri;
+    a.download = name;
+    a.click();
+  }
+
+  async function imageToPngBlob(src, imageEl) {
+    try {
+      const response = await fetch(src);
+      const blob = await response.blob();
+      if (blob.type === 'image/png') return blob;
+    } catch { /* fall through to canvas */ }
+    const img = imageEl?.complete && imageEl.naturalWidth ? imageEl : await new Promise((resolve, reject) => {
+      const el = new Image();
+      el.crossOrigin = 'anonymous';
+      el.onload = () => resolve(el);
+      el.onerror = reject;
+      el.src = src;
+    });
+    const width = img.naturalWidth || img.width || 512;
+    const height = img.naturalHeight || img.height || 512;
+    const canvas = document.createElement('canvas');
+    canvas.width = width;
+    canvas.height = height;
+    canvas.getContext('2d').drawImage(img, 0, 0, width, height);
+    return await new Promise((resolve, reject) => canvas.toBlob(b => b ? resolve(b) : reject(new Error('Could not encode image')), 'image/png'));
+  }
+
+  async function copyImageToClipboard(attachment, imageEl) {
+    const src = attachment?.uri || imageEl?.src;
+    const name = shownName(attachment?.name) || 'image.png';
+    if (!src && !attachment?.path) return;
+    try {
+      if (src && navigator.clipboard?.write && typeof ClipboardItem !== 'undefined') {
+        const blob = await imageToPngBlob(src, imageEl);
+        await navigator.clipboard.write([new ClipboardItem({ 'image/png': blob })]);
+        if (attachment?.path) vscode.postMessage({ type: 'copyAttachment', path: attachment.path, silent: true });
+        showToast(`Copied ${name} to clipboard.`);
+        return;
+      }
+    } catch { /* fall back to host clipboard */ }
+    if (attachment?.path) {
+      vscode.postMessage({ type: 'copyAttachment', path: attachment.path });
+      return;
+    }
+    showToast('Could not copy image to the clipboard.', { error: true });
+  }
+
+  let closeImageMenu = null;
+  function openImageContextMenu(x, y, attachment, imageEl) {
+    closeImageMenu?.();
+    const menu = document.createElement('div');
+    menu.className = 'image-context-menu';
+    menu.setAttribute('role', 'menu');
+    menu.setAttribute('aria-label', `Actions for ${shownName(attachment?.name) || 'image'}`);
+    const makeItem = (icon, text, action, onClick) => {
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'image-context-item';
+      btn.dataset.action = action;
+      btn.setAttribute('role', 'menuitem');
+      btn.innerHTML = `${icon}<span>${text}</span>`;
+      btn.addEventListener('click', (event) => { event.stopPropagation(); closeImageMenu?.(); onClick(); });
+      return btn;
+    };
+    const copyBtn = makeItem(COPY_ICON, 'Copy', 'copy', () => { void copyImageToClipboard(attachment, imageEl); });
+    const downloadBtn = makeItem(DOWNLOAD_ICON, 'Download', 'download', () => downloadAttachment(attachment));
+    menu.append(copyBtn, downloadBtn);
+    document.body.appendChild(menu);
+    const rect = menu.getBoundingClientRect();
+    menu.style.left = `${Math.max(8, Math.min(x, window.innerWidth - rect.width - 8))}px`;
+    menu.style.top = `${Math.max(8, Math.min(y, window.innerHeight - rect.height - 8))}px`;
+    const onPointerDown = (event) => { if (!menu.contains(event.target)) closeImageMenu?.(); };
+    const onKeyDown = (event) => {
+      if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); closeImageMenu?.(); return; }
+      if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+        event.preventDefault();
+        (document.activeElement === copyBtn ? downloadBtn : copyBtn).focus({ preventScroll: true });
+      }
+    };
+    const dismiss = () => closeImageMenu?.();
+    closeImageMenu = () => {
+      closeImageMenu = null;
+      document.removeEventListener('pointerdown', onPointerDown, true);
+      document.removeEventListener('keydown', onKeyDown, true);
+      window.removeEventListener('scroll', dismiss, true);
+      window.removeEventListener('blur', dismiss);
+      menu.remove();
+    };
+    document.addEventListener('pointerdown', onPointerDown, true);
+    document.addEventListener('keydown', onKeyDown, true);
+    window.addEventListener('scroll', dismiss, true);
+    window.addEventListener('blur', dismiss);
+    copyBtn.focus({ preventScroll: true });
+  }
+
   // P17-J/K: one shared lightbox for composer chips and transcript images. The X, a click outside the image, or Esc closes it.
-  function openLightbox(src, caption = '', pdf = false) {
+  function openLightbox(src, caption = '', pdf = false, attachment = null) {
     const previousFocus = document.activeElement;
     const box = document.createElement('div');
     box.className = 'image-lightbox';
@@ -747,7 +1006,17 @@
     frame.className = 'image-lightbox-frame';
     const viewer = pdf ? window.attachmentPdf.viewer(src, caption) : null;
     const image = viewer?.element || document.createElement('img');
-    if (!pdf) { image.src = src; image.alt = caption; if (/\.svg(?:\s|$)/i.test(caption)) image.classList.add('attachment-svg-preview'); }
+    const targetAttachment = attachment || { uri: src, name: caption.split('  ')[0] || 'image.png' };
+    if (!pdf) {
+      image.src = src;
+      image.alt = caption;
+      if (/\.svg(?:\s|$)/i.test(caption)) image.classList.add('attachment-svg-preview');
+      image.addEventListener('contextmenu', (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        openImageContextMenu(event.clientX, event.clientY, targetAttachment, image);
+      });
+    }
     else box.classList.add('is-pdf');
     box.setAttribute('aria-label', caption || 'Attachment preview');
     const closeBtn = document.createElement('button');
@@ -755,7 +1024,19 @@
     closeBtn.className = 'image-lightbox-close';
     closeBtn.setAttribute('aria-label', 'Close preview');
     closeBtn.innerHTML = '<svg viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M4.5 4.5l7 7M11.5 4.5l-7 7" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>';
-    frame.append(image, closeBtn);
+    if (!pdf) {
+      const downloadBtn = document.createElement('button');
+      downloadBtn.type = 'button';
+      downloadBtn.className = 'image-lightbox-download';
+      const downloadTitle = `Download ${shownName(targetAttachment.name) || 'image.png'}`;
+      downloadBtn.title = downloadTitle;
+      downloadBtn.setAttribute('aria-label', downloadTitle);
+      downloadBtn.innerHTML = DOWNLOAD_ICON;
+      downloadBtn.addEventListener('click', (event) => { event.stopPropagation(); downloadAttachment(targetAttachment); });
+      frame.append(image, downloadBtn, closeBtn);
+    } else {
+      frame.append(image, closeBtn);
+    }
     const label = document.createElement('div');
     label.className = 'image-lightbox-caption'; label.textContent = caption;
     box.append(frame, label);
@@ -782,9 +1063,8 @@
       vscode.postMessage({ type: 'removeAttachment', path: attachment.path }); attachments = attachments.filter((item) => item.path !== attachment.path); renderAttachments();
     })));
     saveQueueEdit();
+    saveDraft(); // attached files keep the chat alive like typed text does
   }
-  // Files are stored as "<timestamp>_<name>"; people read the name.
-  const shownName = (name) => String(name || '').replace(/^\d{10,}_/, '');
   // Click the name on a composer chip to rename the file: a plain field, no model. Enter or clicking away saves, Esc cancels.
   function renameAttachmentInline(nameEl, attachment) {
     const input = document.createElement('input');
@@ -836,17 +1116,35 @@
       chip.title = `Preview ${shownName(attachment.name)}`;
       chip.tabIndex = 0;
       chip.setAttribute('aria-label', chip.title);
-      const preview = () => openLightbox(attachment.uri, `${shownName(attachment.name)}  ${isPdf ? '' : withPx(attachment.dims)}`.trim(), isPdf);
+      if (isPdf) { chip.title = `Open ${shownName(attachment.name)} in editor`; chip.setAttribute('aria-label', chip.title); }
+      const preview = () => isPdf ? vscode.postMessage({ type: 'openFile', path: attachment.path }) : openLightbox(attachment.uri, `${shownName(attachment.name)}  ${withPx(attachment.dims)}`.trim(), false, attachment);
       chip.addEventListener('click', preview);
       chip.addEventListener('keydown', event => { if (event.target === chip && (event.key === 'Enter' || event.key === ' ')) { event.preventDefault(); preview(); } });
     }
     chip.append(label);
+    if (isImage) {
+      const download = document.createElement('button');
+      download.type = 'button';
+      download.className = 'attachment-download';
+      download.title = `Download ${shownName(attachment.name)}`;
+      download.setAttribute('aria-label', download.title);
+      download.innerHTML = DOWNLOAD_ICON;
+      download.addEventListener('click', (event) => { event.stopPropagation(); downloadAttachment(attachment); });
+      download.addEventListener('keydown', (event) => event.stopPropagation());
+      chip.append(download);
+      chip.addEventListener('contextmenu', (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        openImageContextMenu(event.clientX, event.clientY, attachment, chip.querySelector('img'));
+      });
+    }
     if (onRemove) {
       name.title = 'Click to rename';
       name.classList.add('is-renamable');
       name.addEventListener('click', (event) => { event.stopPropagation(); renameAttachmentInline(name, attachment); });
-      const remove = document.createElement('button'); remove.type = 'button'; remove.textContent = '×'; remove.title = `Remove ${attachment.name}`;
+      const remove = document.createElement('button'); remove.type = 'button'; remove.className = 'attachment-remove'; remove.textContent = '×'; remove.title = `Remove ${shownName(attachment.name)}`; remove.setAttribute('aria-label', remove.title);
       remove.addEventListener('click', (event) => { event.stopPropagation(); onRemove(); });
+      remove.addEventListener('keydown', (event) => event.stopPropagation());
       chip.append(remove);
     }
     return chip;
@@ -874,32 +1172,30 @@
     const chatId = currentChatId;
     void capImage(file).then((image) => {
       const reader = new FileReader();
-      reader.onload = () => vscode.postMessage({ type: 'attachmentData', chatId, name: file.name || `paste-${Date.now()}.png`, mime: file.type || 'application/octet-stream', data: reader.result });
+      reader.onload = () => vscode.postMessage({ type: 'attachmentData', chatId, name: file.name || 'image.png', mime: file.type || 'application/octet-stream', data: reader.result });
       reader.readAsDataURL(image);
     });
   }
   attachBtn.addEventListener('click', () => vscode.postMessage({ type: 'pickAttachments', chatId: currentChatId }));
   promptInput.addEventListener('paste', (event) => { const files = [...(event.clipboardData?.items || [])].filter(item => item.kind === 'file'); if (files.length) { event.preventDefault(); for (const item of files) readAttachment(item.getAsFile()); } });
-  // The whole window is one drop zone. The IDE only hands a drag to a webview while
-  // Shift is held (otherwise its own "Upload to Agent" overlay takes it), so the
-  // overlay and attach tooltip both explain the Shift gesture.
+  // The whole window is one drop zone. The IDE only hands a drag to a webview while Shift is held, so the
+  // attach tooltip explains the gesture; the overlay itself only shows once the drag has already arrived.
   const dropOverlay = document.createElement('div');
   dropOverlay.className = 'drop-overlay';
   dropOverlay.setAttribute('aria-hidden', 'true');
-  dropOverlay.innerHTML = '<div class="drop-overlay-card"><svg viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M8 2.5v8M4.75 7.25 8 10.5l3.25-3.25M3 13.5h10" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg><span>Drop to reference in this chat<small>Hold <kbd>Shift</kbd> while hovering</small></span></div>';
+  dropOverlay.innerHTML = '<div class="drop-overlay-card"><svg viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M8 2.5v8M4.75 7.25 8 10.5l3.25-3.25M3 13.5h10" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg><span>Drop to reference in this chat</span></div>';
   document.body.appendChild(dropOverlay);
-  let dragDepth = 0;
-  const endDrag = () => { dragDepth = 0; document.body.classList.remove('attachment-dragging'); };
-  document.addEventListener('dragenter', (event) => { if (!event.dataTransfer?.types.includes('Files') && !event.dataTransfer?.types.some((type) => /uri-list/.test(type))) return; dragDepth++; document.body.classList.add('attachment-dragging'); });
-  document.addEventListener('dragleave', () => { if (--dragDepth <= 0) endDrag(); });
-  document.addEventListener('dragover', (event) => { event.preventDefault(); if (event.dataTransfer) event.dataTransfer.dropEffect = 'copy'; });
-  document.addEventListener('drop', (event) => {
-    event.preventDefault(); endDrag();
-    // P17-Q: Explorer drags carry URIs, not file blobs; the host turns them into workspace-relative @-mentions.
-    const uris = (event.dataTransfer?.getData('application/vnd.code.uri-list') || event.dataTransfer?.getData('text/uri-list') || '')
-      .split(/\r?\n/).map((line) => line.trim()).filter((line) => /^file:/i.test(line));
-    if (uris.length) { vscode.postMessage({ type: 'mentionUris', uris }); return; }
-    for (const file of event.dataTransfer?.files || []) readAttachment(file);
+  // drop-zone.js ends the overlay on its own when the IDE swallows the drag (Shift released, Esc, drop elsewhere).
+  window.dropZone.createDropZone({
+    doc: document,
+    win: window,
+    setActive: (on) => document.body.classList.toggle('attachment-dragging', on),
+    onDrop: (event) => {
+      // P17-Q: Explorer drags carry URIs, not file blobs; the host turns them into workspace-relative @-mentions.
+      const uris = window.dropZone.droppedUris(event.dataTransfer);
+      if (uris.length) { vscode.postMessage({ type: 'mentionUris', uris }); return; }
+      for (const file of event.dataTransfer?.files || []) readAttachment(file);
+    },
   });
   attachBtn.title = 'Attach files (or hold Shift while dragging files in)';
 
@@ -1166,7 +1462,7 @@
     modelPickerBtn.dataset.brand = brandOf(option);
     modelPickerBtn.querySelector('.model-picker-icon').innerHTML = iconFor(brandOf(option));
     renderRouting();
-    if (scheduleChoice === false) scheduleChoice = null; // a "send anyway" was for the previous model
+    if (scheduleChoice === false || (editingQueue?.taskId && optionFor(editingQueue.turn.modelId)?.agent !== option.agent && scheduleTimer.mode === 'reset')) scheduleChoice = null;
     refreshScheduleDefault(); // on if this model is out of usage; the placeholder names it
     if (slashMenu && !slashMenu.hidden) updateSlashMenu();
     try { vscode.setState({ ...(vscode.getState() || {}), modelId: option.id }); } catch {}
@@ -1340,16 +1636,18 @@
   const composerEl = document.querySelector('.composer');
   const composerActions = composerEl.querySelector('.composer-actions');
   let savedDraft = null;
-  function saveDraft() {
+  function saveDraft(userInput = false) {
     if (!currentChatId) return;
     const text = editingQueue ? composerDraft?.text || '' : promptInput.value;
-    const signature = JSON.stringify([currentChatId, text]);
-    if (signature === savedDraft) return;
+    const files = (editingQueue ? composerDraft?.files || [] : attachments).map((file) => file.path);
+    const signature = JSON.stringify([currentChatId, text, files]);
+    if (signature === savedDraft && !userInput) return;
     savedDraft = signature;
-    vscode.postMessage({ type: 'saveDraft', chatId: currentChatId, text });
+    vscode.postMessage({ type: 'saveDraft', chatId: currentChatId, text, attachments: files, ...(userInput && text.length ? { userInput: true } : {}) });
   }
-  function autoGrow() {
-    saveDraft();
+  function autoGrow(event) {
+    if (event?.type === 'input') vscode.postMessage({ type: 'composerActivity' });
+    saveDraft(event?.type === 'input' && !editingQueue);
     const value = promptInput.value;
     // Empty is always the one-line pill. Measuring scrollHeight here would size
     // the box to the placeholder, which wraps whenever the pill is a little too
@@ -1392,7 +1690,6 @@
   let queuePaused = false;
   let awaitingInterruptAck = false; // the host's turn_complete for a turn this window already closed out
   let turnQueue = []; // { id, text, modelId, attachments }
-  let editingQueue = null;
   let composerDraft = null;
   function saveQueueEdit(finish = false) {
     if (!editingQueue) return;
@@ -1444,7 +1741,13 @@
     polishBtn.disabled = micWrap.classList.contains('is-polishing') || !promptInput.value.trim();
     autoGrow(); // Stop/Queue buttons change the text column's width, so re-measure
   }
-  function setBusy(next) { busy = next; if (!next) railWorking = null; renderComposerState(); syncPending(); renderProjectList(); }
+  function setBusy(next) {
+    const changed = busy !== next;
+    busy = next;
+    if (!next) railWorking = null;
+    renderComposerState(); syncPending(); renderProjectList();
+    if (changed) renderTurnQueue();
+  }
 
   // Pending indicator: the moment a turn starts, and again whenever the agent
   // goes quiet mid-turn (after a tool card), a glass "Thinking" pill sits at
@@ -1453,21 +1756,40 @@
   const pendingEl = document.createElement('div');
   pendingEl.className = 'msg-pending';
   pendingEl.setAttribute('role', 'status');
-  pendingEl.innerHTML = '<span class="pending-orb" aria-hidden="true"></span><span class="pending-label">Thinking</span><span class="pending-time" aria-hidden="true"></span><span class="pending-tokens"></span><span class="pending-cost"></span><span class="pending-thought"></span>';
+  pendingEl.innerHTML = '<span class="pending-orb" aria-hidden="true"></span><span class="pending-label">Thinking</span><span class="pending-time" aria-hidden="true"></span><span class="pending-tokens"></span><span class="pending-thought"></span>';
+  const pendingLabel = pendingEl.querySelector('.pending-label');
   const pendingTime = pendingEl.querySelector('.pending-time');
   const pendingTokens = pendingEl.querySelector('.pending-tokens');
   const pendingThought = pendingEl.querySelector('.pending-thought');
-  // Beside the context: what this whole chat would have cost at pay-per-token API prices (the extension adds each turn,
-  // compactions included, since it is still the same chat). A comparison for the subscription, never a charge.
-  const pendingCost = pendingEl.querySelector('.pending-cost');
-  pendingCost.title = 'API value of this chat: what its tokens would cost at the providers’ pay-per-token API prices. An estimate for comparison. Your subscriptions cover this work; nothing is charged.';
+  // Monetary comparisons live in Settings, including the current chat's estimate.
   function renderChatCost(usd) {
-    pendingCost.textContent = usd > 0 ? `≈ ${window.apiValue.formatUsd(usd)} API value` : '';
+    chatSettings.chatCost(usd);
+  }
+  // While the agent only waits on a running tool (a Monitor, or a shell that is just a sleep) the pill is a "Timer":
+  // it counts down a known sleep, otherwise up from when the wait began. Anything else is "Thinking" with the turn's clock.
+  function renderPendingClock() {
+    const now = Date.now();
+    for (const card of document.querySelectorAll('.tool-card.is-running[data-started-at]')) {
+      const elapsed = now - Number(card.dataset.startedAt);
+      const text = elapsed >= 1000 ? formatDuration(elapsed) : '';
+      const time = card.querySelector('.tool-time');
+      if (time && time.textContent !== text) time.textContent = text;
+    }
+    const wait = pendingEl.isConnected ? turnHost().querySelector('.tool-card.is-running[data-wait-start]') : null;
+    pendingEl.classList.toggle('is-timer', Boolean(wait));
+    const label = wait ? 'Timer' : 'Thinking';
+    if (pendingLabel.textContent !== label) pendingLabel.textContent = label;
+    let ms = turnStartedAt ? Date.now() - turnStartedAt : 0;
+    if (wait) {
+      ms = Date.now() - Number(wait.dataset.waitStart);
+      const total = Number(wait.dataset.waitSecs) * 1000;
+      if (total > ms) ms = total - ms;
+    }
+    const clock = (wait || turnStartedAt) && ms >= 1000 ? formatDuration(ms) : '';
+    if (pendingTime.textContent !== clock) pendingTime.textContent = clock; // the pill sits inside the observed transcript: only a real change may mutate it
   }
   // The running clock for the turn; it becomes the "Worked for" figure at the end.
-  setInterval(() => {
-    if (pendingEl.isConnected && turnStartedAt) pendingTime.textContent = Date.now() - turnStartedAt >= 1000 ? formatDuration(Date.now() - turnStartedAt) : '';
-  }, 1000);
+  setInterval(renderPendingClock, 1000);
 
   // P17-T: live reasoning. Streams into the pending pill's second line (the
   // plain "Thinking" pill when a model sends none), then folds into a closed
@@ -1499,7 +1821,7 @@
   }
   function syncPending() {
     const last = [...turnHost().children].reverse().find((el) => el !== pendingEl);
-    const show = busy && !isCompacting && Boolean(last) && last !== currentAssistantBubble && !last.matches('.approval-card, .question-card');
+    const show = busy && !isCompacting && Boolean(last) && !last.matches('.approval-card, .question-card');
     if (show && turnHost().lastElementChild !== pendingEl) {
       pendingEl.classList.toggle('is-entering', !pendingEl.isConnected);
       turnHost().appendChild(pendingEl);
@@ -1511,6 +1833,7 @@
       scrollTranscriptToEnd();
     }
     else if (!show && pendingEl.isConnected) pendingEl.remove();
+    renderPendingClock();
   }
   new MutationObserver(syncPending).observe(transcriptEl, { childList: true, subtree: true });
 
@@ -1524,10 +1847,10 @@
       else emptyMascot.dispose();
       emptyMascot = null;
     }
-    appendUserMessage(turn.text, undefined, turn.files);
+    appendUserMessage(turn.text, undefined, turn.files, { clientTurnId: turn.id });
     setBusy(true);
     dropUndo(); // the last turn's undo is only for the last turn
-    vscode.postMessage({ type: 'send', chatId: currentChatId, modelId: turn.modelId, text: turn.text, attachments: turn.attachments, submit: true, steer, retry: Boolean(turn.retry), verify: Boolean(turn.verify), pipeline: Boolean(turn.pipeline) });
+    vscode.postMessage({ type: 'send', chatId: currentChatId, clientTurnId: turn.id, modelId: turn.modelId, text: turn.text, attachments: turn.attachments, submit: true, steer, retry: Boolean(turn.retry), verify: Boolean(turn.verify), pipeline: Boolean(turn.pipeline) });
   }
 
   function appendInterruptedPill(reason) {
@@ -1535,7 +1858,8 @@
     const pill = document.createElement('div');
     pill.className = 'chat-notice is-interrupted';
     pill.innerHTML = STOP_SVG;
-    pill.append(reason === 'host_shutdown' ? 'Interrupted by IDE restart · Saved output restored' : 'Interrupted by user');
+    pill.append(reason === 'recovered_incomplete' ? 'Recovered output · No completed reply was recorded'
+      : reason === 'host_shutdown' ? 'Interrupted by IDE restart · Saved output restored' : 'Interrupted by user');
     turnHost().appendChild(pill);
     scrollTranscriptToEnd();
   }
@@ -1545,7 +1869,7 @@
   function interruptLocally() {
     awaitingInterruptAck = true;
     if (isCompacting) { finishCompactDivider('interrupted'); isCompacting = false; }
-    for (const [id, card] of pendingCards) { settleCard(card, 'Turn stopped', 'denied'); pendingCards.delete(id); }
+    for (const [id, card] of pendingCards) { if (card.dataset.deferred === 'true') continue; settleCard(card, 'Turn stopped', 'denied'); pendingCards.delete(id); }
     document.querySelectorAll('.tool-card.is-running').forEach((card) => {
       finishToolCard(card, { output: card.querySelector('.tool-body')?.textContent || '' });
       card.classList.add('is-cancelled');
@@ -1596,16 +1920,19 @@
   function startQueueDrag(event, row, turn) {
     if (event.button !== 0) return;
     event.preventDefault();
-    const rows = [...queueStrip.querySelectorAll('.turn-queue-item')];
+    const scheduled = row.classList.contains('is-scheduled');
+    const rows = [...queueStrip.querySelectorAll(scheduled ? '.turn-queue-item.is-scheduled' : '.turn-queue-item:not(.is-scheduled)')];
     const from = rows.indexOf(row);
     const tops = rows.map((r) => r.offsetTop);
     const pitch = rows.length > 1 ? tops[1] - tops[0] : row.offsetHeight;
     const startY = event.clientY;
     const grip = event.currentTarget;
+    const chatId = currentChatId;
     let to = from;
     let dy = 0;
     grip.setPointerCapture(event.pointerId);
     queueStrip.classList.add('is-sorting');
+    for (const sibling of rows) sibling.classList.remove('is-entering');
     row.classList.add('is-dragging');
     const move = (e) => {
       dy = Math.max(tops[0] - tops[from], Math.min(tops[rows.length - 1] - tops[from], e.clientY - startY));
@@ -1621,11 +1948,22 @@
       grip.removeEventListener('pointermove', move);
       grip.removeEventListener('pointerup', up);
       grip.removeEventListener('pointercancel', up);
+      row.classList.remove('is-dragging');
+      for (const sibling of rows) sibling.style.transform = '';
+      if (chatId !== currentChatId) return;
       const letGoAt = tops[from] + dy;
-      if (to !== from) turnQueue.splice(to, 0, ...turnQueue.splice(from, 1));
-      queueAction('reorderQueuedTurns', { ids: turnQueue.map((item) => item.id) });
+      const entries = scheduled ? scheduledHere() : turnQueue;
+      const source = entries.findIndex(item => item.id === turn.id);
+      const target = entries.findIndex(item => item.id === (scheduled ? rows[to].dataset.taskId : rows[to].dataset.id));
+      if (source >= 0 && target >= 0 && source !== target) entries.splice(target, 0, ...entries.splice(source, 1));
+      if (scheduled) {
+        const ids = new Set(entries.map(item => item.id));
+        let index = 0;
+        schedulerTasks = schedulerTasks.map(item => ids.has(item.id) ? entries[index++] : item);
+      }
+      queueAction(scheduled ? 'reorderScheduledTasks' : 'reorderQueuedTurns', { ids: entries.map((item) => item.id) });
       renderTurnQueue();
-      const settled = queueStrip.querySelector(`[data-id="${CSS.escape(turn.id)}"]`);
+      const settled = queueStrip.querySelector(`[${scheduled ? 'data-task-id' : 'data-id'}="${CSS.escape(turn.id)}"]`);
       if (settled) {
         settled.style.transition = 'none';
         settled.style.transform = `translateY(${letGoAt - settled.offsetTop}px)`;
@@ -1672,114 +2010,149 @@
 
   // This chat's scheduled prompts (the scheduler holds them; the chat shows them where the queue is).
   const scheduledHere = () => activeTasks().filter((task) => task.status === 'pending' && task.chatId && task.chatId === currentChatId);
-  function scheduledRow(task) {
-    const row = document.createElement('div');
-    row.className = 'turn-queue-item is-scheduled';
-    row.dataset.taskId = task.id;
-    const mark = document.createElement('span');
-    mark.className = 'turn-queue-grip turn-queue-clock';
-    mark.innerHTML = CLOCK_SVG;
-    mark.title = 'Scheduled';
-    const option = optionFor(task.modelId) || MODEL_OPTIONS.find((candidate) => candidate.agent === task.model) || MODEL_OPTIONS[0];
-    const pill = document.createElement('span');
-    pill.className = 'model-pill';
-    pill.dataset.brand = brandOf(option);
-    pill.innerHTML = iconFor(brandOf(option));
-    pill.append(option.shortLabel || option.label);
-    const text = document.createElement('span');
-    text.className = 'turn-queue-text';
-    text.textContent = task.prompt;
-    text.title = task.prompt;
-    const when = document.createElement('span');
-    when.className = 'turn-queue-when';
-    const at = fireTimeOf(task);
-    when.textContent = task.dispatchTrigger === 'quota-reset' ? (at ? `at reset · ${formatCountdown(at - Date.now())}` : 'at reset') : at ? formatWhen(at) : '';
-    const button = (icon, label, title, cls, type) => {
-      const btn = document.createElement('button');
-      btn.type = 'button'; btn.className = `turn-queue-btn ${cls}`; btn.innerHTML = icon; btn.title = title;
-      if (label) btn.append(label); else btn.setAttribute('aria-label', title);
-      btn.addEventListener('click', () => vscode.postMessage({ type, taskId: task.id }));
-      return btn;
-    };
-    row.append(mark, pill, text, when,
-      button(QUEUE_ICONS.steer, 'Send Now', 'Send this now instead of waiting', 'is-primary', 'dispatchNowWithAutoRoute'),
-      button(QUEUE_ICONS.edit, '', 'Move back into the composer', 'is-icon', 'unscheduleToComposer'),
-      button(QUEUE_ICONS.remove, '', 'Delete', 'is-danger is-icon', 'cancelScheduledTask'));
-    return row;
+  function renderQueueMark(row, scheduled) {
+    const entry = row.queueEntry;
+    const clock = scheduled && (fireTimeOf(entry) > Date.now() || resetWaiting(entry));
+    if (row.queueClock === clock) return;
+    row.queueClock = clock;
+    const mark = row.querySelector('.turn-queue-grip');
+    mark.classList.toggle('turn-queue-clock', clock);
+    mark.innerHTML = clock ? CLOCK_SVG : QUEUE_ICONS.grip;
+    mark.title = clock ? 'Scheduled · drag to reorder' : 'Drag to reorder';
   }
-
-  function renderTurnQueue() {
-    const scheduled = scheduledHere();
-    queueStrip.hidden = !(turnQueue.length || scheduled.length);
-    queueStrip.replaceChildren();
-    if (!(turnQueue.length || scheduled.length)) return;
-    const head = document.createElement('div');
-    head.className = 'turn-queue-head';
-    const title = document.createElement('span');
-    const parts = [];
-    if (turnQueue.length) parts.push(queuePaused ? `${turnQueue.length} queued · paused` : `${turnQueue.length} queued · sends after this turn`);
-    if (scheduled.length) parts.push(`${scheduled.length} scheduled`);
-    title.textContent = parts.join(' · ');
-    head.append(title);
-    const transport = document.createElement('button');
-    transport.type = 'button'; transport.className = 'turn-queue-btn is-icon queue-transport';
-    transport.innerHTML = queuePaused ? QUEUE_ICONS.play : QUEUE_ICONS.pause;
-    transport.title = queuePaused ? 'Resume queue' : 'Pause queue after the current task';
-    transport.setAttribute('aria-label', queuePaused ? 'Resume queue' : 'Pause queue');
-    transport.addEventListener('click', () => {
-      queuePaused = !queuePaused;
-      queueAction('pauseTurnQueue', { paused: queuePaused });
-      renderTurnQueue();
-      renderComposerState();
-      queueStrip.querySelector('.queue-transport')?.focus({ preventScroll: true });
-    });
-    if (turnQueue.length) head.append(transport);
-    queueStrip.append(head);
-    // Scheduled prompts sit in the same list, marked with a clock: they wait for a time (or the usage reset) instead of the
-    // previous turn, and then join the queue.
-    for (const task of scheduled) if (task.id !== editingQueue?.taskId) queueStrip.append(scheduledRow(task));
-    for (const turn of turnQueue) {
-      if (!editingQueue?.taskId && turn.id === editingQueue?.turn.id) continue;
-      const row = document.createElement('div');
-      row.className = 'turn-queue-item';
-      row.dataset.id = turn.id;
-      const grip = document.createElement('span');
-      grip.className = 'turn-queue-grip';
-      grip.title = 'Drag to reorder';
-      grip.innerHTML = QUEUE_ICONS.grip;
-      grip.addEventListener('pointerdown', (event) => startQueueDrag(event, row, turn));
-      row.append(grip);
-      const option = optionFor(turn.modelId) || MODEL_OPTIONS[0];
+  function queueRow(entry, scheduled, row) {
+    if (!row) {
+      row = document.createElement('div');
+      row.className = 'turn-queue-item' + (REDUCED_MOTION.matches ? '' : ' is-entering') + (scheduled ? ' is-scheduled' : '');
+      row.dataset.queueKey = (scheduled ? 'scheduled:' : 'turn:') + entry.id;
+      if (scheduled) row.dataset.taskId = entry.id; else row.dataset.id = entry.id;
+      row.addEventListener('animationend', event => { if (event.target === row && event.animationName === 'msg-in') row.classList.remove('is-entering'); });
+      const mark = document.createElement('span');
+      mark.className = 'turn-queue-grip';
+      mark.addEventListener('pointerdown', event => startQueueDrag(event, row, row.queueEntry));
       const pill = document.createElement('span');
       pill.className = 'model-pill';
-      pill.dataset.brand = brandOf(option);
-      pill.innerHTML = iconFor(brandOf(option));
-      pill.append(option.shortLabel || option.label);
       const text = document.createElement('span');
       text.className = 'turn-queue-text';
-      text.textContent = turn.text;
-      text.title = turn.text;
       const button = (icon, label, title, cls, onClick) => {
         const btn = document.createElement('button');
-        btn.type = 'button'; btn.className = `turn-queue-btn ${cls}`; btn.innerHTML = icon; btn.title = title;
+        btn.type = 'button'; btn.className = 'turn-queue-btn ' + cls; btn.innerHTML = icon; btn.title = title;
         if (label) btn.append(label); else btn.setAttribute('aria-label', title);
         btn.addEventListener('click', onClick);
         return btn;
       };
-      const remove = () => { queueAction('removeQueuedTurn', { id: turn.id }); turnQueue = turnQueue.filter((item) => item !== turn); renderTurnQueue(); };
-      row.append(pill, text);
-      if (turn.files?.length) row.append(queuedFilesBadge(turn.files));
-      row.append(
-        button(QUEUE_ICONS.steer, 'Steer Now', busy ? 'Interrupt the running turn and send this now' : 'Send this now', 'is-primary', () => { queueAction('steerQueuedTurn', { id: turn.id }); }),
-        button(QUEUE_ICONS.edit, '', 'Move back into the composer', 'is-icon', () => {
-          editQueuePrompt(turn);
-        }),
+      row.append(mark, pill, text);
+      if (scheduled) {
+        const when = document.createElement('span'); when.className = 'turn-queue-when'; row.append(when);
+        row.append(
+          button(QUEUE_ICONS.steer, 'Send Now', 'Send this now instead of waiting', 'is-primary', () => vscode.postMessage({ type: 'dispatchNowWithAutoRoute', taskId: row.queueEntry.id })),
+          button(QUEUE_ICONS.edit, 'Change model', 'Choose another model, then confirm to continue when the chat is idle. Ctrl+Enter steers now.', '', () => vscode.postMessage({ type: 'unscheduleToComposer', taskId: row.queueEntry.id, chooseModel: true })),
+          button(QUEUE_ICONS.edit, '', 'Move back into the composer', 'is-icon', () => vscode.postMessage({ type: 'unscheduleToComposer', taskId: row.queueEntry.id })),
+          button(QUEUE_ICONS.remove, '', 'Delete', 'is-danger is-icon', () => vscode.postMessage({ type: 'cancelScheduledTask', taskId: row.queueEntry.id })));
+      } else row.append(
+        button(QUEUE_ICONS.steer, 'Steer Now', 'Send this now', 'is-primary', () => queueAction('steerQueuedTurn', { id: row.queueEntry.id })),
+        button(QUEUE_ICONS.edit, '', 'Move back into the composer', 'is-icon', () => editQueuePrompt(row.queueEntry)),
         button(QUEUE_ICONS.remove, '', 'Delete', 'is-danger is-icon', () => {
-          for (const file of turn.files || []) vscode.postMessage({ type: 'removeAttachment', path: file.path }); // as a composer chip's ×
-          remove();
+          const turn = row.queueEntry;
+          for (const file of turn.files || []) vscode.postMessage({ type: 'removeAttachment', path: file.path });
+          queueAction('removeQueuedTurn', { id: turn.id });
+          turnQueue = turnQueue.filter(item => item.id !== turn.id);
+          renderTurnQueue();
         }));
-      queueStrip.append(row);
     }
+    // Keep controls mounted; their handlers always read the latest host snapshot.
+    row.queueEntry = entry;
+    renderQueueMark(row, scheduled);
+    const option = optionFor(entry.modelId) || (scheduled && MODEL_OPTIONS.find(candidate => candidate.agent === entry.model)) || MODEL_OPTIONS[0];
+    const brand = brandOf(option), label = option.shortLabel || option.label, icon = iconFor(brand);
+    const modelKey = JSON.stringify([brand, label, icon]);
+    if (row.queueModelKey !== modelKey) {
+      const pill = row.querySelector('.model-pill');
+      pill.dataset.brand = brand; pill.innerHTML = icon; pill.append(label);
+      row.queueModelKey = modelKey;
+    }
+    const text = row.querySelector('.turn-queue-text');
+    const prompt = (scheduled ? entry.prompt : entry.text) || '';
+    if (text.textContent !== prompt) text.textContent = prompt;
+    if (text.title !== prompt) text.title = prompt;
+    const files = entry.files || (scheduled ? (entry.attachments || []).map(file => ({ name: file.name, mime: file.mimeType })) : []);
+    const filesKey = JSON.stringify(files);
+    if (row.queueFilesKey !== filesKey) {
+      row.querySelector('.turn-queue-files')?.remove();
+      if (files.length) row.insertBefore(queuedFilesBadge(files), row.querySelector('.turn-queue-when, button'));
+      row.queueFilesKey = filesKey;
+    }
+    if (scheduled) {
+      const at = fireTimeOf(entry);
+      const value = entry.dispatchTrigger === 'quota-reset' ? resetLabel(entry) : at ? formatWhen(at) : '';
+      const when = row.querySelector('.turn-queue-when');
+      if (when.textContent !== value) when.textContent = value;
+    } else {
+      const steer = row.querySelector('.is-primary');
+      const title = busy ? 'Interrupt the running turn and send this now' : 'Send this now';
+      if (steer.title !== title) steer.title = title;
+    }
+    const sendButton = row.querySelector('.is-primary');
+    const agent = optionFor(entry.modelId)?.agent;
+    sendButton.disabled = scheduled ? resetWaiting(entry) : !entry.scheduled && schedulerTasks.some(task => task.status === 'pending' && task.chatId === currentChatId && task.model === agent && resetWaiting(task));
+    return row;
+  }
+
+  function renderTurnQueue() {
+    if (queueStrip.dataset.chatId === currentChatId && queueStrip.querySelector('.is-dragging')) return; // reconcile pending snapshots on pointer release
+    const scheduled = scheduledHere();
+    const hidden = !(turnQueue.length || scheduled.length);
+    if (queueStrip.hidden !== hidden) queueStrip.hidden = hidden;
+    if (queueStrip.dataset.chatId !== currentChatId || hidden) {
+      queueStrip.classList.remove('is-sorting');
+      if (queueStrip.childElementCount) queueStrip.replaceChildren();
+      queueStrip.dataset.chatId = currentChatId;
+    }
+    if (hidden) return;
+    let head = queueStrip.querySelector('.turn-queue-head');
+    if (!head) {
+      head = document.createElement('div');
+      head.className = 'turn-queue-head';
+      const title = document.createElement('span');
+      const transport = document.createElement('button');
+      transport.type = 'button'; transport.className = 'turn-queue-btn is-icon queue-transport';
+      transport.addEventListener('click', () => {
+        queuePaused = !queuePaused;
+        queueAction('pauseTurnQueue', { paused: queuePaused });
+        renderTurnQueue();
+        renderComposerState();
+        transport.focus({ preventScroll: true });
+      });
+      head.append(title, transport);
+      queueStrip.append(head);
+    }
+    const title = head.querySelector('span'), label = turnQueueTitle();
+    if (title.textContent !== label) title.textContent = label;
+    const transport = head.querySelector('.queue-transport');
+    if (transport.hidden !== !turnQueue.length) transport.hidden = !turnQueue.length;
+    if (transport.dataset.paused !== String(queuePaused)) {
+      transport.dataset.paused = String(queuePaused);
+      transport.innerHTML = queuePaused ? QUEUE_ICONS.play : QUEUE_ICONS.pause;
+      transport.title = queuePaused ? 'Resume queue' : 'Pause queue after the current task';
+      transport.setAttribute('aria-label', queuePaused ? 'Resume queue' : 'Pause queue');
+    }
+    // Scheduled and queued prompts share a stable list, with distinct ID namespaces.
+    const existing = new Map([...queueStrip.querySelectorAll('.turn-queue-item')].map(row => [row.dataset.queueKey, row]));
+    const desired = [
+      ...scheduled.filter(task => task.id !== editingQueue?.taskId).map(task => [task, true]),
+      ...turnQueue.filter(turn => editingQueue?.taskId || turn.id !== editingQueue?.turn.id).map(turn => [turn, false]),
+    ];
+    desired.forEach(([entry, scheduled], index) => {
+      const key = (scheduled ? 'scheduled:' : 'turn:') + entry.id;
+      const row = queueRow(entry, scheduled, existing.get(key));
+      existing.delete(key);
+      const before = queueStrip.children[index + 1] || null;
+      if (before !== row) {
+        if (row.parentElement === queueStrip) row.classList.remove('is-entering');
+        queueStrip.insertBefore(row, before);
+      }
+    });
+    for (const row of existing.values()) row.remove();
   }
 
   function sendPrompt({ steer = false } = {}) {
@@ -1867,6 +2240,8 @@
 
   micBtn.addEventListener('click', () => {
     setComposerAction('dictate');
+    warmMicCue(); // a click is the gesture that lets the start cue play the instant the microphone is live
+    if (!micBtn.classList.contains('recording')) applyMicState({ state: 'starting' }); // answer now; the host confirms a moment later
     vscode.postMessage({ type: 'micToggle' });
   });
 
@@ -1906,7 +2281,7 @@
   }
   // Esc drops the recording without transcribing it.
   document.addEventListener('keydown', (event) => {
-    if (event.key !== 'Escape' || !composerEl.classList.contains('is-voice') || composerEl.classList.contains('is-voice-processing')) return;
+    if (event.key !== 'Escape' || !composerEl.classList.contains('is-voice') || composerEl.classList.contains('is-voice-processing') || composerEl.classList.contains('is-voice-starting')) return;
     event.preventDefault();
     vscode.postMessage({ type: 'micCancel' });
   });
@@ -1925,12 +2300,18 @@
   composerEl.appendChild(voiceOverlay);
   const WAVE_MIN = 3; // px: a resting dot
   const WAVE_MAX = 28; // px: the loudest centre bar
+  const WAVE_DASH = 6; // px: a closed-shutter dash while the microphone opens (the bar lying on its side)
+  const WAVE_TURN_MS = 380; // one bar's quarter turn, from horizontal to upright
+  const WAVE_STAGGER_MS = 170; // the turn travels from the centre to the edges
+  const WAVE_HANDOVER_MS = WAVE_TURN_MS + WAVE_STAGGER_MS; // closed dashes -> live meter
   const VOICE_SPEECH = 0.12; // a level above this is speech, not room noise
   const VOICE_MIN_SPEECH_MS = 300; // a cough does not arm the auto-stop
   let micLevel = 0; // latest level, 0..1
   let micLevelAt = 0;
   let waveLevel = 0; // micLevel smoothed per frame: quick to rise, slow to fall
   let waveFrame = 0;
+  let waveRunning = false;
+  let waveLiveAt = 0; // when the microphone went live; 0 while it is still opening
   let speechMs = 0; // speech heard so far in this recording
   let lastSpeechAt = 0;
   let lastVolumeAt = 0;
@@ -1950,12 +2331,15 @@
   voiceDictionaryBud.hidden = true;
   voiceDictionaryBud.setAttribute('aria-live', 'polite');
   composerEl.before(voiceDictionaryBud);
-  function resetVoiceCorrections() {
+  // keepRows: only drop the pending edit check. Notices already counting down keep their clock, so typing or sending never
+  // restarts a cancel window; a full reset (chat switch, polish, cleared prompt) clears them.
+  function resetVoiceCorrections(keepRows = false) {
     clearTimeout(voiceEditTimer);
-    for (const timer of voiceDictionaryTimers.values()) clearInterval(timer);
-    voiceDictionaryTimers.clear();
     voiceEditRequest++;
     voiceEditSnapshot = null;
+    if (keepRows) return;
+    for (const timer of voiceDictionaryTimers.values()) clearInterval(timer);
+    voiceDictionaryTimers.clear();
     voiceDictionaryBud.replaceChildren();
     voiceDictionaryBud.hidden = true;
   }
@@ -1964,15 +2348,19 @@
     if (!lastVoiceDraft || !edited.trim()) return;
     // Text typed before dictation is outside the learning region. Editing that prefix abandons learning.
     if (!edited.startsWith(lastVoiceDraft.prefix)) return;
-    resetVoiceCorrections();
+    resetVoiceCorrections(true);
     voiceEditSnapshot = { original: lastVoiceDraft.original, edited: edited.slice(lastVoiceDraft.prefix.length) };
     vscode.postMessage({ type: 'voiceDraftEdited', ...voiceEditSnapshot, requestId: ++voiceEditRequest });
   }
   function showVoiceCorrections(terms) {
-    for (const timer of voiceDictionaryTimers.values()) clearInterval(timer);
-    voiceDictionaryTimers.clear();
-    voiceDictionaryBud.replaceChildren();
-    for (const term of terms.filter(term => !dismissedVoiceTerms.has(term))) {
+    const existing = new Map([...voiceDictionaryBud.children].map(row => [row.dataset.term, row]));
+    // A row whose word is no longer suggested goes away unless it is already saving or showing an error.
+    for (const [term, row] of existing) {
+      if (terms.includes(term) || row.dataset.state !== 'pending') continue;
+      clearInterval(voiceDictionaryTimers.get(term)); voiceDictionaryTimers.delete(term);
+      row.remove(); existing.delete(term);
+    }
+    for (const term of terms.filter(term => !dismissedVoiceTerms.has(term) && !existing.has(term))) {
       const row = document.createElement('div'); row.className = 'voice-dictionary-row';
       const label = document.createElement('span'); label.textContent = `Adding “${term}” to dictionary`;
       label.className = 'voice-dictionary-label';
@@ -1984,6 +2372,13 @@
       dismiss.title = 'Cancel dictionary addition';
       dismiss.innerHTML = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 4h10M6 4V2h4v2M4 4l.7 9h6.6l.7-9M6.5 6.5v4M9.5 6.5v4"/></svg>';
       const snapshot = { ...voiceEditSnapshot, requestId: voiceEditRequest };
+      // Pointing at or focusing the notice holds the countdown so there is time to decide; leaving lets it run on and save.
+      let hovered = false, focused = false;
+      const hold = () => { row.toggleAttribute('data-held', hovered || focused); };
+      row.addEventListener('pointerenter', () => { hovered = true; hold(); });
+      row.addEventListener('pointerleave', () => { hovered = false; hold(); });
+      row.addEventListener('focusin', () => { focused = true; hold(); });
+      row.addEventListener('focusout', () => { focused = false; hold(); });
       function startCountdown() {
         let remaining = VOICE_DICTIONARY_CANCEL_MS;
         let lastTick = performance.now();
@@ -1993,10 +2388,10 @@
         row.dataset.state = 'pending';
         const timer = setInterval(() => {
           const now = performance.now();
-          // Give the user ten seconds on screen; hidden windows do not consume the cancel window.
-          if (!document.hidden) remaining -= now - Math.max(lastTick, voiceDictionaryVisibilityAt);
+          // Give the user ten seconds on screen; hidden windows and a held notice do not consume the cancel window.
+          if (!document.hidden && !row.hasAttribute('data-held')) remaining -= now - Math.max(lastTick, voiceDictionaryVisibilityAt);
           lastTick = now;
-          countdown.textContent = `${Math.max(0, Math.ceil(remaining / 1000))}s`;
+          countdown.textContent = row.hasAttribute('data-held') ? 'Paused' : `${Math.max(0, Math.ceil(remaining / 1000))}s`;
           row.style.setProperty('--dictionary-remaining', String(Math.max(0, remaining / VOICE_DICTIONARY_CANCEL_MS)));
           if (remaining > 0) return;
           clearInterval(timer); voiceDictionaryTimers.delete(term);
@@ -2024,35 +2419,88 @@
     waveLevel += (target - waveLevel) * (target > waveLevel ? 0.35 : 0.1);
     const t = now / 1000;
     const mid = (WAVE_BARS - 1) / 2;
+    // Loading: the bars lie on their side as one flat dashed line, a shut shutter, and a soft glint travels along it. It is
+    // deliberately not a wave: nothing is being heard yet. When the microphone is live (the same moment as the start cue)
+    // every dash turns a quarter turn into an upright bar, centre first, like louvres opening, and the meter takes over.
+    const live = waveLiveAt ? now - waveLiveAt : -1;
+    const glint = ((t * 0.7) % 1.6) - 0.3; // 0..1 spans the row, the rest lets it enter and leave
     for (let i = 0; i < WAVE_BARS; i++) {
       const x = Math.abs(i - mid) / mid; // 0 at the centre, 1 at the edges
       const swell = (1 - x ** 1.7) * (0.74 + 0.26 * Math.sin(t * 7 - x * 5)); // bell-shaped, rippling outward
+      const p = live < 0 ? 0 : Math.min(1, Math.max(0, (live - x * WAVE_STAGGER_MS) / WAVE_TURN_MS));
+      const ease = (v) => 1 - (1 - v) ** 3; // ease-out: the shutter snaps open, then settles
+      const turn = ease(Math.min(1, p / 0.7)); // the turn finishes at full dash length...
+      const settle = ease(Math.max(0, (p - 0.55) / 0.45)); // ...then the upright bar relaxes to the meter's height
       const s = Math.min(1, waveLevel * swell * 1.15);
-      waveBars[i].style.height = `${(WAVE_MIN + (WAVE_MAX - WAVE_MIN) * s).toFixed(1)}px`;
-      waveBars[i].style.opacity = (0.3 + 0.7 * s).toFixed(2);
+      const meter = WAVE_MIN + (WAVE_MAX - WAVE_MIN) * s;
+      const shut = 0.34 + 0.3 * Math.exp(-((((i / (WAVE_BARS - 1)) - glint) / 0.12) ** 2));
+      waveBars[i].style.height = `${(WAVE_DASH + (meter - WAVE_DASH) * settle).toFixed(1)}px`;
+      waveBars[i].style.transform = turn < 1 ? `rotate(${(90 * (1 - turn)).toFixed(1)}deg)` : '';
+      waveBars[i].style.opacity = (shut + (0.3 + 0.7 * s - shut) * settle).toFixed(2);
     }
     micBtn.style.setProperty('--mic-level', waveLevel.toFixed(3));
+    composerEl.style.setProperty('--mic-level', waveLevel.toFixed(3));
     waveFrame = requestAnimationFrame(waveStep);
   }
+  let micStartingTimer;
+  // One microphone, every window animated in step. The window the text will land in (the one used last) is the target and
+  // gets the full treatment; the others echo it quietly (.is-voice-mirror). A click or focus here makes this window the target.
+  let voiceMirror = false;
+  for (const type of ['pointerdown', 'focusin']) document.addEventListener(type, () => vscode.postMessage({ type: 'windowActive' }), true);
+  window.addEventListener('focus', () => vscode.postMessage({ type: 'windowActive' }));
+  function applyMicState(message) {
+    const { state } = message;
+    clearTimeout(micStartingTimer);
+    if (state === 'starting') micStartingTimer = setTimeout(() => applyMicState({ state: 'idle' }), 8000); // the host always answers; this only unlocks a lost reply
+    if (state === 'recording') voiceHold = Boolean(message.hold);
+    voiceMirror = message.target === false && state !== 'idle';
+    if (message.cue && (state === 'recording' || state === 'processing')) playMicCue(state === 'recording' ? 'start' : 'stop');
+    micBtn.classList.toggle('recording', state === 'recording');
+    micBtn.classList.toggle('is-starting', state === 'starting');
+    micBtn.classList.toggle('is-busy', state === 'starting' || state === 'processing');
+    micBtn.classList.toggle('is-mirror', voiceMirror);
+    micBtn.disabled = state === 'processing' || state === 'starting';
+    micBtn.title =
+      state === 'recording' && voiceMirror
+        ? 'Listening for another chat. Click here to stop and transcribe into this chat instead'
+      : state === 'recording'
+        ? `Listening${message.device ? ` on ${message.device}` : ''}\u2026 ${message.hold ? 'release the hotkey to transcribe' : window.VOICE_SILENCE_MS ? 'stops by itself after a pause. Click to stop now' : 'click or press the hotkey again to stop and transcribe'}, Esc to cancel`
+        : state === 'processing'
+          ? 'Transcribing and cleaning up\u2026'
+          : state === 'starting'
+            ? 'Opening microphone\u2026'
+            : 'Voice input (click to record)';
+    setVoiceState(state);
+  }
   function setVoiceState(state) {
+    const starting = state === 'starting';
     const recording = state === 'recording';
     const processing = state === 'processing';
-    cancelAnimationFrame(waveFrame);
     emptyMascot?.setListening?.(recording);
-    if (recording) {
+    composerEl.classList.toggle('is-voice-mirror', voiceMirror && (starting || recording || processing));
+    if (starting && composerEl.classList.contains('is-voice-starting')) return; // the host's confirmation of the click's own start
+    if (starting || recording) {
       voiceOverlay.hidden = false;
-      micLevelAt = 0; micLevel = 0; waveLevel = 0; speechMs = 0; lastSpeechAt = 0; lastVolumeAt = 0; voiceStopSent = false;
-      if (!REDUCED_MOTION.matches) waveFrame = requestAnimationFrame(waveStep);
+      micLevelAt = 0; micLevel = 0; speechMs = 0; lastSpeechAt = 0; lastVolumeAt = 0; voiceStopSent = false;
+      if (starting) { waveLevel = 0; waveLiveAt = 0; }
+      else if (!waveLiveAt) waveLiveAt = performance.now(); // the closed dashes open into the live meter from here
+      // One loop serves both: opening the microphone and listening are the same animation, one fading into the other.
+      if (!REDUCED_MOTION.matches && !waveRunning) { waveRunning = true; waveFrame = requestAnimationFrame(waveStep); }
     } else {
+      waveRunning = false;
+      waveLiveAt = 0;
+      cancelAnimationFrame(waveFrame);
       micBtn.style.removeProperty('--mic-level');
+      composerEl.style.removeProperty('--mic-level');
     }
     if (processing) {
-      waveBars.forEach((bar) => { bar.style.opacity = ''; bar.style.height = ''; }); // CSS collapses them to the 4px baseline
+      waveBars.forEach((bar) => { bar.style.opacity = ''; bar.style.height = ''; bar.style.transform = ''; }); // CSS collapses them to the 4px baseline
       promptInput.placeholder = 'Transcribing & formatting with Whisper…';
     }
-    composerEl.classList.toggle('is-voice', recording || processing);
+    composerEl.classList.toggle('is-voice', starting || recording || processing);
+    composerEl.classList.toggle('is-voice-starting', starting);
     composerEl.classList.toggle('is-voice-processing', processing);
-    if (!recording && !processing) {
+    if (!starting && !recording && !processing) {
       setScheduleArmed(scheduleArmed); // restores the placeholder
       setTimeout(() => { if (!composerEl.classList.contains('is-voice')) voiceOverlay.hidden = true; }, 280);
     }
@@ -2078,7 +2526,7 @@
     lastVoiceDraft = null;
   }
   promptInput.addEventListener('input', () => {
-    resetVoiceCorrections();
+    resetVoiceCorrections(!!promptInput.value.trim());
     if (!promptInput.value.trim()) lastVoiceDraft = null;
     if (lastVoiceDraft) voiceEditTimer = setTimeout(() => checkVoiceCorrections(), 700);
   });
@@ -2135,7 +2583,7 @@
     schedPop.hidden = true;
     if (chats[0].id !== currentChatId) vscode.postMessage({ type: 'restoreChat', id: chats[0].id }); else promptInput.focus();
   });
-  newChatBtn.addEventListener('click', () => { if (editingQueue) finishQueueEdit(); attachments = []; renderAttachments(); clearEmptyState(); vscode.postMessage({ type: 'newChat' }); });
+  newChatBtn.addEventListener('click', () => { if (editingQueue) finishQueueEdit(); clearEmptyState(); vscode.postMessage({ type: 'newChat' }); });
   historyBtn.addEventListener('click', () => { if (toggleModal(historyModal)) vscode.postMessage({ type: 'requestHistory' }); });
   terminalBtn?.addEventListener('click', () => {
     // The only action that ever reveals the real VS Code terminal — an
@@ -2198,11 +2646,13 @@
   ]);
   const KNOWN_FILE_EXTENSIONS = new Set([
     'js', 'mjs', 'cjs', 'ts', 'tsx', 'jsx', 'astro', 'css', 'scss', 'html', 'htm',
-    'json', 'py', 'ps1', 'sh', 'bash', 'yml', 'yaml', 'md', 'txt', 'toml', 
-    'png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'avif'
+    'json', 'py', 'ps1', 'sh', 'bash', 'yml', 'yaml', 'md', 'txt', 'toml', 'env',
+    'png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'avif', 'pdf'
   ]);
+  // Dotenv files (.env, .env.local, .env.production) have no real extension, so they get their own test.
+  const ENV_FILE = /(?:^|[\\/])\.env(?:\.[\w-]+)*$/i;
   function fileBadge(ref, label) {
-    const match = FILE_REF.exec(ref);
+    const match = ENV_FILE.test(ref) ? [ref, ref.replace(/^file:\/\/\/?/i, ''), 'env'] : FILE_REF.exec(ref);
     if (!match || /^(https?|mailto):/i.test(ref)) return null;
     let file = match[1];
     try { file = decodeURIComponent(file); } catch { /* keep as written */ }
@@ -2212,22 +2662,33 @@
     const base = file.split(/[\\/]/).pop();
     const shown = file.replace(/^\/?[a-z]:\//i, '');
     const browser = /^html?$/.test(ext) && !line;
-    return `<button type="button" class="file-badge" data-ext="${escapeHtml(ext)}" data-path="${escapeHtml(file)}" data-line="${line}" title="${escapeHtml((browser ? 'Open in browser: ' : '') + shown + (line ? `:${line}` : ''))}">${FILE_ICONS[FILE_KIND[ext] || 'doc']}<span>${escapeHtml(label || base)}${line ? `<small>:${line}</small>` : ''}</span></button>`;
+    return `<button type="button" class="file-badge" data-ext="${escapeHtml(ext)}" data-path="${escapeHtml(file)}" data-line="${line}" title="${escapeHtml((ext === 'pdf' ? 'Open in editor: ' : browser ? 'Open in browser: ' : '') + shown + (line ? `:${line}` : ''))}">${FILE_ICONS[FILE_KIND[ext] || 'doc']}<span>${escapeHtml(label || base)}${line ? `<small>:${line}</small>` : ''}</span></button>`;
   }
   transcriptEl.addEventListener('click', (event) => {
     const badge = event.target.closest?.('.file-badge');
     if (badge) vscode.postMessage({ type: 'openFile', path: badge.dataset.path, line: Number(badge.dataset.line) || null });
+    const link = event.target.closest?.('.msg a[href]');
+    if (link && /^(https?:|mailto:)/i.test(link.getAttribute('href'))) {
+      event.preventDefault();
+      vscode.postMessage({ type: 'openUrl', url: link.getAttribute('href') });
+    }
   });
 
   function renderInline(text, notes) {
     const slots = [];
-    const hold = (html) => `\u0000${slots.push(html) - 1}\u0000`;
+    const raws = [];
+    const hold = (html, raw) => { raws[slots.length] = raw; return `\u0000${slots.push(html) - 1}\u0000`; };
+    // A link label like [`.env`](...) holds a code slot; the badge wants its plain text.
+    const plain = (label) => label.replace(/\u0000(\d+)\u0000/g, (_, n) => raws[n] ?? '').replace(/^(\*{1,3}|_{1,3}|~~)(?=\S)([\s\S]*?\S)\1$/, '$2');
     let s = String(text)
       .replace(/(`+)([\s\S]*?[^`])\1(?!`)/g, (_, _ticks, code) => {
-        const badge = /[\\/]/.test(code) ? fileBadge(code.trim()) : null;
-        return hold(badge || `<code>${escapeHtml(code.trim())}</code>`);
+        const ref = code.trim();
+        // A bare URL in backticks (how agents usually print dev-server addresses) stays code-styled but clickable.
+        if (/^https?:\/\/[^\s<>"]+$/i.test(ref)) return hold(`<a class="code-link" href="${escapeHtml(ref)}" title="${escapeHtml(ref)}"><code>${escapeHtml(ref)}</code></a>`);
+        const badge = /[\\/]|\.pdf$/i.test(ref) ? fileBadge(ref) : null;
+        return hold(badge || `<code>${escapeHtml(ref)}</code>`, ref);
       })
-      .replace(/\[([^\]\r\n]+)\]\((?:<([^<>\r\n]+)>|([^\r\n)]+))\)/g, (whole, label, wrapped, target) => { const badge = fileBadge((wrapped || target).trim(), label); return badge ? hold(badge) : whole; })
+      .replace(/\[([^\]\r\n]+)\]\((?:<([^<>\r\n]+)>|([^\r\n)]+))\)/g, (whole, label, wrapped, target) => { const badge = fileBadge((wrapped || target).trim(), plain(label)); return badge ? hold(badge) : whole; })
       .replace(/\$\$([^$]+?)\$\$/g, (_, tex) => hold(renderMath(tex, true)))
       .replace(/\\\((.+?)\\\)/g, (_, tex) => hold(renderMath(tex, false)))
       .replace(/(^|[\s([{])\$(?!\s|\$|\d)([^$\n`=;|+]{1,120}?)(?<!\s|\$)\$(?=[\s)\]},.:;!?]|$)/g, (whole, pre, tex) => {
@@ -2364,11 +2825,54 @@
   let editorThemeName = null;
   let themeVersion = 0;
   const highlightCache = new Map();
+  const HIGHLIGHT_BUDGET = 2 * 1024 * 1024;
+  let highlightBytes = 0;
+  let highlighterLoading = null;
+  let themeApplying = Promise.resolve();
+  const observedCode = new Set();
+  const codeVisibility = new IntersectionObserver(entries => {
+    for (const { target, isIntersecting } of entries) if (isIntersecting) {
+      codeVisibility.unobserve(target); observedCode.delete(target);
+      if (!document.hidden) void ensureHighlighter().then(() => { if (target.isConnected && !document.hidden) highlightInto(target); });
+    }
+  }, { rootMargin: '160px' });
+  let codeFrame = 0;
+  new MutationObserver(records => {
+    if (!observedCode.size || !records.some(record => record.removedNodes.length)) return;
+    for (const el of observedCode) if (!el.isConnected) { codeVisibility.unobserve(el); observedCode.delete(el); }
+  }).observe(document.body, { childList: true, subtree: true });
+  function queueCode(codeEl) {
+    if (codeEl.textContent.length > 100000) return;
+    observedCode.add(codeEl);
+    if (codeFrame) return;
+    codeFrame = requestAnimationFrame(() => {
+      codeFrame = 0;
+      for (const el of observedCode) {
+        if (!el.isConnected) { codeVisibility.unobserve(el); observedCode.delete(el); }
+        else if (!document.hidden) codeVisibility.observe(el);
+      }
+    });
+  }
+  function ensureHighlighter() {
+    if (highlighterLoading) return highlighterLoading;
+    highlighterLoading = (async () => {
+      if (!window.createCodeHighlighter) await new Promise((resolve, reject) => {
+        const script = document.createElement('script');
+        script.src = window.SHIKI_URI;
+        script.onload = resolve; script.onerror = reject;
+        document.head.append(script);
+      });
+      highlighter = await window.createCodeHighlighter();
+      await applyEditorTheme();
+    })().catch(() => { highlighterLoading = null; });
+    return highlighterLoading;
+  }
   const FONT_STYLE = [[1, 'font-style:italic'], [2, 'font-weight:600'], [4, 'text-decoration:underline']];
 
   function highlightInto(codeEl) {
     if (!highlighter || !editorThemeName) return;
     const code = codeEl.textContent;
+    if (code.length > 100000) return; // very large blocks remain readable without blocking the UI
     const key = `${codeEl.dataset.lang}\u0000${code}`;
     let html = highlightCache.get(key);
     if (html === undefined) {
@@ -2380,27 +2884,49 @@
           }).join(''))
           .join('\n');
       } catch { html = null; } // a language not in the bundle stays plain
-      if (highlightCache.size > 300) highlightCache.clear();
-      highlightCache.set(key, html);
+      const bytes = 2 * (key.length + (html?.length || 0));
+      if (codeEl.dataset.complete === 'true' && bytes <= HIGHLIGHT_BUDGET) {
+        while (highlightCache.size && (highlightBytes + bytes > HIGHLIGHT_BUDGET || highlightCache.size >= 300)) {
+          const oldest = highlightCache.keys().next().value;
+          highlightBytes -= 2 * (oldest.length + (highlightCache.get(oldest)?.length || 0));
+          highlightCache.delete(oldest);
+        }
+        highlightCache.set(key, html); highlightBytes += bytes;
+      }
     }
     if (html) codeEl.innerHTML = html;
   }
 
-  async function applyEditorTheme() {
-    if (!highlighter || !editorTheme) return;
-    const name = `editor-${++themeVersion}`;
-    await highlighter.loadTheme({ ...editorTheme, name });
-    editorThemeName = name;
-    highlightCache.clear();
-    document.querySelectorAll('.code-block code[data-lang]').forEach((codeEl) => { codeEl.textContent = codeEl.textContent; highlightInto(codeEl); });
+  function applyEditorTheme() {
+    if (!highlighter || !editorTheme) return Promise.resolve();
+    const theme = editorTheme;
+    themeApplying = themeApplying.catch(() => {}).then(async () => {
+      if (theme !== editorTheme) return;
+      const previous = editorThemeName;
+      const name = `editor-${++themeVersion}`;
+      // This bundled Shiki has no unloadTheme API. Replacing and disposing its
+      // context releases old theme/grammar state instead of retaining each theme.
+      const next = previous ? await window.createCodeHighlighter() : highlighter;
+      try { await next.loadTheme({ ...theme, name }); }
+      catch (error) { if (next !== highlighter) next.dispose(); throw error; }
+      if (next !== highlighter) { highlighter.dispose(); highlighter = next; }
+      editorThemeName = name;
+      highlightCache.clear(); highlightBytes = 0;
+      document.querySelectorAll('.code-block code[data-lang]').forEach(codeEl => {
+        codeEl.textContent = codeEl.textContent; queueCode(codeEl);
+      });
+    });
+    return themeApplying;
   }
-
-  window.addEventListener('load', async () => {
-    if (!window.createCodeHighlighter) return;
-    try { highlighter = await window.createCodeHighlighter(); await applyEditorTheme(); } catch { highlighter = null; }
+  document.addEventListener('visibilitychange', () => {
+    refreshAgents();
+    if (document.hidden) return;
+    if (!agentsModal.el.hidden && shownAgentId) showAgent(shownAgentId);
+    if (!historyModal.el.hidden) renderHistory(historySessions);
+    document.querySelectorAll('.code-block code[data-lang]').forEach(queueCode);
   });
 
-  function buildCodeBlock(lang, code) {
+  function buildCodeBlock(lang, code, complete = true) {
     const block = document.createElement('div');
     block.className = 'code-block';
 
@@ -2434,7 +2960,7 @@
     const pre = document.createElement('pre');
     const codeEl = document.createElement('code');
     codeEl.textContent = code;
-    if (lang) { codeEl.dataset.lang = lang.toLowerCase(); highlightInto(codeEl); }
+    if (lang) { codeEl.dataset.lang = lang.toLowerCase(); codeEl.dataset.complete = String(complete); queueCode(codeEl); }
     pre.appendChild(codeEl);
 
     block.append(header, pre);
@@ -2450,7 +2976,7 @@
     let match;
     while ((match = fenceRe.exec(text)) && match[0]) {
       if (match.index > lastIndex) appendMarkdownHtml(frag, text.slice(lastIndex, match.index), notes);
-      frag.appendChild(buildCodeBlock(match[1].trim().split(/\s+/)[0], match[2].replace(/\n$/, '')));
+      frag.appendChild(buildCodeBlock(match[1].trim().split(/\s+/)[0], match[2].replace(/\n$/, ''), match[0].endsWith('```')));
       lastIndex = fenceRe.lastIndex;
     }
     if (lastIndex < text.length) appendMarkdownHtml(frag, text.slice(lastIndex), notes);
@@ -2507,6 +3033,9 @@
     const at = message.at || Date.now();
     const agent = agentFor(message.id, at);
     if (message.agent) agent.provider = message.agent;
+    if (message.model) agent.model = message.model;
+    if (message.effort) agent.effort = message.effort;
+    if (message.external) agent.external = true;
     agent.lastAt = at;
     if (message.type === 'subagent_start') {
       Object.assign(agent, { description: message.description, subagentType: message.subagentType, status: 'running' });
@@ -2516,19 +3045,36 @@
     } else if (message.type === 'subagent_end') {
       agent.status = message.launched ? 'background' : message.error ? 'failed' : 'done';
     } else if (message.type === 'subagent_status') {
-      const settled = { completed: 'done', failed: 'failed', stopped: 'stopped', killed: 'stopped', ended: 'ended' }[message.status];
+      const settled = { background: 'background', completed: 'done', failed: 'failed', stopped: 'stopped', killed: 'stopped', ended: 'ended' }[message.status];
       if (settled) agent.status = settled;
     }
     refreshAgents();
+    saveAgents();
   }
   function pushAgentEvent(agent, event) {
     agent.events.push(event);
-    if (agent.id === shownAgentId) renderAgentEvent(event, true);
+    agent.eventBytes = (agent.eventBytes || 0) + JSON.stringify(event).length * 2;
+    let trimmed = false;
+    while (agent.events.length && (agent.events.length > 300 || agent.eventBytes > 256 * 1024)) {
+      agent.eventBytes -= JSON.stringify(agent.events.shift()).length * 2;
+      trimmed = true;
+    }
+    let total = [...subagents.values()].reduce((bytes, item) => bytes + (item.eventBytes || 0), 0);
+    for (const item of subagents.values()) while (item.events.length && total > 2 * 1024 * 1024) {
+      const bytes = JSON.stringify(item.events.shift()).length * 2;
+      item.eventBytes -= bytes; total -= bytes;
+      if (item.id === shownAgentId) trimmed = true;
+    }
+    if (!agentsModal.el.hidden && !document.hidden) {
+      if (trimmed && shownAgentId) showAgent(shownAgentId);
+      else if (agent.id === shownAgentId) renderAgentEvent(event, true);
+    }
   }
   // A turn that ends takes its foreground agents with it; background ones keep going.
   function settleAgents(interrupted) {
     for (const agent of subagents.values()) if (agent.status === 'running') agent.status = interrupted ? 'stopped' : 'done';
     refreshAgents();
+    saveAgents();
   }
   function resetAgents() {
     subagents.clear();
@@ -2555,6 +3101,7 @@
         delete saved[currentChatId]; // re-added last, so it counts as the most recent
         saved[currentChatId] = [...subagents.values()].map((agent) => ({ ...agent, events: agent.events.slice(-AGENT_SAVED_EVENTS) }));
         for (const id of Object.keys(saved).slice(0, -AGENT_SAVED_CHATS)) delete saved[id];
+        while (Object.keys(saved).length && JSON.stringify(saved).length * 2 > 2 * 1024 * 1024) delete saved[Object.keys(saved)[0]];
         vscode.setState({ ...state, agents: saved });
       } catch {}
     }, 800);
@@ -2564,7 +3111,13 @@
     let saved;
     try { saved = vscode.getState()?.agents?.[currentChatId]; } catch {}
     for (const agent of saved || []) {
-      subagents.set(agent.id, { ...agent, status: agentWorking(agent) ? 'ended' : agent.status });
+      const events = [];
+      const restored = { ...agent, events, eventBytes: 0, status: agentWorking(agent) ? 'ended' : agent.status };
+      for (const event of agent.events || []) {
+        events.push(event); restored.eventBytes += JSON.stringify(event).length * 2;
+        while (events.length && (events.length > 300 || restored.eventBytes > 256 * 1024)) restored.eventBytes -= JSON.stringify(events.shift()).length * 2;
+      }
+      subagents.set(agent.id, restored);
     }
     if (subagents.size) refreshAgents();
   }
@@ -2573,7 +3126,6 @@
     const all = [...subagents.values()];
     const working = all.filter(agentWorking);
     agentsBtn.hidden = !all.length;
-    saveAgents();
     agentsBtn.classList.toggle('is-idle', !working.length);
     agentsBtn.classList.toggle('is-quiet', working.some((agent) => agentState(agent).cls === 'is-quiet'));
     agentsBtn.querySelector('.agents-chip-count').textContent = String(working.length || all.length);
@@ -2582,10 +3134,10 @@
     agentsBtn.setAttribute('aria-label', label);
     agentsModal.count.textContent = working.length ? `${working.length} working` : String(all.length);
     // The "last activity" clocks tick while anything works or the sheet is open.
-    const tick = working.length || !agentsModal.el.hidden;
+    const tick = !document.hidden && !agentsModal.el.hidden;
     if (tick && !agentsTicker) agentsTicker = setInterval(refreshAgents, 1000);
     if (!tick && agentsTicker) { clearInterval(agentsTicker); agentsTicker = null; }
-    if (!agentsModal.el.hidden) renderAgentTabs();
+    if (!agentsModal.el.hidden && !document.hidden) renderAgentTabs();
   }
 
   // Five robot characters in the 16px line style. An agent's robot steps through the set by its
@@ -2666,7 +3218,7 @@
     const head = document.createElement('div');
     head.className = 'agents-head';
     head.innerHTML = '<span class="agents-bot"></span><span class="agents-type"></span><span class="agents-status"></span><span class="agents-steps"></span>';
-    head.querySelector('.agents-type').textContent = agent.subagentType;
+    head.querySelector('.agents-type').textContent = [agent.subagentType, agent.model, agent.effort].filter(Boolean).join(' · ');
     // The tab truncates its name; here it reads in full.
     const title = document.createElement('div');
     title.className = 'agents-title';
@@ -2717,7 +3269,7 @@
       log.appendChild(thought);
     } else if (event.type === 'tool_start') {
       const command = event.command || event.file;
-      const card = appendToolCard({ name: event.name, command, output: { text: '' }, done: event.done, diff: event.diff, host: log });
+      const card = appendToolCard({ name: event.name, command, output: { text: '' }, done: event.done, diff: event.diff, startedAt: event.startedAt ?? event.at, durationMs: event.durationMs, host: log });
       // The summary line truncates; opening the step shows the whole command above its output.
       if (command) {
         const full = document.createElement('div');
@@ -2727,7 +3279,7 @@
       }
       if (event.toolId) agentLog.cards.set(event.toolId, card);
     } else if (event.type === 'tool_end') {
-      finishToolCard(agentLog.cards.get(event.toolId), { output: event.output, error: event.error });
+      finishToolCard(agentLog.cards.get(event.toolId), { output: event.output, error: event.error, durationMs: event.durationMs });
     }
     if (follow && pinned) log.scrollTop = log.scrollHeight;
   }
@@ -2768,6 +3320,7 @@
   // a burst of output landing between our scroll and its scroll event never does.
   let stickToEnd = true;
   let lastScrollTop = 0;
+  let transcriptScrollFrame = 0;
   function isTranscriptNearBottom(threshold = 80) {
     return transcriptEl.scrollHeight - transcriptEl.scrollTop - transcriptEl.clientHeight <= threshold;
   }
@@ -2785,23 +3338,34 @@
   transcriptEl.addEventListener('scroll', () => {
     updateTranscriptFade();
     const top = transcriptEl.scrollTop;
+    const scrollingUp = top < lastScrollTop;
     if (isTranscriptNearBottom()) stickToEnd = true;
-    else if (top < lastScrollTop) stickToEnd = false;
+    else if (scrollingUp) stickToEnd = false;
     lastScrollTop = top;
+    if (scrollingUp) loadEarlierHistory(true);
   }, { passive: true });
   function scrollTranscriptToEnd(force = false) {
+    if (restoringHistory) return;
     if (!force && !stickToEnd) return;
     stickToEnd = true;
-    requestAnimationFrame(() => {
+    if (transcriptScrollFrame) return;
+    const chatId = currentChatId;
+    transcriptScrollFrame = requestAnimationFrame(() => {
+      transcriptScrollFrame = 0;
+      if (chatId !== currentChatId || !stickToEnd) return;
       transcriptEl.scrollTop = transcriptEl.scrollHeight;
+      lastScrollTop = transcriptEl.scrollTop;
       updateTranscriptFade();
+      loadEarlierHistory(); // short pages fill the viewport without loading the whole conversation
     });
   }
   // P17-N: content that grows after the scroll (code highlighting, KaTeX,
   // images decoding, a turn collapsing) re-pins the tail while stuck to it.
   const pinToEnd = new ResizeObserver(() => {
+    transcriptEl.style.setProperty('--transcript-h', `${transcriptEl.clientHeight}px`); // the first message sits at a share of this
     if (stickToEnd) {
       transcriptEl.scrollTop = transcriptEl.scrollHeight;
+      lastScrollTop = transcriptEl.scrollTop;
       updateTranscriptFade();
     }
   });
@@ -2820,14 +3384,19 @@
   }, true);
 
   // ---------- Message actions: time, copy, revert ----------
-  const COPY_ICON = '<svg viewBox="0 0 16 16" fill="none" aria-hidden="true"><rect x="5.5" y="5.5" width="8" height="8" rx="2" stroke="currentColor" stroke-width="1.3"/><path d="M10.5 3.5A1.5 1.5 0 0 0 9 2.5H4A1.5 1.5 0 0 0 2.5 4v5A1.5 1.5 0 0 0 3.5 10.5" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>';
-  const CHECK_ICON = '<svg viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="m3.5 8.5 3 3 6-7" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>';
   const REVERT_ICON = '<svg viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M5.5 3 2.5 6l3 3" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/><path d="M2.5 6h6.75a4 4 0 0 1 0 8H7" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>';
   const REPLY_NAMES = { claude: 'Claude', codex: 'Codex', gemini: 'Gemini' };
+  transcriptEl.addEventListener('contextmenu', (event) => {
+    const img = event.target.closest('img:not(.attachment-pdf)');
+    if (!img || img.closest('.attachment-chip')) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const rawName = (img.getAttribute('alt') || img.src.split('/').pop()?.split('?')[0] || 'image.png').trim();
+    openImageContextMenu(event.clientX, event.clientY, { uri: img.src, name: /\.[a-z0-9]{2,5}$/i.test(rawName) ? rawName : 'image.png' }, img);
+  });
 
   function formatTime(at) {
-    const date = at ? new Date(at) : null;
-    return date && !Number.isNaN(date.getTime()) ? date.toLocaleTimeString(TIME_PREFS.locale, clockParts()) : '';
+    return at ? window.chatTime.messageTime(at, { locale: TIME_PREFS.locale, hourCycle: HOUR_CYCLE }) : '';
   }
 
   function iconAction(icon, label, onClick) {
@@ -2890,6 +3459,12 @@
 
   // Dictation cues (aiChatPanel.voiceSounds), played once the microphone is really recording and when it stops: a rising
   // pair of sine blips for "you are live", a single falling one for "got it".
+  function warmMicCue() {
+    try {
+      droidAudio = droidAudio || new AudioContext();
+      if (droidAudio.state === 'suspended') droidAudio.resume();
+    } catch { /* no audio device: the cue stays silent */ }
+  }
   function playMicCue(kind) {
     try {
       droidAudio = droidAudio || new AudioContext();
@@ -2935,27 +3510,42 @@
   document.body.insertAdjacentHTML('beforeend', '<svg width="0" height="0" style="position:absolute" aria-hidden="true" focusable="false"><filter id="msg-goo" x="-10%" y="-10%" width="120%" height="130%" color-interpolation-filters="sRGB"><feGaussianBlur in="SourceGraphic" stdDeviation="5" result="blur"/><feColorMatrix in="blur" mode="matrix" values="1 0 0 0 0  0 1 0 0 0  0 0 1 0 0  0 0 0 18 -7" result="goo"/><feComposite in="SourceGraphic" in2="goo" operator="atop"/></filter><filter id="tip-goo" filterUnits="userSpaceOnUse" x="-320" y="-40" width="420" height="140" color-interpolation-filters="sRGB"><feGaussianBlur in="SourceGraphic" stdDeviation="5" result="blur"/><feColorMatrix in="blur" mode="matrix" values="1 0 0 0 0  0 1 0 0 0  0 0 1 0 0  0 0 0 18 -7" result="goo"/><feComposite in="SourceGraphic" in2="goo" operator="atop"/></filter></svg>'); // tip-goo: same goo, a wide fixed region for a tag hanging off a 32px button
 
   // P17-K: a prompt longer than three lines clamps behind a fade with a Show more / Show less toggle.
-  function clampUserBubble(bubble, body, actions) {
-    const line = parseFloat(getComputedStyle(body).lineHeight) || 20;
-    if (body.scrollHeight <= line * 3 + 4) return;
+  function clampUserBubble(bubble, body) {
     bubble.classList.add('is-clamped');
     const toggle = document.createElement('button');
     toggle.type = 'button';
-    toggle.className = 'msg-action msg-clamp-toggle';
+    toggle.className = 'msg-clamp-toggle';
     toggle.textContent = 'Show more';
     toggle.setAttribute('aria-expanded', 'false');
+    toggle.setAttribute('aria-controls', body.id);
     toggle.addEventListener('click', () => {
       const expanded = bubble.classList.toggle('is-expanded');
       toggle.textContent = expanded ? 'Show less' : 'Show more';
       toggle.setAttribute('aria-expanded', String(expanded));
     });
-    actions.querySelector('.msg-time').after(toggle);
+    bubble.querySelector('.msg-user-content').append(toggle);
   }
 
-  function appendUserMessage(text, at = new Date().toISOString(), files = [], { scheduled = false } = {}) {
+  const pendingUserClamps = [];
+  let userClampFrame = 0;
+  function queueUserClamp(bubble, body) {
+    pendingUserClamps.push({ bubble, body });
+    if (userClampFrame) return;
+    userClampFrame = requestAnimationFrame(() => {
+      userClampFrame = 0;
+      // Read all heights before changing any classes: one layout for the whole page.
+      const overflowing = pendingUserClamps.filter(({ bubble, body }) => bubble.isConnected && body.scrollHeight > (parseFloat(getComputedStyle(body).lineHeight) || 20) * 3 + 4);
+      pendingUserClamps.length = 0;
+      for (const { bubble, body } of overflowing) clampUserBubble(bubble, body);
+    });
+  }
+
+  function appendUserMessage(text, at = new Date().toISOString(), files = [], { scheduled = false, clientTurnId = null } = {}) {
+    if (clientTurnId && [...transcriptEl.querySelectorAll('.msg-group-user')].some(group => group.dataset.clientTurnId === clientTurnId)) return;
     clearEmptyState();
     const group = document.createElement('div');
     group.className = 'msg-group msg-group-user';
+    if (clientTurnId) group.dataset.clientTurnId = clientTurnId;
     // Sent by the scheduler, not typed just now: the same bubble, with a quiet clock tag above it.
     if (scheduled) {
       const tag = document.createElement('div');
@@ -2975,8 +3565,13 @@
     const body = document.createElement('div');
     body.className = 'msg-user-text';
     body.appendChild(buildMessageBody(text));
-    bubble.appendChild(body);
-    const index = transcriptEl.querySelectorAll('.msg-group-user').length; // nth user message = its place in the stored chat
+    const content = document.createElement('div');
+    content.className = 'msg-user-content';
+    content.append(body);
+    bubble.append(content);
+    const index = nextUserIndex++; // absolute position, including history not fetched yet
+    body.id = `message-text-${index}`;
+    group.dataset.userIndex = index;
     const revert = iconAction(REVERT_ICON, 'Revert to here (forks the chat, message goes back to the composer)', () => vscode.postMessage({ type: 'revertToMessage', index }));
     const actions = messageActions(at, () => text, [revert]);
     group.append(bubble, actions);
@@ -2984,7 +3579,7 @@
     turn.className = 'turn';
     turn.appendChild(group);
     transcriptEl.appendChild(turn); // always top level, never inside the previous turn
-    clampUserBubble(bubble, body, actions);
+    queueUserClamp(bubble, body);
     currentTurnEl = turn;
     turnAnchor = group;
     turnStartedAt = Date.now();
@@ -3009,7 +3604,8 @@
     clearEmptyState();
     // Text that arrives after a tool/approval/question card continues in a
     // new bubble BELOW that card, never back up in the one above it.
-    const continued = currentAssistantBubble && turnHost().lastElementChild !== currentAssistantBubble;
+    const last = turnHost().lastElementChild;
+    const continued = currentAssistantBubble && (last === pendingEl ? last.previousElementSibling : last) !== currentAssistantBubble;
     if (continued) {
       currentAssistantBubble = null;
       textChunk = textChunk.replace(/^\s+/, '');
@@ -3036,10 +3632,23 @@
       turnBubbles.push(currentAssistantBubble);
     }
     currentAssistantBubble.dataset.raw += textChunk;
-    const body = currentAssistantBubble.querySelector('.msg-body');
-    body.innerHTML = '';
-    body.appendChild(buildMessageBody(currentAssistantBubble.dataset.raw));
+    if (restoringHistory) renderAssistantBody(currentAssistantBubble);
+    else {
+      pendingAssistantBodies.add(currentAssistantBubble);
+      if (!assistantRenderFrame) assistantRenderFrame = requestAnimationFrame(() => {
+        assistantRenderFrame = 0;
+        for (const bubble of pendingAssistantBodies) if (bubble.isConnected) renderAssistantBody(bubble);
+        pendingAssistantBodies.clear();
+        scrollTranscriptToEnd();
+      });
+    }
     scrollTranscriptToEnd();
+  }
+
+  const pendingAssistantBodies = new Set();
+  let assistantRenderFrame = 0;
+  function renderAssistantBody(bubble) {
+    bubble.querySelector('.msg-body').replaceChildren(buildMessageBody(bubble.dataset.raw));
   }
 
   // A reply can span several bubbles (text, tool card, more text). The last one
@@ -3053,6 +3662,10 @@
   // "You have exhausted your daily quota" / RESOURCE_EXHAUSTED.
   let limitHitThisTurn = false; // an upstream_error card already said so
   let restoringHistory = false; // old limit replies in a restored transcript get no button; only the last may
+  let nextUserIndex = 0;
+  let historyStart = 0;
+  let historyRequest = 0;
+  let loadingHistory = false;
   let continueSentAfterLimit = false;
   function hasQueuedContinue(agent) {
     return continueSentAfterLimit || turnQueue.some(turn => /^\s*continue\s*[.!]?\s*$/i.test(turn.text)) || schedulerTasks.some(task => task.chatId === currentChatId && task.model === agent && ['pending', 'dispatched', 'interrupted'].includes(task.status) && /^\s*continue\s*[.!]?\s*$/i.test(task.prompt));
@@ -3083,7 +3696,8 @@
     if (!restoringHistory && limitHit) continueSentAfterLimit = false;
     // Only when there is something to continue (the turn was cut off by the limit) and a reason to
     // wait: the usage display doesn't show headroom for that provider.
-    if (!restoringHistory && limitHit && !hasHeadroom(replied)) offerContinueAtReset(last || turnHost());
+    // A notice that names its own reset time (agy: "Resets in 4h43m") beats the rail, which reads a different pool for Claude and GPT through agy.
+    if (!restoringHistory && limitHit && (limitActive(last?.dataset.raw) ?? !hasHeadroom(replied))) offerContinueAtReset(last || turnHost());
     // The model's own answer is the freshest word on its usage: a limit reply turns scheduling on, a normal one off.
     if (!restoringHistory && AGENT_IDS.includes(replied)) {
       if (limitHit) limitHitAgents.add(replied); else limitHitAgents.delete(replied);
@@ -3271,8 +3885,16 @@
     worktree: lineIcon('<circle cx="4.5" cy="4" r="1.5"/><circle cx="4.5" cy="12" r="1.5"/><circle cx="11.5" cy="6" r="1.5"/><path d="M4.5 5.5v5M11.5 7.5c0 2.5-3 2-7 3.5"/>'),
     remote: lineIcon('<path d="M9 2 3.5 9H7.5L7 14l5.5-7h-4z"/>'),
   };
+  // A tool that only waits: a Monitor/TaskOutput poll, or a shell that is just a sleep. Returns the seconds a leading
+  // `sleep N` promises (0 when unknown), or null when the tool does real work.
+  function waitSeconds(kind, command) {
+    const shell = String(command || '').replace(/^.*?\s-(?:Command|c|lc)\s+(['"])([\s\S]*)\1\s*$/i, '$2');
+    const sleep = shell.match(/^\s*(?:sleep|start-sleep)\s+(?:-s(?:econds)?\s+)?(\d+(?:\.\d+)?)\s*([smh]?)\s*(?:;|$)/i);
+    if (kind !== 'monitor' && !(sleep && !shell.slice(sleep[0].length).trim())) return null;
+    return sleep ? Math.round(Number(sleep[1]) * { s: 1, m: 60, h: 3600 }[sleep[2].toLowerCase() || 's']) : 0;
+  }
   // `host`: where the card goes (the agents viewer passes its own pane); default, the running turn.
-  function appendToolCard({ name, command, output, toolId, done, error, diff, cancelled, host = null }) {
+  function appendToolCard({ name, command, output, toolId, done, error, diff, cancelled, startedAt, durationMs, host = null }) {
     if (!host) clearEmptyState();
     const skills = loadedSkillNames(name, command || '');
     const kind = skills.length ? 'skill' : toolKind(name);
@@ -3282,6 +3904,13 @@
     const details = document.createElement('details');
     details.className = `tool-card tool-${kind}${done ? '' : ' is-running'}${error ? ' is-error' : ''}${cancelled ? ' is-cancelled' : ''}`;
     if (cancelled) details.title = 'Interrupted before a result was saved';
+    const startMs = Number.isFinite(Number(startedAt)) && Number(startedAt) > 0 ? Number(startedAt) : Date.now();
+    if (!done) details.dataset.startedAt = String(startMs);
+    const wait = done || host ? null : waitSeconds(kind, command);
+    if (wait !== null) {
+      details.dataset.waitStart = String(startMs);
+      if (wait) details.dataset.waitSecs = String(wait);
+    }
 
     const summary = document.createElement('summary');
     const icon = document.createElement('span');
@@ -3312,9 +3941,13 @@
     }
     const meta = document.createElement('span');
     meta.className = 'tool-meta';
+    const time = document.createElement('span');
+    time.className = 'tool-time';
+    const initialMs = done ? Number(durationMs) : Date.now() - startMs;
+    if (Number.isFinite(initialMs) && initialMs >= 1000) time.textContent = formatDuration(initialMs);
     const state = document.createElement('span');
     state.className = 'tool-state';
-    summary.append(icon, tool, label, meta, state);
+    summary.append(icon, tool, label, meta, time, state);
 
     if (output && (typeof output.added === 'number' || typeof output.removed === 'number')) {
       const stat = document.createElement('span');
@@ -3357,9 +3990,15 @@
     scrollTranscriptToEnd();
     return details;
   }
-  function finishToolCard(card, { output, error }) {
+  function finishToolCard(card, { output, error, durationMs }) {
     if (!card) return;
+    const startedAt = Number(card.dataset.startedAt);
+    delete card.dataset.startedAt;
+    const elapsed = Number.isFinite(Number(durationMs)) ? Number(durationMs) : (startedAt > 0 ? Date.now() - startedAt : 0);
+    const time = card.querySelector('.tool-time');
+    if (time) time.textContent = elapsed >= 1000 ? formatDuration(elapsed) : '';
     card.classList.remove('is-running');
+    syncPending(); // a finished wait turns the Timer back into "Thinking"
     card.classList.toggle('is-error', Boolean(error));
     const body = card.querySelector('.tool-body');
     // A diff card keeps its diff; only a failure replaces it with the reason.
@@ -3455,7 +4094,9 @@
     head.append(title);
     const note = document.createElement('div');
     note.className = 'setup-note';
-    note.textContent = 'The upstream service returned 503 after two automatic retries. It is usually back within a minute.';
+    note.textContent = /selected model is at capacity/i.test(detail)
+      ? 'The selected model is still at capacity after two automatic retries. Retry later or choose another model.'
+      : 'The upstream service is unavailable after two automatic retries. Try again later.';
     const raw = document.createElement('details');
     raw.className = 'setup-paths';
     const summary = document.createElement('summary');
@@ -3594,13 +4235,14 @@
 
   // AskUserQuestion: one block per question, options as tappable pills
   // (radio or multi-select), plus a free "Other" answer.
-  function appendQuestionCard({ agent, actionId, questions }) {
+  function appendQuestionCard({ agent, actionId, questions, deferred = false, modelId, settled: storedSettlement }) {
     clearEmptyState();
     // A <details> like the tool steps: open while it waits, one summary row once answered, click to read it again.
     const card = document.createElement('details');
     card.className = 'question-card';
     card.open = true;
     card.dataset.actionId = actionId;
+    card.dataset.deferred = String(deferred);
     card.dataset.label = questions[0]?.header || 'Question';
     const answers = new Map();
     const submit = document.createElement('button');
@@ -3704,19 +4346,64 @@
     submit.addEventListener('click', () => {
       const payload = Object.fromEntries(questions.map((q) => [q.question, (answers.get(q.question) || []).join(', ')]));
       const settled = { text: Object.values(payload).join(' \u00b7 '), tone: 'allowed' };
-      vscode.postMessage({ type: 'questionResponse', actionId, answers: payload, settled });
-      pendingCards.delete(actionId);
+      if (deferred) {
+        // The host settles the card and puts its answer ahead of queued work atomically.
+        vscode.postMessage({ type: 'deferredQuestionSettled', actionId, settled, answers: payload, verify: autoVerify });
+        pendingCards.delete(actionId);
+      } else {
+        vscode.postMessage({ type: 'questionResponse', actionId, answers: payload, settled });
+        pendingCards.delete(actionId);
+      }
       settleCard(card, settled.text, settled.tone);
       promptInput.focus();
     });
     skip.addEventListener('click', () => {
-      vscode.postMessage({ type: 'approvalResponse', approved: false, actionId, settled: { text: 'Skipped', tone: 'denied' } });
-      pendingCards.delete(actionId);
+      if (deferred) {
+        vscode.postMessage({ type: 'deferredQuestionSettled', actionId, settled: { text: 'Skipped', tone: 'denied' } });
+        pendingCards.delete(actionId);
+      }
+      if (!deferred) {
+        vscode.postMessage({ type: 'approvalResponse', approved: false, actionId, settled: { text: 'Skipped', tone: 'denied' } });
+        pendingCards.delete(actionId);
+      }
       settleCard(card, 'Skipped', 'denied');
     });
     refresh();
     turnHost().appendChild(card);
-    pendingCards.set(actionId, card);
+    if (storedSettlement) settleCard(card, storedSettlement.text, storedSettlement.tone);
+    else pendingCards.set(actionId, card);
+    scrollTranscriptToEnd();
+  }
+
+  function renderAuthHold(hold) {
+    let card = transcriptEl.querySelector('.auth-hold');
+    if (hold.cleared) { card?.remove(); return; }
+    if (!card) {
+      card = document.createElement('div');
+      card.className = 'auth-hold';
+      card.setAttribute('role', 'alert');
+      transcriptEl.append(card);
+    }
+    const make = (tag, className, text) => { const el = document.createElement(tag); if (className) el.className = className; if (text) el.textContent = text; return el; };
+    const icon = make('span', 'auth-hold-icon');
+    icon.innerHTML = WARN_SVG;
+    const body = make('div', 'auth-hold-body');
+    body.append(make('strong', '', hold.title), make('span', '', hold.message));
+    for (const step of hold.steps || []) body.append(make('span', 'auth-hold-step', step));
+    if (hold.error) body.append(make('span', 'auth-hold-error', hold.error));
+    const actions = make('div', 'auth-hold-actions');
+    if (hold.button) {
+      const primary = make('button', 'context-compact auth-hold-primary', hold.busy ? 'Waiting…' : hold.button);
+      primary.type = 'button';
+      primary.disabled = Boolean(hold.busy);
+      primary.addEventListener('click', () => vscode.postMessage({ type: 'authAction', agent: hold.agent }));
+      actions.append(primary);
+    }
+    const recheck = make('button', 'context-compact', 'Check again');
+    recheck.type = 'button';
+    recheck.addEventListener('click', () => vscode.postMessage({ type: 'authRecheck', agent: hold.agent }));
+    actions.append(recheck);
+    card.replaceChildren(icon, body, actions);
     scrollTranscriptToEnd();
   }
 
@@ -3792,11 +4479,14 @@
 
   /** `running`: the host's routing message for a turn still in progress. Its reply
    * so far stays open, and the stream picks up where it is. */
-  function restoreChat(chat, running = null) {
+  function restoreChat(chat, running = null, synced = false) {
+    const previousTop = transcriptEl.scrollTop, follow = stickToEnd;
+    if (transcriptScrollFrame) cancelAnimationFrame(transcriptScrollFrame);
+    transcriptScrollFrame = 0;
     const lastLimit = (chat.messages || []).findLastIndex(message => message.role === 'assistant' && isLimitNotice(message.text));
     continueSentAfterLimit = lastLimit >= 0 && chat.messages.slice(lastLimit + 1).some(message => message.role === 'user' && /^\s*continue\s*[.!]?\s*$/i.test(message.text));
     currentChatId = chat.id;
-    if (chat.modelId) selectModel(chat.modelId, { notifyExtension: false });
+    if (chat.modelId && !synced) selectModel(chat.modelId, { notifyExtension: false });
     try { vscode.setState({ ...(vscode.getState() || {}), chatId: chat.id }); } catch {} // reopened here after a restart
     turnRoutedAgent = null; // the restored transcript's own last reply says who answered here
     isCompacting = Boolean(running?.compact);
@@ -3809,6 +4499,49 @@
     currentAssistantBubble = null;
     turnBubbles = [];
     const messages = chat.messages || [];
+    historyStart = chat.historyStart || 0;
+    loadingHistory = false;
+    historyRequest++;
+    pendingAssistantBodies.clear();
+    toolCards.clear(); pendingCards.clear(); openToolCard = null;
+    currentTurnEl = null;
+    const { anchor, flush } = renderStoredMessages(messages, running, chat.historyUserStart || 0);
+    const latest = messages.findLastIndex((entry) => entry.role === 'assistant' && !entry.compact);
+    if (!running && messages[latest]?.undo?.count && !messages[latest].undone && !messages.slice(latest).some((entry) => entry.role === 'user' && !entry.compact)) offerUndo(messages[latest].undo.count);
+    if (!synced) {
+      scheduleChoice = null; // a new chat starts from its own model's usage, not the last chat's clock pick
+      scheduleTimer.clear();
+      refreshScheduleDefault();
+    }
+    if (running) {
+      turnAnchor = anchor;
+      turnStartedAt = running.startedAt || Date.now();
+      turnModelLabel = running.modelLabel || null;
+      turnRoleName = running.roleName || null;
+      pendingEl.dataset.agent = running.agentId || '';
+      if (currentTurnEl) currentTurnEl.dataset.agent = running.agentId || '';
+      turnRoutedAgent = running.agentId || null;
+    } else {
+      flush();
+      turnAnchor = null;
+      const lastMessage = messages.findLast((message) => message.role !== 'tool');
+      if (lastMessage?.role === 'assistant' && isLimitNotice(lastMessage.text) && (limitActive(lastMessage.text, lastMessage.at) ?? !hasHeadroom(lastMessage.agent))) {
+        turnRoutedAgent = lastMessage.agent || null;
+        offerContinueAtReset([...transcriptEl.querySelectorAll('.msg-assistant')].pop());
+      }
+    }
+    if (!transcriptEl.childElementCount) transcriptEl.append(emptyState());
+    lastScrollTop = transcriptEl.scrollTop;
+    if (!synced || follow) scrollTranscriptToEnd(true);
+    else {
+      if (transcriptScrollFrame) cancelAnimationFrame(transcriptScrollFrame);
+      transcriptScrollFrame = 0;
+      stickToEnd = false; transcriptEl.scrollTop = previousTop;
+    }
+  }
+
+  function renderStoredMessages(messages, running = null, userStart = 0) {
+    nextUserIndex = userStart;
     const live = running ? messages.findLastIndex((message) => message.role === 'assistant') : -1;
     // Each stored turn collapses the same way a live one does; its duration is
     // the gap between the user message's and the reply's timestamps.
@@ -3816,7 +4549,9 @@
     let startedAt = null;
     let endedAt = null;
     const flush = () => { if (anchor) collapseTurn(anchor, startedAt && endedAt ? Date.parse(endedAt) - Date.parse(startedAt) : null); anchor = null; };
-    const storedTool = (message) => appendToolCard({ name: message.event?.name, command: message.event?.command || message.event?.file, output: { text: message.event?.output || '' }, toolId: message.event?.toolId, done: message.done !== false || !running || message.interrupted, cancelled: message.interrupted, error: message.error, diff: message.event?.diff });
+    const storedTool = (message) => message.event?.type === 'question_required' && message.event.deferred
+      ? appendQuestionCard(message.event)
+      : appendToolCard({ name: message.event?.name, command: message.event?.command || message.event?.file, output: { text: message.event?.output || '' }, toolId: message.event?.toolId, done: message.done !== false || !running || message.interrupted, cancelled: message.interrupted, error: message.error, diff: message.event?.diff, startedAt: message.startedAt ?? message.event?.startedAt ?? (message.done === false && running ? (running.startedAt || Date.parse(startedAt)) : undefined), durationMs: message.durationMs ?? message.event?.durationMs });
     const placed = new Set();
     let hiddenCompactTurn = false;
     restoringHistory = true;
@@ -3825,14 +4560,15 @@
         flush();
         hiddenCompactTurn = Boolean(message.compact);
         if (hiddenCompactTurn) {
+          nextUserIndex++;
           const reply = messages.slice(index + 1).find((entry) => entry.role === 'assistant');
-          const active = isCompacting && messages.findLastIndex((entry) => entry.role === 'user') === index;
+          const active = Boolean(running?.compact) && messages.findLastIndex((entry) => entry.role === 'user') === index;
           const outcome = reply?.interrupted ? 'interrupted' : /^(Claude|Gemini|Codex) error:/i.test(reply?.text || '') ? 'failed' : 'complete';
           appendCompactDivider(message.auto, active, outcome);
           if (active) { currentTurnEl = null; currentAssistantBubble = null; }
           return;
         }
-        appendUserMessage(message.text || '', message.at || null, message.files, { scheduled: message.scheduled });
+        appendUserMessage(message.text || '', message.at || null, message.files, { scheduled: message.scheduled, clientTurnId: message.clientTurnId });
         anchor = currentTurnEl.firstElementChild; startedAt = message.at; endedAt = null;
       }
       else if (hiddenCompactTurn) return;
@@ -3856,31 +4592,47 @@
       else if (message.role === 'tool' && !placed.has(index)) storedTool(message);
     });
     restoringHistory = false;
-    const latest = messages.findLastIndex((entry) => entry.role === 'assistant' && !entry.compact);
-    if (!running && messages[latest]?.undo?.count && !messages[latest].undone && !messages.slice(latest).some((entry) => entry.role === 'user' && !entry.compact)) offerUndo(messages[latest].undo.count);
-    scheduleChoice = null; // a new chat starts from its own model's usage, not the last chat's clock pick
-    scheduleTimer.clear();
-    refreshScheduleDefault();
-    if (running) {
-      turnAnchor = anchor;
-      turnStartedAt = running.startedAt || Date.now();
-      turnModelLabel = running.modelLabel || null;
-      turnRoleName = running.roleName || null;
-      pendingEl.dataset.agent = running.agentId || '';
-      if (currentTurnEl) currentTurnEl.dataset.agent = running.agentId || '';
-      turnRoutedAgent = running.agentId || null; // a reload mid-turn must still know who hits a limit
-    } else {
+    return { anchor, flush };
+  }
+
+  function loadEarlierHistory(fromScroll = false) {
+    if (!historyStart || loadingHistory || restoringHistory || transcriptScrollFrame || transcriptEl.scrollTop > 320) return;
+    // Opening a chat stays at its recent tail. Only underfilled viewports load another page automatically.
+    if (stickToEnd && !fromScroll && transcriptEl.scrollHeight > transcriptEl.clientHeight + 1) return;
+    if (fromScroll) stickToEnd = false;
+    loadingHistory = true;
+    vscode.postMessage({ type: 'requestChatHistory', chatId: currentChatId, before: historyStart, requestId: ++historyRequest });
+  }
+
+  function prependHistory(page) {
+    if (!loadingHistory || page.chatId !== currentChatId || page.requestId !== historyRequest || page.historyEnd !== historyStart) return;
+    const first = transcriptEl.firstElementChild;
+    const top = first?.getBoundingClientRect().top;
+    const tail = transcriptEl.lastElementChild;
+    // Render only the incoming page. Keep the live tail's nodes, event handlers and renderer state intact.
+    const saved = { currentTurnEl, currentAssistantBubble, turnBubbles, turnAnchor, turnStartedAt, nextUserIndex, turnRoutedAgent, limitHitThisTurn };
+    const cards = new Map(toolCards);
+    const followTail = stickToEnd;
+    stickToEnd = false;
+    currentTurnEl = null; currentAssistantBubble = null; turnBubbles = []; turnRoutedAgent = null;
+    try {
+      const { flush } = renderStoredMessages(page.messages, null, page.historyUserStart);
       flush();
-      turnAnchor = null;
-      // Reopened after the limit hit (reload, restart, next morning): the last reply still offers the button.
-      const lastMessage = messages.findLast((message) => message.role !== 'tool');
-      if (lastMessage?.role === 'assistant' && isLimitNotice(lastMessage.text) && !hasHeadroom(lastMessage.agent)) {
-        turnRoutedAgent = lastMessage.agent || null;
-        offerContinueAtReset([...transcriptEl.querySelectorAll('.msg-assistant')].pop());
-      }
+      const fragment = document.createDocumentFragment();
+      while (tail.nextSibling) fragment.append(tail.nextSibling);
+      transcriptEl.insertBefore(fragment, first);
+    } finally {
+      ({ currentTurnEl, currentAssistantBubble, turnBubbles, turnAnchor, turnStartedAt, nextUserIndex, turnRoutedAgent, limitHitThisTurn } = saved);
+      for (const [id, card] of cards) toolCards.set(id, card);
+      restoringHistory = false;
+      loadingHistory = false;
     }
-    if (!transcriptEl.childElementCount) transcriptEl.append(emptyState());
-    scrollTranscriptToEnd(true);
+    historyStart = page.historyStart;
+    if (first && Number.isFinite(top)) transcriptEl.scrollTop += first.getBoundingClientRect().top - top;
+    lastScrollTop = transcriptEl.scrollTop;
+    updateTranscriptFade();
+    if (followTail) scrollTranscriptToEnd(true);
+    else requestAnimationFrame(() => loadEarlierHistory());
   }
 
   // Inline rename: the name turns into a field. Enter or clicking away saves,
@@ -3921,12 +4673,103 @@
   historySearch.placeholder = 'Search chats';
   historySearch.setAttribute('aria-label', 'Search chats');
   historySearch.autocomplete = 'off';
-  historyModal.body.before(historySearch);
+  // Beside the search field, a Filter button opens a panel: which projects and providers to show, which chats (all, active,
+  // waiting for you) and how to sort. A sort other than "Last active" lists the chats flat instead of by day.
+  const HISTORY_SORTS = [
+    ['recent', 'Last active', (a, b) => String(b.updatedAt).localeCompare(String(a.updatedAt))],
+    ['created', 'Newest', (a, b) => String(b.createdAt || b.updatedAt).localeCompare(String(a.createdAt || a.updatedAt))],
+    ['oldest', 'Oldest', (a, b) => String(a.createdAt || a.updatedAt).localeCompare(String(b.createdAt || b.updatedAt))],
+    ['title', 'Title A–Z', (a, b) => String(a.title || a.preview || '').localeCompare(String(b.title || b.preview || ''), undefined, { sensitivity: 'base', numeric: true })],
+    ['messages', 'Most messages', (a, b) => (b.messageCount || 0) - (a.messageCount || 0)],
+  ];
+  const HISTORY_STATUSES = [['all', 'All'], ['active', 'Active'], ['waiting', 'Needs input']];
+  const historyFilter = { projects: new Set(), models: new Set(), status: 'all', sort: 'recent' };
+  const filterCount = () => historyFilter.projects.size + historyFilter.models.size + (historyFilter.status !== 'all') + (historyFilter.sort !== 'recent');
+  const sessionProjectIds = (session) => { const ids = [...new Set([session.projectId, ...(session.touchedProjectIds || [])].filter(Boolean))]; return ids.length ? ids : ['']; };
+  const historyTools = document.createElement('div');
+  historyTools.className = 'history-tools';
+  const filterBtn = document.createElement('button');
+  filterBtn.type = 'button';
+  filterBtn.className = 'history-filter-btn';
+  filterBtn.setAttribute('aria-expanded', 'false');
+  filterBtn.setAttribute('aria-controls', 'historyFilterPanel');
+  filterBtn.innerHTML = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" aria-hidden="true"><path d="M2.5 4.5h11M4.5 8h7M6.5 11.5h3"/></svg><span>Filter</span><b class="history-filter-badge" hidden></b>';
+  const filterPanel = document.createElement('div');
+  filterPanel.className = 'history-filter-panel';
+  filterPanel.id = 'historyFilterPanel';
+  filterPanel.hidden = true;
+  historyTools.append(historySearch, filterBtn);
+  historyModal.body.before(historyTools, filterPanel);
   let historySessions = [];
+  let reusableHistoryCards = new Map();
   historySearch.addEventListener('input', () => renderHistory(historySessions));
+  filterBtn.addEventListener('click', () => {
+    filterPanel.hidden = !filterPanel.hidden;
+    filterBtn.setAttribute('aria-expanded', String(!filterPanel.hidden));
+    if (!filterPanel.hidden) renderFilterPanel();
+  });
+  function renderFilterPanel() {
+    const badge = filterBtn.querySelector('.history-filter-badge');
+    badge.hidden = !filterCount();
+    badge.textContent = String(filterCount());
+    filterBtn.classList.toggle('is-filtered', filterCount() > 0);
+    if (filterPanel.hidden) return;
+    const row = (label, chips) => {
+      const section = document.createElement('div');
+      section.className = 'history-filter-row';
+      const heading = document.createElement('span');
+      heading.className = 'history-filter-label';
+      heading.textContent = label;
+      const group = document.createElement('div');
+      group.className = 'history-filter-chips';
+      group.append(...chips);
+      section.append(heading, group);
+      return section;
+    };
+    const chip = (text, pressed, onClick, lead) => {
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'history-chip';
+      btn.setAttribute('aria-pressed', String(pressed));
+      if (lead) btn.append(lead);
+      btn.append(Object.assign(document.createElement('span'), { textContent: text }));
+      btn.addEventListener('click', () => { onClick(); renderFilterPanel(); renderHistory(historySessions); });
+      return btn;
+    };
+    const toggle = (set, key) => () => { if (!set.delete(key)) set.add(key); };
+    const counts = new Map();
+    for (const session of historySessions) for (const id of sessionProjectIds(session)) counts.set(id, (counts.get(id) || 0) + 1);
+    const projectChips = railProjects.filter((project) => counts.has(project.id)).map((project) => {
+      const icon = document.createElement('span');
+      icon.className = 'history-project-icon'; icon.style.setProperty('--hue', projectHue(project.id));
+      icon.append(projectMark(project));
+      return chip(`${project.name} · ${counts.get(project.id)}`, historyFilter.projects.has(project.id), toggle(historyFilter.projects, project.id), icon);
+    });
+    if (counts.has('')) projectChips.push(chip(`No project · ${counts.get('')}`, historyFilter.projects.has(''), toggle(historyFilter.projects, '')));
+    const models = [...new Set(historySessions.flatMap((session) => session.models || []))];
+    const modelChips = models.map((model) => {
+      const mark = document.createElement('span');
+      mark.className = 'agent-mark'; mark.innerHTML = (window.AGENT_ICONS && window.AGENT_ICONS[model]) || '';
+      return chip(MODEL_LABELS[model] || model, historyFilter.models.has(model), toggle(historyFilter.models, model), mark);
+    });
+    const rows = [];
+    if (projectChips.length) rows.push(row('Project', projectChips));
+    if (modelChips.length) rows.push(row('Provider', modelChips));
+    rows.push(row('Show', HISTORY_STATUSES.map(([key, label]) => chip(label, historyFilter.status === key, () => { historyFilter.status = key; }))));
+    rows.push(row('Sort by', HISTORY_SORTS.map(([key, label]) => chip(label, historyFilter.sort === key, () => { historyFilter.sort = key; }))));
+    const reset = document.createElement('button');
+    reset.type = 'button';
+    reset.className = 'history-filter-reset';
+    reset.textContent = 'Reset';
+    reset.hidden = !filterCount();
+    reset.addEventListener('click', () => { Object.assign(historyFilter, { status: 'all', sort: 'recent' }); historyFilter.projects.clear(); historyFilter.models.clear(); renderFilterPanel(); renderHistory(historySessions); });
+    const focusAt = [...filterPanel.querySelectorAll('button')].indexOf(document.activeElement);
+    filterPanel.replaceChildren(...rows, reset);
+    if (focusAt >= 0) filterPanel.querySelectorAll('button')[focusAt]?.focus({ preventScroll: true });
+  }
   // "5 minutes ago" ages while the list is open.
   setInterval(() => {
-    if (historyModal.el.hidden) return;
+    if (historyModal.el.hidden || document.hidden) return;
     historyModal.body.querySelectorAll('.history-when[data-at]').forEach((label) => { const text = chatWhen(label.dataset.at); if (label.textContent !== text) label.textContent = text; });
   }, 30000);
 
@@ -3935,27 +4778,46 @@
     const all = historySessions;
     const working = all.filter((session) => session.state).length;
     historyBtn.title = working ? `${working} chat${working === 1 ? '' : 's'} running` : 'Manage chats';
+    if (historyModal.el.hidden || document.hidden || historyModal.body.querySelector('input')) return;
     const query = historySearch.value.trim().toLowerCase();
-    const list = query ? all.filter((session) => [session.title, session.projectName, ...(session.projectNames || []), session.preview, session.lastMessage?.text].some((field) => String(field || '').toLowerCase().includes(query))) : all;
-    historyModal.count.textContent = query ? `${list.length} of ${all.length}` : String(all.length);
-    historySearch.hidden = !all.length;
+    const { projects, models, status, sort } = historyFilter;
+    // Dates search too: "yesterday", "oct 29", "october", "29.10." all find the chats last active then.
+    const dateText = (session) => [chatWhen(session.updatedAt), window.chatTime.chatDayGroup(session.updatedAt, timeOptions()), fullWhen(session.updatedAt), new Date(session.updatedAt).toLocaleDateString(TIME_PREFS.locale)];
+    const list = all.filter((session) => (!query || [session.title, session.projectName, ...(session.projectNames || []), session.preview, session.lastMessage?.text, ...dateText(session)].some((field) => String(field || '').toLowerCase().includes(query)))
+      && (!projects.size || sessionProjectIds(session).some((id) => projects.has(id)))
+      && (!models.size || (session.models || []).some((model) => models.has(model)))
+      && (status === 'all' || (status === 'active' ? session.active : session.state === 'waiting')));
+    if (sort !== 'recent') list.sort(HISTORY_SORTS.find(([key]) => key === sort)[2]);
+    const narrowed = Boolean(query) || projects.size > 0 || models.size > 0 || status !== 'all';
+    historyModal.count.textContent = narrowed ? `${list.length} of ${all.length}` : String(all.length);
+    historyTools.hidden = !all.length;
+    if (!all.length) filterPanel.hidden = true;
+    renderFilterPanel();
     const scrolled = historyModal.body.scrollTop; // a live refresh keeps your place
+    const focused = document.activeElement;
+    reusableHistoryCards = new Map([...historyModal.body.querySelectorAll('.history-card')].map(card => [card.dataset.id, card]));
     historyModal.body.replaceChildren();
     if (!list.length) {
       const empty = document.createElement('p');
       empty.className = 'fs-modal-empty';
-      empty.textContent = all.length ? `No chats match “${historySearch.value.trim()}”.` : 'No conversations yet.';
+      empty.textContent = !all.length ? 'No conversations yet.' : query ? `No chats match “${historySearch.value.trim()}”.` : 'No chats match the filter.';
       historyModal.body.append(empty);
+      reusableHistoryCards.clear();
       return;
     }
-    const active = list.filter((session) => session.active);
-    if (active.length) historyModal.body.append(historySection('Active Chats', active));
-    const groups = [];
-    for (const session of list.filter((entry) => !entry.active)) {
-      const label = window.chatTime.chatDayGroup(session.updatedAt, timeOptions());
-      if (groups.at(-1)?.label === label) groups.at(-1).sessions.push(session); else groups.push({ label, sessions: [session] });
+    if (sort !== 'recent') historyModal.body.append(historySection(HISTORY_SORTS.find(([key]) => key === sort)[1], list));
+    else {
+      const active = list.filter((session) => session.active);
+      if (active.length) historyModal.body.append(historySection('Active Chats', active));
+      const groups = [];
+      for (const session of list.filter((entry) => !entry.active)) {
+        const label = window.chatTime.chatDayGroup(session.updatedAt, timeOptions());
+        if (groups.at(-1)?.label === label) groups.at(-1).sessions.push(session); else groups.push({ label, sessions: [session] });
+      }
+      for (const group of groups) historyModal.body.append(historySection(group.label || 'Older', group.sessions));
     }
-    for (const group of groups) historyModal.body.append(historySection(group.label || 'Older', group.sessions));
+    reusableHistoryCards.clear();
+    if (focused?.isConnected && focused !== document.activeElement) focused.focus({ preventScroll: true });
     historyModal.body.scrollTop = scrolled;
   }
 
@@ -3978,7 +4840,11 @@
     const wrap = document.createElement('div');
     wrap.className = 'queue-list';
     for (const session of sessions) {
+      const signature = JSON.stringify([session, currentChatId, railMarks, timeOptions()]);
+      const existing = reusableHistoryCards.get(session.id);
+      if (existing?.dataset.signature === signature) { wrap.append(existing); continue; }
       const card = document.createElement('article');
+      card.dataset.signature = signature;
       // The same look as the rail's Recent tiles: a chat bubble whose rim is white for the chat in this window, blue for
       // one that ran in the last minutes, orange when it waits for you; a running chat wears the orb on its top right.
       card.className = `history-card${session.state ? ` is-${session.state}` : ''}${session.active ? ' is-recent' : ''}${session.id === currentChatId ? ' is-current' : ''}`;
@@ -4015,6 +4881,17 @@
       meta.className = 'history-meta';
       // Every project the chat worked in, the latest first (they follow the chat as its tools touch other projects).
       const projectNames = session.projectNames?.length ? session.projectNames : [session.projectName].filter(Boolean);
+      // Their icons lead the line (up to three, overlapping), the same marks as the rail's tiles.
+      const projectIcons = [...new Set([...(session.touchedProjectIds || []), session.projectId])].map(id => railProjects.find(item => item.id === id)).filter(Boolean).slice(0, 3);
+      if (projectIcons.length) {
+        const icons = document.createElement('span');
+        icons.className = 'history-project-icons'; icons.setAttribute('aria-hidden', 'true');
+        for (const item of projectIcons) {
+          const icon = document.createElement('span'); icon.className = 'history-project-icon'; icon.style.setProperty('--hue', projectHue(item.id));
+          icon.append(projectMark(item)); icons.append(icon);
+        }
+        meta.append(icons);
+      }
       if (projectNames.length) {
         const project = document.createElement('span');
         project.className = 'history-projects';
@@ -4105,25 +4982,43 @@
         break;
       }
       case 'attachmentRenamed': { const at = attachments.findIndex((item) => item.path === message.from); if (at >= 0) { attachments[at] = { ...attachments[at], ...message.attachment, dims: attachments[at].dims }; renderAttachments(); } break; }
+      case 'attachmentCopied': {
+        if (message.ok) showToast(`Copied ${message.name || 'image'} to clipboard.`);
+        else showToast(message.error || 'Could not copy image to the clipboard.', { error: true });
+        break;
+      }
+      case 'attachmentDownloaded': {
+        if (message.name) showToast(`Saved ${message.name}`);
+        break;
+      }
       case 'history': {
         // A rename in progress would lose its text to a live refresh; its own save refreshes again.
-        if (!historyModal.body.querySelector('input')) renderHistory(message.sessions);
+        renderHistory(message.sessions);
         railSessions = message.sessions || []; renderProjectList();
         break;
       }
       case 'project': {
+        railProjectsLoaded = true;
+        projectList.removeAttribute('aria-busy');
         projectBar.hidden = false;
         railProjects = message.projects || []; railActiveProject = message.project?.id || null; railChatId = message.chatId || railChatId;
-        const tiles = projectList.isConnected && railProjects.length; // the tiles, + and × cover it; the button stays for an empty rail
+        railPinnedProjects = (Array.isArray(message.pinnedProjectIds) ? message.pinnedProjectIds : railProjects.filter(project => project.id !== railActiveProject).slice(0, 2).map(project => project.id))
+          .filter((id, index, ids) => railProjects.some(project => project.id === id) && ids.indexOf(id) === index).slice(0, 2);
+        const tiles = projectList.isConnected && railProjects.length; // tiles and All projects cover it; the picker stays for an empty rail
         projectBtn.hidden = Boolean(tiles); projectBtn.textContent = message.project?.name || 'Choose project';
         renderProjectList();
+        const marks = JSON.stringify(railProjects.map((item) => [item.id, item.name, item.iconUri]));
+        if (marks !== railMarks) { railMarks = marks; window.dispatchEvent(new Event('rail-projects')); } // the Recent previews redraw their project icons
+        if (historySessions.length &&!historyModal.body.querySelector('input')) renderHistory(historySessions); // the chats' project icons follow a rename or a new icon
         projectBtn.title = message.project ? (message.project.root || 'Planning project — attach a folder through Manage projects') : 'Select a project before sending this chat';
         projectBtn.classList.toggle('needs-project', Boolean(message.required));
         break;
       }
-      case 'editorTheme': editorTheme = message.theme; void applyEditorTheme(); break;
+      case 'editorTheme': editorTheme = message.theme; void applyEditorTheme().catch(() => {}); break;
       // A chat switch has started: the old thread goes, shimmering placeholders stand in until chatLoaded renders the new one.
       case 'chatLoading': {
+        historyStart = 0; loadingHistory = false; historyRequest++;
+        pendingAssistantBodies.clear();
         resetVoiceCorrections(); lastVoiceDraft = null;
         if (editingQueue) finishQueueEdit();
         clearEmptyState();
@@ -4135,14 +5030,16 @@
           <div class="skel-reply">${[88, 61].map(bar).join('')}</div></div>`;
         break;
       }
+      case 'chatSynced':
       case 'chatLoaded': {
+        if (message.type === 'chatSynced' && message.chat?.id !== currentChatId) break;
         if (message.chat?.id !== currentChatId) {
           resetVoiceCorrections(); lastVoiceDraft = null; dismissedVoiceTerms.clear();
           if (editingQueue) finishQueueEdit();
           if (currentChatId) chatDrafts.set(currentChatId, { text: promptInput.value, files: attachments.slice(), mentions: [...mentioned] });
           const draft = chatDrafts.get(message.chat?.id);
           promptInput.value = draft?.text ?? message.chat?.draft ?? '';
-          attachments = draft?.files || [];
+          attachments = draft?.files || message.chat?.draftFiles || [];
           mentioned.clear();
           for (const mention of draft?.mentions || []) mentioned.add(mention);
           workspaceFiles = null; workspaceRoot = '';
@@ -4161,12 +5058,13 @@
         busy = false;
         resetThought();
         resetAgents(); // the new chat's own agents follow in a subagentReplay
-        restoreChat(message.chat, message.running);
+        restoreChat(message.chat, message.running, message.type === 'chatSynced');
         renderTurnQueue();
         restoreAgents();
         setBusy(Boolean(message.running));
         break;
       }
+      case 'chatHistory': prependHistory(message); break;
       case 'turnQueue': {
         // Clear acknowledged legacy copies before checking visibility, so they can't reappear on a later switch.
         try {
@@ -4194,6 +5092,7 @@
       // shows as the role label on the reply bubble itself).
       case 'quotas': {
         lastQuotas = message.quotas || {};
+        tickQueueCountdown();
         for (const quota of modelMenu.querySelectorAll('.model-group-head')) {
           const agent = quota.parentElement.querySelector('.model-option')?.dataset.agent;
           quota.querySelector('.model-group-quota').textContent = quotaText(agent);
@@ -4212,23 +5111,7 @@
         selectModel(message.modelId, { notifyExtension: false });
         break;
       }
-      case 'micState': {
-        if (message.state === 'recording') voiceHold = Boolean(message.hold);
-        if (message.cue && (message.state === 'recording' || message.state === 'processing')) playMicCue(message.state === 'recording' ? 'start' : 'stop');
-        micBtn.classList.toggle('recording', message.state === 'recording');
-        micBtn.classList.toggle('is-busy', message.state === 'starting' || message.state === 'processing');
-        micBtn.disabled = message.state === 'processing' || message.state === 'starting';
-        micBtn.title =
-          message.state === 'recording'
-            ? `Listening${message.device ? ` on ${message.device}` : ''}\u2026 ${message.hold ? 'release the hotkey to transcribe' : window.VOICE_SILENCE_MS ? 'stops by itself after a pause. Click to stop now' : 'click or press the hotkey again to stop and transcribe'}, Esc to cancel`
-            : message.state === 'processing'
-              ? 'Transcribing and cleaning up\u2026'
-              : message.state === 'starting'
-                ? 'Opening microphone\u2026'
-                : 'Voice input (click to record)';
-        setVoiceState(message.state);
-        break;
-      }
+      case 'micState': applyMicState(message); break;
       case 'micVolume': {
         const rms = Math.max(0, Number(message.rms) || 0);
         const peak = Math.max(0, Number(message.peak) || 0);
@@ -4242,7 +5125,7 @@
         // Hands-free end: once real speech has been heard, a pause of VOICE_SILENCE_MS stops and transcribes, like a click would.
         if (level > VOICE_SPEECH) { speechMs += lastVolumeAt ? Math.min(now - lastVolumeAt, 100) : 40; lastSpeechAt = now; }
         lastVolumeAt = now;
-        if (window.VOICE_SILENCE_MS && !voiceHold && !voiceStopSent && speechMs >= VOICE_MIN_SPEECH_MS && now - lastSpeechAt > window.VOICE_SILENCE_MS) {
+        if (window.VOICE_SILENCE_MS && !voiceHold && !voiceMirror && !voiceStopSent && speechMs >= VOICE_MIN_SPEECH_MS && now - lastSpeechAt > window.VOICE_SILENCE_MS) {
           voiceStopSent = true;
           vscode.postMessage({ type: 'micToggle' });
         }
@@ -4278,22 +5161,19 @@
       }
       case 'voiceTermsLearned': {
         if (message.terms?.length) showToast(`Added to voice dictionary: ${message.terms.join(', ')}`);
-        if (message.requestId === voiceEditRequest) {
-          for (const row of [...voiceDictionaryBud.children]) if (message.terms?.includes(row.dataset.term)) row.remove();
-          voiceDictionaryBud.hidden = !voiceDictionaryBud.childElementCount;
-        }
+        // Rows are matched by word: typing after the countdown started bumps the request id but the save is still theirs.
+        for (const row of [...voiceDictionaryBud.children]) if (message.terms?.includes(row.dataset.term)) row.remove();
+        voiceDictionaryBud.hidden = !voiceDictionaryBud.childElementCount;
         break;
       }
       case 'voiceDictionaryError': {
         showToast(message.message, { error: true });
-        if (message.requestId === voiceEditRequest) {
-          const row = [...voiceDictionaryBud.children].find(row => row.dataset.term === message.term);
-          if (row) {
-            row.dataset.state = 'error'; row.style.setProperty('--dictionary-remaining', '0');
-            row.querySelector('.voice-dictionary-label').textContent = `Could not add “${message.term}” to dictionary`;
-            row.querySelector('.voice-dictionary-retry').hidden = false;
-            row.querySelector('.voice-dictionary-cancel').disabled = false;
-          }
+        const row = [...voiceDictionaryBud.children].find(row => row.dataset.term === message.term);
+        if (row) {
+          row.dataset.state = 'error'; row.style.setProperty('--dictionary-remaining', '0');
+          row.querySelector('.voice-dictionary-label').textContent = `Could not add “${message.term}” to dictionary`;
+          row.querySelector('.voice-dictionary-retry').hidden = false;
+          row.querySelector('.voice-dictionary-cancel').disabled = false;
         }
         break;
       }
@@ -4310,6 +5190,7 @@
         if (message.routingConfig || message.closeSettings) closeModal(settingsModal.el);
         if (editingQueue) finishQueueEdit();
         promptInput.value = message.text || '';
+        if (Array.isArray(message.files)) { attachments = message.files; renderAttachments(); }
         autoGrow();
         promptInput.focus();
         break;
@@ -4325,6 +5206,7 @@
           break;
         }
         editQueuePrompt({ text, files, modelId: message.modelId }, message.taskId);
+        if (message.chooseModel) openModelMenu();
         break;
       }
       // Forward-compatible with the Unified Event Protocol the headless
@@ -4357,18 +5239,18 @@
         if (isCompacting) break;
         foldThought();
         noteWorkingFile(message.file);
-        openToolCard = appendToolCard({ name: message.name, command: message.command || message.file, output: { text: '' }, toolId: message.toolId, done: message.done, diff: message.diff });
+        openToolCard = appendToolCard({ name: message.name, command: message.command || message.file, output: { text: '' }, toolId: message.toolId, done: message.done, diff: message.diff, startedAt: message.startedAt, durationMs: message.durationMs });
         break;
       }
       case 'tool_end': {
         if (isCompacting) break;
         const card = (message.toolId && toolCards.get(message.toolId)) || openToolCard;
-        finishToolCard(card, { output: message.output, error: message.error });
+        finishToolCard(card, { output: message.output, error: message.error, durationMs: message.durationMs });
         if (card === openToolCard) openToolCard = null;
         break;
       }
       case 'question_required': {
-        appendQuestionCard({ agent: message.agent, actionId: message.actionId, questions: Array.isArray(message.questions) ? message.questions : [] });
+        appendQuestionCard({ ...message, questions: Array.isArray(message.questions) ? message.questions : [] });
         break;
       }
       case 'approval_cancelled': {
@@ -4401,6 +5283,12 @@
         scrollTranscriptToEnd();
         break;
       }
+      // The queue is waiting for a signed-out CLI (lib/auth-gate.js): what is wrong, the button that fixes it, and a re-check.
+      case 'authHold': {
+        if (message.chatId && message.chatId !== currentChatId) break;
+        renderAuthHold(message);
+        break;
+      }
       // Answered in another window showing this chat: the card settles here exactly as it did there.
       case 'cardSettled': {
         const card = pendingCards.get(message.actionId);
@@ -4413,6 +5301,7 @@
       }
       case 'compacting': {
         // The handoff streams invisibly; its thinking and compaction share one live status.
+        nextUserIndex++;
         isCompacting = true;
         currentAssistantBubble = null;
         currentTurnEl = null;
@@ -4459,7 +5348,7 @@
         if (completedCompaction) finishCompactDivider(message.interrupted ? 'interrupted' : 'complete');
         isCompacting = false;
         // Anything still unanswered can't be answered any more.
-        for (const [id, card] of pendingCards) { settleCard(card, 'Turn ended', 'denied'); pendingCards.delete(id); }
+        for (const [id, card] of pendingCards) { if (card.dataset.deferred === 'true') continue; settleCard(card, 'Turn ended', 'denied'); pendingCards.delete(id); }
         if (!completedCompaction) {
           document.querySelectorAll('.tool-card.is-running').forEach((card) => {
             finishToolCard(card, { output: card.querySelector('.tool-body')?.textContent || '' });
@@ -4511,8 +5400,9 @@
         break;
       case 'routingMode': setRoutingMode(message.mode, message.connected); break;
       case 'fleet': chatSettings.fleet(message); break;
+      case 'apiValue': chatSettings.apiValue(message); break;
       case 'voice': chatSettings.voice(message.voice); break;
-      case 'micDevices': chatSettings.micDevices(message.devices); break;
+      case 'micDevices': chatSettings.micDevices(message.devices, message.automatic); break;
       case 'projectIcons': chatSettings.projectIcons(message.projects); break;
       case 'voiceDictionary': chatSettings.voiceDictionary(message); break;
       case 'groqResult': chatSettings.groqResult(message); break;
@@ -4534,6 +5424,8 @@
         MODEL_OPTIONS.splice(1, MODEL_OPTIONS.length, ...message.catalog); // the menu re-renders each time it opens
         availableModels = message.available || [];
         selectModel(pendingModelId || activeModelId, { notifyExtension: Boolean(pendingModelId && optionFor(pendingModelId)) });
+        // Its CLI was removed or turned unavailable (plan ended, credits out): Auto instead of a model that can no longer be used.
+        if (pendingModelId && availableModels.length && !optionFor(pendingModelId)) selectModel('auto');
         if (menuOpen()) renderModelMenu();
         break;
       case 'schedulerQueue': {
@@ -4553,7 +5445,7 @@
           continueSentAfterLimit = true;
           transcriptEl.querySelectorAll('.continue-at-reset').forEach(button => button.remove());
         }
-        appendUserMessage(message.text || '', message.at || undefined, message.files || [], { scheduled: message.scheduled });
+        appendUserMessage(message.text || '', message.at || undefined, message.files || [], { scheduled: message.scheduled, clientTurnId: message.clientTurnId });
         break;
       }
       case 'taskScheduled': {
@@ -4576,6 +5468,7 @@
     }
   });
 
+  vscode.postMessage({ type: 'chatReady' });
   vscode.postMessage({ type: 'requestQuotas' });
   vscode.postMessage({ type: 'requestProject' });
   vscode.postMessage({ type: 'requestCliConnections' });

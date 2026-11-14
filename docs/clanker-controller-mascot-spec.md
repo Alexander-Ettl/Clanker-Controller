@@ -123,20 +123,9 @@ Element Map:
 
 ## 6. Handoff & Next Steps
 
-### Pending Git Actions
-- **Nested Repo (`astro-visual-editor`):**
-  Stage & commit replaced icon assets:
-  ```powershell
-  git -C astro-visual-editor add tools/ai-chat-panel/media/clanker.svg tools/ai-chat-panel/media/clanker-dark.svg docs/clanker-controller-mascot-spec.md
-  git -C astro-visual-editor commit -m "docs(mascot): add clanker controller specification and animation handoff"
-  ```
-- **Root Repo (`.`):**
-  Stage master brand asset:
-  ```powershell
-  git add Clanker_Controller_logo.svg
-  git commit -m "assets(brand): add Clanker Controller master SVG"
-  ```
-*(Per `AGENTS.md`, never push without explicit user command).*
+### Repository ownership
+
+The old nested-repository staging instructions no longer apply. Clanker Controller owns this document, `ai-chat-panel/media/` and the master logo at `assets/Clanker_Controller_logo.svg`. Follow the root [agent instructions](../AGENTS.md) for Git operations and [backlog](../TODO.md) for selected work. Animation ideas below are reference material, not an outstanding commit task.
 
 ### Resuming Animation Work
 When returning to implement motion:

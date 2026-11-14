@@ -12,9 +12,15 @@ floating windows (`vscode.window.createWebviewPanel`, `ViewColumn.Beside`)
 from a lightweight launcher in the Activity Bar's Primary Side Bar. Because
 chat lives in floating windows rather than the Primary Side Bar itself, the
 File Explorer can stay open on the left at the same time (P13-J). Spec:
-[`docs/ai-chat-studio-architecture.md`](../docs/ai-chat-studio-architecture.md).
+[original studio design](../docs/archive/ai-chat-studio-architecture.md) (historical).
 
 ## Architecture (and why it isn't node-pty)
+
+PDF references and attachment chips open in the editor using its registered PDF viewer,
+like opening a file from Explorer.
+Use a Markdown file link or a path/filename in backticks, such as `out/report.pdf`
+or `report.pdf`. Relative paths resolve from the chat's project root; web URLs
+keep their normal link behavior.
 
 The model picker and Settings use the installed CLIs' model lists, with a
 persisted cache for startup and failed refreshes. Claude supplies models and
@@ -29,6 +35,17 @@ separately, with its prompt, permissions (or inheritance from General), reasonin
 and removal from favorites. These settings also apply to queued and scheduled
 turns. Changing reasoning retains the favorite's configuration; Remote keeps its
 Telegram and tunnel controls.
+
+A CLI can be signed in and still be unusable: its plan ended, credits ran out, or
+its sign-in was rejected. Clanker checks the plan behind each sign-in on start, every
+30 minutes and when Settings opens (a provider's optional `entitlement` in
+`lib/providers/`: Codex reads the plan from its local token, Claude Code from
+`auth status`, Antigravity from its language server's account tier), and also learns it from a failed turn (`lib/provider-access.js`, any
+provider). It marks the CLI "Not available" in
+General > Your CLIs with the reason and a Try again button, and drops its usage
+ring, picker models and Auto routing. A plan flag clears itself once the plan is back;
+a failed-turn flag waits for Try again or a new sign-in.
+Limits that reset keep their gauge and scheduled-continue flow.
 
 The spec allows either `node-pty` or `vscode.window.createTerminal`. This
 machine has no C++ build toolchain (no `cl.exe`/`node-gyp`), and a native
@@ -54,12 +71,36 @@ requiring it directly, so the session lifecycle logic
 is unit-testable with a plain mock object — no `@vscode/test-electron`
 (a full downloaded VS Code test instance) needed for this tool's size.
 
+## Cross-agent briefings never lose what they shorten
+
+When another agent answers in a chat, the next agent gets a condensed briefing
+(`lib/chat-handoff.js`, 20,000 characters at most). Whatever it shortens stays
+readable: each chat has a plain Markdown transcript at
+`<session>/chats/transcripts/<chatId>.md` (`lib/chat-transcript.js`, written by
+`ChatStore.transcript()` when a briefing is built, only if the chat changed).
+It holds every user and assistant message in full and every tool call with its
+complete command, result, diff and output (output as recorded: at most 16,000
+characters per call). It lives in a subfolder, so the chat list and
+`storage-gc.js` never see it; deleting the chat deletes it.
+
+- Every omission is marked `[...N chars omitted; full text: <file> line L, turn T, message M...]`;
+  the briefing's header names the file and the total omitted. The agent opens
+  it with its normal Read tool at that line.
+- Lists and headings are cut at item boundaries (`lib/handoff-clip.js`): every
+  item keeps its number and first line, spare budget goes to the bodies of the
+  most severe (then earliest) items, and a closing paragraph is kept.
+- Intermediate messages shrink to a one-line digest each; tool calls keep the
+  start of the command (200 characters) and `[ok]`, `[exit N: first error
+  line]`, `[failed: ...]` or `[no result]`, duplicates counted.
+- `node scripts/handoff-demo.mjs` builds such a briefing from a real chat and
+  checks that every pointer lands on the omitted text.
+
 ## Revert starts a fresh session (decision, 2026-09-23)
 
 Revert (`revertToMessage` in `extension.js`) forks the chat with the visible
 messages only. The fork carries no agent session ids, so the next turn starts
-a new session briefed by `lib/chat-handoff.js`: the oldest turns are dropped,
-the rest arrive condensed without tool output. The context gauge then shows
+a new session briefed by `lib/chat-handoff.js`: the oldest turns are dropped
+(and pointed at), the rest arrive condensed. The context gauge then shows
 that new session's real size, which is far below what the original chat had
 used.
 
@@ -75,6 +116,50 @@ We kept the handoff because in practice it works well: the condensed briefing
 is enough to carry on, and replies come back noticeably faster in the much
 smaller context. Revisit if a revert ever loses something the summary can't
 carry.
+
+## Signed-out CLIs hold the queue (2026-11-11)
+
+A "continue", a queued prompt or a scheduled one is sent while nobody is watching. If its CLI was signed out in the
+meantime (Codex opened elsewhere, a token that ended), the prompt used to go out anyway and come back as `401
+Unauthorized`. `lib/auth-gate.js` now asks first, on top of the same account state the sidebar rings use:
+
+- **One state, one text, one button.** `CliAccounts` (`lib/cli-accounts.js`) owns what is wrong (`fault()`: signed out,
+  sign-in expired, cannot start, not installed, plan/credits), when it last looked (`ensureFresh`), and what fixes it
+  (`fix()`). The red ring in the rail, the chat's sign-in card, the Windows popup and the gate all read and press those, so
+  they cannot disagree: whatever the rail's own check (startup, every 30 minutes, a closed terminal) or the gate finds, the
+  other already knows. The gate keeps only the waiting: the incident, the popup, a 10 s poll and the `resolved` event.
+- **Before sending:** the CLI's own status command (`codex login status`, no prompt, no tokens), reused for 30 s. Only a
+  definite fault blocks. A check that itself fails lets the prompt go; its own error is still read afterwards. Gates:
+  `ChatRun.startTurn` for everything queued (`queued` turns, scheduled hand-overs and "continue" all end up there) and
+  `SchedulerWatchdog.tick` for the Scheduled tab.
+- **Blocked:** the prompts stay where they are (chat queue, Scheduled tab), a card in the chat says what is wrong, and a
+  Windows popup (`lib/auth-prompt.ps1`, not an IDE notification, since the IDE is often minimised) has the button that
+  fixes it. **Sign in** (popup, card and the rail's ring) runs `<cli> login` headless (the CLI opens your browser),
+  **Repair/Install** opens the setup terminal, **Try again** re-reads a plan flag. Antigravity has no sign-in command, so
+  its popup only explains.
+- **Released:** when the CLI answers "signed in" (our own sign-in finished, a 10 s background look, the rail's check, or
+  **Check again**), the gate emits `resolved` once; the chats drain and the watchdog ticks, so everything goes out in its
+  original order.
+- **Expired mid-run:** a turn that ends with an auth error (`accessFailure` kind `auth`) calls
+  `CliAccounts.markSignedOut`: the ring turns red as well, and the same popup opens. The prompt that hit the error goes back
+  to the front of the queue (or "continue", if it had already worked) and waits behind the sign-in. Here the status command
+  may still say "logged in" for a token the server dropped, so only a sign-in, **Check again**, or seeing the CLI signed
+  out and then in again releases it, never a passing status look alone. Plan and credit failures keep their old
+  "unavailable, Try again" flow.
+
+Tests: `test/auth-gate.test.js`, `test/auth-hold.test.js` (both on the real `CliAccounts`, only the CLI process faked:
+`test/auth-fixture.js`), `test/auth-hold-ui.mjs` (screenshots in `out/auth-hold-review`), `test/rail-fault-ui.mjs`
+(`out/rail-fault`). Redo the popup picture with `AUTH_SHOT=<png>` set and the `AUTH_*` variables from `lib/auth-prompt.ps1` (it renders without showing).
+
+## Agents can start other vendors' models (2026-11-11)
+
+Claude's, Codex's and Antigravity's own sub-agents only run their own vendor's models. `lib/clanker-agent.js` is a shell
+command any of them can call to start another vendor's model in the background and read its answer from
+`<project>\_work\clanker\<task>\result.md`, with a `status.json` that says running, done or failed and why. The extension writes
+the launcher `~/.clanker/clanker-agent.js` and the picker's model list (`~/.clanker/agent-bridge.json`) at every start and
+whenever the models change; the global skill `clanker-load-agent` (in `ClaudeConfig/skills`, seen by all three CLIs) tells the
+agents how to use it. Design, file layout, rules and what is still unverified: [docs/agent-bridge.md](../docs/agent-bridge.md).
+Tests: `test/clanker-agent.test.js`.
 
 ## Try it
 
@@ -128,7 +213,7 @@ powershell -ExecutionPolicy Bypass -File .\install-into-antigravity.ps1 -Link
 Then run **Developer: Reload Window** (`Ctrl+Shift+P`) in Antigravity.
 
 > [!WARNING]
-> **Windows PowerShell UTF-8 BOM Pitfall:** Never use PowerShell 5.1's `Set-Content -Encoding utf8` or `Out-File -Encoding utf8` to edit `package.json`. It prepends a 3-byte Byte Order Mark (`0xEF 0xBB 0xBF`), which crashes Antigravity's Shared Process manifest scanner (`JSON.parse`) with `SyntaxError: Unexpected token '﻿'` and causes the extension to be silently ignored. See [`docs/antigravity-extension-discovery.md`](../../docs/antigravity-extension-discovery.md) for full architectural documentation.
+> **Windows PowerShell UTF-8 BOM Pitfall:** Never use PowerShell 5.1's `Set-Content -Encoding utf8` or `Out-File -Encoding utf8` to edit `package.json`. It prepends a 3-byte Byte Order Mark (`0xEF 0xBB 0xBF`), which crashes Antigravity's Shared Process manifest scanner (`JSON.parse`) with `SyntaxError: Unexpected token '﻿'` and causes the extension to be silently ignored. See [`docs/antigravity-extension-discovery.md`](../docs/antigravity-extension-discovery.md) for full architectural documentation.
 
 ## The launcher rail (no sidebar patch needed)
 
@@ -172,13 +257,37 @@ Cloudflare Workers AI instead, using the Cloudflare connection under Settings �
 Cloudflare [does not train on prompts or share them with other customers](https://developers.cloudflare.com/workers-ai/platform/data-usage/).
 Whisper transcription stays on Groq.
 
+**Long recordings and the 7-day archive.** There is no length limit. The microphone writes WAV files of 5 minutes each
+straight into `<session storage>/voice/<start time>/`. **Work happens while you speak:** as soon as a 5-minute part is
+finished it is transcribed in the background, and the text is cleaned in chunks of about 3,500 characters as soon as a
+chunk can no longer change. Pressing the hotkey then only has the last part left. A prompt of a minute or less never
+reaches the first boundary and behaves as before (one transcription, one cleaning).
+
+- **Silence is not uploaded.** For parts over 45 seconds, pauses of 1.2 s or more are cut to 0.4 s and the rest is sent
+  as FLAC (a real 30-minute recording: 57 MB of WAV became 14 MB, in under 3 s of ffmpeg time). A part that is only
+  silence costs no request. The WAV in the archive is not touched.
+- **Cleanup waits instead of giving up.** The router allows 8,000 Groq tokens a minute, which a 30-minute dictation
+  used to exceed in its first minute. A chunk that hits that limit is retried after 6, 20 and 45 s. A chunk that still
+  fails is put in the composer as its raw text (the others stay cleaned) and the warning says how many.
+- **Nothing is lost.** Every part's text is saved the moment it returns (`seg-000.txt`, ...), `transcript.raw.txt` is
+  rebuilt after each part, and the cleaned text is saved as `transcript.txt`. A part that still fails after two retries
+  is marked in the text with the path of its audio. `meta.json` records `finishMs` (how long the wait after the hotkey
+  was) and the cleanup errors.
+- **7 days.** Audio and text stay for 7 days (swept every six hours; a recording still being written is never swept),
+  except when you cancel with Esc. If the IDE closes or the network drops mid-way, the next start offers the unfinished
+  recording once. **Clanker Controller: Recover Voice Recording** picks any recording from the last week, transcribes
+  only the missing parts and puts the text in the composer; **Open Voice Recordings Folder** opens the archive for
+  manual transcription (`voice/README.txt` explains the files and how to join them). A hard crash of the recorder
+  loses at most the part being written. A word spoken exactly at a 5-minute boundary can be clipped.
+
 Correct a misheard word in the composer. After a typing pause, a visible
 **Adding “word” to dictionary** notice starts a ten-second countdown. Click
 its trash button to cancel; otherwise the spelling saves automatically and
 a confirmation appears. The countdown pauses while the chat is hidden.
 **Settings → Voice → Dictionary** is the full list: search, add, rename, switch off or delete words, scan a
-project (or any folder) for its technical terms, or have a chat model edit it. Every list that reaches a model is
-capped. See the
+project (or any folder) for its technical terms, or have a chat model edit it. The dictionary keeps thousands of words;
+Clanker picks the ones that go to the models for each recording (recent use, the chat's project) and there is
+nothing to pin. See the
 [microphone review and walkthrough](../docs/microphone-dictionary-review.md)
 for routing, storage, behavior and verification details.
 
@@ -217,3 +326,9 @@ npm.cmd run render -- rail      # from the Clanker root; or: settings | queue
 `test/render.mjs` draws a fixture with the real stylesheets in headless Chrome or Edge and prints the PNG's path
 (`--scale=4`, `--width=<px>`, `--chrome=<path>` or `CHROME_PATH`). It is for reading a picture, not for asserting
 anything. The fixtures are hand-written markup shaped like what `launcher.js` and `main.js` build; keep them in step.
+
+## AGY question cards
+
+AGY's headless JSON stream reports native `ask_question` steps as `unknown`, without their text or options, and auto-skips the answer. Clanker reads the original tool arguments from that conversation's local SQLite trajectory in read-only mode, shows the usual question card, and ends the turn before AGY continues past the question. Your answer starts the next turn on the model that asked it. Cards and their answered state are saved with the chat.
+
+This bridge uses AGY's current local protobuf trajectory layout. If the database cannot be read, Clanker shows a notice. Regression checks: `node --test ai-chat-panel/test/agy-question.test.js ai-chat-panel/test/turn-queue.test.js` and `node ai-chat-panel/test/agy-question-ui.mjs` from the repository root. They do not send prompts to a live CLI.

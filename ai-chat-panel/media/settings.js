@@ -65,8 +65,8 @@
     const ready = ['connected', 'ready'].includes(connection.auth);
     return {
       ready,
-      tag: !connection.enabled ? 'Not added' : ready ? connection.auth === 'ready' ? 'Ready' : 'Connected' : connection.settingUp ? 'Setting up' : !connection.installed ? 'Not installed' : 'Sign in',
-      action: connection.settingUp && !ready ? 'Open setup' : !connection.installed ? 'Install & sign in' : ready ? 'Add CLI' : 'Sign in / Sign up',
+      tag: !connection.enabled ? 'Not added' : ready ? connection.auth === 'ready' ? 'Ready' : 'Connected' : connection.settingUp ? 'Setting up' : !connection.installed ? 'Not installed' : connection.auth === 'broken' ? 'Broken' : 'Sign in',
+      action: connection.settingUp && !ready ? 'Open setup' : !connection.installed ? 'Install & sign in' : connection.auth === 'broken' ? 'Repair & sign in' : ready ? 'Add CLI' : 'Sign in / Sign up',
       description: connection.note || (connection.auth === 'ready' ? 'CLI is ready. Complete Google sign-in in its terminal if prompted.' : ready ? 'Account connected on this computer.' : 'Use your existing account, or create one during sign-in.'),
     };
   }
@@ -135,7 +135,7 @@
       <button class="cs-tab" role="tab" data-tab="routing" aria-selected="false" aria-label="Routing" title="Routing" type="button">${ICON.server}<span>Routing</span></button>
       <button class="cs-tab" role="tab" data-tab="voice" aria-selected="false" aria-label="Voice" title="Voice" type="button">${ICON.mic}<span>Voice</span></button>
       <button class="cs-tab" role="tab" data-tab="remote" aria-selected="false" aria-label="Remote" title="Remote" type="button">${ICON.tunnel}<span>Remote</span></button>
-      <button class="cs-tab" role="tab" data-tab="compliance" aria-selected="false" aria-label="Compliance" title="EU and GDPR compliance" type="button">${ICON.shield}<span>Compliance</span></button>
+      <button class="cs-tab" role="tab" data-tab="loops" aria-selected="false" aria-label="Loops" title="Loops" type="button">${ICON.loop}<span>Loops</span></button>
     </div>
 
     <div class="cs-pane" data-pane="general" role="tabpanel">
@@ -178,6 +178,66 @@
             <button class="format-pill" data-format="auto" type="button">Auto</button>
           </div>
         </div>
+        <div class="cs-row cs-row-wrap">
+          <span class="cs-icon">${ICON.chart}</span>
+          <div class="cs-info"><span class="cs-title">Antigravity usage circle</span><span class="cs-desc">What the Gemini circle in the launcher draws. Hovering it still lists every group.</span></div>
+          <div class="ring-source-picker pill-track" role="radiogroup" aria-label="Antigravity usage circle">
+            <button class="ring-source-pill" data-ring="argon" type="button" title="Gemini 4 Argon, 7-day window">Argon 7d</button>
+            <button class="ring-source-pill" data-ring="gemini" type="button" title="Gemini models, 5h and 7d">Gemini</button>
+            <button class="ring-source-pill" data-ring="claude-gpt" type="button" title="Claude and GPT models, 5h and 7d">Claude</button>
+          </div>
+        </div>
+        <div class="cs-row">
+          <span class="cs-icon">${ICON.clock}</span>
+          <div class="cs-info"><span class="cs-title">Automatically continue after usage resets</span><span class="cs-desc">When a task hits its usage limit, schedule Continue in the same chat and model for the reset, ahead of later prompts.</span></div>
+          <button class="cs-switch" data-role="autoContinueOnLimit" role="switch" aria-checked="true" aria-label="Automatically continue after usage resets" type="button"></button>
+        </div>
+        <div class="cs-row">
+          <span class="cs-icon">${ICON.up}</span>
+          <div class="cs-info"><span class="cs-title">Automatically update idle CLIs</span><span class="cs-desc">Update connected providers silently when they have no active work and you have not typed with them for 30 seconds. Other providers can update while you chat. Turn off to update manually.</span></div>
+          <button class="cs-switch" data-role="autoUpdateClis" role="switch" aria-checked="true" aria-label="Automatically update idle CLIs" type="button"></button>
+        </div>
+        <div class="cs-row">
+          <span class="cs-icon">${ICON.clock}</span>
+          <div class="cs-info"><span class="cs-title">Start usage windows early</span><span class="cs-desc" data-role="sessionWarmupDesc">Every 5 hours, sends "respond with 1" to the cheapest model of each connected CLI in the background, so a 5-hour window is nearly always already under way when you start. Subscription sign-ins only: a CLI billed per token through an API key is skipped.</span></div>
+          <button class="cs-switch" data-role="sessionWarmup" role="switch" aria-checked="true" aria-label="Start usage windows early" type="button"></button>
+        </div>
+        <div class="cs-row cs-warmup-status" data-role="sessionWarmupStatusRow" hidden>
+          <div class="cs-info"><span class="cs-desc" data-role="sessionWarmupStatus"></span></div>
+        </div>
+        <div class="cs-row">
+          <span class="cs-icon">${ICON.server}</span>
+          <div class="cs-info"><span class="cs-title">Start windows in Google Cloud <span class="cs-tag">Experimental</span></span><span class="cs-desc">Use your weekly work calendar even while this computer is off. Runs in your own Google Cloud account.</span></div>
+          <button class="cs-switch" data-role="cloudWarmupEnabled" role="switch" aria-checked="false" aria-label="Start windows in Google Cloud" type="button"></button>
+        </div>
+        <div class="cs-cloud-warmup" data-role="cloudWarmupPanel" hidden>
+          <p class="cs-note cs-cloud-warning">Google Cloud could charge you if set up incorrectly or if you exceed its shared free allowances. More providers, retries, builds, image storage and networking can add costs. Budget alerts do not cap spending.</p>
+          <p class="cs-desc">Cloud sign-ins are separate from your desktop. Subscription credentials are stored in your private Google Cloud project. API keys are skipped. No shared Clanker backend.</p>
+          <div class="cs-actions cs-cloud-actions">
+            <button class="cs-btn is-primary" data-role="cloudWarmupConnect" type="button">Connect Google Cloud</button>
+            <button class="cs-btn is-quiet" data-role="cloudWarmupInstall" type="button">Get Google Cloud CLI</button>
+          </div>
+          <p class="cs-desc" data-role="cloudWarmupProject"></p>
+          <fieldset class="cs-cloud-calendar"><legend>Weekly work calendar</legend>
+            <label class="cs-cloud-zone">Timezone <input class="cs-area" data-role="cloudWarmupTimezone" aria-label="Work calendar timezone" placeholder="Europe/Berlin" spellcheck="false"></label>
+            <label class="cs-cloud-zone">Start windows <select class="cs-select" data-role="cloudWarmupLead" aria-label="Hours before work"><option value="1">1 hour before work</option><option value="2">2 hours before work</option><option value="3" selected>3 hours before work</option><option value="4">4 hours before work</option></select></label>
+            <div class="cs-cloud-days" data-role="cloudWarmupDays"></div>
+            <p class="cs-desc">Same-day shifts, on the hour. Planned starts repeat every five hours until work ends, then pause overnight. A running provider window cannot be moved. Local-clock schedules follow daylight saving; duplicate slots are skipped.</p>
+            <button class="cs-btn" data-role="cloudWarmupSave" type="button">Save calendar</button>
+          </fieldset>
+          <p class="cs-desc" data-role="cloudWarmupEstimate"></p>
+          <p class="cs-desc" data-role="cloudWarmupExpiry"></p>
+          <div class="cs-actions cs-cloud-actions">
+            <button class="cs-btn is-primary" data-role="cloudWarmupDeploy" type="button">Review &amp; deploy</button>
+            <button class="cs-btn" data-role="cloudWarmupRefresh" type="button">Refresh status</button>
+            <button class="cs-btn" data-role="cloudWarmupRenew" type="button">Renew for 30 days</button>
+          </div>
+          <div class="cs-cloud-providers" data-role="cloudWarmupProviders"></div>
+          <p class="cs-desc">Antigravity is unavailable here: its desktop sign-in cannot currently be connected to this runner. The same calendar applies to supported cloud providers.</p>
+          <p class="cs-note" role="status" aria-live="polite" data-role="cloudWarmupStatus">Off. No Google resources have been created.</p>
+          <p class="cs-desc">Stops prompts after 30 days unless renewed. Login warnings appear when Clanker is open; phone or email alerts while the PC is off are not configured. Pausing retains cloud resources and credentials.</p>
+          <div class="cs-actions cs-cloud-actions"><button class="cs-btn is-quiet" data-role="cloudWarmupConsole" type="button">Open Google console</button><button class="cs-btn is-quiet" data-role="cloudWarmupRemove" type="button">Remove cloud runner &amp; credentials</button></div>
+        </div>
         <div class="cs-row">
           <span class="cs-icon">${ICON.server}</span>
           <div class="cs-info"><span class="cs-title">Status bar item</span><span class="cs-desc">Show the tunnel state at the bottom of the window.</span></div>
@@ -189,6 +249,22 @@
           <button class="cs-btn" data-role="openTerminal" type="button">Open</button>
         </div>
       </section>
+
+      <details class="cs-card cs-group cs-api-value">
+        <summary class="cs-row">
+          <span class="cs-icon">${ICON.clock}</span>
+          <div class="cs-info"><span class="cs-title">API value</span><span class="cs-desc">Estimated value of your work at pay-per-token prices.</span></div>
+          ${ICON.chevron}
+        </summary>
+        <div class="cs-api-value-body">
+          <div class="cs-api-value-total" data-role="apiValueTotal">Loading estimate…</div>
+          <div class="cs-desc" data-role="apiValueRange"></div>
+          <div class="cs-desc" data-role="apiValueChat">Current chat ≈ $0</div>
+          <p class="cs-note">What this work would have cost at the providers' pay-per-token API prices. This is an estimate covered by your subscriptions, not a charge.</p>
+          <div class="cs-api-value-rows" data-role="apiValueRows"></div>
+          <p class="cs-note" data-role="apiValueFoot"></p>
+        </div>
+      </details>
 
       <details class="cs-card cs-group cs-project-icons">
         <summary class="cs-row">
@@ -252,7 +328,6 @@
         </div>
         <div class="cs-dict-list" data-role="dictList" role="list" aria-label="Dictionary words"></div>
         <p class="cs-status" data-role="dictStatus" role="status"></p>
-        <div class="cs-usage" data-role="dictUsage"></div>
         <div class="cs-row cs-dict-scan">
           <span class="cs-icon">${ICON.search}</span>
           <div class="cs-info"><span class="cs-title">Scan a project</span><span class="cs-desc">Adds the class, function and package names a project uses, a limited number per scan. It runs on this computer and only reads files.</span></div>
@@ -317,8 +392,8 @@
       </section>
     </div>
 
-    <div class="cs-pane" data-pane="compliance" role="tabpanel" hidden>
-      <p class="cs-note">Pointers for building in the EU and Germany. This is technical guidance, not legal advice: you stay responsible for what you publish, and a lawyer or your data protection officer has the last word.</p>
+    <div class="cs-pane" data-pane="loops" role="tabpanel" hidden>
+      <p class="cs-note">Options for loops. The EU check lists indicators for you to judge. It is technical guidance, not legal advice.</p>
       <section class="cs-card">
         <div class="cs-row">
           <span class="cs-icon">${ICON.shield}</span>
@@ -331,7 +406,6 @@
           <button class="cs-switch" data-role="complianceRedact" role="switch" aria-checked="true" aria-label="Hide personal data from cloud models" type="button"></button>
         </div>
       </section>
-      <div data-role="complianceBody"></div>
     </div>
 
     <div class="cs-pane" data-pane="models" role="tabpanel" hidden>
@@ -358,7 +432,7 @@
         </div>
         <div class="cs-model-tools">
           <label class="cs-model-search">${ICON.search}<input data-role="modelSearch" type="search" placeholder="Search models…" aria-label="Search available models" autocomplete="off" spellcheck="false"></label>
-          <div class="cs-company-filters" role="group" aria-label="Filter models by company" data-role="companyFilters"></div>
+          <div class="cs-company-filters" role="group" aria-label="Filter models by CLI" data-role="companyFilters"></div>
           <span class="cs-model-count" data-role="modelCount" role="status"></span>
         </div>
         <div class="cs-model-list" data-role="modelList"></div>
@@ -413,7 +487,7 @@
       },
     };
     const TIERS = ['cloudflare', 'groq'];
-    const TIER_CAPS = { image_width: 1024, image_bytes: 190000, timeout_ms: 5000, retention_days: 365, cloudflare_neurons: 10000, groq_rpm: 30, groq_rpd: 1000, groq_tpm: 18000, groq_tpd: 200000 };
+    const TIER_CAPS = { image_width: 1024, image_bytes: 190000, timeout_ms: 5000, retention_days: 365, cloudflare_neurons: 10000, groq_rpm: 30, groq_rpd: 1000, groq_tpm: 8000, groq_tpd: 200000 };
 
     function routing(snapshot) {
       if (!snapshot) return;
@@ -671,6 +745,7 @@
     const panes = body.querySelectorAll('.cs-pane');
     const pingLabel = $('pingClis').querySelector('span');
     const formatPills = body.querySelectorAll('.format-pill');
+    const ringPills = body.querySelectorAll('.ring-source-pill');
     const permissionPills = body.querySelectorAll('.permission-pill');
 
     function renderPermissionSupport(mode = 'fullAccess') {
@@ -844,6 +919,7 @@
       const connection = connections?.providers?.[agent];
       const details = connection && connectionDetails(connection);
       const connected = !connection || (connection.enabled && details.ready);
+      const unavailable = connection?.enabled ? connection.unavailable : null; // added, but the plan ended, credits ran out or the sign-in broke
       const info = status.versions[agent] || {};
       const updating = status.updating[agent];
       const version = info.version || cli.version;
@@ -851,6 +927,7 @@
 
       // [dot / text colour, text]: the one thing that most needs your attention comes first.
       const [tone, text] = !cli.path ? ['', 'Not installed']
+        : unavailable ? ['warn', 'Not available']
         : !connected ? ['warn', details.tag]
           : updating ? ['warn', 'Updating…']
             : info.outdated ? ['warn', 'Update available']
@@ -861,7 +938,7 @@
 
       const permission = REGISTRY.find((provider) => provider.id === agent)?.headlessApprovals === false && currentPermMode !== 'fullAccess' ? 'Restricted (no prompts)'
         : currentPermMode === 'fullAccess' ? 'Full Access' : currentPermMode === 'auto' ? 'Auto' : 'Ask';
-      const labels = [permission, ...models.map((model) => model.label.replace(/^Claude /, ''))];
+      const labels = unavailable ? [unavailable.reason] : [permission, ...models.map((model) => model.label.replace(/^Claude /, ''))];
 
       const row = document.createElement('div');
       row.className = 'cs-row';
@@ -874,7 +951,7 @@
       row.querySelector('.cs-state').title = info.error || '';
       const modelLine = row.querySelector('.cs-models');
       modelLine.textContent = labels.join(' · ');
-      modelLine.title = labels.join('\n');
+      modelLine.title = unavailable?.detail ? `${unavailable.reason}\n${unavailable.detail}` : labels.join('\n');
       card.append(row);
 
       const actions = row.querySelector('.cs-ractions');
@@ -888,7 +965,8 @@
         button.addEventListener('click', onClick);
         actions.append(button);
       };
-      if (connection && !connected) pill(ICON.plug, details.action, true, () => vscode.postMessage({ type: 'connectCli', agent }));
+      if (unavailable) pill(ICON.refresh, 'Try again', true, () => vscode.postMessage({ type: 'restoreCli', agent }));
+      else if (connection && !connected) pill(ICON.plug, details.action, true, () => vscode.postMessage({ type: 'connectCli', agent }));
       else if (cli.path && (info.outdated || updating)) pill(ICON.up, updating ? 'Updating…' : info.latest, !updating, () => vscode.postMessage({ type: 'updateCli', agent }), Boolean(updating));
       if (connection?.enabled) {
         const trash = iconButton(ICON.trash, `Remove ${names[agent] || agent}`, 'is-danger');
@@ -907,7 +985,7 @@
         progress.querySelector('.cs-progress-bar').style.animation = `cs-progress ${updating.estimateMs}ms cubic-bezier(0.1, 0.6, 0.3, 1) ${-(Date.now() - updating.startedAt)}ms forwards`;
         progress.querySelector('.cs-progress-line').textContent = updating.line || 'Starting…';
         card.append(progress);
-      } else if (cli.path && note) {
+      } else if (cli.path && note && (!note.ok || Date.now() - note.completedAt < 5000)) {
         const outcome = document.createElement('p');
         outcome.className = `cs-update-note ${note.ok ? 'is-ok' : 'is-error'} cs-provider-note`;
         outcome.textContent = note.ok ? 'Update complete.' : note.text;
@@ -925,8 +1003,8 @@
 
     let company = 'all';
     let availableSignature = '';
-    // Company filters are independent of the CLI that serves a model.
-    $('companyFilters').replaceChildren(...[{ id: 'all', label: 'All' }, ...REGISTRY.filter((provider, i) => REGISTRY.findIndex((other) => other.company === provider.company) === i).map((provider) => ({ id: provider.id, label: provider.company }))].map(({ id, label }) => {
+    // Group models by the CLI that serves them, including cross-provider models.
+    $('companyFilters').replaceChildren(...[{ id: 'all', label: 'All' }, ...REGISTRY.map((provider) => ({ id: provider.id, label: provider.id === 'gemini' ? 'Antigravity CLI' : provider.name }))].map(({ id, label }) => {
       const button = document.createElement('button');
       button.type = 'button'; button.className = 'cs-company'; button.dataset.company = id;
       if (id !== 'all') button.dataset.agent = id;
@@ -960,7 +1038,7 @@
       const starred = new Set(status.favorites);
       const all = status.fetched;
       const query = $('modelSearch').value.trim().toLowerCase();
-      const visible = all.filter((entry) => (company === 'all' || (entry.company || COMPANIES[entry.agent]) === COMPANIES[company])
+      const visible = all.filter((entry) => (company === 'all' || entry.agent === company)
         && `${entry.label} ${entry.model} ${entry.effort || ''}`.toLowerCase().includes(query));
       const list = $('modelList');
       const signature = JSON.stringify(visible);
@@ -1173,8 +1251,13 @@
     }
     setInterval(renderUpdateTimes, 1000);
 
+    let updateNoteTimer;
     function cliStatus(next) {
       status = next;
+      clearTimeout(updateNoteTimer);
+      const remaining = Object.values(status.notes).filter(note => note?.ok && note.completedAt)
+        .map(note => note.completedAt + 5000 - Date.now()).filter(ms => ms > 0);
+      if (remaining.length) updateNoteTimer = setTimeout(() => cliStatus(status), Math.min(...remaining));
       const active = Object.keys(status.updating).length;
       const due = PROVIDERS.filter(agent => status.versions[agent]?.outdated && connections?.providers?.[agent]?.enabled !== false).length;
       updateAll.hidden = !due && !active;
@@ -1237,9 +1320,14 @@
 
       if (services.voice) voice(services.voice);
       $('statusBar').setAttribute('aria-checked', String(Boolean(services.statusBar)));
-      renderCompliance(services.compliance);
+      $('autoContinueOnLimit').setAttribute('aria-checked', String(services.autoContinueOnLimit !== false));
+      $('autoUpdateClis').setAttribute('aria-checked', String(services.autoUpdateClis !== false));
+      renderWarmup(services.sessionWarmup);
+      renderCloudWarmup(services.cloudWarmup);
+      renderLoops(services.compliance);
       const currentFormat = services.timeFormat || '24h';
       for (const pill of formatPills) pill.classList.toggle('active', pill.dataset.format === currentFormat);
+      for (const pill of ringPills) pill.classList.toggle('active', pill.dataset.ring === (services.antigravityRing || 'argon'));
       for (const pill of permissionPills) pill.classList.toggle('active', pill.dataset.mode === currentPermMode);
       renderPermissionSupport(currentPermMode);
 
@@ -1262,6 +1350,13 @@
         vscode.postMessage({ type: 'setTimeFormat', format: pill.dataset.format });
       });
     }
+    for (const pill of ringPills) {
+      pill.addEventListener('click', () => {
+        for (const p of ringPills) p.classList.remove('active');
+        pill.classList.add('active');
+        vscode.postMessage({ type: 'setAntigravityRing', value: pill.dataset.ring });
+      });
+    }
     for (const pill of permissionPills) {
       pill.addEventListener('click', () => {
         for (const p of permissionPills) p.classList.remove('active');
@@ -1275,64 +1370,119 @@
       $('statusBar').setAttribute('aria-checked', String(on));
       vscode.postMessage({ type: 'setStatusBar', enabled: on });
     });
+    $('autoContinueOnLimit').addEventListener('click', () => {
+      const enabled = $('autoContinueOnLimit').getAttribute('aria-checked') !== 'true';
+      $('autoContinueOnLimit').setAttribute('aria-checked', String(enabled));
+      vscode.postMessage({ type: 'setAutoContinueOnLimit', enabled });
+    });
+    $('autoUpdateClis').addEventListener('click', () => {
+      const enabled = $('autoUpdateClis').getAttribute('aria-checked') !== 'true';
+      $('autoUpdateClis').setAttribute('aria-checked', String(enabled));
+      vscode.postMessage({ type: 'setAutoUpdateClis', enabled });
+    });
+    $('sessionWarmup').addEventListener('click', () => {
+      const enabled = $('sessionWarmup').getAttribute('aria-checked') !== 'true';
+      $('sessionWarmup').setAttribute('aria-checked', String(enabled));
+      if (!enabled) $('sessionWarmupStatusRow').hidden = true;
+      vscode.postMessage({ type: 'setSessionWarmup', enabled });
+    });
+    // What the last pings did, one clause per CLI: "Claude Haiku 5.5 Low 06:30, 21 tokens".
+    let cloudSnapshot = null, cloudDraft = false;
+    const cloudPost = (action, extra = {}) => vscode.postMessage({ type: 'cloudWarmup', action, ...extra });
+    const cloudDayNames = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+    for (const day of [1, 2, 3, 4, 5, 6, 0]) {
+      const row = document.createElement('div'); row.className = 'cs-cloud-day'; row.dataset.day = day;
+      const label = document.createElement('label');
+      const check = document.createElement('input'); check.type = 'checkbox'; check.dataset.field = 'enabled'; check.setAttribute('aria-label', `${cloudDayNames[day]} work day`);
+      label.append(check, cloudDayNames[day].slice(0, 3)); row.append(label);
+      for (const [field, title] of [['start', 'Start'], ['end', 'End']]) {
+        const select = document.createElement('select'); select.className = 'cs-select'; select.dataset.field = field; select.setAttribute('aria-label', `${cloudDayNames[day]} work ${title.toLowerCase()}`);
+        for (let hour = field === 'start' ? 0 : 1; hour <= (field === 'start' ? 23 : 24); hour++) {
+          const option = document.createElement('option'); option.value = hour; option.textContent = `${String(hour).padStart(2, '0')}:00`; select.append(option);
+        }
+        const wrapper = document.createElement('label'); wrapper.append(title, select); row.append(wrapper);
+      }
+      const preview = document.createElement('span'); preview.className = 'cs-desc cs-cloud-preview'; row.append(preview);
+      $('cloudWarmupDays').append(row);
+    }
+    function cloudSchedule() {
+      const days = Array(7);
+      for (const row of $('cloudWarmupDays').children) days[Number(row.dataset.day)] = { enabled: row.querySelector('[data-field=enabled]').checked, start: Number(row.querySelector('[data-field=start]').value), end: Number(row.querySelector('[data-field=end]').value) };
+      return { timezone: $('cloudWarmupTimezone').value.trim(), leadHours: Number($('cloudWarmupLead').value), days };
+    }
+    function cloudPreview() {
+      const schedule = cloudSchedule();
+      for (const row of $('cloudWarmupDays').children) {
+        const d = schedule.days[Number(row.dataset.day)], times = [];
+        for (let h = d.start - schedule.leadHours; d.enabled && h >= 0 && h < d.end && times.length < 5; h += 5) times.push(`${String(h).padStart(2, '0')}:00`);
+        row.querySelector('.cs-cloud-preview').textContent = d.enabled ? times.length ? `Start ${times.join(' · ')}` : 'Choose valid work hours' : 'Rest day';
+        for (const select of row.querySelectorAll('select')) select.disabled = !d.enabled || Boolean(cloudSnapshot?.busy);
+      }
+    }
+    for (const el of [$('cloudWarmupDays'), $('cloudWarmupTimezone'), $('cloudWarmupLead')]) el.addEventListener('change', () => { cloudDraft = true; cloudPreview(); });
+    $('cloudWarmupTimezone').addEventListener('input', () => { cloudDraft = true; });
+    $('cloudWarmupEnabled').addEventListener('click', () => cloudPost('enable', { enabled: $('cloudWarmupEnabled').getAttribute('aria-checked') !== 'true' }));
+    $('cloudWarmupSave').addEventListener('click', () => { cloudDraft = false; cloudPost('save', { schedule: cloudSchedule() }); });
+    $('cloudWarmupDeploy').addEventListener('click', () => {
+      if (cloudDraft) { $('cloudWarmupStatus').textContent = 'Save your calendar before deploying.'; return; }
+      cloudPost('deploy');
+    });
+    for (const [role, action] of [['Connect', 'connect'], ['Install', 'install'], ['Refresh', 'refresh'], ['Renew', 'renew'], ['Remove', 'remove'], ['Console', 'console']]) $('cloudWarmup' + role).addEventListener('click', () => cloudPost(action));
+    function renderCloudWarmup(snapshot) {
+      cloudSnapshot = snapshot || { enabled: false, providers: [] };
+      const { enabled, deployed, connected, busy } = cloudSnapshot;
+      $('cloudWarmupEnabled').setAttribute('aria-checked', String(Boolean(enabled)));
+      $('cloudWarmupEnabled').disabled = Boolean(busy);
+      $('cloudWarmupPanel').hidden = !enabled && !deployed && !connected;
+      $('cloudWarmupStatus').textContent = cloudSnapshot.status || 'Off. No Google resources have been created.';
+      $('cloudWarmupProject').textContent = connected ? `Project: ${cloudSnapshot.project} · ${cloudSnapshot.region || 'us-central1'}` : 'Requires the Google Cloud CLI and a project with billing enabled.';
+      for (const button of $('cloudWarmupPanel').querySelectorAll('button')) button.disabled = Boolean(busy);
+      $('cloudWarmupDeploy').disabled = Boolean(busy || !enabled || !connected);
+      $('cloudWarmupRefresh').disabled = Boolean(busy || !deployed);
+      $('cloudWarmupRenew').disabled = Boolean(busy || !deployed);
+      $('cloudWarmupRemove').hidden = !connected;
+      $('cloudWarmupConsole').hidden = !connected;
+      if (!cloudDraft) {
+        const schedule = cloudSnapshot.schedule || { timezone: Intl.DateTimeFormat().resolvedOptions().timeZone, leadHours: 3, days: Array.from({ length: 7 }, (_, d) => ({ enabled: d > 0 && d < 6, start: 9, end: 18 })) };
+        $('cloudWarmupTimezone').value = schedule.timezone; $('cloudWarmupLead').value = schedule.leadHours;
+        for (const row of $('cloudWarmupDays').children) {
+          const d = schedule.days[Number(row.dataset.day)];
+          row.querySelector('[data-field=enabled]').checked = d.enabled;
+          for (const field of ['start', 'end']) row.querySelector(`[data-field=${field}]`).value = d[field];
+        }
+      }
+      for (const input of $('cloudWarmupPanel').querySelectorAll('input, select')) input.disabled = Boolean(busy);
+      cloudPreview();
+      $('cloudWarmupEstimate').textContent = cloudSnapshot.estimate ? `Selected providers: ${cloudSnapshot.providers.filter(p => p.selected).length}. Approx. ${cloudSnapshot.estimate.callsPerWeek} prompts/week; ${cloudSnapshot.estimate.cpuSeconds.toLocaleString()} vCPU-seconds/month. Estimate excludes other Google usage and storage/build costs.` : '';
+      $('cloudWarmupExpiry').textContent = cloudSnapshot.expiresAt ? `Prompt permission expires ${new Date(cloudSnapshot.expiresAt).toLocaleString()}. The timer and stored resources remain until removed.` : '';
+      $('cloudWarmupProviders').replaceChildren(...(cloudSnapshot.providers || []).map(p => {
+        const row = document.createElement('div'); row.className = 'cs-row';
+        const info = document.createElement('div'); info.className = 'cs-info';
+        const title = document.createElement('span'); title.className = 'cs-title'; title.textContent = p.label;
+        const desc = document.createElement('span'); desc.className = 'cs-desc';
+        const state = cloudSnapshot.states?.[p.agent];
+        desc.textContent = !p.selected ? 'Not deployed; connect a subscription locally, then deploy.' : state?.status === 'reconnect' ? 'Reconnect required. Cloud prompts paused for this provider.' : p.connected ? `${state?.status || 'Ready'}${state?.at ? ` · ${new Date(state.at).toLocaleString()}` : ''}` : 'Separate cloud sign-in required.';
+        info.append(title, desc); row.append(info);
+        const button = document.createElement('button'); button.className = 'cs-btn'; button.type = 'button'; button.textContent = p.connected ? 'Reconnect' : 'Connect'; button.disabled = Boolean(busy || !deployed || !p.selected);
+        button.addEventListener('click', () => cloudPost('authenticate', { agent: p.agent })); row.append(button); return row;
+      }));
+    }
+    function renderWarmup(warmup) {
+      const on = Boolean(warmup?.enabled);
+      $('sessionWarmup').setAttribute('aria-checked', String(on));
+      if (!warmup) return;
+      const clock = at => new Date(at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+      const parts = Object.values(warmup.last || {}).filter(item => item?.at && Date.now() - item.at < 12 * 3600000).map(item => item.status === 'running' ? `${item.label}: window already running`
+        : item.status === 'failed' ? `${item.label}: failed, ${item.error || 'no answer'}` : `${item.label} ${clock(item.at)}${item.tokens != null ? `, ${item.tokens.toLocaleString()} tokens` : ''}`);
+      $('sessionWarmupStatus').textContent = parts.join(' · ');
+      $('sessionWarmupStatusRow').hidden = !on || !parts.length;
+    }
     $('openTerminal').addEventListener('click', () => vscode.postMessage({ type: 'openTerminal' }));
 
-    // ---------- Compliance: what leaves this computer, and what to settle before shipping something built here ----------
-    // Plain statements with no promises about any provider's certifications: those change, so each row links to the provider's own terms.
-    const DATA_FLOWS = [
-      { name: 'Claude Code', operator: 'Anthropic, USA', sends: 'Your messages, attached files and every project file the agent reads or edits. In a loop: scout, verifier and editor prompts.', link: ['anthropicDpa', 'Processing terms'] },
-      { name: 'Codex', operator: 'OpenAI, USA', sends: 'The same as Claude Code, through your OpenAI sign-in.', link: ['openaiDpa', 'Processing terms'] },
-      { name: 'Gemini (Antigravity)', operator: 'Google, USA', sends: 'The same as Claude Code, plus cropped screenshots when a loop reviews your pages.', link: ['googleDpa', 'Processing terms'] },
-      { name: 'Smart routing', operator: 'Cloudflare, USA', sends: 'The text of each message you send in Auto (secrets redacted when that is on) and, if you allow it, a downscaled screenshot.', link: ['cloudflareDpa', 'Processing terms'] },
-      { name: 'Dictation and routing', operator: 'Groq, USA', sends: 'Spoken audio for dictation, and message text for routing and summaries. Private projects are never sent.', link: ['groqPrivacy', 'Privacy policy'] },
-      { name: 'Telegram remote', operator: 'outside the EU', sends: 'The alerts and approval requests you set up, including any text they contain.', link: ['telegramPrivacy', 'Privacy policy'] },
-      { name: 'Stays on this computer', operator: '', sends: 'Project files and chat history, routing logs, the local rules router, and the private copy a loop works in.', local: true },
-    ];
-    const SHIP_LIST = [
-      ['Legal notice (Impressum)', 'A commercial website aimed at Germany links a legal notice that is reachable from every page (§ 5 DDG).'],
-      ['Privacy notice', 'Say who is responsible, what you collect and why, the legal basis, who receives it, transfers outside the EU, how long you keep it and what rights people have (Art. 12–14 GDPR).'],
-      ['Consent before trackers', 'Analytics, advertising and anything that reads or stores identifiers on the visitor’s device needs a prior, informed opt-in; declining must be as easy as accepting (§ 25 TDDDG, Art. 7 GDPR).'],
-      ['Self-host third-party resources', 'Fonts, scripts and libraries from external servers send every visitor’s IP address there. Serve them yourself, and load videos and maps only after a click.'],
-      ['Contracts with processors', 'Hosting, e-mail, forms, analytics and AI providers that handle other people’s data need a processing agreement (Art. 28 GDPR). Such agreements are usually offered for business, team and API accounts, not for personal chat subscriptions, so check which plan each CLI is signed in with before an agent reads real customer data.'],
-      ['Transfers outside the EU', 'Sending personal data to a provider in the USA needs a basis such as the EU–US Data Privacy Framework or standard contractual clauses (Art. 44–49 GDPR). Check the provider’s current status on the official list below.'],
-      ['Records and security', 'Keep a record of processing activities (Art. 30), use https and access control, keep secrets out of the repository (Art. 32), and know the 72-hour breach notice (Art. 33).'],
-      ['People’s rights', 'Build a way to export and delete what you store about a person, and set a retention period (Art. 15–17, Art. 5(1)(e)).'],
-      ['AI features you ship', 'Tell people when they talk to an AI or see AI-generated content (EU AI Act Art. 50; the transparency duties start applying in 2026, so check the current dates). Do not put personal data into prompts without a legal basis.'],
-      ['Accessibility', 'Online shops and other consumer services must be accessible (Barrierefreiheitsstärkungsgesetz, in force since 28 June 2025; very small service providers are exempt).'],
-      ['Software or devices you sell', 'The EU Cyber Resilience Act brings vulnerability reporting duties from 11 September 2026 and most other duties from 11 December 2027.'],
-    ];
-    const COMPLIANCE_LINKS = [['gdpr', 'GDPR text'], ['dpf', 'Data Privacy Framework list'], ['aiAct', 'AI Act text'], ['bfdi', 'German data protection authority']];
-    function renderCompliance(state = {}) {
+    // ---------- Loops: the two switches that change what a loop does with your project ----------
+    function renderLoops(state = {}) {
       $('complianceScout').setAttribute('aria-checked', String(state.scout !== false));
       $('complianceRedact').setAttribute('aria-checked', String(state.redact !== false));
-      const section = (title, hint) => {
-        const node = el('div', 'cs-section', '<span class="cs-section-title"></span><span class="cs-section-hint"></span>');
-        node.querySelector('.cs-section-title').textContent = title; node.querySelector('.cs-section-hint').textContent = hint; return node;
-      };
-      const flows = el('section', 'cs-card');
-      for (const flow of DATA_FLOWS) {
-        const row = el('div', 'cs-set is-stack', '<div class="cs-info"><span class="cs-title"></span><span class="cs-desc"></span></div>');
-        row.querySelector('.cs-title').textContent = flow.operator ? `${flow.name} · ${flow.operator}` : flow.name;
-        row.querySelector('.cs-desc').textContent = flow.sends;
-        if (flow.local) row.querySelector('.cs-title').append(el('span', 'cs-tag is-ok', 'Local'));
-        else {
-          const open = el('button', 'cs-btn is-small is-quiet', `${ICON.ext}<span></span>`); open.type = 'button'; open.querySelector('span').textContent = flow.link[1];
-          open.addEventListener('click', () => vscode.postMessage({ type: 'openRoutingLink', key: flow.link[0] }));
-          row.append(open);
-        }
-        flows.append(row);
-      }
-      const ship = el('section', 'cs-card');
-      for (const [title, text] of SHIP_LIST) {
-        const row = el('div', 'cs-set is-stack', '<div class="cs-info"><span class="cs-title"></span><span class="cs-desc"></span></div>');
-        row.querySelector('.cs-title').textContent = title; row.querySelector('.cs-desc').textContent = text; ship.append(row);
-      }
-      const links = el('div', 'cs-footer');
-      for (const [key, label] of COMPLIANCE_LINKS) {
-        const open = el('button', 'cs-btn is-quiet', `${ICON.ext}<span></span>`); open.type = 'button'; open.querySelector('span').textContent = label;
-        open.addEventListener('click', () => vscode.postMessage({ type: 'openRoutingLink', key })); links.append(open);
-      }
-      $('complianceBody').replaceChildren(section('Data flows', 'Before an agent reads personal data'), flows, section('Before you ship', 'For sites and apps built here'), ship, links);
     }
     for (const [role, key] of [['complianceScout', 'scout'], ['complianceRedact', 'redact']]) {
       $(role).addEventListener('click', () => {
@@ -1341,7 +1491,7 @@
         vscode.postMessage({ type: 'setCompliance', key, value: on });
       });
     }
-    renderCompliance();
+    renderLoops();
 
     // ---------- Voice: the hotkey, how it behaves, the sounds, the Groq key and today's usage ----------
     const modePills = body.querySelectorAll('.mode-pill');
@@ -1389,13 +1539,14 @@
     // The microphone list comes from the host (ffmpeg's view of the Windows capture devices); the saved choice
     // stays selectable, marked, when its device is unplugged, so opening Settings never silently changes it.
     let micList = null;
+    let micAuto = ''; // the microphone Automatic resolves to (Windows' default input), shown beside the word
     const micRoot = $('micSelect');
     const micTrigger = micRoot.querySelector('.cs-dd-trigger');
     const micMenu = micRoot.querySelector('.cs-dd-menu');
     function renderMics() {
       const chosen = voiceState?.micDevice || '';
       const missing = micList && chosen && !micList.includes(chosen);
-      const options = [['', 'Automatic'], ...(micList || (chosen ? [chosen] : [])).map((name) => [name, name]), ...(missing ? [[chosen, `${chosen} (not connected)`]] : [])];
+      const options = [['', micAuto ? `Automatic (${micAuto})` : 'Automatic'], ...(micList || (chosen ? [chosen] : [])).map((name) => [name, name]), ...(missing ? [[chosen, `${chosen} (not connected)`]] : [])];
       micMenu.replaceChildren(...options.map(([value, text]) => {
         const option = document.createElement('button');
         option.type = 'button'; option.className = 'cs-dd-option'; option.setAttribute('role', 'option');
@@ -1530,7 +1681,7 @@
       }
     }
     function voice(state) { voiceState = state; renderVoice(); }
-    function micDevices(devices) { micList = devices; renderMics(); }
+    function micDevices(devices, automatic = '') { micList = devices; micAuto = automatic; renderMics(); }
 
     // Dictionary: a searchable list of the words Whisper is biased toward. The host owns the file and answers every
     // action with the whole list, so what an AI wrote into it shows up the same way. The limits arrive with the data.
@@ -1541,6 +1692,7 @@
     let dictEditing = null;
     let dictReveal = '';
     let dictScanning = false;
+    const DICT_ROWS = 300; // a long dictionary is searched, not scrolled: drawing thousands of rows would only slow the window
 
     function dictRow(entry) {
       const row = document.createElement('div');
@@ -1600,9 +1752,22 @@
       const limits = dictUsage?.limits || {};
       const query = $('dictSearch').value.trim().toLowerCase();
       const shown = dictEntries.filter((entry) => !query || entry.term.toLowerCase().includes(query));
-      setTag($('dictTag'), limits.entries && dictEntries.length >= limits.entries ? 'warn' : '', limits.entries ? `${dictEntries.length} / ${limits.entries}` : `${dictEntries.length} words`);
-      $('dictDesc').textContent = dictEntries.length ? `${dictUsage?.enabled ?? dictEntries.length} on. Double-click a word to rename it.` : 'Names, tools and jargon dictation should spell your way.';
-      if (shown.length) $('dictList').replaceChildren(...shown.map(dictRow));
+      const nearFull = limits.entries && dictEntries.length >= limits.entries * 0.95; // the count is only worth a number when the file is about to refuse words
+      setTag($('dictTag'), nearFull ? 'warn' : '', nearFull ? `${dictEntries.length.toLocaleString('en')} / ${limits.entries.toLocaleString('en')}` : `${dictEntries.length.toLocaleString('en')} words`);
+      $('dictDesc').textContent = dictEntries.length ? `${(dictUsage?.enabled ?? dictEntries.length).toLocaleString('en')} on. Clanker picks what each recording uses.` : 'Names, tools and jargon dictation should spell your way.';
+      if (shown.length) {
+        const visible = shown.slice(0, DICT_ROWS);
+        const fresh = shown.find((entry) => entry.term === dictReveal);
+        if (fresh && !visible.includes(fresh)) visible.push(fresh); // a word just added always shows
+        const rows = visible.map(dictRow);
+        if (shown.length > visible.length) {
+          const more = document.createElement('p');
+          more.className = 'cs-dict-empty';
+          more.textContent = `${(shown.length - visible.length).toLocaleString('en')} more. Search to find a word.`;
+          rows.push(more);
+        }
+        $('dictList').replaceChildren(...rows);
+      }
       else {
         const empty = document.createElement('p');
         empty.className = 'cs-dict-empty';
@@ -1612,25 +1777,6 @@
       const scanned = dictEntries.filter((entry) => entry.source === 'scan').length;
       $('dictClearScanned').hidden = !scanned;
       $('dictClearScanned').textContent = `Remove ${scanned} scanned word${scanned === 1 ? '' : 's'}`;
-      const meters = dictUsage ? [['Sent to Whisper', dictUsage.inPrompt, limits.promptTerms], ['Used when cleaning up the text', dictUsage.inCleanup, limits.cleanupTerms]] : [];
-      $('dictUsage').hidden = !meters.length;
-      $('dictUsage').replaceChildren(...meters.map(([label, used, max]) => {
-        const row = document.createElement('div');
-        row.className = 'cs-usage-row';
-        row.innerHTML = '<div class="cs-usage-head"><span></span><span></span></div><div class="cs-usage-bar"><b></b></div>';
-        const [name, count] = row.querySelectorAll('.cs-usage-head span');
-        name.textContent = label; count.textContent = `${used} / ${max}`;
-        const bar = row.querySelector('.cs-usage-bar');
-        bar.style.setProperty('--used', max ? Math.min(100, (used / max) * 100).toFixed(1) : 0);
-        bar.classList.toggle('is-high', max > 0 && used >= max);
-        return row;
-      }));
-      if (dictUsage && dictUsage.enabled > dictUsage.inPrompt) {
-        const note = document.createElement('p');
-        note.className = 'cs-usage-foot';
-        note.textContent = `Whisper takes about ${limits.promptTerms} words at a time: yours first, scanned ones last. The rest still help the cleanup step.`;
-        $('dictUsage').append(note);
-      }
       renderDictProjects();
     }
 
@@ -1733,7 +1879,30 @@
       }));
     }
 
+    function apiValue(value) {
+      const fmt = window.apiValue.formatUsd;
+      $('apiValueTotal').textContent = `≈ ${fmt(value.totalUsd)}`;
+      $('apiValueRange').textContent = `${window.apiValue.formatRange(value.totalUsd)} · ±20%`;
+      $('apiValueRows').replaceChildren(...REGISTRY.map(provider => {
+        const row = document.createElement('div');
+        row.className = 'cs-row';
+        const mark = document.createElement('span');
+        mark.className = 'cs-icon'; mark.innerHTML = ICONS[provider.id] || '';
+        const name = document.createElement('span');
+        name.className = 'cs-info cs-title'; name.textContent = provider.name;
+        const amount = document.createElement('span');
+        amount.className = 'cs-api-value-amount'; amount.textContent = fmt(value.byAgent?.[provider.id]);
+        row.append(mark, name, amount);
+        return row;
+      }));
+      const day = iso => iso ? new Date(iso).toLocaleDateString(window.TIME_PREFS?.locale, { month: 'short', day: 'numeric', year: 'numeric' }) : '';
+      const prices = value.prices?.liveAt ? `prices updated ${day(value.prices.liveAt)}` : value.prices?.verified ? `prices as of ${day(value.prices.verified)}` : '';
+      $('apiValueFoot').textContent = [`This month ≈ ${fmt(value.monthUsd)}`, value.since ? `since ${day(value.since)}` : '', prices, value.unpriced ? `${value.unpriced} turn${value.unpriced === 1 ? '' : 's'} of unlisted models not counted` : ''].filter(Boolean).join(' · ');
+    }
+
     showTab('general');
-    return { fleet, cliStatus, cliConnections, showTab, voice, micDevices, projectIcons, voiceDictionary, groqResult, routingResult };
+    return { fleet, cliStatus, cliConnections, showTab, voice, micDevices, projectIcons, voiceDictionary, groqResult, routingResult, apiValue,
+      chatCost: usd => { $('apiValueChat').textContent = `Current chat ≈ ${window.apiValue.formatUsd(usd)}`; },
+    };
   };
 })();

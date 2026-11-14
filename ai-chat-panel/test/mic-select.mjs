@@ -16,6 +16,8 @@ Module._load = function (request, parent, isMain) {
 const { ChatWindowHost } = require('../extension');
 Module._load = originalLoad;
 const media = path.resolve(fileURLToPath(new URL('../media/', import.meta.url)));
+const shotDir = fileURLToPath(new URL('../../out/screenshots/', import.meta.url));
+fs.mkdirSync(shotDir, { recursive: true });
 const origin = 'http://127.0.0.1';
 const host = Object.assign(Object.create(ChatWindowHost.prototype), { extensionUri: '/panel', panel: { sidebar: true }, deps: { getModels: () => ({}) }, run: null, activeModelId: 'auto', activeAgent: 'auto', lastRoutedAgent: 'codex' });
 const html = host.renderHtml({ cspSource: origin, asWebviewUri: value => origin + '/' + path.relative('/panel/media', value.fsPath).replaceAll('\\', '/') });
@@ -52,15 +54,15 @@ try {
   await pauseMedia.click();
   assert.equal(await pauseMedia.getAttribute('aria-checked'), 'true');
   assert.equal(await page.evaluate(() => window.sent.some(m => m.type === 'requestMicDevices')), true, 'the voice tab asks for devices');
-  await send({ type: 'micDevices', devices: ['Microphone (Yeti Stereo)', 'Headset (WH-1000XM5 Hands-Free)'] });
+  await send({ type: 'micDevices', devices: ['Microphone (Yeti Stereo)', 'Headset (WH-1000XM5 Hands-Free)'], automatic: 'Microphone (Yeti Stereo)' });
   const root = page.locator('[data-role="micSelect"]');
   const trigger = root.locator('.cs-dd-trigger');
   const options = root.locator('.cs-dd-option');
-  assert.equal(await trigger.innerText(), 'Automatic');
+  assert.equal(await trigger.innerText(), 'Automatic (Microphone (Yeti Stereo))', 'Automatic names the microphone Windows picked');
   await trigger.click();
-  assert.deepEqual(await options.allInnerTexts(), ['Automatic', 'Microphone (Yeti Stereo)', 'Headset (WH-1000XM5 Hands-Free)']);
+  assert.deepEqual(await options.allInnerTexts(), ['Automatic (Microphone (Yeti Stereo))', 'Microphone (Yeti Stereo)', 'Headset (WH-1000XM5 Hands-Free)']);
   assert.equal(await root.locator('.cs-dd-menu').isVisible(), true);
-  await page.screenshot({ path: process.env.SHOT || 'mic-select.png' });
+  await page.screenshot({ path: process.env.SHOT || path.join(shotDir, 'mic-select.png') });
   await options.nth(1).click();
   assert.equal(await root.locator('.cs-dd-menu').isVisible(), false);
   assert.equal(await trigger.innerText(), 'Microphone (Yeti Stereo)');

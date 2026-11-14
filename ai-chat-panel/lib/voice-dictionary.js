@@ -1,23 +1,29 @@
 'use strict';
 
-// Clanker's own voice dictionary: spellings Whisper should favour, as `{ terms: [{ term, enabled, addedAt, source? }], ignored? }`
-// in the session directory, plus OpenWhispr's custom words (read-only, merged per recording, never copied in).
-// People edit it in Settings > Voice and an AI may edit the file directly, so reading is forgiving (a bare string is a
-// term, junk is dropped) and every consumer is capped: the file can grow, what reaches the transcription model cannot.
+// Clanker's own voice dictionary: spellings Whisper should favour, as `{ terms: [{ term, enabled, addedAt, source?, uses?,
+// lastUsedAt?, usedIn? }], ignored? }` in the session directory, plus OpenWhispr's custom words (read-only, merged per
+// recording, never copied in). People edit it in Settings > Voice and an AI may edit the file directly, so reading is
+// forgiving (a bare string is a term, junk is dropped).
+//
+// The file is a long memory: it keeps thousands of words and never forgets one on its own. Only a few dozen fit into a
+// transcription request, so `vocabulary` ranks every word per recording (see `score`) and sends the best. Nobody picks
+// favourites; `uses`, `lastUsedAt` and `usedIn` (uses per project id) are bookkeeping that `recordUse` keeps current.
 
 const fs = require('node:fs');
 const path = require('node:path');
 
 const MAX_TERM_LENGTH = 60;
 const LIMITS = Object.freeze({
-  entries: 500,       // words kept in the file
-  scanned: 150,       // of those, how many project scans may own, so a scan never crowds out hand-picked words
+  entries: 5000,      // words kept in the file
+  scanned: 1500,      // of those, how many project scans may own, so a scan never crowds out hand-picked words
   scanBatch: 60,      // words one scan adds
   promptTerms: 40,    // words in Whisper's `prompt` (it holds ~224 tokens)
   promptChars: 480,   // identifiers cost several tokens each, so the prompt is also capped by length
   cleanupTerms: 150,  // words handed to the cleanup model's prompt
 });
 const SOURCES = ['manual', 'learned', 'scan', 'ai'];
+const DAY_MS = 86400000;
+const MAX_PROJECT_STATS = 12; // projects remembered per word
 const key = (term) => String(term).trim().toLowerCase();
 
 const clean = (raw) => {
@@ -113,10 +119,12 @@ function addScanned({ dictionaryFile }, terms, project = '') {
   const data = load(dictionaryFile);
   const room = Math.min(LIMITS.scanBatch, LIMITS.scanned - data.terms.filter(isScan).length, LIMITS.entries - data.terms.length);
   const ignored = new Set(data.ignored);
+  const taken = new Set(data.terms.map((entry) => key(entry.term)));
   const fresh = [];
   for (const raw of terms) {
     const term = String(raw || '').trim();
-    if (!term || term.length > MAX_TERM_LENGTH || find(data, term) || ignored.has(key(term)) || fresh.some((other) => key(other) === key(term))) continue;
+    if (!term || term.length > MAX_TERM_LENGTH || taken.has(key(term)) || ignored.has(key(term))) continue;
+    taken.add(key(term));
     fresh.push(term);
   }
   const added = fresh.slice(0, Math.max(0, room));
@@ -145,15 +153,63 @@ async function readOpenWhisprTerms(databasePath = openWhisprDatabasePath()) {
   }
 }
 
-/** Every term to bias Whisper with, most important first: the words people chose, then OpenWhispr's, then scanned ones. */
-async function vocabulary(paths, openWhisprPath) {
-  const enabled = listTerms(paths).filter((entry) => entry.enabled);
-  const seen = new Set();
-  return [
-    ...enabled.filter((entry) => !isScan(entry)).map((entry) => entry.term),
-    ...await readOpenWhisprTerms(openWhisprPath),
-    ...enabled.filter(isScan).map((entry) => entry.term),
-  ].filter((term) => !seen.has(key(term)) && seen.add(key(term)));
+const BASE_SCORE = { learned: 3, manual: 2, openwhispr: 2, ai: 1.5, scan: 0 }; // a corrected word is one Whisper got wrong
+const JITTER = 1.5; // random lift per recording: words with no history take turns instead of one fixed list winning forever
+
+/**
+ * How useful a word is for the next recording. Recent and frequent use count, more so in the project being worked on;
+ * a scanned word is lifted when it came from that project; a brand-new word gets a short head start. The random lift is
+ * what keeps a thousand rarely-used words rotating through the few slots without anyone managing them.
+ */
+function score(entry, { projectId = '', projectName = '', now = Date.now() } = {}, random = Math.random) {
+  let points = BASE_SCORE[entry.source] ?? BASE_SCORE.manual;
+  if (entry.lastUsedAt) points += 3 * 0.5 ** (Math.max(0, now - entry.lastUsedAt) / (30 * DAY_MS));
+  points += Math.min(2, 0.5 * Math.log2(1 + (entry.uses || 0)));
+  const here = projectId && entry.usedIn?.[projectId];
+  if (here) points += 1.5 + Math.min(1.5, 0.5 * Math.log2(1 + here));
+  if (isScan(entry) && projectName && key(entry.project || '') === key(projectName)) points += 3;
+  if (entry.addedAt && now - entry.addedAt < 14 * DAY_MS) points += 1;
+  return points + random() * JITTER;
+}
+
+/**
+ * Every term to bias the models with, most useful first for this project and moment. Words people chose, OpenWhispr's and
+ * scanned ones compete on the same scale. `context` is `{ projectId, projectName, now, random }`.
+ */
+async function vocabulary(paths, openWhisprPath, context = {}) {
+  const candidates = listTerms(paths).filter((entry) => entry.enabled);
+  const known = new Set(candidates.map((entry) => key(entry.term)));
+  for (const term of await readOpenWhisprTerms(openWhisprPath)) if (!known.has(key(term)) && known.add(key(term))) candidates.push({ term, source: 'openwhispr' });
+  return candidates.map((entry) => ({ term: entry.term, points: score(entry, context, context.random) }))
+    .sort((a, b) => b.points - a.points).map((entry) => entry.term);
+}
+
+/** The enabled words that appear in `text`, matched the way people type them: whole words, any case. */
+function mentionedTerms(entries, text) {
+  const haystack = String(text || '').toLowerCase();
+  if (!haystack.trim()) return [];
+  const words = new Set(haystack.split(/[^\p{L}\p{N}_#+.'-]+/u).map((word) => word.replace(/^[.'-]+|[.'-]+$/g, '')).filter(Boolean));
+  return entries.filter((entry) => {
+    const wanted = key(entry.term);
+    return /\s/.test(wanted) ? haystack.includes(wanted) : words.has(wanted);
+  });
+}
+
+/** Notes that the words in `text` were just dictated or sent, so they rank higher next time, most of all in this project. */
+function recordUse({ dictionaryFile }, text, { projectId = '', now = Date.now() } = {}) {
+  const data = load(dictionaryFile);
+  const hits = mentionedTerms(data.terms.filter((entry) => entry.enabled), text);
+  if (!hits.length) return 0;
+  for (const entry of hits) {
+    entry.uses = (entry.uses || 0) + 1;
+    entry.lastUsedAt = now;
+    if (!projectId) continue;
+    entry.usedIn = { ...entry.usedIn, [projectId]: (entry.usedIn?.[projectId] || 0) + 1 };
+    const projects = Object.entries(entry.usedIn);
+    if (projects.length > MAX_PROJECT_STATS) entry.usedIn = Object.fromEntries(projects.sort((a, b) => b[1] - a[1]).slice(0, MAX_PROJECT_STATS));
+  }
+  save(dictionaryFile, data);
+  return hits.length;
 }
 
 /** The words that fit Whisper's `prompt`: leading ones, up to the term and character caps. */
@@ -168,17 +224,13 @@ function promptTerms(terms) {
   return picked;
 }
 
-/** What Settings shows: how many words there are and how many of them actually reach each model. */
-async function usage(paths, openWhisprPath) {
+/** What Settings shows: how many words there are. Which of them reach a model is decided per recording and not shown. */
+function usage(paths) {
   const terms = listTerms(paths);
-  const words = await vocabulary(paths, openWhisprPath);
-  return {
-    total: terms.length, enabled: terms.filter((entry) => entry.enabled).length, scanned: terms.filter(isScan).length,
-    inPrompt: promptTerms(words).length, inCleanup: Math.min(words.length, LIMITS.cleanupTerms), limits: LIMITS,
-  };
+  return { total: terms.length, enabled: terms.filter((entry) => entry.enabled).length, scanned: terms.filter(isScan).length, limits: { entries: LIMITS.entries } };
 }
 
 module.exports = {
   LIMITS, SOURCES, MAX_TERM_LENGTH, listTerms, listEnabledTerms, addTerm, updateTerm, removeTerm, removeScanned, addScanned,
-  readOpenWhisprTerms, vocabulary, promptTerms, usage,
+  readOpenWhisprTerms, vocabulary, promptTerms, mentionedTerms, recordUse, score, usage,
 };

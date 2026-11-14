@@ -15,7 +15,9 @@
 //   npmPackage    latest version comes from the npm registry   latestVersion(fetch)  or from here (null = unknown)
 //   updateArgs    default ['update']                      versionArgs   default ['--version']
 //   login         args that start sign-in                 install       PowerShell line that installs the CLI and signs in
-//   authStatus    { args, interpret(result) -> 'connected' | 'ready' | 'signin' }
+//   authStatus    { args, interpret(result) -> 'connected' | 'ready' | 'signin' | 'broken' (CLI cannot start) }
+//   entitlement   optional ({ result, home, env, languageServer }) -> null | { kind: 'plan', reason, detail } (may be async; null = fine, undefined = cannot tell, the last verdict stands); run after each sign-in check
+//                 that says connected. Say so here when the CLI stays "signed in" after the plan that unlocks it ends.
 //   discoverModels({ file, runCli })  raw model entries ({ id, agent, model, effort, label, isDefault }) or null on failure
 // What a descriptor does not cover yet is running a chat: lib/stream-engine.js still builds each provider's command and
 // reads its output (the "runner"), see the guide.

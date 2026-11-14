@@ -4,6 +4,7 @@ import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import vm from 'node:vm';
+import crypto from 'node:crypto';
 import { chromium } from 'playwright';
 
 const require = createRequire(import.meta.url);
@@ -31,7 +32,7 @@ try {
   await page.waitForFunction(() => document.querySelector('iframe').getAttribute('src'));
   const frame = page.frames().find(frame => frame.url().startsWith('http://localhost:4321')) || await page.waitForEvent('framenavigated', { predicate: frame => frame.url().startsWith('http://localhost:4321') });
   await frame.waitForFunction(() => Array.isArray(window.received));
-  const prompt = { type: 'astro-editor:route-prompts', requestId: '42', prompts: ['Fix src/pages/about.astro heading, rect 200x40: make it smaller'], fallbackPrompt: 'retry' };
+  const prompt = { type: 'astro-editor:route-prompts', requestId: '42', prompts: ['Fix src/pages/about.astro heading, rect 200x40: make it smaller'], attachments: ['.astro/session/shots/task-42.png', '.astro/session/shots/attachments/reference.png'], newChat: true, fallbackPrompt: 'retry' };
   for (const message of [prompt, { type: 'astro-editor:request-models' }, { type: 'astro-editor:set-routing-mode', mode: 'auto' }, { type: 'astro-editor:dispatch-batch', phases: [] }, { type: 'astro-editor:run-next-batch-in-clean-session', batchPrompt: 'phase' }, { type: 'astro-editor:voice-toggle' }, { type: 'astro-editor:voice-cancel' }]) {
     await frame.evaluate(message => parent.postMessage(message, '*'), message);
     await page.waitForFunction(type => window.sent.some(message => message.type === type), message.type);
@@ -50,8 +51,8 @@ try {
 
 // Exercise the real provider method without starting any CLI or sending a real task.
 const source = readFileSync(new URL('../ai-chat-panel/extension.js', import.meta.url), 'utf8');
-const method = source.slice(source.indexOf('  async routePrompt('), source.indexOf('  /** A scheduled task bound to a chat'));
-const routePrompt = vm.runInNewContext(`(${method.trim().replace('async routePrompt(', 'async function (')})`, { MODEL_CATALOG: [{ id: 'codex-high', label: 'Codex High', agent: 'codex' }] });
+const method = source.slice(source.indexOf('  async routePrompt('), source.indexOf('  isChatBusy('));
+const routePrompt = vm.runInNewContext(`(${method.trim().replace('async routePrompt(', 'async function (')})`, { crypto, MODEL_CATALOG: [{ id: 'codex-high', label: 'Codex High', agent: 'codex' }] });
 const chats = [], runs = new Map(), opened = [];
 const manager = {
   deps: { chatStore: { create: () => ({ id: String(chats.length + 1) }), save: chat => { chats.push(chat); return chat; } }, notifyHistory() {} },
@@ -64,6 +65,7 @@ assert.equal(new Set(chats.map(chat => chat.id)).size, 2);
 assert.ok(chats.every(chat => chat.modelId === 'auto'));
 assert.equal(runs.get('1').queue[0].text, 'Fix heading in about.astro');
 assert.equal(runs.get('2').queue[0].modelId, 'auto');
+assert.ok([...runs.values()].every(run => run.queue[0].queued && run.queue[0].id));
 assert.ok(opened.every(entry => entry.options.preserveFocus));
 assert.equal(await routePrompt.call(manager, 'Use my chosen model', { newChat: true, targetModel: 'codex-high' }), true);
 assert.equal(chats[2].modelId, 'codex-high');

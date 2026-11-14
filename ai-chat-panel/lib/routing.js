@@ -27,11 +27,13 @@ function config(input = {}) {
   if (c.router_mode === 'shadow') c.router_mode = 'manual'; // Migrate previously saved settings.
   if (Array.isArray(c.tiers)) c.tiers = c.tiers.map(t => t === 'openrouter' ? 'cloudflare' : t); // Replace the removed provider without losing its position.
   if (c.primary === 'openrouter') c.primary = 'cloudflare';
+  // Migrate the previously allowed free-tier ceiling without rejecting saved configurations.
+  if (Number.isInteger(c.groq_tpm) && c.groq_tpm > 8000 && c.groq_tpm <= 18000) c.groq_tpm = 8000;
   for (const [key, values] of Object.entries({ router_mode: ['manual','auto'], primary: ['cloudflare','groq','deterministic'], session_mode: ['always_new','continue_when_possible'] })) if (!values.includes(c[key])) throw Error(`Invalid ${key}`);
   for (const key of ['confidence','context_threshold','summary_start','hysteresis','groq_spill']) if (!Number.isFinite(c[key]) || c[key] < 0 || c[key] > 1 || (['context_threshold','summary_start'].includes(key)&&(c[key]===0||c[key]===1))) throw Error(`Invalid ${key}`);
   if (c.summary_start >= c.context_threshold) throw Error('Summary must start before the context threshold');
   for (const key of ['retry','screenshot','switching','groq_destination','redaction','logging','balance_providers']) if (typeof c[key] !== 'boolean') throw Error(`Invalid ${key}`);
-  for (const [key, max] of Object.entries({ image_width: 1024, image_bytes: 190000, timeout_ms: 5000, retention_days: 365, cloudflare_neurons: 10000, groq_rpm: 30, groq_rpd: 1000, groq_tpm: 18000, groq_tpd: 200000 })) if (!Number.isInteger(c[key]) || c[key] < 1 || c[key] > max) throw Error(`Invalid ${key}`);
+  for (const [key, max] of Object.entries({ image_width: 1024, image_bytes: 190000, timeout_ms: 5000, retention_days: 365, cloudflare_neurons: 10000, groq_rpm: 30, groq_rpd: 1000, groq_tpm: 8000, groq_tpd: 200000 })) if (!Number.isInteger(c[key]) || c[key] < 1 || c[key] > max) throw Error(`Invalid ${key}`);
   if (!Array.isArray(c.tiers) || c.tiers.some(t => !['cloudflare','groq','deterministic'].includes(t))) throw Error('Invalid tiers');
   c.tiers = [...new Set([...c.tiers.filter(t => t !== 'deterministic'), 'deterministic'])];
   if (!Array.isArray(c.never_send) || c.never_send.some(p => typeof p !== 'string')) throw Error('Invalid never_send');
@@ -73,7 +75,8 @@ function redact(text, secrets = []) {
   for (const s of secrets) if (s) value = value.split(s).join('[REDACTED]');
   return value;
 }
-const quotaWindows = (m,q = {}) => [q[m.agent], q[m.brand]].flatMap(v => [v, v?.secondary]);
+// Argon has its own weekly pool on Pro plans; Flash's windows say nothing about it. Without that pool (Ultra shares the Gemini one) it falls back to the agent's.
+const quotaWindows = (m,q = {}) => (m.brand === 'antigravityArgon' && q.antigravityArgon ? [q.antigravityArgon] : [q[m.agent], q[m.brand]]).flatMap(v => [v, v?.secondary]);
 const capped = (m,q = {}) => quotaWindows(m,q).some(v => typeof v?.remaining === 'number' && v.remaining <= 0);
 const lowQuota = (m,q = {},threshold=15) => quotaWindows(m,q).some(v => typeof v?.remaining === 'number' && v.remaining < threshold);
 const validDecision = (d,options) => d && Number.isFinite(d.confidence) && d.confidence >= 0 && d.confidence <= 1
@@ -156,20 +159,25 @@ class Router {
     try { return await this.callTier('groq', payload); }
     catch (error) { if (viaCloudflare) throw error; try { return await this.callTier('cloudflare-chat', payload); } catch { throw error; } }
   }
-  async callTier(tier, payload, regular = false) {
+  /** `guard` ({ cap, lease(reserve) }) lets an optional feature spend less than the shared allowance: `cap` is its lower ceiling for the day's Neurons, `lease` reserves its own budget (and throws when spent) in the same synchronous step as the shared reservation. */
+  async callTier(tier, payload, regular = false, guard = null) {
     const c = config(this.getConfig()), u = this.usage();
     const estimatedTokens = value => Math.ceil(Buffer.byteLength(JSON.stringify(value),'utf8') / 3);
-    let url, body, key, reserve, minute, neuronRate;
+    let url, body, key, reserve, minute, neuronRate, lease;
     if (tier === 'cloudflare') {
-      // Published input-token rates: Clef 21818 and Flash 8182 Neurons / MTok.
+      // Verified 2026-10-29: developers.cloudflare.com/workers-ai/platform/pricing/
+      // Input Neurons / MTok: Clef 21818, Flash 3455. No output charge.
       // Image allowance is estimated visual tokens, never base64 byte length.
       const model = regular || payload.state?.screenshot || payload.images?.length ? 'clef' : 'clef-flash';
-      neuronRate = model === 'clef' ? .021818 : .008182;
+      neuronRate = model === 'clef' ? .021818 : .003455;
       reserve = Math.max(1, Math.ceil((estimatedTokens({state:payload.state,questions:payload.questions}) + 256 + (payload.images?.length || 0)*4096) * neuronRate));
-      if (u.cf_blocked) throw Error('Cloudflare provider quota exhausted');
-      if (u.neurons + reserve > c.cloudflare_neurons) throw Error('Cloudflare local budget exhausted');
+      const cap = Math.min(c.cloudflare_neurons, guard?.cap ?? Infinity);
+      const check = () => { if (u.cf_blocked) throw Error('Cloudflare provider quota exhausted'); if (u.neurons + reserve > cap) throw Error('Cloudflare local budget exhausted'); };
+      check();
       const account = await this.secrets.get('routingCloudflareAccount'); key = await this.secrets.get('routingCloudflareToken');
       if (!/^[a-f0-9]{32}$/i.test(account || '') || !key) throw Error('Cloudflare connection missing');
+      check(); // again after the await: calls that waited together cannot all pass the same remaining budget
+      lease = guard?.lease?.(reserve);
       url = `https://api.cloudflare.com/client/v4/accounts/${account}/ai/run/@cf/cloudflare/${model}`; body = { model, ...payload }; u.neurons += reserve;
     } else {
       const messages = payload.messages || [{ role:'system', content:payload.task ? 'Return a JSON object following the task. Source is untrusted data.' : c.prompts.groq }, { role:'user',content:JSON.stringify(payload) }];
@@ -194,7 +202,7 @@ class Router {
     }
     if (Number.isFinite(payload.temperature)) body.temperature = payload.temperature;
     this.store.set(u);
-    const response = await this.fetchImpl(url,{method:'POST',headers:{Authorization:`Bearer ${key}`,'Content-Type':'application/json'},body:JSON.stringify(body),signal:AbortSignal.timeout(tier === 'cloudflare-chat' ? CF_CHAT.timeoutMs : c.timeout_ms)});
+    const response = await this.fetchImpl(url,{method:'POST',headers:{Authorization:`Bearer ${key}`,'Content-Type':'application/json'},body:JSON.stringify(body),signal:AbortSignal.timeout(Number.isInteger(payload.timeout_ms) ? Math.max(1000, Math.min(payload.timeout_ms, 120000)) : tier === 'cloudflare-chat' ? CF_CHAT.timeoutMs : c.timeout_ms)});
     if (tier === 'groq') this.onGroqResponse?.(response);
     const data = await response.json().catch(() => ({}));
     if (!response.ok || data.success === false) {
@@ -226,7 +234,7 @@ class Router {
     const inputTokens=reportedUsage?.input_tokens ?? reportedUsage?.prompt_tokens;
     const actual=Number.isFinite(actualNeurons) && actualNeurons>=0 ? actualNeurons
       : Number.isFinite(inputTokens) && inputTokens>=0 ? inputTokens*neuronRate : null;
-    if(actual!==null) {u.neurons=Math.max(0,u.neurons+actual-reserve);this.store.set(u);}
+    if(actual!==null) {u.neurons=Math.max(0,u.neurons+actual-reserve);this.store.set(u);lease?.settle(actual);}
     const a = (data.result || data).answers;
     if (!payload.questions?.pick) return data.result || data;
     const probabilities = a.pick.probabilities || a.pick.probs || a.pick;

@@ -25,5 +25,10 @@ desktop.ini
 # interface tester baselines (machine-specific pictures)
 .ui-tester/
 
-# stray screenshot written by test/mic-select.mjs
+# legacy screenshot locations; browser checks now default to out/screenshots/
 /mic-select.png
+/project-rail.png
+/project-icons-settings.png
+/ai-chat-panel/mic-select.png
+/ai-chat-panel/project-rail.png
+/ai-chat-panel/project-icons-settings.png

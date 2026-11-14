@@ -102,6 +102,8 @@ details[open] > .inv-more > svg { transform: none; }
 .inv-run > .cs-desc { margin: 0; }
 .inv-run .inv-actions { padding: 0; }
 .inv-reason { margin: 0; padding: 8px 10px; border-radius: 10px; background: rgba(255, 179, 64, 0.1); font: 500 12px/1.45 var(--font-text); color: #ffcc80; overflow-wrap: anywhere; }
+.inv-preview { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 3; overflow: hidden; overflow-wrap: anywhere; }
+.inv-reason { max-height: 240px; overflow-y: auto; white-space: pre-wrap; }
 .inv-clean { margin: 0; padding: 10px 12px; border-radius: 12px; background: rgba(52, 211, 153, 0.08); font: 500 12px/1.5 var(--font-text); color: #a7f3d0; }
 .inv-caution { margin: 0; font: 400 11.5px/1.45 var(--font-text); color: var(--text-tertiary); }
 .inv-block h5 { margin: 0 0 3px; font: 600 10.5px var(--font-text); letter-spacing: 0.02em; text-transform: uppercase; color: var(--text-tertiary); }

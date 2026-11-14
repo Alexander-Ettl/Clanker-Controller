@@ -1,0 +1,30 @@
+{
+  "version": 1,
+  "status": "built",
+  "categories": [
+    { "id": "backend", "label": "Backend", "symbol": "Connected server blocks", "description": "Server logic, APIs, parsers, background services and integrations; excludes database or authentication work when those are the main task." },
+    { "id": "database", "label": "Data", "symbol": "Stacked database cylinder", "description": "Schemas, SQL, migrations, persistence and data integrity." },
+    { "id": "auth", "label": "Authentication", "symbol": "Key", "description": "Sign-in, sessions, OAuth, identity and access permissions; excludes broader security reviews." },
+    { "id": "frontend", "label": "Interface", "symbol": "Window with sidebar and button", "description": "Implementing interface behavior, components, forms, navigation and interaction wiring; excludes primarily visual styling." },
+    { "id": "design", "label": "Visual design", "symbol": "Pen nib", "description": "Appearance, CSS, layout, typography, color, illustrations, icons and visual mockups." },
+    { "id": "motion", "label": "Motion", "symbol": "Easing curve in a rounded frame", "description": "Animation, transitions, easing, gestures and movement behavior when these are the main deliverable." },
+    { "id": "testing", "label": "Testing", "symbol": "Flask", "description": "Writing or running automated tests, acceptance checks and verification as the primary task; excludes incidental tests during implementation." },
+    { "id": "debugging", "label": "Debugging", "symbol": "Bug", "description": "Diagnosing an unexplained failure or reproducing a bug; prefer the specific domain when implementing an already understood fix." },
+    { "id": "research", "label": "Research", "symbol": "Magnifying glass", "description": "Finding documentation, facts, files, products or external information; excludes studying course material and deciding an implementation architecture." },
+    { "id": "planning", "label": "Planning", "symbol": "Branching roadmap", "description": "Architecture, tradeoffs, specifications, task decomposition and discussing what to build; excludes calendars and to-do lists." },
+    { "id": "documentation", "label": "Writing", "symbol": "Document with lines", "description": "Writing or revising guides, explanations, emails, letters, reports and other new text as the deliverable." },
+    { "id": "devops", "label": "Build and setup", "symbol": "Gear", "description": "Build tooling, dependencies, CI, packaging, deployment, installation and environment configuration." },
+    { "id": "performance", "label": "Performance", "symbol": "Speedometer", "description": "Profiling and improving latency, memory, responsiveness, throughput or resource consumption." },
+    { "id": "security", "label": "Security", "symbol": "Shield", "description": "Vulnerability review, secrets, privacy, hardening and threat modeling; routine sign-in implementation belongs to authentication." },
+    { "id": "voice", "label": "Voice and audio", "symbol": "Microphone with waveform", "description": "Transcription, dictation, speech synthesis, audio capture and voice interaction as the main task." },
+    { "id": "study", "label": "Studying", "symbol": "Graduation cap", "description": "Learning or revising course material: explaining concepts, working through exercises, exam preparation, quizzes and flashcards." },
+    { "id": "notes", "label": "Notes and minutes", "symbol": "Clipboard with bullet list", "description": "Meeting minutes, lab or session protocols, logs and journals, and summarizing or extracting key points from a given text." },
+    { "id": "organizing", "label": "Organizing", "symbol": "Folder with lines", "description": "Structuring information: notes, files and folders, naming schemes, tags, archives and personal knowledge bases." },
+    { "id": "schedule", "label": "Schedule and tasks", "symbol": "Calendar with check", "description": "Calendars, deadlines, to-do lists, routines and time management; excludes planning what to build." },
+    { "id": "math", "label": "Math and numbers", "symbol": "Calculator", "description": "Calculations, math problems, statistics, units, formulas and spreadsheet or data analysis; excludes database work." },
+    { "id": "language", "label": "Language", "symbol": "Two speech bubbles, A and script", "description": "Translating, proofreading, rephrasing and grammar of existing text, and learning languages; writing a new document is writing." },
+    { "id": "ideas", "label": "Ideas", "symbol": "Light bulb", "description": "Brainstorming, naming, creative writing and weighing options to reach a decision." },
+    { "id": "life", "label": "Everyday life", "symbol": "House", "description": "Everyday matters: forms and paperwork, money, travel, shopping, health and other personal decisions." },
+    { "id": "general", "label": "General", "symbol": "Speech bubble", "description": "Mixed or ordinary conversation with no clear work category. Use only when no more specific category fits." }
+  ]
+}

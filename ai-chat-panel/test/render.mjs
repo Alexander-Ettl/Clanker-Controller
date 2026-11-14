@@ -169,7 +169,7 @@ const FIXTURES = {
         limits: { chat: { limit: 1000, remaining: 612, resetsAt: Date.now() + 5.2 * 3600e3 }, transcription: { limit: 2000, remaining: 1960, resetsAt: Date.now() + 5.2 * 3600e3 } } } });
       api.projectIcons([{ id: 'a', name: 'Clanker Controller', root: 'C:/p/clanker' }, { id: 'b', name: 'Visor', root: 'C:/p/visor' }, { id: 'c', name: 'Portfolio', root: 'C:/p/portfolio' }]);
       const word = (term, source, enabled = true) => ({ term, enabled, addedAt: 1, ...(source ? { source, project: 'Visor' } : {}) });
-      api.voiceDictionary({ entries: [word('SimTalk'), word('Tecnomatix'), word('OpenWhispr', 'learned', false), word('Astro'), word('ChatWindowHost', 'scan'), word('voiceDictionary', 'scan'), word('Liquid Glass', 'ai'), word('LauncherViewProvider', 'scan')], usage: { total: 8, enabled: 7, scanned: 3, inPrompt: 7, inCleanup: 7, limits: { entries: 500, scanned: 150, scanBatch: 60, promptTerms: 40, promptChars: 480, cleanupTerms: 150 } }, notice: 'Visor: found 41 technical words in 212 files, added 38.' });`,
+      api.voiceDictionary({ entries: [word('SimTalk'), word('Tecnomatix'), word('OpenWhispr', 'learned', false), word('Astro'), word('ChatWindowHost', 'scan'), word('voiceDictionary', 'scan'), word('Liquid Glass', 'ai'), word('LauncherViewProvider', 'scan')], usage: { total: 8, enabled: 7, scanned: 3, limits: { entries: 5000 } }, notice: 'Visor: found 41 technical words in 212 files, added 38.' });`,
   },
   // Chat Settings > Routing: connecting Cloudflare and Groq, drawn by the real settings.js. The mode itself is in the model menu.
   routing: {

@@ -66,3 +66,13 @@ test('chatDayGroup: the headings the list is divided by', () => {
   assert.equal(group(at(2025, 11, 5, 12, 0)), 'December 2025');
   assert.equal(group('nope'), '');
 });
+
+test('messageTime: the clock today, then Yesterday, then the date', () => {
+  const { messageTime } = require('../media/chat-time.js');
+  assert.equal(messageTime(at(2026, 9, 1, 9, 5), { now, ...opts }), '09:05');
+  assert.equal(messageTime(ago(30 * 1000), { now, ...opts }), '15:29');
+  assert.equal(messageTime(at(2026, 8, 30, 18, 56), { now, ...opts }), 'Yesterday, 18:56');
+  assert.equal(messageTime(at(2026, 8, 29, 18, 56), { now, ...opts }), 'Sep 29, 18:56');
+  assert.equal(messageTime(at(2025, 8, 29, 18, 56), { now, ...opts }), 'Sep 29, 2025, 18:56');
+  assert.equal(messageTime('nope', { now, ...opts }), '');
+});
