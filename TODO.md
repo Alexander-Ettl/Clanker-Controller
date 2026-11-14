@@ -185,9 +185,10 @@ User idea recorded 2026-10-22; research only when revisited. The benefit may be 
 
 ### PROVIDER-01 · Finish provider runner and quota integration
 
-Existing technical follow-up from [adding a provider](docs/adding-a-provider.md); a descriptor alone doesn't make a new CLI runnable.
+Existing technical follow-up from [adding a provider](docs/adding-a-provider.md); descriptor runner hooks (`commandFor`, `normalizeEvent`) and the GitHub Copilot CLI (`ai-chat-panel/lib/providers/copilot.js`) foundation are now wired into `StreamEngine`.
 
-- [ ] When adding a provider, define its runner/event/interrupt contract and quota reader; review slash commands, pricing and provider-specific host branches.
+- [x] Add descriptor-level `commandFor` and `normalizeEvent` hooks in `lib/stream-engine.js` and ship a foundational `copilot` provider descriptor (`@github/copilot`) plus modernized onboarding (`Setup guide`, `Voice`, `Routing`, and `Set up with AI` in `#cliSetupModal`).
+- [ ] Fine-tune live `copilot` CLI flags, streaming tool/session events, quota reading, and pricing against a live `@github/copilot` installation.
 
 **Next:** choose an actual provider before extracting interfaces.
 
@@ -215,6 +216,7 @@ Consider providers beyond the main coding CLIs, including **Groq**. Keep **Groq*
 
 | Date | Item | Evidence |
 |---|---|---|
+| 2026-11-14 | Modernized onboarding modal (`#cliSetupModal` with Voice, Routing, and `Set up with AI` shortcuts plus `Setup guide` in Settings > General) and added the GitHub Copilot CLI provider foundation (`ai-chat-panel/lib/providers/copilot.js`) with descriptor runner hooks (`commandFor`, `normalizeEvent`) in `StreamEngine`. | `ai-chat-panel/lib/providers/copilot.js`, `ai-chat-panel/lib/providers/index.js`, `ai-chat-panel/lib/stream-engine.js`, `ai-chat-panel/media/settings.js`, `ai-chat-panel/media/main.js`; verified with `providers.test.js`, `cli-accounts.test.js`, `cli-setup.mjs`, and `settings-general` UI tester. |
 | 2026-11-14 | Live elapsed timer on running tool cards (`.tool-card .tool-time`) plus persisted `startedAt` and `durationMs` across reloads, completion, and interruption, and right-click Copy / Download actions on attached images and lightboxes preserving original or renamed filenames. | `ai-chat-panel/extension.js`, `ai-chat-panel/media/main.js`, `ai-chat-panel/media/style.css`; unit tests in `turn-queue.test.js`, `message-dock.mjs`, and UI scenarios `tool-running-timer`, `attachment-image-actions`. |
 | 2026-10-26 | ATT-03: Click PDF references and attachment chips to open them in the editor, like Explorer, including Markdown links and filenames shown as code. Verified Codex's `[label](</C:/.../file.pdf>)` format with spaces and Unicode against the supplied screenshot. Uses the editor?s registered viewer for every document size. | `ai-chat-panel/media/main.js`, `ai-chat-panel/extension.js`; host regression in `turn-queue.test.js` and browser scenarios `pdf-file-links`, `codex-pdf-file-links`. |
 | 2026-10-22 | Repository organization and backlog review requested by the user; replaces the old “remind me to clean up later” task. | README navigation, documentation index, archive labels and generated screenshot relocation. Runtime folders retain their installed paths. |

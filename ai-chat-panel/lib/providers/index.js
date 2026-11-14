@@ -19,10 +19,11 @@
 //   entitlement   optional ({ result, home, env, languageServer }) -> null | { kind: 'plan', reason, detail } (may be async; null = fine, undefined = cannot tell, the last verdict stands); run after each sign-in check
 //                 that says connected. Say so here when the CLI stays "signed in" after the plan that unlocks it ends.
 //   discoverModels({ file, runCli })  raw model entries ({ id, agent, model, effort, label, isDefault }) or null on failure
-// What a descriptor does not cover yet is running a chat: lib/stream-engine.js still builds each provider's command and
-// reads its output (the "runner"), see the guide.
+//   commandFor(spec)                  optional runner command builder ({ command, args, input, keepStdinOpen })
+//   normalizeEvent(raw)               optional JSONL event normalizer for lib/stream-engine.js
+//   optional                          true when omitted from legacy default-enabled sets until connected
 
-const BUILTIN = [require('./claude.js'), require('./codex.js'), require('./gemini.js')];
+const BUILTIN = [require('./claude.js'), require('./codex.js'), require('./gemini.js'), require('./copilot.js')];
 const providers = new Map();
 
 const COLOR = /^#[0-9a-f]{6}$/i;
@@ -59,7 +60,7 @@ const all = () => [...providers.values()];
 const ids = () => [...providers.keys()];
 
 /** What the webviews need: no functions, nothing about the machine. */
-const displayList = () => all().map(({ id, name, accountName, company, color, cli, icon, headlessApprovals }) => ({ id, name, accountName, company, color, cli, headlessApprovals: headlessApprovals !== false, ...(icon ? { icon } : {}) }));
+const displayList = () => all().map(({ id, name, accountName, company, color, cli, icon, headlessApprovals, optional }) => ({ id, name, accountName, company, color, cli, headlessApprovals: headlessApprovals !== false, ...(optional ? { optional: true } : {}), ...(icon ? { icon } : {}) }));
 
 /** The accent rules a provider needs in the webviews (the built-in ones also sit in style.css; the same rule twice is harmless). */
 function accentCss(list = displayList()) {

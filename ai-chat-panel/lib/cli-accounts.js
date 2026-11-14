@@ -26,7 +26,8 @@ class CliAccounts {
   constructor({ vscode, store, home = os.homedir(), languageServer = callLanguageServer, existingUser = false, cwd, broadcast, onChange, onChecked, find = locate, reset = refresh, run = runCli, spec = terminalSpec, now = Date.now }) {
     Object.assign(this, { vscode, store, home, languageServer, cwd, broadcast, onChange, onChecked, find, reset, run, spec, now });
     const saved = store.get();
-    this.enabled = new Set((saved?.enabled || (existingUser ? providers.ids() : [])).filter(agent => providers.has(agent)));
+    const coreIds = () => providers.ids().filter(agent => !providers.get(agent)?.optional);
+    this.enabled = new Set((saved?.enabled || (existingUser ? coreIds() : [])).filter(agent => providers.has(agent)));
     // Added but unusable: the plan ended, credits ran out, the sign-in was rejected. agent -> { kind, reason, detail, at }
     this.unavailable = Object.fromEntries(Object.entries(saved?.unavailable || {}).filter(([agent]) => this.enabled.has(agent)));
     this.completed = saved?.completed === true || (!saved && existingUser);
@@ -116,7 +117,12 @@ class CliAccounts {
       return failure;
     } catch { return ''; }
   }
-  async connectAll() { for (const agent of providers.ids()) await this.connect(agent); }
+  async connectAll() {
+    for (const agent of providers.ids()) {
+      if (providers.get(agent)?.optional && !this.find(agent).path) continue;
+      await this.connect(agent);
+    }
+  }
   async remove(agent) {
     if (!providers.has(agent)) return;
     this.enabled.delete(agent);

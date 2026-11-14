@@ -12,9 +12,10 @@
     { id: 'claude', name: 'Claude Code', cli: 'claude', company: 'Anthropic' },
     { id: 'codex', name: 'Codex', cli: 'codex', company: 'OpenAI' },
     { id: 'gemini', name: 'Antigravity', accountName: 'Gemini / Antigravity', cli: 'agy', company: 'Google' },
+    { id: 'copilot', name: 'GitHub Copilot', cli: 'copilot', company: 'GitHub', optional: true },
   ];
   const CLI_NAMES = Object.fromEntries(REGISTRY.map((provider) => [provider.id, provider.cli]));
-  const PROVIDERS = window.PROVIDER_IDS || ['claude', 'codex', 'gemini']; // from the extension's registry (agent-icons.js)
+  const PROVIDERS = window.PROVIDER_IDS || ['claude', 'codex', 'gemini', 'copilot']; // from the extension's registry (agent-icons.js)
 
   const svg = (paths) => `<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${paths}</svg>`;
   const ICON = {
@@ -85,27 +86,57 @@
     return actions;
   }
 
-  window.initCliSetup = function ({ vscode, body, onClose }) {
+  window.initCliSetup = function ({ vscode, body, onClose, onOpenSettings, onStartOnboardingChat }) {
     body.classList.add('cs', 'cs-setup');
-    body.innerHTML = `<div class="cs-setup-hero"><span class="cs-setup-mark"><img src="${window.CLANKER_MARK || ''}" alt="" /></span><h2>Your models. One place.</h2><p>Connect your first CLI, or set up all three. Each provider opens its own sign-in so you can log in or create an account.</p></div>
-      <div class="cs-setup-tools"><button class="cs-btn is-primary" data-role="connectAll" type="button">Set up all three</button><button class="cs-btn" data-role="checkConnections" type="button">${ICON.refresh}<span>Check connections</span></button></div>
+    body.innerHTML = `<div class="cs-setup-hero"><span class="cs-setup-mark"><img src="${window.CLANKER_MARK || ''}" alt="" /></span><h2>Your models. One place.</h2><p>Connect the CLIs you use — Claude Code, Codex, Antigravity, or GitHub Copilot — then optionally set up voice dictation, free smart routing, or let an AI walk you through the rest.</p></div>
+      <div class="cs-setup-tools"><button class="cs-btn is-primary" data-role="connectAll" type="button">Set up all</button><button class="cs-btn" data-role="checkConnections" type="button">${ICON.refresh}<span>Check connections</span></button></div>
       <div class="cs-setup-providers" data-role="setupProviders"></div>
       <p class="cs-note cs-setup-note" role="status" data-role="setupProgress">Choose a provider to get started.</p>
+      <section class="cs-card cs-setup-extras" data-role="setupExtras">
+        <div class="cs-row">
+          <span class="cs-icon">${ICON.mic}</span>
+          <div class="cs-info"><span class="cs-title">Voice dictation (Groq)</span><span class="cs-desc">Free global hotkey, Whisper transcription, and custom dictionary.</span></div>
+          <button class="cs-btn is-small" data-role="setupOpenVoice" type="button">Voice</button>
+        </div>
+        <div class="cs-row">
+          <span class="cs-icon">${ICON.route}</span>
+          <div class="cs-info"><span class="cs-title">Smart routing (Cloudflare + Groq)</span><span class="cs-desc">Free Auto mode that picks the best CLI model for each prompt.</span></div>
+          <button class="cs-btn is-small" data-role="setupOpenRouting" type="button">Routing</button>
+        </div>
+        <div class="cs-row">
+          <span class="cs-icon">${ICON.bolt}</span>
+          <div class="cs-info"><span class="cs-title">Guided AI setup &amp; Copilot fine-tuning</span><span class="cs-desc">Prepares a chat prompt briefed on Clanker settings and provider descriptors.</span></div>
+          <button class="cs-btn is-small is-primary" data-role="setupWithAi" type="button">Set up with AI</button>
+        </div>
+      </section>
       <div class="cs-setup-footer"><button class="cs-btn is-quiet" data-role="setupLater" type="button">Set up later</button><button class="cs-btn is-primary" data-role="setupContinue" type="button" disabled>Start chatting</button></div>`;
     const $ = role => body.querySelector(`[data-role="${role}"]`);
     $('connectAll').addEventListener('click', () => vscode.postMessage({ type: 'connectAllClis' }));
     $('checkConnections').addEventListener('click', () => vscode.postMessage({ type: 'checkCliConnections' }));
+    $('setupOpenVoice').addEventListener('click', () => {
+      if (onOpenSettings) onOpenSettings('voice');
+      else vscode.postMessage({ type: 'openSettings', tab: 'voice' });
+    });
+    $('setupOpenRouting').addEventListener('click', () => {
+      if (onOpenSettings) onOpenSettings('routing');
+      else vscode.postMessage({ type: 'openSettings', tab: 'routing' });
+    });
+    $('setupWithAi').addEventListener('click', () => {
+      if (onStartOnboardingChat) onStartOnboardingChat();
+      else vscode.postMessage({ type: 'startOnboardingChat' });
+    });
     $('setupLater').addEventListener('click', onClose);
     $('setupContinue').addEventListener('click', onClose);
     return {
       update(snapshot) {
         const providers = snapshot.providers || {};
+        const total = PROVIDERS.length;
         const ready = PROVIDERS.filter(agent => providers[agent]?.enabled && connectionDetails(providers[agent]).ready).length;
         $('setupContinue').disabled = ready === 0 || snapshot.checking;
-        $('connectAll').disabled = ready === 3 || snapshot.checking;
+        $('connectAll').disabled = ready === total || snapshot.checking;
         $('checkConnections').disabled = snapshot.checking;
         $('checkConnections').querySelector('span').textContent = snapshot.checking ? 'Checking…' : 'Check connections';
-        $('setupProgress').textContent = snapshot.checking ? 'Checking your CLI connections…' : ready ? `${ready} of 3 CLIs ready. You can add the others in Settings whenever you like.` : 'Finish sign-in, then check connections. One CLI is enough to start.';
+        $('setupProgress').textContent = snapshot.checking ? 'Checking your CLI connections…' : ready ? `${ready} of ${total} CLIs ready. You can add or fine-tune the others in Settings whenever you like.` : 'Finish sign-in, then check connections. One CLI is enough to start.';
         $('setupProviders').replaceChildren(...PROVIDERS.map(agent => {
           const connection = providers[agent] || {};
           const details = connectionDetails(connection);
@@ -439,12 +470,13 @@
       </section>
       <div class="cs-footer">
         <button class="cs-btn" data-role="pingClis" type="button">${ICON.refresh}<span>Check CLIs</span></button>
+        <button class="cs-btn is-quiet" data-role="openSetupGuide" type="button">${ICON.book}<span>Setup guide</span></button>
         <button class="cs-btn is-quiet" data-role="modelSettings" type="button">${ICON.sliders}<span>Advanced settings</span></button>
         <button class="cs-btn is-quiet" data-role="resetCache" type="button" title="Forget resolved CLI paths and look them up again">${ICON.reset}<span>Reset CLI cache</span></button>
       </div>
     </div>`;
 
-  window.initChatSettings = function initChatSettings({ vscode, body }) {
+  window.initChatSettings = function initChatSettings({ vscode, body, onOpenSetupGuide }) {
     body.classList.add('cs');
     body.innerHTML = MARKUP;
     // ---------- Routing: a free model picks the CLI model for each message ----------
@@ -916,7 +948,7 @@
       card.dataset.agent = agent;
       if (cli.path) card.title = cli.path;
 
-      const connection = connections?.providers?.[agent];
+      const connection = connections?.providers?.[agent] || (connections ? { enabled: false, installed: Boolean(cli.path), auth: 'missing' } : null);
       const details = connection && connectionDetails(connection);
       const connected = !connection || (connection.enabled && details.ready);
       const unavailable = connection?.enabled ? connection.unavailable : null; // added, but the plan ended, credits ran out or the sign-in broke
@@ -1336,6 +1368,10 @@
     }
 
     $('pingClis').addEventListener('click', () => { $('pingClis').disabled = true; pingLabel.textContent = 'Checking…'; vscode.postMessage({ type: 'pingClis' }); });
+    $('openSetupGuide').addEventListener('click', () => {
+      if (onOpenSetupGuide) onOpenSetupGuide();
+      else vscode.postMessage({ type: 'openSetupGuide' });
+    });
     $('refreshModels').addEventListener('click', () => vscode.postMessage({ type: 'refreshModels' }));
     $('modelSettings').addEventListener('click', () => vscode.postMessage({ type: 'openModelSettings' }));
     $('resetCache').addEventListener('click', () => vscode.postMessage({ type: 'resetCliCache' }));
