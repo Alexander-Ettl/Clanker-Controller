@@ -156,17 +156,34 @@ function registerExtension(extDir) {
   fs.writeFileSync(reg, JSON.stringify(list), 'utf8'); // no BOM
 }
 
-function removeOld(extDir) {
+function removeOld(extDir, keepDest = null) {
   if (!fs.existsSync(extDir)) return;
   for (const n of fs.readdirSync(extDir)) {
-    if (n === folder || n.startsWith(`${extId}-`)) fs.rmSync(path.join(extDir, n), { recursive: true, force: true });
+    if (/\.bak/i.test(n)) continue;
+    const full = path.join(extDir, n);
+    if (keepDest && full === keepDest) continue;
+    if (n === folder || n.startsWith(`${extId}-`)) fs.rmSync(full, { recursive: true, force: true });
+  }
+}
+
+function isLinkedToSrc(dest) {
+  try {
+    return fs.lstatSync(dest).isSymbolicLink() && path.resolve(fs.realpathSync(dest)) === path.resolve(fs.realpathSync(src));
+  } catch {
+    return false;
   }
 }
 
 function installDirect(extDir, link) {
   fs.mkdirSync(extDir, { recursive: true });
-  removeOld(extDir);
   const dest = path.join(extDir, folder);
+  if (link && isLinkedToSrc(dest)) {
+    removeOld(extDir, dest);
+    registerExtension(extDir);
+    console.log(`  Linked (existing) -> ${dest}`);
+    return;
+  }
+  removeOld(extDir);
   if (link) {
     fs.symlinkSync(src, dest, win ? 'junction' : 'dir');
   } else {
