@@ -317,7 +317,7 @@
   // A CLI that was removed has no ring. One that cannot be used (not signed in, damaged install, plan ended, credits out) keeps it, in red:
   // hovering says why and offers the fix. Until the first connections message every provider shows.
   let connections = null;
-  const usableAgents = () => (window.PROVIDER_IDS || ['claude', 'codex', 'gemini']).filter((agent) => !connections || connections[agent]?.enabled);
+  const usableAgents = () => (window.PROVIDER_IDS || ['claude', 'codex', 'gemini']).filter((agent) => connections ? connections[agent]?.enabled : !window.PROVIDERS?.find((p) => p.id === agent)?.optional);
   const poolsOf = (quotas) => ({ claudeGpt: quotas?.antigravityClaudeGpt, argon: quotas?.antigravityArgon });
   function renderModelCards(quotas) {
     const agents = usableAgents();

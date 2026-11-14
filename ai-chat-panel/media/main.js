@@ -648,7 +648,16 @@
   const historyModal = createModal('historyModal', 'Manage Chats');
   // Chat Settings: a popup like Manage Chats, opened from the launcher's gear. Its page is settings.js.
   const settingsModal = createModal('settingsModal', 'Chat Settings');
-  const chatSettings = window.initChatSettings({ vscode, body: settingsModal.body });
+  const cliSetupModal = createModal('cliSetupModal', 'Welcome to Clanker');
+  const chatSettings = window.initChatSettings({
+    vscode,
+    body: settingsModal.body,
+    onOpenSetupGuide: () => {
+      closeModal(settingsModal.el);
+      openModal(cliSetupModal);
+      vscode.postMessage({ type: 'requestCliConnections' });
+    },
+  });
   vscode.postMessage({ type: 'requestApiValue' });
   const loopsModal = createModal('loopsModal', 'Loops');
   loopsModal.body.classList.add('cs');
@@ -690,8 +699,25 @@
   function openLoops() { openModal(loopsModal); investigations.show(); }
   loopsBtn.addEventListener('click', () => { if (toggleModal(loopsModal)) investigations.show(); });
   investigations.watch();
-  const cliSetupModal = createModal('cliSetupModal', 'Welcome to Clanker');
-  const cliSetup = window.initCliSetup({ vscode, body: cliSetupModal.body, onClose: () => closeModal(cliSetupModal.el) });
+  const cliSetup = window.initCliSetup({
+    vscode,
+    body: cliSetupModal.body,
+    onClose: () => closeModal(cliSetupModal.el),
+    onOpenSettings: (tab) => {
+      closeModal(cliSetupModal.el);
+      openModal(settingsModal);
+      vscode.postMessage({ type: 'requestFleet' });
+      if (tab) chatSettings.showTab(tab);
+    },
+    onStartOnboardingChat: () => {
+      closeModal(cliSetupModal.el);
+      const guidePrompt = 'Help me finish setting up Clanker Controller for my machine. Walk me through checking my connected CLIs (including GitHub Copilot in `ai-chat-panel/lib/providers/copilot.js` and `docs/adding-a-provider.md`), favorite models, voice dictation, and smart routing.';
+      promptInput.value = guidePrompt;
+      autoGrow();
+      renderComposerState();
+      promptInput.focus();
+    },
+  });
   let cliSetupSeen = false;
   let currentChatId = null;
 
@@ -5414,7 +5440,6 @@
         chatSettings.cliConnections(message);
         cliSetup.update(message);
         if (message.setupNeeded && !cliSetupSeen) { cliSetupSeen = true; openModal(cliSetupModal); }
-        if (!message.setupNeeded && !cliSetupModal.el.hidden) closeModal(cliSetupModal.el);
         break;
       case 'modelPrompts': modelPromptIds = new Set(message.models || []); break;
       // Settings and the picker share discovered names. A restored chat keeps

@@ -28,6 +28,8 @@ The extension folders are installed through junctions; keep their names and loca
 
 Run `npm.cmd install`, `npm.cmd run check`, and `npm.cmd test` from this folder. Browser checks use Playwright and the installed Edge browser. To install the unpacked extension, run `ai-chat-panel/install-into-antigravity.ps1 -Link`; an existing junction must point to this checkout.
 
+First-run onboarding (`#cliSetupModal`, also reopenable anytime via **Chat Settings > General > Setup guide**) connects your installed coding CLIs (Claude Code, Codex, Antigravity, and GitHub Copilot), links directly to **Voice** (Groq Whisper dictation) and **Routing** (free Cloudflare + Groq Auto router), and includes **Set up with AI** to prefill a guided setup and provider-customization prompt. The GitHub Copilot CLI foundation lives in [`ai-chat-panel/lib/providers/copilot.js`](ai-chat-panel/lib/providers/copilot.js); see [docs/adding-a-provider.md](docs/adding-a-provider.md) to fine-tune flags, models, or stream events.
+
 Use the [project guide](ai-chat-panel/PROJECTS.md) to choose the website, Visor, or Clanker as a chat's destination. They have independent Git roots. The current chat model supports one primary project per conversation; several open chats can target different repositories. Project registration doesn't itself grant or restrict filesystem access.
 
 Visor is optional. The bridge smoke check discovers `../Visor` or `VISOR_DIR`. Clanker stores chats, schedules and attachments in per-user extension storage, so moving this source repository doesn't move that history.

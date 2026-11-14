@@ -42,15 +42,17 @@ try {
     claude: { enabled: false, installed: true, auth: 'unknown' },
     codex: { enabled: false, installed: true, auth: 'unknown' },
     gemini: { enabled: false, installed: false, auth: 'unknown' },
+    copilot: { enabled: false, installed: false, auth: 'unknown' },
   } };
   assert.equal(await page.evaluate(() => window.sent.some(message => message.type === 'requestCliConnections')), true);
   await send(initial);
   const setup = page.locator('#cliSetupModal');
   await setup.waitFor({ state: 'visible' });
   await page.waitForFunction(() => document.querySelector('.cs-setup-mark img').naturalWidth > 0);
-  assert.equal(await setup.locator('.cs-provider').count(), 3);
+  assert.equal(await setup.locator('.cs-provider').count(), 4);
+  assert.equal(await setup.locator('[data-agent="copilot"] .cs-title').innerText(), 'GitHub Copilot');
   assert.equal(await setup.getByRole('button', { name: 'Start chatting', exact: true }).isDisabled(), true);
-  await setup.getByRole('button', { name: 'Set up all three', exact: true }).click();
+  await setup.getByRole('button', { name: 'Set up all', exact: true }).click();
   assert.equal(await page.evaluate(() => window.sent.some(message => message.type === 'connectAllClis')), true);
   await setup.locator('[data-agent="codex"]').getByRole('button', { name: 'Sign in / Sign up' }).click();
   assert.equal(await page.evaluate(() => window.sent.some(message => message.type === 'connectCli' && message.agent === 'codex')), true);
@@ -58,7 +60,7 @@ try {
   const connected = { ...initial, providers: { ...initial.providers, codex: { enabled: true, installed: true, auth: 'connected' } } };
   await send(connected);
   assert.equal(await setup.getByRole('button', { name: 'Start chatting', exact: true }).isEnabled(), true);
-  assert.match(await setup.locator('[data-role="setupProgress"]').innerText(), /1 of 3 CLIs ready/);
+  assert.match(await setup.locator('[data-role="setupProgress"]').innerText(), /1 of 4 CLIs ready/);
   await setup.getByRole('button', { name: 'Start chatting', exact: true }).click();
   assert.equal(await page.evaluate(() => window.sent.some(message => message.type === 'completeCliSetup')), true);
   await send({ ...connected, setupNeeded: false });
@@ -83,7 +85,11 @@ try {
   await send({ ...connected, setupNeeded: false, checking: true });
   assert.equal(await settings.getByRole('button', { name: 'Checking…', exact: true }).isDisabled(), true);
   assert.equal(await setup.isVisible(), false, 'updates never reopen a completed welcome');
-  await settings.getByRole('button', { name: 'Close', exact: true }).click();
+  await settings.getByRole('button', { name: 'Setup guide', exact: true }).click();
+  await setup.waitFor({ state: 'visible' });
+  await setup.getByRole('button', { name: 'Set up with AI', exact: true }).click();
+  await setup.waitFor({ state: 'hidden' });
+  assert.match(await page.locator('#promptInput').inputValue(), /copilot\.js/);
   await page.reload();
   await page.locator('#stopBtn').waitFor({ state: 'attached' });
   await send({ ...connected, setupNeeded: false });

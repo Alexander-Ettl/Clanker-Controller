@@ -38,12 +38,9 @@ Tracked as PROVIDER-01 in the [root backlog](../TODO.md); the remaining work bel
 
 These still know the three built-ins by name and need a provider-shaped seam before a new CLI can **run a chat**:
 
-- **The runner**: `lib/stream-engine.js` builds each CLI's command line and reads its output (Claude's live stream-json
-  process, Codex's app-server, agy's output). A new provider needs a runner with the same small surface
-  (start a turn, stream events, interrupt, report tokens and cost). Extracting that interface from the three existing
-  runners is the main piece of work; add `runner` to the descriptor when it exists.
+- **The runner (`commandFor` / `normalizeEvent`)**: `lib/stream-engine.js` now delegates command construction (`provider.commandFor(spec)`) and custom JSONL event normalization (`provider.normalizeEvent(raw)`) to the provider descriptor when present. See `ai-chat-panel/lib/providers/copilot.js` (`@github/copilot`, command `copilot -p`) for a working reference descriptor.
 - **Usage rings**: `quota-bridge.js`, `claude-usage.js`, `antigravity-quota.js` read each provider's own limits. A provider
-  without a reader shows an empty ring. Add `quota(…)` to the descriptor along with the runner.
+  without a reader shows an empty ring (and `optional: true` providers stay hidden from the default rail until connected). Add `quota(…)` to the descriptor when usage polling is needed.
 - **API value**: prices are per model in `api-prices.js`; a provider's models are priced once they are added there (or the
   live LiteLLM table lists them). Until then its turns count as "unpriced", not as a guess.
 - **Slash commands** (`slash-commands.js`, `codex-commands.js`) and a few `agent === 'claude'` special cases in

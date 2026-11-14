@@ -7,6 +7,7 @@ const { candidates } = require('../lib/binary-locator.js');
 const { terminalSpec } = require('../lib/cli-accounts.js');
 const { fetchModels, parseCodexModels } = require('../lib/cli-tools.js');
 const { normalizeModels, setEnabledAgents, defaultModel, setModelCatalog } = require('../lib/model-catalog.js');
+const { StreamEngine, normalizeEvent } = require('../lib/stream-engine.js');
 
 const cursor = () => ({
   id: 'cursor',
@@ -23,10 +24,11 @@ const cursor = () => ({
 });
 
 test('the built-in providers are registered, valid and in a stable order', () => {
-  assert.deepEqual(providers.ids(), ['claude', 'codex', 'gemini']);
+  assert.deepEqual(providers.ids(), ['claude', 'codex', 'gemini', 'copilot']);
   for (const provider of providers.all()) assert.deepEqual(providers.validate(provider), [], provider.id);
   assert.equal(providers.get('gemini').accountName, 'Gemini / Antigravity');
   assert.equal(providers.get('claude').accountName, 'Claude Code'); // defaults to the name
+  assert.equal(providers.get('copilot').optional, true);
   assert.equal(providers.get('codex').updateArgs[0], 'update');
 });
 
@@ -38,7 +40,7 @@ test('a descriptor missing pieces is refused with every problem named', () => {
 test('a provider registered at run time flows through locating, sign-in, model discovery, the picker and the webview data', async () => {
   providers.register(cursor());
   try {
-    assert.deepEqual(providers.ids(), ['claude', 'codex', 'gemini', 'cursor']);
+    assert.deepEqual(providers.ids(), ['claude', 'codex', 'gemini', 'copilot', 'cursor']);
     assert.match(candidates('cursor')[0], /cursor-agent\.exe$/);
     assert.deepEqual(candidates('nothing-registered'), []);
 
@@ -63,7 +65,23 @@ test('a provider registered at run time flows through locating, sign-in, model d
     providers.unregister('cursor');
     setModelCatalog([]);
   }
-  assert.deepEqual(providers.ids(), ['claude', 'codex', 'gemini']);
+  assert.deepEqual(providers.ids(), ['claude', 'codex', 'gemini', 'copilot']);
+});
+
+test('copilot descriptor builds commands, discovers fallback models, and normalizes events', async () => {
+  const copilot = providers.get('copilot');
+  const discovered = await copilot.discoverModels({ file: 'copilot.cmd', runCli: async () => ({ ok: false }) });
+  assert.ok(discovered.length >= 3);
+  assert.equal(discovered[0].agent, 'copilot');
+  const engine = new StreamEngine({ cwd: 'C:/Repo', models: { copilot: 'claude-sonnet-4.5' } });
+  try {
+    const spec = engine.commandFor('copilot', 'Fix tests', [], { model: 'gpt-5', resume: 'sess-1', permissionMode: 'fullAccess' });
+    assert.deepEqual(spec.args, ['-p', 'Fix tests', '--model', 'gpt-5', '--resume', 'sess-1', '--allow-all-tools', '--add-dir', 'C:/Repo']);
+    assert.deepEqual(normalizeEvent({ type: 'init', session_id: 'sess-1' }, 'copilot'), { type: 'session', sessionId: 'sess-1', agent: 'copilot' });
+    assert.deepEqual(normalizeEvent({ type: 'delta', text: 'Hello from Copilot' }, 'copilot'), { type: 'delta', text: 'Hello from Copilot', model: 'copilot', agent: 'copilot' });
+  } finally {
+    engine.dispose();
+  }
 });
 
 test('model lists still parse through the providers (Codex sample)', () => {

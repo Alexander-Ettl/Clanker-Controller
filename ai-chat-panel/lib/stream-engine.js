@@ -14,6 +14,7 @@ const { attachmentPrompt, codexAttachmentInput } = require('./attachments.js');
 const { readQuestion } = require('./agy-question.js');
 const { AgySubagents } = require('./agy-subagents.js');
 const { isLimitNotice } = require('../media/limit-notice.js');
+const providers = require('./providers');
 
 // P17-D: how an older claude CLI / API rejects the Opus 5.5 model id or the
 // --effort flag. Only checked before a turn has produced any output.
@@ -266,6 +267,8 @@ function codexDiff(changes, cwd, fileDiff) {
  * null means "known event, nothing to show".
  */
 function vendorEvent(raw, agent) {
+  const custom = providers.get(agent)?.normalizeEvent?.(raw);
+  if (custom !== undefined) return custom;
   const at = (x) => (typeof x === 'string' ? x : '');
   if (raw?.__appServer) {
     const params = raw.params || {};
@@ -524,6 +527,23 @@ class StreamEngine extends EventEmitter {
     const model = choice.model || this.models[agent] || defaultModel(agent)?.model;
     const fullPrompt = attachmentPrompt(prompt, attachments);
     const command = locate(agent).path;
+    const provider = providers.get(agent);
+    if (typeof provider?.commandFor === 'function') {
+      const permissionMode = this.effectivePermissionMode(agent, choice.permissionMode);
+      return provider.commandFor({
+        command,
+        prompt,
+        fullPrompt,
+        attachments,
+        model,
+        effort,
+        resume,
+        permissionMode,
+        cwd: this.cwd,
+        interactive: this.interactive,
+        choice,
+      });
+    }
     // Flags verified against each CLI's own --help (claude 2.1, codex exec,
     // agy). The prompt always goes over stdin, which is then closed.
     if (agent === 'gemini') {
