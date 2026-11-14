@@ -6,7 +6,7 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const { spawn, execFileSync } = require('node:child_process');
-const { resolveShim } = require('./binary-locator');
+const { resolveShim, headlessEnv } = require('./binary-locator');
 const { killTree } = require('./stream-engine');
 
 /** The real node.exe when there is one; inside the IDE `process.execPath` is Electron and needs ELECTRON_RUN_AS_NODE to behave as node. */
@@ -78,7 +78,7 @@ function shimmed(file, args) {
     return { command: process.env.ComSpec || 'cmd.exe', args: ['/d', '/s', '/c', `"${file}"`, ...args], env: {} };
   }
   if (/\.ps1$/i.test(file)) return { command: 'powershell.exe', args: ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', file, ...args], env: {} };
-  return { command: file, args, env: {} };
+  return { command: file, args, env: headlessEnv(file) };
 }
 
 class Semaphore {
@@ -99,7 +99,9 @@ class Semaphore {
 }
 
 const git = (cwd, args, { allowFail = false } = {}) => {
-  try { return execFileSync('git', args, { cwd, windowsHide: true, maxBuffer: 64 * 1024 * 1024, stdio: ['ignore', 'pipe', 'pipe'] }).toString(); }
+  // Private snapshots and fix worktrees add enough nesting to exceed Windows' legacy path limit.
+  // Apply this per command so existing workspaces and the initial `git init` are covered too.
+  try { return execFileSync('git', ['-c', 'core.longpaths=true', ...args], { cwd, windowsHide: true, maxBuffer: 64 * 1024 * 1024, stdio: ['ignore', 'pipe', 'pipe'] }).toString(); }
   catch (error) { if (allowFail) return ''; throw error; }
 };
 

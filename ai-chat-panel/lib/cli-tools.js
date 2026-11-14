@@ -8,13 +8,29 @@
 
 const { execFile } = require('node:child_process');
 const https = require('node:https');
-const { locate, resolveShim } = require('./binary-locator.js');
-const { MODEL_CATALOG, normalizeModels, setModelCatalog, setFavoriteModels, setEnabledAgents } = require('./model-catalog.js');
+const { locate, resolveShim, headlessEnv } = require('./binary-locator.js');
+const { MODEL_CATALOG, normalizeModels, setModelCatalog, setFavoriteModels, setEnabledAgents, modelOption } = require('./model-catalog.js');
 const { withPrompt, cleanPrompt, promptFor } = require('../media/model-prompts.js');
 
 const providers = require('./providers'); // what to run per provider: lib/providers/<id>.js
 const { parseVersion } = require('./providers/shared.js');
 const DEFAULT_UPDATE_MS = 20000; // no CLI reports how far along `update` is; the bar paces itself on the last run
+const AUTO_RETRY_MS = 6 * 60 * 60 * 1000;
+
+// A routing decision can choose any provider. Protect all of them while planning;
+// once dispatched, only the provider doing the work needs to stay untouched.
+function providerBusy(agent, { runs = [], hosts = [], now = Date.now() } = {}) {
+  for (const run of runs) {
+    if (run.starting || run.planning) return true;
+    if ((run.remote || run.streamEngine?.hasBackgroundAgents) && agent === 'claude') return true;
+    const active = run.turnAgent || run.activeAssistantMessage?.agent;
+    if (run.turn && (!active || active === agent)) return true;
+    if (run.queue?.some(turn => turn.agentId === agent || modelOption(turn.modelId)?.agent === agent
+      || turn.modelId === 'auto' || turn.agentId === 'auto' || (!turn.agentId && !modelOption(turn.modelId)))) return true;
+  }
+  return [...hosts].some(host => host.typingAt && now - host.typingAt < 30000
+    && (host.activeAgent === agent || host.activeAgent === 'auto'));
+}
 
 // Extension hosts can replace global fetch with their own network stack.
 // Public release feeds also work through Node's native HTTPS transport.
@@ -59,8 +75,8 @@ function runCli(file, args, timeout, onLine, input = '') {
   const shim = isCmd ? resolveShim(file) : null;
   const shell = isCmd && !shim;
   return new Promise((resolve) => {
-    const child = execFile(shim ? shim.command : shell ? `"${file}"` : file, [...(shim ? shim.args : []), ...args], { windowsHide: true, timeout, shell, maxBuffer: 16 << 20 },
-      (error, stdout, stderr) => resolve({ ok: !error, stdout: String(stdout), stderr: String(stderr || error?.message || '') }));
+    const child = execFile(shim ? shim.command : shell ? `"${file}"` : file, [...(shim ? shim.args : []), ...args], { windowsHide: true, timeout, shell, maxBuffer: 16 << 20, env: { ...process.env, ...headlessEnv(file) } },
+      (error, stdout, stderr) => resolve({ ok: !error, code: error ? (Number.isInteger(error.code) ? error.code : null) : 0, stdout: String(stdout), stderr: String(stderr || error?.message || '') }));
     child.stdin?.on('error', () => {}); // a CLI may exit before it reads initialization
     child.stdin?.end(input);
     if (onLine) for (const stream of [child.stdout, child.stderr]) stream?.on('data', (chunk) => String(chunk).split(/\r?\n/).map((line) => line.trim()).filter(Boolean).forEach(onLine));
@@ -141,7 +157,11 @@ async function fetchModels(enabled = providers.ids()) {
  * report, and the starred ones. `broadcast` posts to every open chat window; favourites persist through the store.
  */
 class CliHub {
-  constructor({ store, promptStore, settingsStore, cacheStore, broadcast, discover = fetchModels, accounts = null, checkVersionsImpl = checkVersions }) {
+  constructor({ store, promptStore, settingsStore, cacheStore, broadcast, discover = fetchModels, accounts = null, checkVersionsImpl = checkVersions,
+    autoUpdateEnabled = () => false, isBusy = () => true, beforeUpdate = async () => {}, updateCliImpl = updateCli, installedVersionImpl = installedVersion, releaseStatusImpl = releaseStatus, now = Date.now }) {
+    Object.assign(this, { autoUpdateEnabled, isBusy, beforeUpdate, updateCli: updateCliImpl, installedVersion: installedVersionImpl, releaseStatus: releaseStatusImpl, now });
+    this.autoAttempts = {};
+    this.updatePromises = new Map();
     this.accounts = accounts;
     this.store = store; // { get(): entry[], set(entry[]) }
     this.promptStore = promptStore; // { get(): { [modelId]: { text, label } }, set(map) }: the per-model prompts (model-prompts.js)
@@ -153,6 +173,7 @@ class CliHub {
     this.checkVersions = checkVersionsImpl;
     this.checking = false;
     this.versionCheck = null;
+    this.installedCheck = null;
     this.cacheStore = cacheStore;
     this.discover = discover;
     this.fetched = normalizeModels(cacheStore?.get() || []);
@@ -198,14 +219,48 @@ class CliHub {
 
   check() {
     if (this.versionCheck) return this.versionCheck;
+    const previous = this.versions;
     this.checking = true;
     this.push();
-    this.versionCheck = this.checkVersions().then((versions) => { this.versions = versions; }).finally(() => {
+    this.versionCheck = this.checkVersions().then((versions) => {
+      for (const [agent, info] of Object.entries(versions)) {
+        // An update or a local version refresh may have completed while the
+        // release service was responding. Never put its older version back.
+        if (!this.updating[agent] && this.versions[agent] === previous[agent]) this.setVersion(agent, info);
+      }
+    }).finally(() => {
       this.checking = false;
       this.versionCheck = null;
       this.push();
     });
     return this.versionCheck;
+  }
+
+  setVersion(agent, info) {
+    this.versions = { ...this.versions, [agent]: info };
+    if (info.version && info.latest && !isNewer(info.latest, info.version) && this.notes[agent]?.ok === false) {
+      const { [agent]: _staleNote, ...notes } = this.notes;
+      this.notes = notes;
+    }
+  }
+
+  // A CLI's own updater (or another IDE window) can finish after `update`
+  // reports "already in progress". Re-read local versions without polling
+  // release services or starting another update, even with auto-update off.
+  refreshInstalled() {
+    if (this.installedCheck) return this.installedCheck;
+    const previous = this.versions;
+    this.installedCheck = Promise.allSettled(Object.entries(previous)
+      .filter(([agent, info]) => !this.updating[agent] && (info.outdated || this.notes[agent]?.ok === false))
+      .map(async ([agent, info]) => {
+        const version = await this.installedVersion(agent);
+        if (!version || this.updating[agent] || this.versions[agent] !== info) return;
+        this.setVersion(agent, { ...info, version, outdated: Boolean(info.latest && isNewer(info.latest, version)) });
+      })).finally(() => {
+      this.installedCheck = null;
+      this.push();
+    });
+    return this.installedCheck;
   }
 
   async updateAll() {
@@ -215,20 +270,48 @@ class CliHub {
       .map((agent) => this.update(agent)));
   }
 
-  async update(agent) {
+  async autoUpdate() {
+    if (!this.autoUpdateEnabled() || this.checking) return;
+    return Promise.allSettled(providers.ids().filter(agent => this.versions[agent]?.outdated
+      && this.accounts?.isEnabled(agent) !== false && !this.updating[agent]
+      && !this.isBusy(agent) && this.now() >= (this.autoAttempts[agent] || 0))
+      .map(agent => {
+        this.autoAttempts[agent] = this.now() + AUTO_RETRY_MS;
+        return this.update(agent, { background: true });
+      }));
+  }
+
+  update(agent, options) {
+    if (this.updatePromises.has(agent)) return this.updatePromises.get(agent);
+    const promise = this.performUpdate(agent, options).finally(() => this.updatePromises.delete(agent));
+    this.updatePromises.set(agent, promise);
+    return promise;
+  }
+
+  async performUpdate(agent, { background = false } = {}) {
     if (!providers.has(agent) || this.updating[agent]) return;
     const startedAt = Date.now();
     const track = (line) => { if (this.updating[agent]) { this.updating = { ...this.updating, [agent]: { ...this.updating[agent], line } }; this.push(); } };
-    this.updating = { ...this.updating, [agent]: { startedAt, estimateMs: this.durations[agent] || DEFAULT_UPDATE_MS, line: '' } };
+    this.updating = { ...this.updating, [agent]: { startedAt, estimateMs: this.durations[agent] || DEFAULT_UPDATE_MS, line: '', background } };
     this.notes = { ...this.notes, [agent]: '' };
     this.push();
-    const result = await updateCli(agent, track);
+    let result, version, release;
+    try {
+      await this.beforeUpdate(agent);
+      result = await this.updateCli(agent, background ? undefined : track);
+      [version, release] = await Promise.all([this.installedVersion(agent), this.releaseStatus(agent)]);
+    } catch (error) {
+      result = { ok: false, message: error.message };
+      version = this.versions[agent]?.version;
+      release = { latest: this.versions[agent]?.latest, error: error.message };
+    }
     this.durations[agent] = Date.now() - startedAt;
-    const [version, release] = await Promise.all([installedVersion(agent), releaseStatus(agent)]);
     const { [agent]: _done, ...rest } = this.updating;
     this.updating = rest;
-    this.notes = { ...this.notes, [agent]: { ok: result.ok, text: result.message } };
-    this.versions = { ...this.versions, [agent]: { version, ...release, outdated: Boolean(version && release.latest && isNewer(release.latest, version)) } };
+    this.notes = { ...this.notes, [agent]: { ok: result.ok, text: result.message, completedAt: Date.now() } };
+    // Keep the last known release if a post-update network lookup fails.
+    const latest = release.latest || this.versions[agent]?.latest;
+    this.setVersion(agent, { version, ...release, latest, outdated: Boolean(version && latest && isNewer(latest, version)) });
     this.push();
   }
 
@@ -306,4 +389,4 @@ class CliHub {
   }
 }
 
-module.exports = { parseVersion, parseAgyLatest, isNewer, parseCodexModels, parseClaudeModels, parseAgyModels, checkVersions, releaseStatus, updateCli, fetchModels, installedVersion, runCli, CliHub };
+module.exports = { parseVersion, parseAgyLatest, isNewer, parseCodexModels, parseClaudeModels, parseAgyModels, checkVersions, releaseStatus, updateCli, fetchModels, installedVersion, runCli, CliHub, providerBusy };

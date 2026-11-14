@@ -79,14 +79,19 @@ list updates when the model saves it. Words from a scan are tagged *scan* and ca
 
 | What | Limit |
 | --- | --- |
-| Words in the file | 500 (a hand edit beyond that still works: only the limits below reach the models) |
-| Words from scans | 150 in total, 60 per scan; a word you delete is not re-added by the next scan |
-| Whisper `prompt` | the first 40 enabled words and at most 480 characters (it holds ~224 tokens) |
-| Cleanup prompt | the first 150 enabled words |
+| Words in the file | 5,000 (a hand edit beyond that still works: only the limits below reach the models) |
+| Words from scans | 1,500 in total, 60 per scan; a word you delete is not re-added by the next scan |
+| Whisper `prompt` | the 40 best-ranked enabled words and at most 480 characters (it holds ~224 tokens) |
+| Cleanup prompt | the 150 best-ranked enabled words |
 | One word | 60 characters |
 
-Order matters because of those caps: words you added come first, then OpenWhispr's, then scanned ones. Settings shows
-how many words currently reach each model. A scan reads at most 1,200 files, 256 KB per file, 6 MB in total and
+Which words fill those slots is decided for every recording, not by you. Each enabled word (and OpenWhispr's) gets a
+score: a base by origin (a corrected word 3, hand-added or OpenWhispr 2, AI-added 1.5, scanned 0), a bonus for recent use
+(fading over about a month) and for how often it was used, a bonus when it was used in the chat's project (or, for a
+scanned word, came from that project), a short head start for a new word, and a random lift of up to 1.5 so words with
+no history take turns. Dictating or sending a message that contains a word records the use (`uses`, `lastUsedAt`,
+`usedIn` per project id in the file; leave those fields alone when editing by hand). Settings shows only the number of
+words, not which ones are sent. A scan reads at most 1,200 files, 256 KB per file, 6 MB in total and
 5 seconds, then stops and says so.
 
 ## References and checks

@@ -66,7 +66,7 @@ test('chat calls share Groq with Cloudflare: spill when nearly spent, back up on
     assert.equal(await cleanDictation('um cleaned'), 'Cleaned.');
     assert.deepEqual(calls, [{ host: 'api.cloudflare.com', path: `/client/v4/accounts/${'a'.repeat(32)}/ai/v1/chat/completions`, auth: 'Bearer cf-test', model: '@cf/openai/gpt-oss-120b', max: 2048 }]);
     calls.length = 0;
-    await cleanDictation('Keep the whole long recording. '.repeat(250));
+    await cleanDictation('Keep the whole long recording. '.repeat(100));
     assert.ok(calls[0].max > 2048, 'standalone Cloudflare honors the long transcript budget');
     // Healthy: Groq answers, and what it spent is reported to the host.
     calls.length = 0; spill = false;
@@ -124,7 +124,7 @@ test('hosted dictation and titles share router budgets and saved credentials wit
     assert.equal(calls[0].auth, 'Bearer saved-groq');
     assert.equal(rt.router.usage().groq_requests, 1);
     assert.equal(rt.router.usage().groq_tokens, 42);
-    const longTranscript = 'Please check the Astro website build. '.repeat(180) + 'Keep this final sentence intact.';
+    const longTranscript = 'Please check the Astro website build. '.repeat(78) + 'Keep this final sentence intact.';
     cleaned = longTranscript;
     assert.equal(await cleanDictation(longTranscript), longTranscript);
     assert.ok(calls[1].body.max_tokens > 2048);
@@ -151,6 +151,48 @@ test('hosted dictation and titles share router budgets and saved credentials wit
     for (const [key, value] of Object.entries(previous)) { if (value === undefined) delete process.env[key]; else process.env[key] = value; }
     fs.rmSync(dir, { recursive: true, force: true });
   }
+});
+
+test('a five minute ramble is cleaned in parts that each fit the limits, in order and complete', async () => {
+  const { cleanDictation, splitTranscript, DICTATION_CHUNK_CHARS, setChatSpill } = await import('../../voice-router/lib/groq-client.mjs');
+  const sentences = Array.from({ length: 160 }, (_, i) => `Sentence number ${i + 1} describes the Militaria and Porzellan service page.`);
+  const ramble = sentences.join(' ') + ' Final words.'; // ~10,000 characters, a few minutes of speech
+  const parts = splitTranscript(ramble);
+  assert.ok(parts.length >= 3 && parts.every((part) => part.length <= DICTATION_CHUNK_CHARS), 'every part fits');
+  assert.ok(parts.slice(0, -1).every((part) => /[.!?]$/.test(part)), 'parts end at sentence ends');
+  assert.equal(parts.join(' '), ramble, 'nothing is lost or duplicated');
+  assert.deepEqual(splitTranscript('Short one.'), ['Short one.']);
+  assert.equal(splitTranscript('x'.repeat(8000)).join('').length, 8000, 'text without spaces is still cut');
+
+  const requests = [];
+  setChatSpill({ callChat: async (body, { timeoutMs }) => { requests.push({ body, timeoutMs }); return body.messages[1].content.split('"')[1].replace(/^Part:/, ''); } });
+  try {
+    const cleaned = await cleanDictation(ramble, { dictionaryTerms: ['Militaria'] });
+    assert.equal(requests.length, parts.length);
+    assert.equal(cleaned, parts.join('\n\n'));
+    assert.ok(requests.every(({ timeoutMs }) => timeoutMs >= 30000), 'a cleanup call gets far longer than the 3.5 s routing timeout');
+    assert.match(requests[1].body.messages[1].content, /Part 2 of /);
+    assert.match(requests[0].body.messages[1].content, /Militaria/);
+    // A typed draft is restructured whole, never split.
+    requests.length = 0;
+    await cleanDictation(ramble, { written: true });
+    assert.equal(requests.length, 1);
+  } finally { setChatSpill({ callChat: null }); }
+});
+
+test('the router lets a call set its own timeout, within bounds, and keeps the short default for routing calls', async () => {
+  const { Router } = require('../lib/routing');
+  const router = new Router({ getConfig: () => ({}), secrets: { get: async (key) => ({ groqApiKey: 'k' })[key] || '' }, store: { get: () => ({}), set: () => {} }, log: () => {},
+    fetchImpl: async () => ({ ok: true, status: 200, headers: new Map(), json: async () => ({ choices: [{ message: { content: 'ok' } }] }) }) });
+  const real = AbortSignal.timeout, asked = [];
+  AbortSignal.timeout = (ms) => { asked.push(ms); return real.call(AbortSignal, ms); };
+  try {
+    const messages = [{ role: 'user', content: 'x' }];
+    await router.callTier('groq', { messages, max_tokens: 50 });
+    await router.callTier('groq', { messages, max_tokens: 50, timeout_ms: 45000 });
+    await router.callTier('groq', { messages, max_tokens: 50, timeout_ms: 9999999 });
+  } finally { AbortSignal.timeout = real; }
+  assert.deepEqual(asked, [3500, 45000, 120000]);
 });
 
 test('hotkey: a key event becomes "Ctrl+Alt+Space", and only a usable combination counts', () => {

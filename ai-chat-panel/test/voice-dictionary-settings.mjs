@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
+import os from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { chromium } from 'playwright';
 
@@ -13,7 +14,7 @@ const html = `<!doctype html><meta charset="utf-8"><style>${['style.css', 'launc
 <script>window.sent = []; window.acquireVsCodeApi = () => ({ postMessage: (message) => window.sent.push(message) });</script>
 <script>${read('agent-icons.js')}</script><script>${read('model-prompts.js')}</script><script>${read('voice-hotkey.js')}</script><script>${read('settings.js')}</script>
 <script>window.api = window.initChatSettings({ vscode: window.acquireVsCodeApi(), body: document.getElementById('csBody') }); window.api.showTab('voice');</script>`;
-const limits = { entries: 500, scanned: 150, scanBatch: 60, promptTerms: 40, promptChars: 480, cleanupTerms: 150 };
+const limits = { entries: 5000, scanned: 1500, scanBatch: 60, promptTerms: 40, promptChars: 480, cleanupTerms: 150 };
 const word = (term, extra = {}) => ({ term, enabled: true, addedAt: 1, ...extra });
 const browser = await chromium.launch({ headless: true, channel: 'msedge' });
 try {
@@ -23,7 +24,7 @@ try {
   await page.setContent(html);
   const sent = (type) => page.evaluate((type) => window.sent.filter((message) => message.type === type), type);
   const lastSent = async (type) => (await sent(type)).at(-1);
-  const deliver = (entries, extra = {}) => page.evaluate(([entries, extra, limits]) => window.api.voiceDictionary({ entries, usage: { total: entries.length, enabled: entries.filter((e) => e.enabled).length, scanned: 0, inPrompt: Math.min(entries.length, 40), inCleanup: Math.min(entries.length, 150), limits }, ...extra }), [entries, extra, limits]);
+  const deliver = (entries, extra = {}) => page.evaluate(([entries, extra, limits]) => window.api.voiceDictionary({ entries, usage: { total: entries.length, enabled: entries.filter((e) => e.enabled).length, scanned: 0, limits: { entries: limits.entries } }, ...extra }), [entries, extra, limits]);
   const rows = () => page.locator('.cs-dict-row .cs-dict-term, .cs-dict-row .cs-dict-edit').count();
 
   assert.ok((await sent('requestVoiceDictionary')).length >= 1, 'opening the Voice tab asks for the dictionary');
@@ -32,7 +33,9 @@ try {
 
   await deliver([word('SimTalk'), word('Tecnomatix', { enabled: false }), word('ChatWindowHost', { source: 'scan', project: 'Visor' })]);
   assert.equal(await rows(), 3);
-  assert.equal(await page.locator('[data-role=dictTag]').innerText(), '3 / 500');
+  assert.equal(await page.locator('[data-role=dictTag]').innerText(), '3 words');
+  assert.equal(await page.locator('.cs-dict .cs-usage').count(), 0, 'which words reach the models is not shown');
+  assert.doesNotMatch(await page.locator('[data-role=dictionary]').innerText(), /Whisper|Sent to/);
 
   await page.fill('[data-role=dictSearch]', 'tec');
   assert.equal(await rows(), 1, 'search narrows the list');
@@ -73,10 +76,21 @@ try {
   await page.click('[data-role=dictClearScanned]');
   assert.ok(await lastSent('voiceDictionaryClearScanned'));
 
-  // A full dictionary: the list scrolls inside its card and nothing overflows the narrow window.
-  await deliver(Array.from({ length: 500 }, (_, index) => word(`Term${index}`, { source: index % 2 ? 'scan' : undefined })));
+  // A long dictionary: only the first rows are drawn, search reaches the rest, and nothing overflows the narrow window.
+  await deliver(Array.from({ length: 1800 }, (_, index) => word(`Term${index}`, { source: index % 2 ? 'scan' : undefined })));
+  assert.equal(await page.locator('[data-role=dictTag]').innerText(), '1,800 words');
+  assert.doesNotMatch(await page.locator('[data-role=dictTag]').getAttribute('class'), /is-warn/);
+  assert.equal(await rows(), 300, 'a long list draws a bounded number of rows');
+  assert.match(await page.locator('.cs-dict-list .cs-dict-empty').innerText(), /1,500 more/);
+  await page.fill('[data-role=dictSearch]', 'Term1799');
+  assert.equal(await rows(), 1, 'search reaches words beyond the drawn rows');
+  await page.fill('[data-role=dictSearch]', '');
+  await deliver(Array.from({ length: 4800 }, (_, index) => word(`Term${index}`)));
   assert.match(await page.locator('[data-role=dictTag]').getAttribute('class'), /is-warn/);
+  assert.equal(await page.locator('[data-role=dictTag]').innerText(), '4,800 / 5,000');
+  await deliver(Array.from({ length: 1800 }, (_, index) => word(`Term${index}`, { source: index % 2 ? 'scan' : undefined })));
   assert.equal(await page.locator('.cs-dict-list').evaluate((el) => el.scrollHeight > el.clientHeight && el.clientHeight <= 270), true);
+  await page.locator('[data-role=dictionary]').screenshot({ path: path.join(os.tmpdir(), 'clanker-dictionary-settings.png') });
   assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), true, 'no horizontal overflow at 364px');
   // The shared project list stays editable only after expanding its compact General card.
   await page.evaluate(() => {

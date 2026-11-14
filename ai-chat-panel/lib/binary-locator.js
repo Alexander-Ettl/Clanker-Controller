@@ -88,4 +88,18 @@ class BinaryNotFoundError extends Error {
   }
 }
 
-module.exports = { locate, refresh, resolveShim, terminalCommand, candidates, BinaryNotFoundError };
+/**
+ * Environment for running a CLI headless. Every agy start spawns its own background updater when the last check is over 15
+ * minutes old, and on Windows that opens a visible terminal window. Clanker updates the CLIs itself (`agy update` still works
+ * with this set), so agy is told not to. Only the exact value `true` counts: `1` is ignored.
+ */
+const headlessEnv = (file) => {
+  // ANTIGRAVITY_NO_CHIME silences ~/.gemini/config/hooks.json's Stop hook; Clanker plays the chime once when the reply renders.
+  if (/(?:^|[\\/])agy(?:\.exe|\.cmd)?$/i.test(String(file))) return { AGY_CLI_DISABLE_AUTO_UPDATE: 'true', ANTIGRAVITY_NO_CHIME: '1' };
+  // Older codex launchers only flag an npm install when npm itself started them, so `codex update` run from here
+  // (no npm_config_user_agent) failed with "Could not detect the Codex installation method".
+  if (/(?:^|[\\/])codex\.cmd$/i.test(String(file))) return { CODEX_MANAGED_BY_NPM: '1' };
+  return {};
+};
+
+module.exports = { locate, refresh, resolveShim, terminalCommand, candidates, headlessEnv, BinaryNotFoundError };

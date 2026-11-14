@@ -9,7 +9,6 @@
   const names = window.AGENT_NAMES || { claude: 'Claude Code', codex: 'Codex', gemini: 'Antigravity', opus: 'Claude Opus 5.5' };
 
   let lastQuotas = null;
-  let lastApiValue = null; // the API value message (renderApiValue), also read by the usage rings' tooltips
 
   // The iOS app-icon shape for the chat tiles: a superellipse (|x|^5 + |y|^5 = 1), whose curvature flows into the
   // straight edges instead of jumping the way a circular corner radius does. CSS `border-radius` cannot draw it, so it
@@ -63,9 +62,110 @@
   // Pop out: a new, empty chat in an editor tab beside this one (no rail there, the same chat window otherwise), for
   // working on several chats at once. Never a second view of this chat.
   document.getElementById('popOutBtn').addEventListener('click', () => vscode.postMessage({ type: 'newChatWindow' }));
-  // One click opens General and starts every available CLI update.
+  // One click starts every available CLI update without leaving the chat.
   const updatesBtn = document.getElementById('updatesBtn');
-  updatesBtn.addEventListener('click', () => openInChat('openSettings', { tab: 'general', updateAll: true }));
+  updatesBtn.addEventListener('click', () => vscode.postMessage({ type: 'updateAllClis' }));
+
+  // While a CLI updates, the arrow circulates and hovering opens a pill with one progress row per CLI. When the last one
+  // ends the button shows a check (or "!") and the pill opens by itself for a few seconds: "Update is done".
+  // No CLI reports its progress, so the bar is paced on how long that CLI's last update took (the host's estimate).
+  const RESULT_HOLD_MS = 7000;
+  const updateRows = new Map(); // agent -> { state: running | done | failed, from, to, startedAt, estimateMs, row, bar, pct, ver }
+  let updateDue = [], updateHold = null, updateTick = null;
+  const statusLine = updatesBtn.querySelector('.upd-status');
+  const rowsBox = updatesBtn.querySelector('.upd-rows');
+
+  const paced = (entry) => {
+    const t = Math.min(1, Math.max(0, (Date.now() - entry.startedAt) / entry.estimateMs));
+    return 0.94 * (1 - (1 - t) ** 3);
+  };
+  const versionText = (entry) => (entry.to && entry.from && entry.to !== entry.from ? `${entry.from} → ${entry.to}` : entry.to || entry.from || '');
+
+  function updateRow(agent, entry) {
+    if (!entry.row) {
+      const row = document.createElement('span');
+      row.className = 'upd-row';
+      row.style.setProperty('--agent', `var(--${agent}-color)`);
+      row.innerHTML = `<span class="upd-mark">${ICONS[agent] || ''}</span><span class="upd-main"><span class="upd-title"><span class="upd-name"></span><span class="upd-ver"></span></span><i class="upd-bar"><b></b></i></span><span class="upd-pct"></span>`;
+      Object.assign(entry, { row, bar: row.querySelector('.upd-bar b'), pct: row.querySelector('.upd-pct'), ver: row.querySelector('.upd-ver') });
+      rowsBox.append(row);
+    }
+    const progress = entry.state === 'running' ? paced(entry) : entry.state === 'done' ? 1 : entry.frozen;
+    entry.row.classList.toggle('is-done', entry.state === 'done');
+    entry.row.classList.toggle('is-failed', entry.state === 'failed');
+    entry.row.querySelector('.upd-name').textContent = entry.state === 'done' ? `${names[agent] || agent}: update is done` : names[agent] || agent;
+    entry.bar.style.setProperty('--p', progress.toFixed(3));
+    entry.pct.textContent = entry.state === 'done' ? '✓' : entry.state === 'failed' ? '!' : progress >= 0.93 ? '…' : `${Math.round(progress * 100)}%`;
+    entry.ver.textContent = versionText(entry);
+    entry.row.title = entry.state === 'failed' ? entry.text || 'Update failed' : '';
+  }
+
+  function renderUpdates() {
+    const entries = [...updateRows.entries()];
+    const running = entries.filter(([, entry]) => entry.state === 'running');
+    const failed = entries.filter(([, entry]) => entry.state === 'failed');
+    const state = running.length ? 'updating' : failed.length ? 'failed' : entries.length ? 'done' : '';
+    for (const [agent, entry] of entries) updateRow(agent, entry);
+    updatesBtn.classList.toggle('is-updating', state === 'updating');
+    updatesBtn.classList.toggle('is-done', state === 'done');
+    updatesBtn.classList.toggle('is-failed', state === 'failed');
+    updatesBtn.classList.toggle('is-single', entries.length === 1);
+    updatesBtn.style.setProperty('--rows', entries.length);
+    statusLine.textContent = state === 'updating' ? `Updating ${running.length} CLI${running.length === 1 ? '' : 's'}…`
+      : state === 'failed' ? (failed.length === entries.length ? 'Update failed' : 'Update finished with errors') : state === 'done' ? 'Update is done' : '';
+    updatesBtn.hidden = !state && !updateDue.length;
+    updatesBtn.title = state ? '' : updateDue.map(([agent, info]) => `${names[agent] || agent} ${info.version} → ${info.latest}`).join('\n');
+    updatesBtn.setAttribute('aria-label', state === 'done' ? `${entries.map(([agent]) => names[agent] || agent).join(' and ')}: update is done` : statusLine.textContent || 'CLI updates');
+    clearInterval(updateTick);
+    updateTick = running.length ? setInterval(() => renderUpdates(), 300) : null;
+  }
+
+  function finishUpdates() {
+    updatesBtn.classList.remove('is-peek');
+    updatesBtn.classList.add('is-collapsing');
+    const reduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    updateHold = setTimeout(() => {
+      if (!updateDue.length) updatesBtn.classList.add('is-exiting');
+      updateHold = setTimeout(() => {
+        updateRows.clear();
+        rowsBox.replaceChildren();
+        renderUpdates();
+        updatesBtn.classList.remove('is-collapsing', 'is-exiting');
+      }, reduced || updateDue.length ? 0 : 360);
+    }, reduced ? 0 : 600);
+  }
+
+  function updatesStatus({ updating = {}, notes = {}, versions = {}, updates = [] }) {
+    updateDue = updates.filter((agent) => versions[agent]).map((agent) => [agent, versions[agent]]);
+    if (Object.keys(updating).length) {
+      clearTimeout(updateHold);
+      updatesBtn.classList.remove('is-collapsing', 'is-exiting');
+    }
+    for (const [agent, info] of Object.entries(updating)) {
+      const entry = updateRows.get(agent);
+      if (entry?.state === 'running') Object.assign(entry, { startedAt: info.startedAt, estimateMs: info.estimateMs || 20000 });
+      else {
+        if (entry) entry.row?.remove();
+        updateRows.set(agent, { state: 'running', from: versions[agent]?.version, to: versions[agent]?.latest, startedAt: info.startedAt, estimateMs: info.estimateMs || 20000 });
+      }
+    }
+    let ended = false;
+    for (const [agent, entry] of updateRows) {
+      if (entry.state !== 'running' || updating[agent]) continue;
+      const note = notes[agent];
+      Object.assign(entry, { state: note?.ok === false ? 'failed' : 'done', frozen: paced(entry), text: note?.text, to: versions[agent]?.version || entry.to });
+      ended = true;
+    }
+    renderUpdates();
+    if (ended && ![...updateRows.values()].some((entry) => entry.state === 'running')) {
+      updatesBtn.classList.add('is-peek');
+      clearTimeout(updateHold);
+      updateHold = setTimeout(finishUpdates, RESULT_HOLD_MS);
+    } else if (!updateRows.size || [...updateRows.values()].some((entry) => entry.state === 'running')) {
+      clearTimeout(updateHold); // a new update started while the last result was still showing
+      updatesBtn.classList.remove('is-peek');
+    }
+  }
 
   // P16-M: legible model cards with 5h and 7d "% remaining" gauges.
   function resetsIn(resetsAt) {
@@ -95,26 +195,67 @@
   const ringCircles = (r) => `<circle class="ring-track" cx="18" cy="18" r="${r}"/><circle class="ring-fill" cx="18" cy="18" r="${r}" pathLength="100"/>`;
   const pctOf = (window) => (typeof window?.remaining === 'number' ? Math.max(0, Math.min(100, Math.round(window.remaining))) : null);
 
-  function modelCard(agent, quota) {
+  function modelCard(agent, quota, extras, connection) {
     const card = document.createElement('div');
     card.className = `model-card model-card-${agent}`;
     card.dataset.agent = agent;
     // Hovering the ring grows .ring-pill leftward out of it: both windows as bars with the exact % and reset (launcher.css).
     const pillRow = (label) => `<span class="ring-row"><span class="ring-row-name">${label}</span><i class="ring-bar"><b></b></i><span class="ring-row-pct"></span><span class="ring-row-eta"></span></span>`;
-    card.innerHTML = `<span class="ring" tabindex="0" title=""><span class="ring-pill" aria-hidden="true"><span class="ring-burn"><b class="ring-burn-val"></b><span class="ring-burn-label"></span></span><span class="ring-rows">${pillRow('5h')}${pillRow('7d')}</span></span><svg viewBox="0 0 36 36" aria-hidden="true">${ringCircles(15)}${ringCircles(10)}</svg><span class="ring-logo">${ICONS[agent] || ''}</span></span><b class="model-card-5h"></b><span class="model-card-7d"></span><span class="model-card-reset"></span>`;
-    return updateModelCard(card, quota);
+    card.innerHTML = `<span class="ring" tabindex="0" title=""><span class="ring-pill" aria-hidden="true"><span class="ring-burn"><b class="ring-burn-val"></b><span class="ring-burn-label"></span></span><span class="ring-rows">${pillRow('5h')}${pillRow('7d')}</span><span class="ring-fault"><span class="ring-fault-text"><span class="ring-fault-head"><b class="ring-fault-title"></b><i class="ring-fault-code"></i></span><span class="ring-fault-detail"></span></span><button class="ring-fault-btn" type="button"></button></span></span><svg viewBox="0 0 36 36" aria-hidden="true">${ringCircles(15)}${ringCircles(10)}</svg><span class="ring-logo">${ICONS[agent] || ''}</span></span><b class="model-card-5h"></b><span class="model-card-7d"></span><span class="model-card-reset"></span>`;
+    if (agent === 'gemini') {
+      card.querySelector('.ring-rows').insertAdjacentHTML('afterbegin', '<span class="ring-group-name">Gemini Models</span>');
+      card.querySelector('.ring-rows').insertAdjacentHTML('afterend', `<span class="ring-rows ring-rows-claude-gpt"><span class="ring-group-name">Claude and GPT models</span>${pillRow('5h')}${pillRow('7d')}</span><span class="ring-rows ring-rows-argon"><span class="ring-group-name">Gemini 4 Argon</span>${pillRow('7d')}</span>`);
+    }
+    card.querySelector('.ring-fault-btn').addEventListener('click', () => card._fault && vscode.postMessage({ type: card._fault.action, agent }));
+    return updateModelCard(card, quota, extras, connection);
   }
 
-  function updateModelCard(card, quota) {
-    const five = pctOf(quota);
-    const week = pctOf(quota?.secondary);
-    [five, week].forEach((pct, i) => {
-      const fill = card.querySelectorAll('.ring-fill')[i];
+  // Which Antigravity pool the Gemini circle draws: 'argon' (default), 'gemini' or 'claude-gpt' (aiChatPanel.antigravityRing).
+  let ringSource = window.ANTIGRAVITY_RING || 'argon';
+
+  function updateModelCard(card, quota, extras, connection) {
+    const gemini = card.dataset.agent === 'gemini';
+    // The circle is the quota's two windows (5h outside, week inside). Antigravity has three pools, so Settings picks which one
+    // the circle draws; a pool with only a weekly window is one circle, as wide as the outer ring.
+    let first = quota, second = quota?.secondary, single = false;
+    let fiveHour, weekly, argonWeek;
+    if (gemini) {
+      // A weekly-only pool (the language server sometimes reports just that bucket) shows no 5h row.
+      const weeklyOnly = (pool) => pool?.windowMinutes === 10080;
+      const { claudeGpt, argon } = extras || {};
+      fiveHour = weeklyOnly(claudeGpt) ? null : claudeGpt;
+      weekly = weeklyOnly(claudeGpt) ? claudeGpt : claudeGpt?.secondary;
+      argonWeek = weeklyOnly(argon) ? argon : argon?.secondary;
+      const week7d = (win) => win && { windowMinutes: 10080, ...win };
+      // Ultra shares Argon with the Gemini pool, so the language server may not list it: then the circle falls back to Gemini's.
+      if (ringSource === 'argon' && argonWeek) { first = week7d(argonWeek); second = null; single = true; }
+      else if (ringSource === 'claude-gpt' && (fiveHour || weekly)) {
+        if (fiveHour) { first = fiveHour; second = weekly; } else { first = week7d(weekly); second = null; single = true; }
+      }
+    }
+    const five = pctOf(first);
+    const week = pctOf(second);
+    const circles = card.querySelectorAll('.ring-fill');
+    card.classList.toggle('ring-single', single);
+    card.querySelectorAll('.ring > svg circle').forEach((circle, i) => {
+      if (i < 2) circle.style.display = single ? 'none' : '';
+      else circle.setAttribute('r', single ? 15 : 10);
+    });
+    (single ? [null, five] : [five, week]).forEach((pct, i) => {
+      const fill = circles[i];
       fill.style.setProperty('--pct', pct ?? 0);
       fill.style.visibility = pct > 0 ? 'visible' : 'hidden';
       fill.classList.toggle('is-low', pct !== null && pct <= 20);
     });
-    [[five, quota], [week, quota?.secondary]].forEach(([pct, win], i) => {
+    const windows = [[pctOf(quota), quota], [pctOf(quota?.secondary), quota?.secondary]];
+    if (gemini) {
+      windows.push([pctOf(fiveHour), fiveHour], [pctOf(weekly), weekly], [pctOf(argonWeek), argonWeek]);
+      const { argon } = extras || {};
+      // Ultra shares Argon with the Gemini pool, so the language server may not list it: then there is nothing to show.
+      card.querySelector('.ring-rows-argon').hidden = !argon;
+      card.classList.toggle('has-argon', Boolean(argon));
+    }
+    windows.forEach(([pct, win], i) => {
       const row = card.querySelectorAll('.ring-row')[i];
       row.style.setProperty('--pct', pct ?? 0);
       row.classList.toggle('is-low', pct !== null && pct <= 20);
@@ -123,31 +264,65 @@
     });
     card.querySelector('.model-card-5h').textContent = five === null ? '—' : `${five}%`;
     card.querySelector('.model-card-7d').textContent = week === null ? '—' : `${week}%`;
-    card.querySelector('.model-card-reset').textContent = resetShort(quota?.resetsAt);
+    card.querySelector('.model-card-reset').textContent = resetShort(first?.resetsAt);
     card.classList.toggle('is-empty', five === null);
     const agent = card.dataset.agent;
-    const burn = window.burnRate.describe(quota);
-    const pace = window.burnRate.estimate(quota);
+    const spent = first && !first.stale && !first.assumedReset && Number.isFinite(first.remaining)
+      && first.remaining <= 0 && first.resetsAt * 1000 > Date.now();
+    const burn = spent ? 'Usage is spent' : window.burnRate.describe(first);
+    const pace = spent ? null : window.burnRate.estimate(first);
     const burnLabel = card.querySelector('.ring-burn');
     // One line, "7m of Usage remaining": the time until the quota is spent at the pace so far, or "Lasts" when the window resets first.
     // The full sentence stays in the tooltip.
-    burnLabel.querySelector('.ring-burn-label').textContent = pace?.resetsFirst ? 'until the reset' : pace?.minutesLeft === 0 ? 'Usage is spent' : 'of Usage remaining';
-    burnLabel.querySelector('.ring-burn-val').textContent = !pace ? '–' : pace.resetsFirst ? 'Lasts' : pace.minutesLeft === 0 ? 'Now' : window.burnRate.duration(pace.minutesLeft);
-    burnLabel.classList.toggle('is-low', pace?.resetsFirst === false);
-    const value = lastApiValue?.byAgent?.[agent];
-    card.title = `${names[agent] || agent}: ${five === null ? 'no live quota' : `${five}% of the 5h window left`}${week === null ? '' : `, ${week}% of the week`}${quota?.resetsAt ? `, ${resetsIn(quota.resetsAt)}` : ''}${value > 0 ? `
-API value so far: ≈ ${window.apiValue.formatUsd(value)} (at pay-per-token prices; not billed)` : ''}`;
-    card.title += `\n${burn}\nAverage since this quota window started; includes idle time.`;
+    burnLabel.querySelector('.ring-burn-label').textContent = spent ? '' : pace?.resetsFirst ? 'until the reset' : 'of Usage remaining';
+    burnLabel.querySelector('.ring-burn-val').textContent = spent ? 'Usage is spent' : !pace ? '–' : pace.resetsFirst ? 'Lasts' : window.burnRate.duration(pace.minutesLeft);
+    burnLabel.classList.toggle('is-spent', Boolean(spent));
+    burnLabel.classList.toggle('is-low', spent || pace?.resetsFirst === false);
+    card.title = `${names[agent] || agent}: ${five === null ? 'no live quota' : `${five}% of the ${single ? 'week' : '5h window'} left`}${week === null ? '' : `, ${week}% of the week`}${first?.resetsAt ? `, ${resetsIn(first.resetsAt)}` : ''}`;
+    card.title += spent ? `\n${burn}` : `\n${burn}\nAverage since this quota window started; includes idle time.`;
+    if (agent === 'gemini') {
+      const describe = ([pct, win], label) => `${label}: ${pct === null ? 'no live quota' : `${pct}% left`}${win?.resetsAt ? `, ${resetsIn(win.resetsAt)}` : ''}`;
+      card.title += `\nGemini models: ${describe(windows[0], '5h')}; ${describe(windows[1], '7d')}`;
+      card.title += `\nClaude and GPT models: ${describe(windows[2], '5h')}; ${describe(windows[3], '7d')}`;
+      if (extras?.argon) card.title += `\nGemini 4 Argon: ${describe(windows[4], '7d')}`;
+    }
+    // A provider that cannot be used (not signed in, broken install, plan ended): a full red ring, "Not available", and on hover
+    // the exit code, the reason and the one button that fixes it. `connection.fault` comes from CliAccounts.fault().
+    const fault = connection?.fault || null;
+    card._fault = fault;
+    card.classList.toggle('is-faulty', Boolean(fault));
+    const pill = card.querySelector('.ring-pill');
+    if (fault) {
+      pill.removeAttribute('aria-hidden'); // its button must be reachable
+      card.querySelectorAll('.ring-fill').forEach((fill) => { fill.style.setProperty('--pct', 100); fill.style.visibility = 'visible'; fill.classList.remove('is-low'); });
+      card.querySelector('.model-card-5h').textContent = 'Not available';
+      card.querySelector('.model-card-reset').textContent = '';
+      card.querySelector('.ring-fault-title').textContent = fault.title;
+      const code = card.querySelector('.ring-fault-code');
+      code.textContent = fault.code ? `Exit code ${fault.code}` : '';
+      code.hidden = !fault.code;
+      const detail = card.querySelector('.ring-fault-detail');
+      detail.textContent = fault.detail;
+      detail.title = fault.detail;
+      const button = card.querySelector('.ring-fault-btn');
+      button.textContent = connection.settingUp && (fault.action === 'connectCli' || fault.action === 'fixCli') ? 'Waiting for sign-in…' : fault.label;
+      card.title = `${names[agent] || agent} is not available: ${fault.title}${fault.code ? ` (exit code ${fault.code})` : ''}\n${fault.detail}`;
+    } else pill.setAttribute('aria-hidden', 'true');
     card.querySelector('.ring').setAttribute('aria-label', card.title);
     return card;
   }
 
   // Re-render in place (same nodes) so the rings sweep instead of popping.
   // No Opus card: it runs on the Claude account, so the Claude ring already shows its windows.
+  // A CLI that was removed has no ring. One that cannot be used (not signed in, damaged install, plan ended, credits out) keeps it, in red:
+  // hovering says why and offers the fix. Until the first connections message every provider shows.
+  let connections = null;
+  const usableAgents = () => (window.PROVIDER_IDS || ['claude', 'codex', 'gemini']).filter((agent) => !connections || connections[agent]?.enabled);
+  const poolsOf = (quotas) => ({ claudeGpt: quotas?.antigravityClaudeGpt, argon: quotas?.antigravityArgon });
   function renderModelCards(quotas) {
-    const agents = window.PROVIDER_IDS || ['claude', 'codex', 'gemini'];
-    if (modelCards.childElementCount !== agents.length) { modelCards.replaceChildren(...agents.map((agent) => modelCard(agent, quotas?.[agent]))); return; }
-    agents.forEach((agent, i) => updateModelCard(modelCards.children[i], quotas?.[agent]));
+    const agents = usableAgents();
+    if ([...modelCards.children].map((card) => card.dataset.agent).join() !== agents.join()) { modelCards.replaceChildren(...agents.map((agent) => modelCard(agent, quotas?.[agent], poolsOf(quotas), connections?.[agent]))); return; }
+    agents.forEach((agent, i) => updateModelCard(modelCards.children[i], quotas?.[agent], poolsOf(quotas), connections?.[agent]));
   }
   setInterval(() => lastQuotas && renderModelCards(lastQuotas), 30000); // countdowns
   // Until the first quotas message arrives the cards are shimmering skeletons (see .is-loading in launcher.css).
@@ -186,16 +361,52 @@ API value so far: ≈ ${window.apiValue.formatUsd(value)} (at pay-per-token pric
     target.querySelectorAll('.history-peek-shape path').forEach((path) => path.setAttribute('d', outline));
   }));
 
-  function historyPeek(session, rowClasses, agent, title) {
+  // A tile's main mark is the chat's project (the rail's project icon); its provider is told by the tint of the work icon on the
+  // corner and by the label. A chat without a project keeps the provider's logo, and one with no turn yet an open slot. While the
+  // project list is still loading the mark stays blank, so the logo never flashes before the icon replaces it.
+  function tileMark(session, agent) {
+    if (session.projectId) {
+      const project = window.railProjectMark?.(session.projectId);
+      if (project) { project.classList.add('is-tile'); return project; }
+      if (!window.railProjectsReady?.()) return document.createElement('span');
+    }
+    if (agent) { const logo = modelMark(agent); logo.removeAttribute('title'); return logo; }
+    const slot = document.createElement('span');
+    slot.className = 'slot-mark';
+    slot.setAttribute('aria-hidden', 'true'); // no turn yet: an open slot, not a blank tile
+    return slot;
+  }
+
+  // What the chat is working on right now (lib/work-context.js): a bundled icon and its name, or null (no category yet, or no icon file).
+  const CONTEXT = window.CONTEXT_ASSETS || { categories: [], icons: {} };
+  function contextOf(session) {
+    const id = session.workContext?.categoryId;
+    const category = CONTEXT.categories.find((entry) => entry.id === id);
+    return category && CONTEXT.icons[id] ? { label: category.label, svg: CONTEXT.icons[id] } : null;
+  }
+
+  function historyPeek(session, rowClasses, agent, title, context) {
     const id = ++peekCount;
     const peek = document.createElement('div');
     peek.className = `history-peek ${rowClasses.replace('history-row', '').trim()}`;
     peek.setAttribute('aria-hidden', 'true');
-    peek.innerHTML = `<svg class="history-peek-shape"><defs><clipPath id="peek-clip-${id}"><path/></clipPath><linearGradient id="peek-sheen-${id}" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#fff" stop-opacity=".045"/><stop offset=".4" stop-color="#fff" stop-opacity="0"/></linearGradient></defs><g clip-path="url(#peek-clip-${id})"><path class="history-peek-fill"/><path fill="url(#peek-sheen-${id})"/><path class="history-peek-rim"/></g></svg><div class="history-peek-text"><div class="history-peek-title"></div><div class="history-peek-meta"><span class="history-peek-project"></span><span class="history-peek-last"></span></div></div><span class="history-peek-mark"></span>`;
+    peek.innerHTML = `<svg class="history-peek-shape"><defs><clipPath id="peek-clip-${id}"><path/></clipPath><linearGradient id="peek-sheen-${id}" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#fff" stop-opacity=".045"/><stop offset=".4" stop-color="#fff" stop-opacity="0"/></linearGradient></defs><g clip-path="url(#peek-clip-${id})"><path class="history-peek-fill"/><path fill="url(#peek-sheen-${id})"/><path class="history-peek-rim"/></g></svg><div class="history-peek-text"><div class="history-peek-head"><div class="history-peek-title"></div><span class="history-peek-context" hidden></span></div><div class="history-peek-meta"><span class="history-peek-icons"></span><span class="history-peek-project"></span><span class="history-peek-last"></span></div></div><span class="history-peek-mark"></span>`;
     peek.querySelector('.history-peek-title').textContent = title;
+    if (context) {
+      const chip = peek.querySelector('.history-peek-context');
+      chip.hidden = false;
+      chip.innerHTML = context.svg;
+      chip.append(context.label);
+    }
     // Like the preview in Manage Chats: the project it last worked in, then who spoke last and what they said.
     const project = peek.querySelector('.history-peek-project');
     project.textContent = session.projectNames?.[0] || session.projectName || '';
+    // Their icons lead the line, the same marks as the rail's project tiles (up to three, the latest first).
+    const icons = peek.querySelector('.history-peek-icons');
+    for (const id of [...new Set([...(session.touchedProjectIds || []), session.projectId])].slice(0, 3)) {
+      const icon = window.railProjectMark?.(id);
+      if (icon) icons.append(icon);
+    }
     const last = peek.querySelector('.history-peek-last');
     const message = session.lastMessage;
     if (message?.text) {
@@ -206,21 +417,24 @@ API value so far: ≈ ${window.apiValue.formatUsd(value)} (at pay-per-token pric
       last.textContent = 'No messages yet';
     }
     // The mark stays where it is on the tile, at the right end of the preview.
-    const mark = peek.querySelector('.history-peek-mark');
-    if (agent) { const logo = modelMark(agent); logo.removeAttribute('title'); mark.append(logo); }
-    else mark.innerHTML = '<span class="slot-mark" aria-hidden="true"></span>';
-    // It covers the tile while open, so it opens the chat too.
-    peek.addEventListener('click', () => vscode.postMessage({ type: 'restoreChat', id: session.id }));
+    peek.querySelector('.history-peek-mark').append(tileMark(session, agent));
+    // The surrounding item opens the chat from either the tile or this expanded preview.
     peekShapes.observe(peek);
     return peek;
   }
 
-  // Every row is just a provider mark, so a long history is a wall of look-alikes: the rail shows the live chats
+  // Every row is a provider mark with a small work icon, so a long history is still a wall of look-alikes: the rail shows the live chats
   // and the latest few, and a "9+" chip opens Manage Chats (which also renames and deletes) for the rest.
   const RAIL_CHATS = 5;
   let recentTimer;
 
+  let lastSessions;
+  // The project list arrives separately from the chats (main.js); the previews pick up its icons when it does.
+  window.addEventListener('rail-projects', () => lastSessions && renderHistory(lastSessions));
+
   function renderHistory(sessions) {
+    historyList.removeAttribute('aria-busy');
+    lastSessions = sessions;
     clearTimeout(recentTimer);
     historyList.replaceChildren();
     if (!sessions || !sessions.length) {
@@ -250,17 +464,17 @@ API value so far: ≈ ${window.apiValue.formatUsd(value)} (at pay-per-token pric
       if (session.selected) row.setAttribute('aria-current', 'true');
       // One pill per chat: the coding environment it last ran on (just one; two or three don't fit), then the name.
       // The tooltip names both and gives the time.
-      const agent = (session.models || []).at(-1);
+      // The last agent that actually worked in the chat (not the first one, and not the model picked in the composer).
+      const agent = session.latestAgent || (session.models || []).at(-1);
+      const context = contextOf(session);
       const title = session.title || session.preview || 'New chat';
       const lastText = session.lastMessage?.text ? ` · "${session.lastMessage.text.slice(0, 60)}…"` : '';
       // The hover preview shows all of this; the label is for screen readers.
-      row.setAttribute('aria-label', `${title}${lastText} · ${agent ? `${names[agent] || agent} · ` : ''}${window.chatTime.chatTime(session.updatedAt, { locale: TIME_PREFS.locale, hourCycle: HOUR_CYCLE })}${session.state === 'waiting' ? ' · Needs input' : ''}`);
+      row.setAttribute('aria-label', `${title}${lastText} · ${session.projectName ? `${session.projectName} · ` : ''}${agent ? `${names[agent] || agent} · ` : ''}${context ? `${context.label} · ` : ''}${window.chatTime.chatTime(session.updatedAt, { locale: TIME_PREFS.locale, hourCycle: HOUR_CYCLE })}${session.state === 'waiting' ? ' · Needs input' : ''}`);
 
       const lead = document.createElement('span');
       lead.className = 'history-lead';
-      if (agent) lead.append(modelMark(agent));
-      else lead.innerHTML = '<span class="slot-mark" aria-hidden="true"></span>'; // no turn yet: an open slot, not a blank tile
-      row.addEventListener('click', () => vscode.postMessage({ type: 'restoreChat', id: session.id }));
+      lead.append(tileMark(session, agent));
       row.append(lead);
       const time = document.createElement('span');
       time.className = 'history-time';
@@ -268,8 +482,24 @@ API value so far: ≈ ${window.apiValue.formatUsd(value)} (at pay-per-token pric
       time.textContent = railTime(session.updatedAt);
       const item = document.createElement('div');
       item.className = 'history-item';
+      item.tabIndex = 0;
+      item.setAttribute('role', 'button');
+      item.setAttribute('aria-label', row.getAttribute('aria-label'));
+      if (session.selected) item.setAttribute('aria-current', 'true');
+      item.addEventListener('click', () => vscode.postMessage({ type: 'restoreChat', id: session.id }));
+      item.addEventListener('keydown', event => {
+        if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); item.click(); }
+      });
       if (agent) item.dataset.agent = agent; // the provider's colour for the orb
-      item.append(row, time, historyPeek(session, row.className, agent, title));
+      item.append(row, time, historyPeek(session, row.className, agent, title, context));
+      if (context) {
+        // The work icon sits on the tile's lower-left corner, on the item (the tile itself is clipped to the bubble).
+        const badge = document.createElement('span');
+        badge.className = 'history-context';
+        badge.setAttribute('aria-hidden', 'true');
+        badge.innerHTML = context.svg;
+        item.append(badge);
+      }
       if (session.state === 'running') {
         // The same orb as the chat's "Thinking" pill (.pending-orb, style.css).
         const orb = document.createElement('span');
@@ -285,13 +515,15 @@ API value so far: ≈ ${window.apiValue.formatUsd(value)} (at pay-per-token pric
     const message = event.data;
     switch (message.type) {
       case 'history': renderHistory(message.sessions); break;
-      case 'cliStatus': {
-        const due = message.updates || [];
-        updatesBtn.hidden = !due.length;
-        updatesBtn.title = due.map((agent) => `${names[agent] || agent} ${message.versions[agent].version} → ${message.versions[agent].latest}`).join('\n');
+      case 'cliStatus': updatesStatus(message); break;
+      case 'antigravityRing':
+        ringSource = message.value || 'argon';
+        renderModelCards(lastQuotas);
         break;
-      }
-      case 'apiValue': renderApiValue(message); break;
+      case 'cliConnections':
+        connections = message.providers;
+        renderModelCards(lastQuotas);
+        break;
       case 'quotas':
         lastQuotas = message.quotas;
         modelCards.classList.remove('is-loading');
@@ -302,34 +534,8 @@ API value so far: ≈ ${window.apiValue.formatUsd(value)} (at pay-per-token pric
     }
   });
 
-  // ---- API value: the running total at pay-per-token API prices, per provider in the card (and in each usage ring's tooltip).
-  const apiValueEl = document.getElementById('apiValue');
-  function renderApiValue(value) {
-    lastApiValue = value;
-    const fmt = window.apiValue.formatUsd;
-    apiValueEl.hidden = !(value.totalUsd > 0);
-    document.getElementById('apiValueAmount').textContent = `≈ ${fmt(value.totalUsd)}`;
-    document.getElementById('apiValueTotal').textContent = `≈ ${fmt(value.totalUsd)}`;
-    document.getElementById('apiValueRange').textContent = window.apiValue.formatRange(value.totalUsd);
-    document.getElementById('apiValueRows').replaceChildren(...(window.PROVIDER_IDS || ['claude', 'codex', 'gemini']).map((agent) => {
-      const row = document.createElement('div');
-      row.className = 'api-value-row';
-      row.dataset.agent = agent;
-      row.innerHTML = `<span class="api-value-mark">${ICONS[agent] || ''}</span><span class="api-value-name"></span><span class="api-value-bar"><b></b></span><span class="api-value-usd"></span>`;
-      const usd = value.byAgent?.[agent] || 0;
-      row.querySelector('.api-value-name').textContent = names[agent] || agent;
-      row.querySelector('.api-value-usd').textContent = fmt(usd);
-      row.style.setProperty('--pct', value.totalUsd > 0 ? (usd / value.totalUsd) * 100 : 0);
-      return row;
-    }));
-    const day = (iso) => (iso ? new Date(iso).toLocaleDateString(TIME_PREFS.locale, { month: 'short', day: 'numeric', year: 'numeric' }) : '');
-    const prices = value.prices?.liveAt ? `prices updated ${day(value.prices.liveAt)}` : `prices as of ${day(value.prices?.verified)}`;
-    document.getElementById('apiValueFoot').textContent = [`This month ≈ ${fmt(value.monthUsd)}`, `since ${day(value.since)}`, prices, value.unpriced ? `${value.unpriced} turn${value.unpriced === 1 ? '' : 's'} of unlisted models not counted` : ''].filter(Boolean).join(' · ');
-    renderModelCards(lastQuotas);
-  }
-
   vscode.postMessage({ type: 'requestHistory' });
   vscode.postMessage({ type: 'requestQuotas' });
-  vscode.postMessage({ type: 'requestApiValue' });
   vscode.postMessage({ type: 'requestCliStatus' });
+  vscode.postMessage({ type: 'requestCliAvailability' });
 })();

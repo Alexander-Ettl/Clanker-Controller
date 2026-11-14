@@ -13,6 +13,8 @@
     "verify:bridge": "node scripts/verify-visor-bridge.mjs",
     "test:loops-ui": "node ai-chat-panel/test/investigations-ui.mjs",
     "test:compliance-ui": "node ai-chat-panel/test/compliance-settings.mjs",
+    "test:voice-ui": "node ai-chat-panel/test/voice-start.mjs",
+    "test:auth-ui": "node ai-chat-panel/test/auth-hold-ui.mjs && node ai-chat-panel/test/rail-fault-ui.mjs",
     "test:ui": "node ai-chat-panel/test/ui-tester/run.mjs",
     "test:ui-tester": "node ai-chat-panel/test/ui-tester.mjs"
   },

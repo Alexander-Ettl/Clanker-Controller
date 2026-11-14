@@ -142,32 +142,58 @@
     const bubble = group.querySelector('.msg-user');
     if (!bubble || !bubble.offsetWidth) return;
     const dockEl = group.querySelector('.msg-actions');
-    const open = dockEl && group.matches(':hover, :focus-within');
-    const image = groupImage(
-      group.offsetWidth,
-      group.offsetHeight,
-      { x: bubble.offsetLeft, y: bubble.offsetTop, w: bubble.offsetWidth, h: bubble.offsetHeight },
-      open ? { x: dockEl.offsetLeft, y: dockEl.offsetTop, w: dockEl.offsetWidth, h: dockEl.offsetHeight } : null,
-    );
-    group.style.backgroundImage = `url("data:image/svg+xml,${encodeURIComponent(image)}")`;
+    const bounds = { x: bubble.offsetLeft, y: bubble.offsetTop, w: bubble.offsetWidth, h: bubble.offsetHeight };
+    const image = (dock) => `url("data:image/svg+xml,${encodeURIComponent(groupImage(group.offsetWidth, group.offsetHeight, bounds, dock))}")`;
+    // CSS selects both the contour and the controls from one state.
+    group.style.setProperty('--bubble-image', image(null));
+    group.style.setProperty('--bubble-dock-image', image(dockEl && { x: dockEl.offsetLeft, y: dockEl.offsetTop, w: dockEl.offsetWidth, h: dockEl.offsetHeight }));
     group.classList.add('has-shape');
   }
 
-  const sizes = new ResizeObserver((entries) => entries.forEach((entry) => paint(entry.target)));
+  let pointer = null;
+  let hoveredGroup = null;
+  function syncHover() {
+    const target = pointer && document.elementFromPoint(pointer.x, pointer.y);
+    const group = target?.closest('.msg-group-user') || null;
+    if (group === hoveredGroup) return;
+    hoveredGroup?.classList.remove('is-dock-hovered');
+    hoveredGroup = group;
+    hoveredGroup?.classList.add('is-dock-hovered');
+  }
+
+  const sizes = new ResizeObserver((entries) => {
+    const groups = new Set(entries.map(entry => entry.target.closest('.msg-group-user') || entry.target));
+    for (const group of groups) paint(group);
+    syncHover();
+  });
   const watch = (root) => {
     if (root.nodeType !== 1) return;
     const groups = root.matches('.msg-group-user') ? [root] : [];
     groups.push(...(root.querySelectorAll?.('.msg-group-user') || []));
     for (const group of groups) {
       sizes.observe(group);
-      for (const type of ['mouseenter', 'mouseleave', 'focusin', 'focusout']) group.addEventListener(type, () => paint(group));
+      for (const child of group.querySelectorAll('.msg-user, .msg-actions')) sizes.observe(child);
     }
   };
   // The cards of the Manage Chats list are made by main.js, outside the transcript: it hands each one over.
   window.shapeBubbleCard = (card) => sizes.observe(card);
   window.bubbleOutline = bubblePath; // the rail's hover preview draws the same outline at its own width
+  const root = document.documentElement;
+  const leave = () => { pointer = null; syncHover(); };
+  document.addEventListener('pointermove', event => {
+    pointer = { x: event.clientX, y: event.clientY };
+    if (!document.hidden && root.classList.contains('is-window-blurred')) root.classList.remove('is-window-blurred');
+    syncHover();
+  }, { passive: true });
+  document.addEventListener('pointerout', event => { if (!event.relatedTarget) leave(); });
+  window.addEventListener('blur', () => { leave(); root.classList.add('is-window-blurred'); });
+  window.addEventListener('focus', () => root.classList.toggle('is-window-blurred', document.hidden));
+  document.addEventListener('visibilitychange', () => { if (document.hidden) leave(); root.classList.toggle('is-window-blurred', document.hidden || !document.hasFocus()); });
   const transcript = document.getElementById('transcript');
   if (!transcript) return;
+  // Chromium can retain :hover after content scrolls beneath a stationary pointer.
+  transcript.addEventListener('scroll', syncHover, { passive: true });
+  window.addEventListener('resize', syncHover, { passive: true });
   watch(transcript);
   new MutationObserver((records) => records.forEach((record) => record.addedNodes.forEach(watch))).observe(transcript, { childList: true, subtree: true });
 })();

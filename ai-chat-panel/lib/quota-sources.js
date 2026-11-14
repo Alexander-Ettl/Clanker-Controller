@@ -1,6 +1,6 @@
 'use strict';
 
-// Where the quota numbers come from: Antigravity's language server (Gemini), Claude Code's own files and
+// Where the quota numbers come from: Antigravity's language server (Gemini and Claude/GPT), Claude Code's own files and
 // usage endpoint (Claude), and Codex's session logs (Codex). Ported from the retired usage status-bar
 // extension, so the panel no longer needs a second extension for its gauges. lib/quota-bridge.js shapes
 // what this returns; nothing here touches `vscode`.
@@ -108,13 +108,26 @@ function parseCodexRateLimitLine(line) {
   };
 }
 
+// Codex rounds down and logs its last reading before the call that runs the window dry, so a spent plan reads
+// 99% used. The turn then ends with a `usage_limit_exceeded` error and no further reading: that error is the
+// proof the fullest window is at 100%, and without it the gauge sits on "1% left" until the reset.
+function spentWindows(usage) {
+  const secondaryFuller = usage.secondary && usage.secondary.used > usage.used;
+  const spend = (window) => ({ ...window, used: 100, remaining: 0 });
+  return secondaryFuller
+    ? { ...usage, secondary: spend(usage.secondary) }
+    : { ...usage, ...spend(usage) };
+}
+
 function findLatestCodexRateLimit(text) {
   const lines = text.split(/\r?\n/);
+  let limitHit = false;
   for (let index = lines.length - 1; index >= 0; index -= 1) {
     const line = lines[index];
+    if (line.includes('"codex_error_info":"usage_limit_exceeded"')) limitHit = true;
     if (!line.includes('rate_limits') && !line.includes('rateLimits')) continue;
     const usage = parseCodexRateLimitLine(line);
-    if (usage) return usage;
+    if (usage) return limitHit ? spentWindows(usage) : usage;
   }
   return null;
 }
@@ -129,13 +142,15 @@ function normalizeAntigravityBucket(bucket) {
   if (!Number.isFinite(resetMs)) return null;
   const bucketId = String(bucket.bucketId ?? bucket.bucket_id ?? '');
   const weekly = bucket.window === 'weekly' || bucketId.includes('weekly');
+  const description = bucket.description ?? null;
+  // An untouched bucket has remainingFraction 1 and no "You have used..." description; its resetTime is just now + window.
   return {
     used: 100 - remaining,
     remaining,
     windowMinutes: weekly ? 7 * 24 * 60 : 300,
-    resetsAt: resetMs / 1000,
+    resetsAt: remainingFraction >= 1 && !description ? null : resetMs / 1000,
     displayName: bucket.displayName ?? bucket.display_name ?? null,
-    description: bucket.description ?? null,
+    description,
   };
 }
 
@@ -167,13 +182,16 @@ function parseAntigravityQuota(data, groupName = 'Gemini Models') {
 
 // ---- Readers (disk and network) ---------------------------------------------------------------------------
 
-async function readGeminiUsage() {
+async function readAntigravityUsage() {
   try {
     const summary = await fetchQuotaSummary();
-    const parsed = summary?.data ? parseAntigravityQuota(summary.data, 'Gemini Models') : null;
-    return parsed && { ...parsed, source: `Antigravity Language Server (127.0.0.1:${summary.port})` };
+    const group = (name) => {
+      const parsed = summary?.data ? parseAntigravityQuota(summary.data, name) : null;
+      return parsed && { ...parsed, source: `Antigravity Language Server (127.0.0.1:${summary.port})` };
+    };
+    return { gemini: group('Gemini Models'), antigravityClaudeGpt: group('Claude and GPT models'), antigravityArgon: group('Gemini 4 Argon') };
   } catch {
-    return null;
+    return {};
   }
 }
 
@@ -321,11 +339,13 @@ function withRefills(usage, nowMs) {
 }
 
 /**
- * Live Gemini (Antigravity), Claude and Codex readings.
- * @param {{ readGemini?: () => Promise<object|null> }} [sources] swap the language-server read (tests).
+ * Live Antigravity model pools, Claude Code and Codex readings.
+ * @param {{ readAntigravity?: () => Promise<object>, readGemini?: () => Promise<object|null> }} [sources] swap the language-server read (tests).
  */
-async function getQuotas({ readGemini = readGeminiUsage } = {}) {
-  const [geminiUsage, claudeState, codexUsage] = await Promise.all([readGemini(), readClaudeState(), readCodexUsage()]);
+async function getQuotas({ readAntigravity = readAntigravityUsage, readGemini } = {}) {
+  const [antigravity, claudeState, codexUsage] = await Promise.all([
+    readGemini ? readGemini().then(gemini => ({ gemini })) : readAntigravity(), readClaudeState(), readCodexUsage(),
+  ]);
   const claudeUsage = await readClaudeUsage(claudeState);
   const now = Date.now();
   // A weekly snapshot from before its reset is simply unknown (the 5h window carries the "waiting" state).
@@ -334,7 +354,9 @@ async function getQuotas({ readGemini = readGeminiUsage } = {}) {
     return claudeWindow(window, now)?.stale ? null : window;
   };
   return {
-    gemini: withRefills(geminiUsage, now),
+    gemini: withRefills(antigravity.gemini, now),
+    antigravityClaudeGpt: withRefills(antigravity.antigravityClaudeGpt, now),
+    antigravityArgon: withRefills(antigravity.antigravityArgon, now),
     claude: claudeWindow(claudeUsage, now),
     claudeWeekly: weekly('seven_day'),
     claudeOpus: weekly('seven_day_opus'),

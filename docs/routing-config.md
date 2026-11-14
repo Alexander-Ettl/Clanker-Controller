@@ -23,6 +23,14 @@ Cloudflare says it does not train on Customer Content or share it with other cus
 
 New installations use generic routing defaults. The one-time migration preserves the existing Opus/build, Sonnet/visual, Sol/backend, and Flash/information preferences as editable assignments; Sol High remains manual-only until changed. Reset clears those model-specific assignments.
 
+## Free-tier rates (verified 2026-10-29)
+
+Clef Flash costs **3,455 input Neurons per million tokens** (previous estimate: 8,182); regular Clef remains 21,818. Neither charges for output tokens. See [Cloudflare pricing](https://developers.cloudflare.com/workers-ai/platform/pricing/). Existing spent counters are retained when rates change; new reservations and reported-token reconciliation use the corrected rate.
+
+Groq GPT-OSS-120B's published free ceiling is **8,000 tokens/minute**, 200,000 tokens/day, 30 requests/minute and 1,000 requests/day ([source](https://console.groq.com/docs/rate-limits)). Saved integer `groq_tpm` values between 8,001 and the formerly accepted 18,000 migrate down to 8,000; lower custom limits stay unchanged. Settings enforce the same ceiling. Cloudflare remains capped locally at 10,000 Neurons/day. Use Workers Free for a provider-enforced zero-spend cap; local estimates cannot track other applications or guarantee zero charges on a paid account. No billing settings are changed by this correction.
+
+The optional recent-chat context classifier ([contract](plans/recent-chat-context-icons.md)) uses Clef Flash with its own 1,000-Neuron daily sub-budget (stops at 8,000 shared) and no paid fallback. It is off until `aiChatPanel.workContextIcons` is set.
+
 ## Validate an AI edit
 
 Run this from the Clanker Controller repository, replacing the path with the config path shown in Settings:

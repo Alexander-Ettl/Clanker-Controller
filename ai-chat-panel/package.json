@@ -84,6 +84,14 @@
                 "title": "Clanker Controller:Dictate (start or stop)"
             },
             {
+                "command": "aiChatPanel.recoverVoiceRecording",
+                "title": "Clanker Controller:Recover Voice Recording"
+            },
+            {
+                "command": "aiChatPanel.openVoiceRecordings",
+                "title": "Clanker Controller:Open Voice Recordings Folder"
+            },
+            {
                 "command": "aiChatPanel.newChatWindow",
                 "title": "Clanker Controller:New Chat Window",
                 "icon": "$(add)"
@@ -167,6 +175,18 @@
                     "default": "24h",
                     "markdownDescription": "Clock format for times in the chat panel and launcher. `auto` follows the editor's display language."
                 },
+                "aiChatPanel.antigravityRing": {
+                    "type": "string",
+                    "enum": ["argon", "gemini", "claude-gpt"],
+                    "enumDescriptions": ["Gemini 4 Argon, its 7-day window as one circle", "Gemini models, 5h and 7d", "Claude and GPT models, 5h and 7d"],
+                    "default": "argon",
+                    "markdownDescription": "Which Antigravity usage the launcher's Gemini circle shows. The hover card always lists every group."
+                },
+                "aiChatPanel.workContextIcons": {
+                    "type": "boolean",
+                    "default": false,
+                    "markdownDescription": "Show what each Recent chat is working on as a small icon, chosen by Cloudflare's Clef Flash. **Turn on only if the Cloudflare account connected in Settings > Routing is on the Workers Free plan.** Clanker cannot check your plan. The feature spends at most 1,000 of Cloudflare's 10,000 free Neurons a day (about 250 classifications) and stops when 8,000 are used; it never falls back to another provider and does nothing without a Cloudflare connection."
+                },
                 "aiChatPanel.livePrices": {
                     "type": "boolean",
                     "default": true,
@@ -204,6 +224,21 @@
                     "default": "",
                     "markdownDescription": "The discovered model id that builds the plan after `/architect`. Empty uses the current Codex default. It starts by itself when the plan is done."
                 },
+                "aiChatPanel.autoContinueOnLimit": {
+                    "type": "boolean",
+                    "default": true,
+                    "markdownDescription": "Automatically schedule Continue in the same chat and model when a task hits its usage limit. It resumes when usage resets, ahead of later prompts. Disable in Chat Settings > General to schedule Continue manually."
+                },
+                "aiChatPanel.autoUpdateClis": {
+                    "type": "boolean",
+                    "default": true,
+                    "markdownDescription": "Silently update outdated connected provider CLIs while they have no active work and you have not typed with them for 30 seconds. Other providers can update while you chat. Turn off to use manual updates. Chat Settings > General has the switch."
+                },
+                "aiChatPanel.sessionWarmup": {
+                    "type": "boolean",
+                    "default": true,
+                    "markdownDescription": "In the background, send \"respond with 1\" to the cheapest model of each connected CLI whenever its 5-hour usage window isn't running and no prompt is queued for its usage reset, so a window is nearly always already under way when you start. It repeats every 5 hours while the IDE is running. On by default, but only for CLIs signed in with a subscription: a CLI billed per token through an API key is never pinged. Chat Settings > General has the switch."
+                },
                 "aiChatPanel.droidSounds": {
                     "type": "boolean",
                     "default": false,
@@ -238,12 +273,12 @@
                 "aiChatPanel.complianceScout": {
                     "type": "boolean",
                     "default": true,
-                    "markdownDescription": "Adds an EU compliance scout to every full loop and runs the free text checks for GDPR and TDDDG indicators (remote fonts, trackers, CDNs, embeds, missing imprint or privacy page, forms without a notice, personal data in logs). Findings are indicators for you to judge, never legal advice, and are never fixed automatically. Set in Chat Settings > Compliance."
+                    "markdownDescription": "Adds an EU compliance scout to every full loop and runs the free text checks for GDPR and TDDDG indicators (remote fonts, trackers, CDNs, embeds, missing imprint or privacy page, forms without a notice, personal data in logs). Findings are indicators for you to judge, never legal advice, and are never fixed automatically. Set in Chat Settings > Loops."
                 },
                 "aiChatPanel.complianceRedact": {
                     "type": "boolean",
                     "default": true,
-                    "markdownDescription": "Before a loop sends project text to a cloud model, replaces real-looking e-mail addresses, IBANs and phone numbers with placeholders. Your own files and the private copy the editors work in are not changed. Set in Chat Settings > Compliance."
+                    "markdownDescription": "Before a loop sends project text to a cloud model, replaces real-looking e-mail addresses, IBANs and phone numbers with placeholders. Your own files and the private copy the editors work in are not changed. Set in Chat Settings > Loops."
                 },
                 "aiChatPanel.investigationsVisualAgent": {
                     "type": "string",
@@ -281,7 +316,7 @@
                 "aiChatPanel.voiceMicDevice": {
                     "type": "string",
                     "default": "",
-                    "markdownDescription": "Microphone for dictation, by its Windows device name. Set it in Chat Settings > Voice. Empty: automatic (the first microphone Windows lists). A device that is not connected falls back to automatic."
+                    "markdownDescription": "Microphone for dictation, by its Windows device name. Set it in Chat Settings > Voice. Empty: automatic (the microphone Windows has as its default input; Settings shows which one). A device that is not connected falls back to automatic."
                 },
                 "aiChatPanel.models": {
                     "type": "object",

@@ -4,12 +4,16 @@ const { EventEmitter } = require('node:events');
 const { spawn, execFile, execFileSync } = require('node:child_process');
 const crypto = require('node:crypto');
 const fs = require('node:fs');
+const os = require('node:os');
 const path = require('node:path');
-const { locate, resolveShim } = require('./binary-locator.js');
+const { locate, resolveShim, headlessEnv } = require('./binary-locator.js');
 const { CodexAppServer } = require('./codex-app-server.js');
 const { AVAILABLE_MODELS, defaultModel } = require('./model-catalog.js');
 const { fromRateLimitEvent } = require('./claude-usage.js');
 const { attachmentPrompt, codexAttachmentInput } = require('./attachments.js');
+const { readQuestion } = require('./agy-question.js');
+const { AgySubagents } = require('./agy-subagents.js');
+const { isLimitNotice } = require('../media/limit-notice.js');
 
 // P17-D: how an older claude CLI / API rejects the Opus 5.5 model id or the
 // --effort flag. Only checked before a turn has produced any output.
@@ -21,6 +25,35 @@ const opusFallback = () => AVAILABLE_MODELS.filter((entry) => entry.agent === 'c
 // that it ends with one upstream_error card instead of raw error text.
 const TRANSIENT_UPSTREAM = /Eligibility check failed|\bUNAVAILABLE\b|code["': ]*503\b|Service Unavailable|overloaded_error/;
 const BACKOFF_MS = [2000, 4000];
+// agy out of quota ("RESOURCE_EXHAUSTED (code 429): Individual quota reached. ... Resets in 4h43m1s.") is not an outage. It becomes the
+// reply's last line, as the other CLIs leave theirs (media/limit-notice.js), so the panel offers Continue and schedules it for the reset.
+const AGY_LIMIT = /RESOURCE_EXHAUSTED[^\r\n]*|Individual quota reached[^\r\n]*/i;
+const agyLimit = (text) => {
+  const hit = AGY_LIMIT.exec(String(text || ''))?.[0].trim().slice(0, 300);
+  return hit ? (/^RESOURCE_EXHAUSTED/i.test(hit) ? hit : `RESOURCE_EXHAUSTED: ${hit}`) : null;
+};
+/** agy writes the failure to its own log even when its stream says nothing: the newest log touched since the turn began. */
+function agyLogLimit(dir, since) {
+  try {
+    const logs = fs.readdirSync(dir).filter((name) => /^cli-.*\.log$/.test(name)).map((name) => ({ file: path.join(dir, name), at: fs.statSync(path.join(dir, name)).mtimeMs }))
+      .filter((log) => log.at >= since - 1000).sort((a, b) => b.at - a.at);
+    for (const { file } of logs) {
+      const size = fs.statSync(file).size, fd = fs.openSync(file, 'r');
+      const tail = Buffer.alloc(Math.min(size, 65536));
+      try { fs.readSync(fd, tail, 0, tail.length, size - tail.length); } finally { fs.closeSync(fd); }
+      const hit = tail.toString('utf8').split(/\r?\n/).reverse().find((line) => /errorreport\.go.*RESOURCE_EXHAUSTED/.test(line));
+      if (hit) return agyLimit(hit);
+    }
+  } catch { /* no log to read: the stream's own words stand */ }
+  return null;
+}
+const CODEX_TRANSIENT = /selected model is at capacity|workspace routing discovery failed/i;
+const CODEX_CONTINUE = 'Continue the unfinished task in this thread after a temporary service failure. First inspect saved work and completed tool results. Preserve completed changes and continue only the remaining steps; do not repeat completed actions or restart the task.';
+
+function transientCodexError(message, info) {
+  const kind = typeof info === 'string' ? info : Object.keys(info || {})[0] || '';
+  return CODEX_TRANSIENT.test(message) || /^(serveroverloaded|internalservererror)$/i.test(kind.replace(/_/g, ''));
+}
 // Nothing at all on stdout/stderr for this long means the CLI is stuck in
 // its own upstream check; treated like a 503 rather than freezing the panel.
 const FIRST_OUTPUT_TIMEOUT_MS = 30000;
@@ -29,8 +62,10 @@ const FIRST_OUTPUT_TIMEOUT_MS = 30000;
 /**
  * P17-R: how full the context window is after this event, or 0 when it says
  * nothing about that. Claude: each assistant message's API usage (prompt +
- * cache + output). agy: result usage, if any. Codex's turn.completed usage is
- * cumulative work across the turn and can exceed the context window many
+ * cache + output). agy: the latest step's usage (one model call: fresh input +
+ * cache reads + output). Its final result usage is the sum over every call of
+ * the turn, so it is not read here (see `contextGrowthOf`). Codex's turn.completed
+ * usage is cumulative work across the turn and can exceed the context window many
  * times over, so ChatRun maintains an explicit context estimate instead.
  */
 /** Claude's subagent-spawning tool: "Task" in older CLIs, "Agent" in newer ones. */
@@ -48,14 +83,24 @@ function toolTarget(input = {}) {
   return s(input.url) || s(input.query) || s(input.skill) || s(input.description) || '';
 }
 
+/** The first path-like parameter of an agy tool call, whatever this build calls it (path, file_path, DirectoryPath, paths: [...]). Content fields never match. */
+function anyPathLike(params = {}) {
+  for (const [key, value] of Object.entries(params || {})) {
+    if (!/^(?:abs(?:olute)?_?)?(?:file_?)?(?:path|paths|name|dir|directory|uri)$|^(?:file|dir|directory|target)_?(?:path|paths|name)?s?$|path$/i.test(key)) continue;
+    const text = typeof value === 'string' ? value : Array.isArray(value) && typeof value[0] === 'string' ? value.join(', ') : '';
+    if (text) return text;
+  }
+  return '';
+}
+
 /** What a Gemini / Antigravity tool call acts on: command, file path, query, task action, etc. */
 function geminiToolTarget(toolName, params = {}) {
   const at = (x) => (typeof x === 'string' ? x : '');
   const name = String(toolName || '').toLowerCase().replace(/[-_]/g, '');
 
   if (name === 'runcommand') return at(params.CommandLine);
-  if (name === 'viewfile') return at(params.AbsolutePath) || at(params.TargetFile);
-  if (name === 'writetofile' || name.includes('replacefilecontent')) return at(params.TargetFile);
+  // view_file/list_dir/write_to_file (older agy) and read_file/write_file/edit_file (newer agy, other parameter names).
+  if (/^(viewfile|listdir|readfile|viewcodeitem|writetofile|writefile|editfile|createfile)$/.test(name) || name.includes('replacefilecontent')) return at(params.AbsolutePath) || at(params.TargetFile) || anyPathLike(params);
   if (name === 'searchweb' || name === 'websearch') return at(params.query) || at(params.Query) || at(params.toolSummary) || at(params.toolAction);
   if (name === 'readurlcontent' || name === 'webfetch' || name === 'readbrowserpage' || name === 'browserpage') return at(params.Url) || at(params.url);
   if (name === 'managetask') {
@@ -72,7 +117,7 @@ function geminiToolTarget(toolName, params = {}) {
   }
   if (name === 'invokesubagent') {
     const subagents = Array.isArray(params.Subagents) ? params.Subagents.map((s) => at(s?.Role) || at(s?.TypeName)).filter(Boolean).join(', ') : '';
-    return subagents || at(params.toolSummary) || at(params.toolAction);
+    return subagents || at(params.Role) || at(params.TypeName) || at(params.toolSummary) || at(params.toolAction); // newer agy builds take one subagent per call, flat
   }
   if (name === 'managesubagents') {
     const ids = Array.isArray(params.ConversationIds) ? params.ConversationIds.join(', ') : '';
@@ -84,17 +129,28 @@ function geminiToolTarget(toolName, params = {}) {
     const qList = Array.isArray(params.questions) ? params.questions.map((q) => at(q?.question)).filter(Boolean).join('; ') : '';
     return qList || at(params.toolSummary) || at(params.toolAction);
   }
-  return at(params.CommandLine) || at(params.TargetFile) || at(params.AbsolutePath) || at(params.query) || at(params.Query) || at(params.Url) || at(params.url) || at(params.toolSummary) || at(params.toolAction) || '';
+  return at(params.CommandLine) || at(params.TargetFile) || at(params.AbsolutePath) || at(params.query) || at(params.Query) || at(params.Url) || at(params.url) || anyPathLike(params) || at(params.toolSummary) || at(params.toolAction) || '';
 }
 
 function contextTokensOf(raw) {
   const n = (x) => (Number.isFinite(x) ? x : 0);
   const u = raw?.type === 'assistant' ? raw.message?.usage
     : raw?.step_update?.usage ? raw.step_update.usage
-    : raw?.event === 'result' ? raw.result?.usage
     : null;
   if (!u) return 0;
-  return n(u.total_tokens) || n(u.input_tokens) + n(u.cache_read_input_tokens) + n(u.cache_creation_input_tokens) + n(u.output_tokens);
+  // agy's input_tokens leaves out cache_read_tokens (its total_tokens adds them back); a resumed chat's history is nearly all cache reads.
+  return n(u.total_tokens) || n(u.input_tokens) + n(u.cache_read_input_tokens) + n(u.cache_read_tokens) + n(u.cache_creation_input_tokens) + n(u.output_tokens);
+}
+
+/**
+ * agy's result usage sums every model call of the turn, so only its new tokens
+ * (fresh input + output, no cache reads) say how far the conversation grew.
+ * Used when no step reported the context size this turn.
+ */
+function contextGrowthOf(raw) {
+  const u = raw?.event === 'result' ? raw.result?.usage : null;
+  const n = (x) => (Number.isFinite(x) ? x : 0);
+  return u ? n(u.input_tokens) + n(u.output_tokens) : 0;
 }
 
 /**
@@ -120,6 +176,16 @@ function tokenCountsOf(raw) {
 }
 const noTokens = () => ({ input: 0, output: 0, lastId: null, detail: { fresh: 0, cachedInput: 0, cacheWrite: 0, output: 0 } });
 const addDetail = (a, b) => ({ fresh: a.fresh + b.fresh, cachedInput: a.cachedInput + b.cachedInput, cacheWrite: a.cacheWrite + b.cacheWrite, output: a.output + b.output });
+
+/** agy's ask_question parameters in the shape the question card renders (Claude's AskUserQuestion): options as {label}, `multiSelect`. */
+function agyQuestions(raw) {
+  return (Array.isArray(raw) ? raw : []).map((q) => ({
+    question: String(q?.question ?? ''),
+    ...(q?.header ? { header: String(q.header) } : {}),
+    multiSelect: Boolean(q?.is_multi_select ?? q?.multiSelect),
+    options: (Array.isArray(q?.options) ? q.options : []).map((o) => typeof o === 'string' ? { label: o } : { label: String(o?.label ?? o?.text ?? ''), ...(o?.description ? { description: String(o.description) } : {}) }).filter((o) => o.label),
+  })).filter((q) => q.question);
+}
 
 function stringAt(value, keys) {
   for (const key of keys) {
@@ -207,8 +273,8 @@ function vendorEvent(raw, agent) {
     if (method === 'thread/started') return params.thread?.id ? { type: 'session', sessionId: at(params.thread.id), agent } : null;
     if (method === 'item/agentMessage/delta') return at(params.delta) ? { type: 'delta', text: at(params.delta), model: agent, agent } : null;
     if (method === 'item/reasoning/summaryTextDelta' || method === 'item/reasoning/textDelta') return at(params.delta) ? { type: 'thought', text: at(params.delta), agent } : null;
-    if (method === 'turn/completed') return { type: 'turn_complete', agent };
-    if (method === 'error') return { type: 'delta', text: `Codex error: ${at(params.error?.message) || at(params.message) || 'request failed'}`, model: agent, agent };
+    if (method === 'turn/completed') return { type: 'turn_complete', agent, ...(params.turn?.id ? { codexTurnId: params.turn.id } : {}) };
+    if (method === 'error') return { type: 'delta', text: `Codex error: ${at(params.error?.message) || at(params.message) || 'request failed'}`, block: true, model: agent, agent };
     if (method === 'item/started' || method === 'item/completed') {
       const item = params.item || {};
       if (item.type === 'agentMessage' || item.type === 'reasoning') return null; // their deltas already streamed
@@ -307,7 +373,7 @@ function vendorEvent(raw, agent) {
       const command = at(item.command).replace(/^"[^"]*powershell\.exe"\s+-Command\s+'([\s\S]*)'$/i, '$1');
       return raw.type === 'item.started'
         ? { type: 'tool_start', toolId: at(item.id), name: 'bash', command, file: '', agent }
-        : { type: 'tool_end', toolId: at(item.id), output: at(item.aggregated_output), error: typeof item.exit_code === 'number' && item.exit_code !== 0, diff: '', agent };
+        : { type: 'tool_end', toolId: at(item.id), output: at(item.aggregated_output), error: typeof item.exit_code === 'number' && item.exit_code !== 0, ...(Number.isInteger(item.exit_code) ? { exitCode: item.exit_code } : {}), diff: '', agent };
     }
     if (item.type === 'file_change' && raw.type === 'item.completed') {
       const files = (item.changes || []).map((c) => `${c?.kind === 'add' ? 'added' : c?.kind === 'delete' ? 'deleted' : 'edited'} ${at(c?.path).split(/[\\/]/).pop()}`).filter(Boolean).join(', ');
@@ -323,6 +389,14 @@ function vendorEvent(raw, agent) {
     if (step.step_type === 'tool') {
       const params = step.tool_info?.parameters || {};
       const toolId = `step-${step.step_index}`;
+      // Headless agy can't wait for an answer: it resolves ask_question itself with "User Skipped" and keeps going.
+      // So the questions become a card, and the engine ends the turn there (see consumeLine); the answer is the next turn.
+      if (at(step.tool_name) === 'ask_question') {
+        if (step.state !== 'ACTIVE') return null;
+        const questions = agyQuestions(params.questions);
+        if (!questions.length) return null;
+        return { type: 'question_required', actionId: step.conversation_id ? `agy-${step.conversation_id}-${step.step_index}` : toolId, deferred: true, questions, agent };
+      }
       const command = geminiToolTarget(step.tool_name, params);
       // view_file/list_dir keep their own names (read cards); only writes are edits.
       const name = step.tool_name === 'run_command' ? 'bash' : /^(write_to_file|(multi_)?replace_file_content)$/.test(at(step.tool_name)) ? 'edit' : at(step.tool_name) || 'tool';
@@ -340,10 +414,11 @@ function vendorEvent(raw, agent) {
     // A resumed conversation can answer only here, with no streamed text_delta steps.
     const response = at(r.response);
     const error = at(r.error);
-    if (r.status === 'ERROR' && !response) return { type: 'delta', text: `Gemini error: ${error || 'turn failed'}`, model: agent, agent };
+    const limit = agyLimit(error);
+    if (r.status === 'ERROR' && !response) return { type: 'delta', text: `Gemini error: ${limit || error || 'turn failed'}`, model: agent, agent };
     // Headless agy can't prompt; anything it wasn't allowed to do is reported here.
     const denied = (r.denied_actions || []).map((d) => at(d.display_name) || at(d.action)).filter(Boolean);
-    return denied.length ? { type: 'notice', text: `Gemini wasn't allowed to: ${denied.join(', ')}. Headless mode can't ask, so these were skipped.`, agent, then: 'turn_complete', response } : { type: 'turn_complete', agent, response };
+    return denied.length ? { type: 'notice', text: `Gemini wasn't allowed to: ${denied.join(', ')}. Headless mode can't ask, so these were skipped.`, agent, then: 'turn_complete', response } : { type: 'turn_complete', agent, response, ...(limit ? { limit } : {}) };
   }
   return undefined;
 }
@@ -397,9 +472,16 @@ class StreamEngine extends EventEmitter {
    * question cards to be answered. The scheduler's unattended engine keeps
    * it off (auto mode, never blocks on a click).
    */
-  constructor({ cwd, models = {}, interactive = false, permissionMode = null, codexServerFactory = (options) => new CodexAppServer(options) } = {}) {
+  constructor({ cwd, chatId = null, models = {}, interactive = false, permissionMode = null, codexServerFactory = (options) => new CodexAppServer(options), agyQuestionReader = readQuestion, agyLogDir = path.join(os.homedir(), '.gemini', 'antigravity-cli', 'log') } = {}) {
     super();
+    this.agyLogDir = agyLogDir;
+    this.agyLimit = null; // the quota failure agy reported on stderr or in its log this turn
+    this.limitShown = false; // ... and whether the reply already says so
     this.cwd = cwd || process.cwd();
+    this.bridgeAgents = new (require('./bridge-agents').BridgeAgents)(chatId, event => this.emit('event', event));
+    this.chatEnv = chatId ? { CLANKER_CHAT_ID: chatId } : {};
+    this.bridgeTimer = setInterval(() => this.bridgeAgents.poll(this.cwd), 2000);
+    this.bridgeTimer.unref();
     this.models = models;
     this.interactive = interactive;
     this.permissionMode = permissionMode; // 'ask' | 'auto' | 'fullAccess' | null
@@ -409,10 +491,14 @@ class StreamEngine extends EventEmitter {
     this.expectEcho = null; // the last panel message sent to the live process, until Claude echoes it
     this.approvals = new Map(); // actionId -> { child, input, suggestions, kind }
     this.agyEdits = new Map(); // toolId -> { event, file, before }: a Gemini edit waiting for its diff
+    this.agyQuestionReader = agyQuestionReader;
     this.codexBases = new Map(); // repo root -> snapshot, for Codex's per-edit diffs
     this.turnBases = null; // repo root -> snapshot as the turn began, and when (ms): what Undo turn restores
     this.tokens = noTokens();
     this.subagentIds = new Set(); // Agent/Task tool_use ids still running (background ones outlive their call)
+    this.backgroundCommands = new Map(); // tool_use id -> CLI task id (Bash/Monitor jobs also resume the conversation)
+    this.agySubagentIds = new Set(); // viewer ids of the agy subagents already launched in this engine
+    this.agySubagents = new AgySubagents({ emit: (event) => this.emit('event', { ...event, agent: 'gemini' }), describe: (name, params) => geminiToolTarget(name, params) });
     this.codexServerFactory = codexServerFactory;
     this.codexServer = null;
     this.codexThreadId = null;
@@ -498,7 +584,7 @@ class StreamEngine extends EventEmitter {
 
   getCodexServer() {
     if (this.codexServer) return this.codexServer;
-    const server = this.codexServerFactory({ cwd: this.cwd });
+    const server = this.codexServerFactory({ cwd: this.cwd, env: { ...process.env, ...this.chatEnv } });
     server.on('notification', (message) => this.handleCodexNotification(message));
     server.on('request', (message) => this.handleCodexRequest(message));
     server.on('diagnostic', (text) => this.emit('diagnostic', { agent: 'codex', text, timestamp: new Date().toISOString() }));
@@ -513,15 +599,21 @@ class StreamEngine extends EventEmitter {
   }
 
   resetCodexTurn(turn) {
+    const recovering = turn.attempt > 0 && this.turn?.agent === 'codex';
     this.turn = turn;
-    this.tokens = noTokens();
+    if (!recovering) this.tokens = noTokens();
     this.blockCount = 0;
-    this.lastTextKey = null;
-    this.hadText = false;
+    if (!recovering) this.hadText = false;
+    this.lastTextKey = this.hadText ? 'retry' : null;
     this.sawOutput = false;
+    this.agyLimit = null;
+    this.limitShown = false;
+    this.agyTurnAt = Date.now();
     this.codexTurnId = null;
-    this.codexTurnBase = null; // the thread's token totals as this turn found them (see thread/tokenUsage/updated)
-    this.codexPeakPrompt = 0; // the largest single request's prompt this turn: what decides long-context pricing
+    if (!recovering) this.codexTurnBase = null; // preserve the thread baseline across recovery attempts
+    this.codexError = '';
+    this.codexErrorInfo = null;
+    if (!recovering) this.codexPeakPrompt = 0; // the largest prompt across all attempts decides pricing
     this.codexActive = true;
     this.codexAcceptEvents = !this.codexInterrupting;
     this.approvals.clear();
@@ -551,11 +643,11 @@ class StreamEngine extends EventEmitter {
     return this.codexThreadId;
   }
 
-  startCodex({ prompt, attachments = [], model, effort, resume = null, freshPrompt = null, codexCommand = null, attempt = 0, permissionMode = null, compact = false, autoCompact = false }) {
+  startCodex({ prompt, attachments = [], model, effort, resume = null, freshPrompt = null, codexCommand = null, attempt = 0, permissionMode = null, compact = false, autoCompact = false, writerWaiting = false }) {
     this.cancel();
     const interrupting = this.codexInterrupting;
     const generation = ++this.codexGeneration;
-    const turn = { agent: 'codex', prompt, attachments, model, effort, resume, freshPrompt, codexCommand, attempt, permissionMode, compact: Boolean(compact), autoCompact: Boolean(autoCompact) };
+    const turn = { agent: 'codex', prompt, attachments, model, effort, resume, freshPrompt, codexCommand, attempt, permissionMode, compact: Boolean(compact), autoCompact: Boolean(autoCompact), writerWaiting };
     this.resetCodexTurn(turn);
     const run = async () => {
       const server = this.getCodexServer();
@@ -567,7 +659,7 @@ class StreamEngine extends EventEmitter {
         if (generation !== this.codexGeneration || !this.codexActive) return;
         try { await this.ensureCodexThread(server, { resume, model, permissionMode }); }
         catch (error) {
-          if (!resume) throw error;
+          if (!resume || !/missing session/i.test(error.message) && !RESUME_FAILED.test(error.message)) throw error;
           this.codexThreadId = null;
           await this.ensureCodexThread(server, { resume: null, model, permissionMode });
           if (freshPrompt) turn.prompt = freshPrompt;
@@ -595,9 +687,24 @@ class StreamEngine extends EventEmitter {
             return;
           }
           this.codexTurnId = result?.turn?.id || this.codexTurnId;
+          // Codex can fold new input into the interrupted native turn. An
+          // accepted start makes that returned id current again.
+          if (this.codexTurnId) this.codexRetiredTurns.delete(this.codexTurnId);
         }
       } catch (error) {
         if (generation !== this.codexGeneration || !this.codexActive) return;
+        if (/already has an active writer/i.test(error.message) && !this.sawOutput && !this.codexTurnId) {
+          // A different app can hold the writer lease even when its last answer is complete. No input was accepted here.
+          this.codexActive = false;
+          this.codexAcceptEvents = false;
+          this.codexThreadId = null;
+          if (!writerWaiting) this.emit('event', { type: 'notice', agent: 'codex', text: 'Waiting for another Codex app to release this chat. Close this conversation in ChatGPT, or quit ChatGPT if it stays locked. Your prompt is kept; Clanker retries automatically every 5 seconds. Stop cancels the waiting send.' });
+          this.retryTimer = setTimeout(() => {
+            this.retryTimer = null;
+            if (generation === this.codexGeneration) this.startCodex({ ...turn, writerWaiting: true });
+          }, 5000);
+          return;
+        }
         if (error?.code === 'CODEX_BINARY_MISSING') {
           const { checked } = locate('codex');
           this.emit('event', { type: 'binary_missing', agent: 'codex', checked });
@@ -696,9 +803,18 @@ class StreamEngine extends EventEmitter {
       return;
     }
     if (!this.codexActive && method !== 'thread/started') return;
+    // Codex reports the failure both here and on turn/completed. Wait for
+    // the terminal event; reconnect errors can also recover within the turn.
+    if (method === 'error') {
+      this.codexError = params.error?.message || params.message || 'request failed';
+      this.codexErrorInfo = params.error?.codexErrorInfo || null;
+      if (params.willRetry) this.emit('event', { type: 'notice', agent: 'codex', text: String(this.codexError) });
+      return;
+    }
     if (method === 'turn/completed' && params.turn?.status === 'failed') {
-      const failure = params.turn?.error?.message || params.turn?.error || 'turn failed';
-      this.consumeLine(JSON.stringify({ __appServer: true, method: 'error', params: { message: String(failure) } }), 'codex');
+      const failure = params.turn?.error?.message || (typeof params.turn?.error === 'string' ? params.turn.error : '') || this.codexError || 'turn failed';
+      this.finishCodexTurn(String(failure), params.turn?.error?.codexErrorInfo || this.codexErrorInfo);
+      return;
     }
     if (method === 'turn/completed') {
       this.retireCodexTurn(turnId || this.codexTurnId);
@@ -727,14 +843,27 @@ class StreamEngine extends EventEmitter {
     this.consumeLine(JSON.stringify({ __appServer: true, method: request.method, params: request.params || {}, request: { id: request.id, method: request.method } }), 'codex');
   }
 
-  finishCodexTurn(error = '') {
+  finishCodexTurn(error = '', info = null) {
     if (!this.codexActive) return;
+    if (error && !this.turn?.codexCommand && transientCodexError(error, info)) {
+      this.retireCodexTurn(this.codexTurnId);
+      // This attempt has ended: do not interrupt it again or accept late events.
+      this.codexActive = false;
+      this.codexAcceptEvents = false;
+      this.codexTurnId = null;
+      if (this.sawOutput && this.codexThreadId) {
+        this.turn = { ...this.turn, prompt: CODEX_CONTINUE, attachments: [], resume: this.codexThreadId };
+      }
+      this.failUpstream('codex', error);
+      return;
+    }
     if (error) this.consumeLine(JSON.stringify({ __appServer: true, method: 'error', params: { message: error } }), 'codex');
+    const completedTurnId = this.codexTurnId;
     this.retireCodexTurn(this.codexTurnId);
     this.codexActive = false;
     this.codexAcceptEvents = false;
     this.codexTurnId = null;
-    this.consumeLine(JSON.stringify({ __appServer: true, method: 'turn/completed', params: {} }), 'codex');
+    this.consumeLine(JSON.stringify({ __appServer: true, method: 'turn/completed', params: { turn: { id: completedTurnId } } }), 'codex');
   }
   // ---------- Live mode: Claude Code Remote Control, headless ----------
   // Normally every turn is its own `claude -p` process. With Remote Control on, the chat
@@ -803,6 +932,7 @@ class StreamEngine extends EventEmitter {
     this.cancel();
     this.turn = live ? null : { agent, prompt, attachments, model, effort, resume, freshPrompt, codexCommand, codexCommandArgs, attempt, permissionMode, compact: Boolean(compact), autoCompact: Boolean(autoCompact) };
     this.tokens = noTokens(); // P17-V: this turn's token draw
+    this.contextSeen = false; // set once a step reports the context size
     const spec = this.commandFor(agent, prompt, attachments, { model, effort, resume, codexCommand, codexCommandArgs, permissionMode });
     if (live && spec.command) spec.args.push('--replay-user-messages');
     // A session that no longer exists (cleared, or made on another machine)
@@ -835,6 +965,8 @@ class StreamEngine extends EventEmitter {
       shell: useShell,
       env: {
         ...process.env,
+        ...headlessEnv(spec.command),
+        ...this.chatEnv,
         CLAUDE_CONFIG_DIR: process.env.CLAUDE_CONFIG_DIR,
         ...(isCompacting ? {
           NO_CHIME: '1',
@@ -854,7 +986,11 @@ class StreamEngine extends EventEmitter {
     this.hadText = false;
     let stdoutBuffer = '';
     let stderrBuffer = '';
-    const diagnostics = [];
+    let agyInput = Promise.resolve();
+    let lastDiagnostic = '';
+    const rememberDiagnostic = line => {
+      if (line.trim() && !/^WARNING:/i.test(line.trim())) lastDiagnostic = line.trim().slice(-16384);
+    };
     // A live process says nothing until it gets a message, so only per-turn processes have a first-output deadline.
     const watchdog = live ? null : setTimeout(() => { if (this.child === child) this.failUpstream(agent, `No response from ${agent} after ${FIRST_OUTPUT_TIMEOUT_MS / 1000}s.`); }, FIRST_OUTPUT_TIMEOUT_MS);
     // A live process keeps talking between our turns (phone prompts), so it's always heard.
@@ -867,7 +1003,11 @@ class StreamEngine extends EventEmitter {
       stdoutBuffer = lines.pop();
       for (const line of lines) {
         if (!current()) return;
-        this.consumeLine(line, agent);
+        if (agent === 'gemini') {
+          // Await hidden question recovery before accepting any later text/result
+          // from the same chunk. AGY can otherwise finish while the DB is read.
+          agyInput = agyInput.then(() => current() && this.consumeAgyLine(line, child));
+        } else this.consumeLine(line, agent);
       }
     };
     const consumeStderr = (chunk) => {
@@ -878,15 +1018,22 @@ class StreamEngine extends EventEmitter {
       stderrBuffer = lines.pop();
       for (const line of lines) {
         if (!current()) return;
-        diagnostics.push(line);
+        rememberDiagnostic(line);
         this.consumeStderrLine(line, agent);
       }
     };
     child.stdout.on('data', consumeStdout);
     child.stderr.on('data', consumeStderr);
     child.on('error', (error) => { child.reportedError = true; this.emit('event', { type: 'delta', text: `Unable to start ${agent}: ${error.message}`, model: agent, agent }); });
-    child.on('close', (code) => {
+    child.on('close', async (code) => {
       clearTimeout(watchdog);
+      if (agent === 'gemini') {
+        await agyInput;
+        if (current() && stdoutBuffer.trim()) {
+          await this.consumeAgyLine(stdoutBuffer, child);
+          stdoutBuffer = '';
+        }
+      }
       if (this.live === child) {
         this.live = null;
         for (const pending of this.pendingControls.values()) pending.reject(new Error('Claude exited'));
@@ -896,12 +1043,14 @@ class StreamEngine extends EventEmitter {
       if (this.lingering === child) this.lingering = null;
       if (this.child !== child) return;
       if (stdoutBuffer.trim()) this.consumeLine(stdoutBuffer, agent);
-      if (stderrBuffer.trim()) { diagnostics.push(stderrBuffer); this.consumeStderrLine(stderrBuffer, agent); }
+      if (stderrBuffer.trim()) { rememberDiagnostic(stderrBuffer); this.consumeStderrLine(stderrBuffer, agent); }
       // Subagents run inside this process: whatever it didn't report finished ended with it.
       for (const id of this.subagentIds) this.emit('event', { type: 'subagent_status', id, status: code ? 'failed' : 'ended', agent });
       this.subagentIds.clear();
+      this.agySubagents.endAll(code ? 'failed' : 'ended');
+      this.backgroundCommands.clear();
       if (code && !child.turnCompleted && !this.sawOutput && !child.reportedError) {
-        const detail = diagnostics.findLast((line) => line.trim() && !/^WARNING:/i.test(line.trim()))?.trim();
+        const detail = lastDiagnostic;
         this.emit('event', { type: 'delta', text: detail || `${agent} exited with code ${code}.`, model: agent, agent });
       }
       this.child = null;
@@ -952,6 +1101,9 @@ class StreamEngine extends EventEmitter {
     this.lastTextKey = null;
     this.hadText = false;
     this.sawOutput = false;
+    this.agyLimit = null;
+    this.limitShown = false;
+    this.agyTurnAt = Date.now();
     this.resumeRetry = null;
     this.fallback = null;
     if (this.child) this.child.turnCompleted = false; // the live or kept-open process this turn runs in
@@ -985,9 +1137,37 @@ class StreamEngine extends EventEmitter {
       }
     }
 
+    if (agent === 'gemini' && !this.agyLimit) this.agyLimit = agyLimit(line);
+
     // 2. Isolate diagnostics: Stderr chatter NEVER emits a 'delta' event.
     // Route to diagnostic event for internal extension/terminal telemetry.
     this.emit('diagnostic', { agent, text: line, timestamp: new Date().toISOString() });
+  }
+
+  async consumeAgyLine(line, child) {
+    let raw;
+    try { raw = JSON.parse(line); } catch { /* ordinary diagnostics */ }
+    if (raw?.event === 'init') child.agyConversationId = raw.conversation_id;
+    const step = raw?.step_update;
+    if (step?.step_type === 'unknown' && step.state === 'DONE') {
+      let questions;
+      let failure;
+      for (let attempt = 0; attempt < 8 && this.child === child; attempt++) {
+        try {
+          questions = await this.agyQuestionReader(step.conversation_id || child.agyConversationId, step.step_index);
+          if (questions !== undefined) { failure = null; break; }
+        } catch (error) { failure = error; }
+        // The trajectory write can lag behind the streamed step update.
+        await new Promise((resolve) => setTimeout(resolve, 50));
+      }
+      if (this.child !== child) return;
+      if (failure || questions === undefined) this.emit('event', { type: 'notice', agent: 'gemini', text: `Could not read AGY's hidden step: ${failure?.message || 'the local trajectory was not saved in time'}. A question may have been skipped by AGY.` });
+      if (agyQuestions(questions).length) {
+        this.consumeLine(JSON.stringify({ event: 'step_update', step_update: { ...step, step_type: 'tool', state: 'ACTIVE', tool_name: 'ask_question', tool_info: { parameters: { questions } } } }), 'gemini');
+        return;
+      }
+    }
+    if (this.child === child) this.consumeLine(line, 'gemini');
   }
 
   consumeLine(line, agent) {
@@ -1026,7 +1206,8 @@ class StreamEngine extends EventEmitter {
     if (this.consumeSubagentLine(raw, agent)) return;
     if (raw !== undefined) {
       const contextTokens = contextTokensOf(raw);
-      if (contextTokens) this.emit('event', { type: 'usage', agent, contextTokens });
+      if (contextTokens) { this.contextSeen = true; this.emit('event', { type: 'usage', agent, contextTokens }); }
+      else if (!this.contextSeen && contextGrowthOf(raw)) this.emit('event', { type: 'usage', agent, contextGrowth: contextGrowthOf(raw) });
       const counts = tokenCountsOf(raw);
       if (counts && (counts.final || counts.id === null || counts.id !== this.tokens.lastId)) {
         this.tokens = counts.final
@@ -1054,10 +1235,10 @@ class StreamEngine extends EventEmitter {
     }
     // A kept-open process can start a turn by itself: Claude answers its background agents'
     // reports as they arrive. That output opens a turn of its own, like a prompt from the phone.
-    if (this.child && this.child === this.lingering && this.child.turnCompleted && SELF_STARTED.has(event.type)) {
+    if (agent === 'claude' && this.child?.turnCompleted && SELF_STARTED.has(event.type)) {
       this.turn = { agent, prompt: '', attachments: [], attempt: 0 };
       this.beginLiveTurn();
-      this.emit('event', { type: 'remote_prompt', text: 'Background agents reported back', agent });
+      this.emit('event', { type: 'remote_prompt', text: 'Background work continued', agent });
     }
     if (event.type === 'delta' || event.type === 'tool_start' || event.type === 'thought') this.sawOutput = true;
     if (event.type === 'turn_complete' && 'response' in event) {
@@ -1070,6 +1251,16 @@ class StreamEngine extends EventEmitter {
         this.emit('event', { type: 'delta', text: response, model: agent, agent });
       }
     }
+    if (event.type === 'turn_complete' && agent === 'gemini' && !this.child?.turnCompleted) {
+      const limit = event.limit || this.agyLimit || (this.limitShown || !this.agyTurnAt ? null : agyLogLimit(this.agyLogDir, this.agyTurnAt));
+      if (limit && !this.limitShown) {
+        this.emit('event', { type: 'delta', text: `${this.hadText ? '\n\n' : ''}Gemini error: ${limit}`, model: agent, agent });
+        this.hadText = true;
+        this.sawOutput = true;
+        this.limitShown = true;
+      }
+    }
+    delete event.limit;
     if (event.type === 'turn_complete' && event.error) {
       const errorText = event.error;
       delete event.error;
@@ -1083,6 +1274,10 @@ class StreamEngine extends EventEmitter {
     }
     if (event.type === 'turn_complete') {
       if (this.child?.turnCompleted) return; // the CLI's own result event already ended the turn
+      // Claude's result can be a waiting update: background shell jobs will send their results and resume the model.
+      // Keep the same reply, thinking state and stdin until that continuation actually finishes.
+      if (agent === 'claude' && this.backgroundCommands.size && !raw?.is_error && !this.limitShown) return;
+      if (agent === 'claude' && (raw?.is_error || this.limitShown)) this.backgroundCommands.clear();
       // Claude Code's cost figure is a running total for its process (one process lives across a chat's turns), so this
       // turn's share is the rise since the last one; a lower figure means a new process that started from zero.
       if (Number.isFinite(event.costUsd) && this.child) {
@@ -1121,6 +1316,15 @@ class StreamEngine extends EventEmitter {
     if (event.type === 'tool_start' || event.type === 'approval_required') {
       for (const key of ['file', 'command']) if (event[key]) event[key] = this.relative(event[key]);
     }
+    if (event.type === 'question_required' && event.deferred) {
+      if (!this.interactive) return; // Unattended AGY runs keep their native skip-and-continue behavior.
+      const child = this.child;
+      this.emit('event', event);
+      // The reply would otherwise go on as if the user had skipped it. Closing the turn here makes the answer the next one.
+      this.consumeLine(JSON.stringify({ event: 'result', result: { status: 'SUCCESS', response: '' } }), agent);
+      if (child && this.child === child) { killTree(child); this.child = null; }
+      return;
+    }
     if (event.type === 'approval_required' || event.type === 'question_required') {
       this.approvals.set(event.actionId, { child: this.child, input: event.input, suggestions: event.suggestions || [], appServer: event.appServer || null, questions: event.questions || [] });
       delete event.input;
@@ -1130,6 +1334,8 @@ class StreamEngine extends EventEmitter {
     if (event.type === 'approval_cancelled') this.approvals.delete(event.actionId);
     // Whole-message text from separate blocks gets a paragraph break between them.
     if (event.type === 'delta') {
+      if (agent === 'claude' && isLimitNotice(event.text)) this.limitShown = true;
+      if (agent === 'gemini' && /^Gemini error: RESOURCE_EXHAUSTED/i.test(event.text || '')) this.limitShown = true;
       if (this.hadText && /^Gemini error: The stream was interrupted/i.test(event.text || '')) return;
       const key = event.block ? `block-${++this.blockCount}` : event.step != null ? `step-${event.step}` : 'stream';
       if (this.lastTextKey && this.lastTextKey !== key && this.hadText) event.text = `\n\n${event.text}`;
@@ -1159,6 +1365,7 @@ class StreamEngine extends EventEmitter {
    */
   consumeSubagentLine(raw, agent) {
     if (!raw || typeof raw !== 'object') return false;
+    if (agent === 'gemini' && raw.event === 'step_update' && raw.step_update?.tool_name === 'invoke_subagent') this.consumeAgySubagentStep(raw.step_update);
     const parentId = typeof raw.parent_tool_use_id === 'string' ? raw.parent_tool_use_id : null;
     if (parentId && (raw.type === 'assistant' || raw.type === 'user')) {
       let event = null;
@@ -1187,6 +1394,11 @@ class StreamEngine extends EventEmitter {
     }
     if (raw.type === 'user') {
       for (const block of blocks) {
+        if (agent === 'claude' && block?.type === 'tool_result') {
+          const output = Array.isArray(block.content) ? block.content.map((c) => at(c?.text)).join('') : at(block.content);
+          const task = /Command running in background with ID:\s*([\w-]+)/i.exec(output);
+          if (task) this.backgroundCommands.set(block.tool_use_id, task[1]);
+        }
         if (block?.type !== 'tool_result' || !this.subagentIds.has(block.tool_use_id)) continue;
         const output = Array.isArray(block.content) ? block.content.map((c) => at(c?.text)).join('') : at(block.content);
         // A background agent's call returns at once with a launch note; it keeps working after that.
@@ -1199,6 +1411,12 @@ class StreamEngine extends EventEmitter {
     if (raw.type === 'system' && /^task_/.test(String(raw.subtype || '')) && (raw.tool_use_id || raw.task_id)) {
       const id = at(raw.tool_use_id || raw.task_id);
       const status = at(raw.status) || (raw.subtype === 'task_started' ? 'running' : '');
+      const commandId = this.backgroundCommands.has(id) ? id : [...this.backgroundCommands].find(([, taskId]) => taskId === raw.task_id)?.[0];
+      if (commandId || raw.task_type === 'local_bash') {
+        if (SETTLED_TASK.has(status)) this.backgroundCommands.delete(commandId || id);
+        else this.backgroundCommands.set(commandId || id, at(raw.task_id));
+        return true; // the model's response follows this notification, so don't close stdin here
+      }
       this.emit('event', { type: 'subagent_status', id, agent, status, summary: at(raw.summary) || at(raw.description) });
       if (SETTLED_TASK.has(status)) { this.subagentIds.delete(id); this.releaseLingering(); }
       return true;
@@ -1206,8 +1424,22 @@ class StreamEngine extends EventEmitter {
     return false;
   }
 
+  /** agy's `invoke_subagent` step: a robot-chip entry that follows the subagent's own transcript (see agy-subagents.js). The tool card stays in the reply as before. */
+  consumeAgySubagentStep(step) {
+    const parentId = step.conversation_id || this.child?.agyConversationId || '';
+    const id = `agy-${parentId}-${step.step_index}`;
+    const params = step.tool_info?.parameters || {};
+    if (!this.agySubagentIds.has(id)) {
+      if (!params.Prompt && !params.Role) return; // a step that names nothing to follow
+      this.agySubagentIds.add(id);
+      this.agySubagents.launch({ id, parentId, role: at(params.Role), typeName: at(params.TypeName), prompt: at(params.Prompt) });
+    }
+    if (step.state === 'ERROR') this.agySubagents.failed(id, at(step.tool_info?.error?.message));
+    else if (step.state !== 'ACTIVE') this.agySubagents.launched(id, /conversationId[\\"]*\s*:\s*[\\"]*([0-9a-f-]{36})/i.exec(JSON.stringify(step))?.[1]);
+  }
+
   /** The turn is over but Claude's background agents are still working in the kept-open process. */
-  get hasBackgroundAgents() { return Boolean(this.lingering) && this.subagentIds.size > 0; }
+  get hasBackgroundAgents() { return this.bridgeAgents.active || (Boolean(this.lingering) && this.subagentIds.size > 0); }
 
   /** The kept-open process closes once its turn is over and no background agent is left in it. */
   releaseLingering() {
@@ -1294,11 +1526,13 @@ class StreamEngine extends EventEmitter {
       return;
     }
     this.emit('event', { type: 'upstream_error', agent, detail: String(detail).trim().slice(0, 400) });
-    this.emit('event', { type: 'turn_complete', agent });
+    if (agent === 'codex') this.consumeLine(JSON.stringify({ __appServer: true, method: 'turn/completed', params: {} }), agent);
+    else this.emit('event', { type: 'turn_complete', agent });
   }
 
   cancel() {
     this.groqTurn = null;
+    this.backgroundCommands.clear();
     clearTimeout(this.retryTimer);
     this.retryTimer = null;
     this.approvals.clear();
@@ -1317,12 +1551,14 @@ class StreamEngine extends EventEmitter {
       }
     }
     if (this.child && this.child === this.live) return; // the Remote Control process outlives turns
+    if (this.child) this.agySubagents.endAll('stopped'); // agy's subagents run inside the process that is about to be killed
     killTree(this.child);
     this.child = null;
   }
 
   /** Extension shutdown: the live process goes too. */
   dispose() {
+    clearInterval(this.bridgeTimer);
     this.cancel();
     if (this.live) killTree(this.live);
     this.live = null;
@@ -1381,4 +1617,4 @@ function killTree(child, execFileImpl = execFile) {
   } else child.kill();
 }
 
-module.exports = { StreamEngine, normalizeEvent, killTree, contextTokensOf, toolTarget, geminiToolTarget };
+module.exports = { StreamEngine, normalizeEvent, killTree, contextTokensOf, contextGrowthOf, toolTarget, geminiToolTarget };

@@ -96,6 +96,8 @@ function shapeQuotas(raw) {
   const claudeOpus = windowOf(quotas.claudeOpus, '7d');
   const codex = windowOf(quotas.codex, '5h', 'codex');
   const gemini = windowOf(quotas.gemini, '5h', 'gemini');
+  const antigravityClaudeGpt = windowOf(quotas.antigravityClaudeGpt, quotas.antigravityClaudeGpt?.windowMinutes === 10080 ? '7d' : '5h');
+  const antigravityArgon = windowOf(quotas.antigravityArgon, quotas.antigravityArgon?.windowMinutes === 10080 ? '7d' : '5h');
   return {
     claude: claude && { ...claude, secondary: claudeWeekly },
     claudeWeekly,
@@ -103,6 +105,8 @@ function shapeQuotas(raw) {
     opus: claude && { ...claude, secondary: claudeOpus || claudeWeekly },
     codex: codex && { ...codex, secondary: windowOf(quotas.codex?.secondary, '7d') },
     gemini: gemini && { ...gemini, secondary: windowOf(quotas.gemini?.secondary, '7d') },
+    antigravityClaudeGpt: antigravityClaudeGpt && { ...antigravityClaudeGpt, secondary: windowOf(quotas.antigravityClaudeGpt?.secondary, '7d') },
+    antigravityArgon: antigravityArgon && { ...antigravityArgon, secondary: windowOf(quotas.antigravityArgon?.secondary, '7d') },
   };
 }
 

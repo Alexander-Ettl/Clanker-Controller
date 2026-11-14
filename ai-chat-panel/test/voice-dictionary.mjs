@@ -85,6 +85,7 @@ try {
   await page.getByRole('button', { name: 'Cancel adding SimTalk to voice dictionary' }).waitFor();
   await page.clock.runFor(9000);
   await page.getByRole('button', { name: 'Cancel adding SimTalk to voice dictionary' }).click();
+  await page.mouse.move(5, 5); // a pointer parked over the next notice would hold its countdown
   await page.clock.runFor(1100);
   assert.equal((await latest('voiceDictionarySave')).term, 'Tecnomatix', 'late cancellation prevents saving');
   assert.deepEqual(listEnabledTerms(paths), ['Tecnomatix']);
@@ -142,8 +143,33 @@ try {
   await input.fill('a fresh typed prompt');
   await page.waitForTimeout(800);
   assert.equal(await page.evaluate(() => window.sent.filter(message => message.type === 'voiceDraftEdited').length), count, 'new chat does not learn from the previous chat');
+  const saveCount = () => page.evaluate(() => window.sent.filter(message => message.type === 'voiceDictionarySave').length);
+  const countdown = page.locator('.voice-dictionary-countdown');
+  await page.mouse.move(5, 5);
+  await input.fill('');
+  await post({ type: 'voiceResult', output: { cleanedPrompt: 'run the simtalk method' } });
+  await input.fill('run the SimTalk method');
+  await suggestions();
+  await page.getByRole('button', { name: 'Cancel adding SimTalk to voice dictionary' }).waitFor();
+  await page.clock.runFor(4000);
+  await input.fill('run the SimTalk method now');
+  await suggestions();
+  const secondsLeft = Number.parseInt(await countdown.textContent(), 10);
+  assert.ok(secondsLeft <= 6, `typing more must not restart the countdown (shows ${secondsLeft}s)`);
+  assert.equal(await page.locator('.voice-dictionary-row').count(), 1, 'one notice survives the re-check');
+  const before = await saveCount();
+  await page.locator('.voice-dictionary-row').hover();
+  await page.clock.runFor(9000);
+  assert.equal(await saveCount(), before, 'hovering the notice holds the countdown');
+  assert.equal(await countdown.textContent(), 'Paused');
+  await page.waitForTimeout(300);
+  await page.screenshot({ path: path.join(os.tmpdir(), 'clanker-voice-dictionary-held.png') });
+  await page.mouse.move(5, 5);
+  await page.clock.runFor(secondsLeft * 1000 + 500);
+  assert.equal(await saveCount(), before + 1, 'leaving the notice lets the countdown finish and save');
+  assert.equal((await latest('voiceDictionarySave')).term, 'SimTalk');
   assert.deepEqual(errors, []);
-  console.log('Voice dictionary: ten-second countdown, late trash cancellation, hidden-window pause, persistence, retry, typed prefixes, chat switching, stale responses and narrow layout passed.');
+  console.log('Voice dictionary: ten-second countdown, late trash cancellation, hidden-window pause, hover hold, no restart on typing, persistence, retry, typed prefixes, chat switching, stale responses and narrow layout passed.');
 } finally {
   await browser.close();
   fs.rmSync(temporary, { recursive: true, force: true });

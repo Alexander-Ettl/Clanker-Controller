@@ -42,20 +42,42 @@ try {
   const draftInput = page.locator('#promptInput');
   await send({ type: 'chatLoaded', chat: { id: 'draft-chat', messages: [], draft: 'Stored unsent text' } });
   assert.equal(await draftInput.inputValue(), 'Stored unsent text');
+  assert.equal(await page.evaluate(() => window.sent.some(item => item.type === 'saveDraft' && item.userInput)), false, 'restoring a draft is not a user input event');
+  await page.evaluate(() => window.dispatchEvent(new Event('resize')));
+  assert.equal(await page.evaluate(() => window.sent.some(item => item.type === 'saveDraft' && item.userInput)), false, 'layout changes are not user input');
   await draftInput.fill('Edited unsent text');
-  assert.deepEqual(await page.evaluate(() => window.sent.filter(item => item.type === 'saveDraft').at(-1)), { type: 'saveDraft', chatId: 'draft-chat', text: 'Edited unsent text' });
+  assert.deepEqual(await page.evaluate(() => window.sent.filter(item => item.type === 'saveDraft').at(-1)), { type: 'saveDraft', chatId: 'draft-chat', text: 'Edited unsent text', attachments: [], userInput: true });
   await send({ type: 'chatLoaded', chat: { id: 'other-chat', messages: [], draft: 'Other stored text' } });
-  assert.deepEqual(await page.evaluate(() => window.sent.filter(item => item.type === 'saveDraft').at(-1)), { type: 'saveDraft', chatId: 'other-chat', text: 'Other stored text' });
+  assert.deepEqual(await page.evaluate(() => window.sent.filter(item => item.type === 'saveDraft').at(-1)), { type: 'saveDraft', chatId: 'other-chat', text: 'Other stored text', attachments: [] });
   await send({ type: 'chatLoaded', chat: { id: 'draft-chat', messages: [], draft: 'Stored unsent text' } });
   assert.equal(await draftInput.inputValue(), 'Edited unsent text');
   await draftInput.fill('');
   assert.equal(await page.evaluate(() => window.sent.filter(item => item.type === 'saveDraft').at(-1).text), '');
+  await send({ type: 'chatLoaded', chat: { id: 'untouched-chat', messages: [], draft: '', hasTypedMessage: true } });
+  assert.equal(await draftInput.inputValue(), '');
+  await page.evaluate(() => window.dispatchEvent(new Event('resize')));
+  assert.equal(await page.evaluate(() => window.sent.some(item => item.type === 'saveDraft' && item.chatId === 'untouched-chat' && item.userInput)), false, 'opening an empty chat does not count as typing');
   await send({ type: 'chatLoaded', chat: { id: 'queue-chat', modelId: 'auto', messages: [], turnQueue: { turns: [], paused: true } } });
   const image = { path: '/attachments/qt.png', name: 'qt.png', mimeType: 'image/png', uri: 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/ZL8AAAAASUVORK5CYII=' };
   const turns = [
     { id: 'qt', text: 'Qt picture task', modelId: 'gpt-6.1-sol-high', attachments: [image.path], files: [image] },
     { id: 'other', text: 'Separate task', modelId: 'auto', attachments: [], files: [] },
   ];
+  image.size = 68;
+  image.mime = 'image/png';
+  await send({ type: 'prefillPrompt', text: 'Forked prompt with image', files: [image] });
+  assert.equal(await draftInput.inputValue(), 'Forked prompt with image');
+  assert.equal(await page.locator('.attachment-strip .attachment-chip').count(), 1);
+  await page.locator('.compose-row').screenshot({ path: 'out/ui-review/revert-attachments.png', animations: 'disabled' });
+  await draftInput.press('Enter');
+  const forkSend = await page.evaluate(() => window.sent.findLast(item => item.type === 'send'));
+  assert.equal(forkSend.text, 'Forked prompt with image');
+  assert.deepEqual(forkSend.attachments, [image.path]);
+  await send({ type: 'chatLoaded', chat: { id: 'queue-chat', modelId: 'auto', messages: [], turnQueue: { turns: [], paused: true } } });
+  await send({ type: 'prefillPrompt', text: 'Another fork', files: [image] });
+  await send({ type: 'prefillPrompt', text: 'Text-only fork', files: [] });
+  assert.equal(await page.locator('.attachment-strip .attachment-chip').count(), 0);
+  await page.evaluate(() => { window.sent = []; });
   await send({ type: 'turnQueue', chatId: 'queue-chat', turns, paused: true });
   const input = page.locator('#promptInput');
   await input.fill('Unsent composer draft');

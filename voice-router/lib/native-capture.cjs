@@ -17,7 +17,17 @@ const os = require('node:os');
 const path = require('node:path');
 const { MediaPause } = require('./media-pause.cjs');
 
-const STARTUP_GRACE_MS = 400;
+// "Recording" is declared when ffmpeg delivers its first audio, which is when the device is really open and the start
+// cue is honest. A device that opens but never delivers is let through after this long rather than hanging the button.
+const STARTUP_TIMEOUT_MS = 2500;
+// DirectShow's default device buffer is ~500 ms and delays the first sample by that much; 50 ms lets it through at once.
+const DSHOW_BUFFER_MS = 50;
+// The media pause may trail the device opening, but the start cue should not play over music for long.
+const MEDIA_PAUSE_GRACE_MS = 250;
+// A recording is written as consecutive WAV files of this length, so there is no length limit. 16 kHz mono 16-bit is
+// 32 KB/s, so 5 minutes is ~9.6 MB: well under Groq's 25 MB upload cap, and a hard crash costs at most the
+// segment being written (every finished segment is a complete file).
+const SEGMENT_SECONDS = 300;
 
 function loadVoiceRouterConfig() {
   const candidates = [
@@ -40,6 +50,22 @@ function parseDshowAudioDevices(output) {
   const devices = [];
   for (const match of String(output).matchAll(/"([^"]+)"\s+\(audio\)/g)) devices.push(match[1]);
   return devices;
+}
+
+/** The name Windows gives its default input (Sound settings), or '' when it can't be read. */
+function readWindowsDefaultMic() {
+  if (process.platform !== 'win32') return Promise.resolve('');
+  return new Promise((resolve) => {
+    let output = '';
+    let child;
+    try {
+      child = spawn('powershell.exe', ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', path.join(__dirname, 'default-mic.ps1')], { stdio: ['ignore', 'pipe', 'ignore'], windowsHide: true });
+    } catch { resolve(''); return; }
+    const timer = setTimeout(() => { child.kill(); resolve(''); }, 6000);
+    child.stdout.on('data', (chunk) => { output += chunk.toString('utf8'); });
+    child.once('error', () => { clearTimeout(timer); resolve(''); });
+    child.once('close', () => { clearTimeout(timer); resolve(output.trim()); });
+  });
 }
 
 /** P17-ZA: RMS and peak (0..1) of little-endian 16-bit mono PCM. */
@@ -73,6 +99,14 @@ function perceptualMicLevel({ rms = 0, peak = 0 } = {}) {
 
 const VOLUME_INTERVAL_MS = 40;
 
+/** The finished-or-playable segments of a recording folder, in order. 44 bytes is a WAV header with no samples. */
+function listSegments(dir) {
+  try {
+    return fs.readdirSync(dir).filter((name) => /^seg-\d{3,}\.wav$/.test(name)).sort()
+      .map((name) => path.join(dir, name)).filter((file) => fs.statSync(file).size > 44);
+  } catch { return []; }
+}
+
 class AudioCaptureError extends Error {
   constructor(message, { device, devices = [], stderr = '' } = {}) {
     super(message);
@@ -84,18 +118,21 @@ class AudioCaptureError extends Error {
 }
 
 class VoiceCapture {
-  constructor({ config, spawnImpl, onVolume, mediaControl } = {}) {
+  constructor({ config, spawnImpl, onVolume, mediaControl, defaultMicImpl } = {}) {
     this.config = config || loadVoiceRouterConfig();
     this.spawn = spawnImpl || spawn;
     this.onVolume = onVolume || null; // ({ rms, peak }) about every 40ms while recording
     this.process = null;
-    this.wavPath = null;
+    this.dir = null; // folder of the current recording
+    this.ownsDir = false; // true when start() made a temp folder itself, so dispose() may delete it
     this.starting = null;
     this.devices = null;
     this.device = null;
+    this.resolving = null; // the device probe in flight, if any
     this.preferred = ''; // the microphone chosen in Settings > Voice; empty falls back to daemon.config.json, then the first device
     this.exit = null; // { code, stderr } once the current ffmpeg process has exited
     this.media = mediaControl || new MediaPause();
+    this.readDefaultMic = defaultMicImpl || (spawnImpl ? async () => '' : readWindowsDefaultMic); // a faked ffmpeg means no real Windows to ask
   }
 
   isRecording() {
@@ -123,40 +160,57 @@ class VoiceCapture {
     this.device = null;
   }
 
-  /** The chosen mic if this machine has it, else the configured one, else else the first real capture device (cached). */
+  /** The chosen mic if this machine has it. Automatic: the Windows default input, else the configured one, else the first capture device (cached). */
   async resolveDevice(refresh = false) {
     if (this.device && !refresh) return this.device;
-    this.devices = await this.listAudioDevices();
-    const wanted = this.preferred || this.config.micDevice;
-    this.device = this.devices.includes(wanted) ? wanted : this.devices[0] || wanted || null;
+    this.resolving ||= this.probe().finally(() => { this.resolving = null; }); // a warm-up and a start share one probe
+    const { devices, automatic } = await this.resolving;
+    this.devices = devices;
+    this.device = this.preferred && devices.includes(this.preferred) ? this.preferred : automatic;
     return this.device;
   }
 
+  /** The capture devices, and which one Automatic means: the Windows default, else daemon.config.json's, else the first. */
+  async probe() {
+    const [devices, windowsDefault] = await Promise.all([this.listAudioDevices(), Promise.resolve(this.readDefaultMic()).catch(() => '')]);
+    const name = String(windowsDefault || '').trim(); // DirectShow cuts long names, so one starting the other counts
+    const system = devices.find((device) => device === name) || (name && devices.find((device) => name.startsWith(device) || device.startsWith(name)));
+    return { devices, automatic: system || (devices.includes(this.config.micDevice) ? this.config.micDevice : devices[0] || this.config.micDevice || null) };
+  }
+
+  /** Looks the microphone up ahead of the first click, so starting does not pay for the device probe. */
+  warm() {
+    return this.resolveDevice().catch(() => null);
+  }
+
   /** Resolves once ffmpeg is really recording; rejects with AudioCaptureError if it can't. */
-  start({ pauseMedia = false } = {}) {
+  start({ pauseMedia = false, dir = null } = {}) {
     if (this.isRecording()) return this.starting || Promise.resolve(this.device);
     this.starting = (async () => {
-      if (pauseMedia) await this.media.pause();
-      return this.doStart();
+      // Booting the pause helper takes as long as opening the device, so the two run side by side.
+      const paused = pauseMedia ? this.media.pause() : null;
+      const device = await this.doStart(dir);
+      if (paused) await Promise.race([paused, new Promise(resolve => setTimeout(resolve, MEDIA_PAUSE_GRACE_MS))]);
+      return device;
     })().catch(error => { this.media.resume(); throw error; }).finally(() => { this.starting = null; });
     return this.starting;
   }
 
-  async doStart() {
+  async doStart(dir) {
     const device = await this.resolveDevice();
     if (!device) {
       throw new AudioCaptureError('No microphone found on this workstation.', { devices: this.devices || [] });
     }
-    const dir = path.join(os.tmpdir(), 'ai-chat-panel');
-    fs.mkdirSync(dir, { recursive: true });
-    this.wavPath = path.join(dir, `rec-${Date.now()}.wav`);
+    this.ownsDir = !dir;
+    this.dir = dir || path.join(os.tmpdir(), 'ai-chat-panel', `rec-${Date.now()}`);
+    fs.mkdirSync(this.dir, { recursive: true });
     this.exit = null;
 
     let stderr = '';
     const proc = this.spawn(
       this.ffmpeg(),
       // P17-ZA: a second output taps raw PCM to stdout for the composer's level meter.
-      ['-y', '-loglevel', 'error', '-f', 'dshow', '-i', `audio=${device}`, '-ar', '16000', '-ac', '1', this.wavPath, '-f', 's16le', '-ar', '16000', '-ac', '1', 'pipe:1'],
+      ['-y', '-loglevel', 'error', '-f', 'dshow', '-audio_buffer_size', String(DSHOW_BUFFER_MS), '-i', `audio=${device}`, '-ar', '16000', '-ac', '1', '-f', 'segment', '-segment_time', String(SEGMENT_SECONDS), '-segment_format', 'wav', path.join(this.dir, 'seg-%03d.wav'), '-f', 's16le', '-ar', '16000', '-ac', '1', 'pipe:1'],
       { stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true },
     );
     this.process = proc;
@@ -164,7 +218,9 @@ class VoiceCapture {
     // Always drained (a full pipe would stall ffmpeg); levels go out at most every 40ms.
     let pending = Buffer.alloc(0);
     let lastEmit = 0;
+    let onFirstAudio = null;
     proc.stdout?.on('data', (chunk) => {
+      onFirstAudio?.();
       if (!this.onVolume) return;
       pending = pending.length ? Buffer.concat([pending, chunk]) : chunk;
       const now = Date.now();
@@ -179,7 +235,8 @@ class VoiceCapture {
 
     const failure = (reason) => new AudioCaptureError(`Could not open microphone "${device}": ${reason}`, { device, devices: this.devices || [], stderr: stderr.trim() });
     await new Promise((resolve, reject) => {
-      const timer = setTimeout(resolve, STARTUP_GRACE_MS);
+      const timer = setTimeout(resolve, STARTUP_TIMEOUT_MS);
+      onFirstAudio = () => { onFirstAudio = null; clearTimeout(timer); resolve(); };
       proc.once('error', (error) => { this.media.resume(); clearTimeout(timer); reject(failure(error.message)); });
       proc.once('exit', (code) => {
         this.media.resume();
@@ -195,12 +252,12 @@ class VoiceCapture {
     return device;
   }
 
-  /** Stops ffmpeg gracefully (writes 'q' to its stdin) and resolves with the wav path. */
+  /** Stops ffmpeg gracefully (writes 'q' to its stdin) and resolves with the segment files, in order. */
   stop() {
     this.media.resume();
     return new Promise((resolve, reject) => {
       const proc = this.process;
-      const wavPath = this.wavPath;
+      const dir = this.dir;
       if (!proc) {
         reject(new Error('Not currently recording.'));
         return;
@@ -208,10 +265,8 @@ class VoiceCapture {
       this.process = null;
 
       const settle = () => {
-        let size = 0;
-        try { size = fs.statSync(wavPath).size; } catch {}
-        // 44 bytes is a WAV header with no samples.
-        if (size > 44) resolve(wavPath);
+        const files = listSegments(dir);
+        if (files.length) resolve(files);
         else reject(new AudioCaptureError(`Recording from "${this.device}" produced no audio.`, { device: this.device, devices: this.devices || [], stderr: this.exit?.stderr || '' }));
       };
 
@@ -233,10 +288,14 @@ class VoiceCapture {
   async dispose() {
     try {
       await this.starting;
-      if (this.process) fs.promises.unlink(await this.stop()).catch(() => {});
+      if (this.process) {
+        const dir = this.dir;
+        await this.stop().catch(() => {});
+        if (this.ownsDir) fs.promises.rm(dir, { recursive: true, force: true }).catch(() => {}); // a folder the caller gave us keeps its audio
+      }
     } catch { /* failed startup has already restored playback */ }
     finally { this.media.resume(); }
   }
 }
 
-module.exports = { VoiceCapture, AudioCaptureError, parseDshowAudioDevices, pcmLevels, perceptualMicLevel };
+module.exports = { VoiceCapture, AudioCaptureError, SEGMENT_SECONDS, listSegments, parseDshowAudioDevices, pcmLevels, perceptualMicLevel };

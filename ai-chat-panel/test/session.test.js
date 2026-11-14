@@ -176,6 +176,34 @@ test('Codex App Server kills a failed initializer and ignores that stale child a
   server.dispose();
 });
 
+test('Codex App Server drops a server that stops answering mid-session so the retry gets a fresh process', async () => {
+  const children = [];
+  const makeChild = () => {
+    const child = new EventEmitter();
+    child.stdout = new EventEmitter(); child.stderr = new EventEmitter(); child.stdin = new EventEmitter();
+    child.stdin.writable = true;
+    child.stdin.end = () => { child.stdin.writable = false; };
+    child.kill = () => { child.killed = true; };
+    child.stdin.write = (line) => {
+      const message = JSON.parse(line);
+      // Answers initialize only; thread/start hangs like the real server did.
+      if (message.method === 'initialize') queueMicrotask(() => child.stdout.emit('data', Buffer.from(`${JSON.stringify({ id: message.id, result: {} })}\n`)));
+      return true;
+    };
+    return child;
+  };
+  const server = new CodexAppServer({
+    cwd: os.tmpdir(), timeoutMs: 20, locateImpl: () => ({ path: 'codex' }),
+    spawnImpl: () => { const child = makeChild(); children.push(child); return child; },
+  });
+  await assert.rejects(server.request('thread/start', {}), /thread\/start: no response/);
+  assert.equal(children[0].killed, true);
+  assert.equal(server.child, null);
+  await assert.rejects(server.request('thread/start', {}), /thread\/start: no response/);
+  assert.equal(children.length, 2, 'the retry spawned a new server instead of reusing the hung one');
+  server.dispose();
+});
+
 test('JSON documents reach Claude, Gemini and Codex, including fresh Codex resume recovery', async () => {
   const { StreamEngine } = require('../lib/stream-engine.js');
   const file=path.join(TEST_CWD,'router feedback.json');
@@ -355,6 +383,217 @@ test('late notifications from an interrupted Codex turn cannot complete its repl
   engine.dispose();
 });
 
+test('Codex can reuse an interrupted native turn for a follow-up', async () => {
+  const { StreamEngine } = require('../lib/stream-engine.js');
+  class Server extends EventEmitter {
+    async connect() {}
+    async request(method) {
+      if (method === 'thread/start') return { thread: { id: 'thread-steer' } };
+      if (method === 'turn/start') return { turn: { id: 'same-turn' } };
+      return {};
+    }
+    dispose() {}
+  }
+  const server = new Server();
+  const engine = new StreamEngine({ cwd: TEST_CWD, codexServerFactory: () => server });
+  const events = [];
+  engine.on('event', event => events.push(event));
+  try {
+    engine.start({ agent: 'codex', prompt: 'Make mockups' });
+    await new Promise(resolve => setImmediate(resolve));
+    engine.interrupt();
+    engine.start({ agent: 'codex', prompt: 'Include a shop', resume: 'thread-steer' });
+    await new Promise(resolve => setImmediate(resolve));
+    server.emit('notification', { method: 'item/agentMessage/delta', params: { threadId: 'thread-steer', turnId: 'same-turn', delta: 'Shop noted.' } });
+    server.emit('notification', { method: 'turn/completed', params: { threadId: 'thread-steer', turn: { id: 'same-turn', status: 'completed' } } });
+    assert.equal(events.findLast(event => event.type === 'delta')?.text, 'Shop noted.');
+    assert.equal(events.filter(event => event.type === 'turn_complete' && !event.interrupted).length, 1);
+    assert.equal(engine.codexActive, false);
+  } finally { engine.dispose(); }
+});
+
+test('Codex terminal errors appear once; recovered reconnects do not become answer text', () => {
+  const { StreamEngine } = require('../lib/stream-engine.js');
+  const engine = new StreamEngine({ cwd: TEST_CWD });
+  const events = [];
+  engine.on('event', event => events.push(event));
+  const failure = 'Permission denied';
+  const notify = (method, params) => engine.handleCodexNotification({ method, params });
+  try {
+    engine.resetCodexTurn({ agent: 'codex' });
+    notify('item/agentMessage/delta', { delta: 'Work already done.' });
+    notify('error', { error: { message: failure } });
+    notify('error', { error: { message: failure } });
+    notify('turn/completed', { turn: { id: 'failed-1', status: 'failed', error: { message: failure } } });
+    notify('turn/completed', { turn: { id: 'failed-1', status: 'failed', error: { message: failure } } });
+    assert.deepEqual(events.filter(e => e.type === 'delta').map(e => e.text), ['Work already done.', `\n\nCodex error: ${failure}`]);
+    assert.equal(events.filter(e => e.type === 'turn_complete').length, 1);
+    assert.ok(!engine.retryTimer, 'partial work must not replay automatically');
+
+    events.length = 0;
+    engine.resetCodexTurn({ agent: 'codex' });
+    notify('error', { error: { message: 'Reconnecting... 2/5' }, willRetry: true });
+    notify('item/agentMessage/delta', { delta: 'Recovered.' });
+    notify('turn/completed', { turn: { id: 'recovered-1', status: 'completed' } });
+    assert.deepEqual(events.filter(e => e.type === 'delta').map(e => e.text), ['Recovered.']);
+    assert.equal(events.filter(e => e.type === 'notice').length, 1);
+
+    events.length = 0;
+    engine.resetCodexTurn({ agent: 'codex' });
+    notify('turn/completed', { turn: { id: 'failed-2', status: 'failed' } });
+    assert.equal(events.find(e => e.type === 'delta').text, 'Codex error: turn failed', 'failure state resets between turns');
+
+    events.length = 0;
+    engine.resetCodexTurn({ agent: 'codex' });
+    notify('error', { error: { message: 'Permission denied' } });
+    notify('turn/completed', { turn: { id: 'failed-3', status: 'failed' } });
+    assert.equal(events.find(e => e.type === 'delta').text, 'Codex error: Permission denied', 'use the error event when completion omits details');
+  } finally { engine.dispose(); }
+});
+
+test('Codex capacity retry keeps the selected model and thread, is bounded, and Stop cancels it', async () => {
+  const { StreamEngine } = require('../lib/stream-engine.js');
+  class FakeServer extends EventEmitter {
+    constructor() { super(); this.calls = []; this.turns = 0; }
+    async connect() {}
+    async request(method, params) {
+      this.calls.push({ method, params });
+      if (method === 'thread/start') return { thread: { id: 'capacity-thread' } };
+      if (method === 'turn/start') return { turn: { id: `capacity-${++this.turns}` } };
+      return {};
+    }
+    dispose() {}
+  }
+  const server = new FakeServer();
+  const engine = new StreamEngine({ cwd: TEST_CWD, codexServerFactory: () => server });
+  const events = [];
+  engine.on('event', event => events.push(event));
+  const failure = 'Selected model is at capacity. Please try a different model.';
+  const rejectTurn = () => {
+    const params = { threadId: 'capacity-thread', turnId: `capacity-${server.turns}`, error: { message: failure } };
+    server.emit('notification', { method: 'error', params });
+    server.emit('notification', { method: 'turn/completed', params: { threadId: params.threadId, turn: { id: params.turnId, status: 'failed', error: params.error } } });
+  };
+  try {
+    engine.start({ agent: 'codex', prompt: 'Do the task', model: 'manually-selected-model', effort: 'high' });
+    await new Promise(resolve => setImmediate(resolve));
+    rejectTurn();
+    assert.ok(engine.retryTimer);
+    assert.equal(events.filter(e => e.type === 'turn_complete').length, 0);
+    const retried = new Promise(resolve => engine.once('event', resolve));
+    await retried;
+    await new Promise(resolve => setImmediate(resolve));
+    const calls = server.calls.filter(call => call.method === 'turn/start');
+    assert.equal(calls.length, 2);
+    assert.ok(calls.every(call => call.params.model === 'manually-selected-model' && call.params.effort === 'high' && call.params.threadId === 'capacity-thread'));
+    rejectTurn();
+    assert.ok(engine.retryTimer);
+    engine.cancel();
+    assert.equal(engine.retryTimer, null);
+
+    engine.start({ agent: 'codex', prompt: 'Do the task', model: 'manually-selected-model', attempt: 2 });
+    await new Promise(resolve => setImmediate(resolve));
+    server.emit('notification', { method: 'item/agentMessage/delta', params: { threadId: 'capacity-thread', turnId: `capacity-${server.turns}`, delta: 'Saved work.' } });
+    rejectTurn();
+    assert.equal(events.filter(e => e.type === 'upstream_error').length, 1);
+    assert.equal(events.filter(e => e.type === 'turn_complete').length, 1);
+    assert.deepEqual(events.filter(e => e.type === 'delta').map(e => e.text), ['Saved work.']);
+    assert.equal(engine.retryTimer, null);
+  } finally { engine.dispose(); }
+});
+
+test('Codex resumes partial work after capacity and routing failures without replay or lost usage', async () => {
+  const { StreamEngine } = require('../lib/stream-engine.js');
+  class Server extends EventEmitter {
+    calls = []; turns = 0;
+    async connect() {}
+    async request(method, params) {
+      this.calls.push({ method, params });
+      if (method === 'thread/start') return { thread: { id: 'partial-thread' } };
+      if (method === 'turn/start') return { turn: { id: `partial-${++this.turns}` } };
+      return {};
+    }
+    dispose() {}
+  }
+  const server = new Server();
+  const engine = new StreamEngine({ cwd: TEST_CWD, codexServerFactory: () => server });
+  const events = [];
+  engine.on('event', event => events.push(event));
+  const notify = (method, params) => server.emit('notification', { method, params: { threadId: 'partial-thread', turnId: `partial-${server.turns}`, ...params } });
+  const usage = (input, cached, output, lastInput, lastCached, lastOutput) => notify('thread/tokenUsage/updated', {
+    tokenUsage: { total: { inputTokens: input, cachedInputTokens: cached, outputTokens: output, totalTokens: input + output },
+      last: { inputTokens: lastInput, cachedInputTokens: lastCached, outputTokens: lastOutput, totalTokens: lastInput + lastOutput } },
+  });
+  const fail = async (error) => {
+    const resumed = new Promise(resolve => engine.once('event', resolve));
+    notify('error', { error });
+    notify('turn/completed', { turn: { id: `partial-${server.turns}`, status: 'failed', error } });
+    assert.ok(engine.retryTimer);
+    await resumed; // retry notice; the next session event marks the timer firing
+    await new Promise(resolve => engine.once('event', resolve));
+    await new Promise(resolve => setImmediate(resolve));
+  };
+  try {
+    engine.start({ agent: 'codex', prompt: 'Original task with side effects', model: 'chosen-model', effort: 'medium', permissionMode: 'ask' });
+    await new Promise(resolve => setImmediate(resolve));
+    notify('item/agentMessage/delta', { delta: 'I did part one.' });
+    notify('item/completed', { item: { type: 'commandExecution', id: 'saved-work', command: 'save changes', aggregatedOutput: 'saved', exitCode: 0 } });
+    usage(1000, 100, 100, 100, 50, 10);
+    await fail({ message: 'The service is busy', codexErrorInfo: 'serverOverloaded' });
+    const retry = server.calls.findLast(call => call.method === 'turn/start').params;
+    assert.equal(retry.threadId, 'partial-thread');
+    assert.equal(retry.model, 'chosen-model');
+    assert.equal(retry.effort, 'medium');
+    assert.equal(retry.approvalsReviewer, 'user');
+    assert.match(retry.input[0].text, /inspect saved work and completed tool results/);
+    assert.doesNotMatch(retry.input[0].text, /Original task with side effects/);
+    assert.equal(server.calls.filter(call => call.method === 'thread/start').length, 1);
+    const before = events.length;
+    server.emit('notification', { method: 'turn/completed', params: { threadId: 'partial-thread', turn: { id: 'partial-1', status: 'failed', error: { message: 'old failure' } } } });
+    assert.equal(events.length, before, 'late completions cannot end the recovery attempt');
+    usage(1300, 250, 130, 300, 150, 30);
+    await fail({ message: 'workspace routing discovery failed' });
+    assert.match(server.calls.findLast(call => call.method === 'turn/start').params.input[0].text, /continue only the remaining steps/);
+    usage(1400, 300, 140, 100, 50, 10);
+    notify('item/agentMessage/delta', { delta: 'Done.' });
+    notify('turn/completed', { turn: { id: 'partial-3', status: 'completed' } });
+    assert.deepEqual(events.filter(event => event.type === 'delta').map(event => event.text), ['I did part one.', '\n\nDone.']);
+    assert.equal(events.filter(event => event.type === 'turn_complete').length, 1);
+    assert.equal(events.filter(event => event.type === 'upstream_error').length, 0);
+    assert.equal(server.calls.filter(call => call.method === 'turn/interrupt').length, 0, 'failed attempts have already ended');
+    assert.equal(events.at(-1).totalTokens, 550);
+    assert.deepEqual(events.at(-1).usage, { fresh: 250, cachedInput: 250, cacheWrite: 0, output: 50, peakPrompt: 300 });
+  } finally { engine.dispose(); }
+});
+
+test('Codex routing failure recovery is cancellable and transient resume failures retain the thread', async () => {
+  const { StreamEngine } = require('../lib/stream-engine.js');
+  class Server extends EventEmitter {
+    calls = [];
+    async connect() {}
+    async request(method, params) {
+      this.calls.push({ method, params });
+      if (method === 'thread/resume') throw Error('workspace routing discovery failed');
+      return {};
+    }
+    dispose() {}
+  }
+  const server = new Server();
+  const engine = new StreamEngine({ cwd: TEST_CWD, codexServerFactory: () => server });
+  const events = [];
+  engine.on('event', event => events.push(event));
+  try {
+    engine.start({ agent: 'codex', prompt: 'Continue', resume: 'existing-thread', freshPrompt: 'Fresh handoff', model: 'chosen-model' });
+    await new Promise(resolve => setImmediate(resolve));
+    assert.deepEqual(server.calls.map(call => call.method), ['thread/resume'], 'a temporary resume failure must not silently create a fresh thread');
+    assert.ok(engine.retryTimer);
+    assert.equal(engine.interrupt(), true);
+    assert.equal(engine.retryTimer, null);
+    assert.equal(events.at(-1).interrupted, true);
+    assert.equal(events.filter(event => event.type === 'turn_complete').length, 1);
+  } finally { engine.dispose(); }
+});
+
 test('slash command ownership stays with the explicitly selected provider', async () => {
   let claudeProbes = 0;
   let geminiProbes = 0;
@@ -452,7 +691,7 @@ test('P16-I: StreamEngine turns a missing CLI into a binary_missing event, never
 test('missing quota readings report every provider as unknown', () => {
   process.env.AI_CHAT_PANEL_QUOTA_CACHE = path.join(os.tmpdir(), `ai-chat-panel-test-unknown-${process.pid}.json`); // nothing remembered either
   const { shapeQuotas } = require('../lib/quota-bridge.js');
-  assert.deepEqual(shapeQuotas({}), { claude: null, claudeWeekly: null, claudeOpus: null, opus: null, codex: null, gemini: null });
+  assert.deepEqual(shapeQuotas({}), { claude: null, claudeWeekly: null, claudeOpus: null, opus: null, codex: null, gemini: null, antigravityClaudeGpt: null, antigravityArgon: null });
 });
 
 test('quota-sources reads Codex rate limits from session logs, with no other extension', async () => {
@@ -477,6 +716,28 @@ test('quota-sources reads Codex rate limits from session logs, with no other ext
       if (saved[name] === undefined) delete process.env[key]; else process.env[key] = saved[name];
     }
   }
+});
+
+test('quota-sources: a usage_limit_exceeded turn after a 99% reading means the window is spent, not 1% left', () => {
+  const { findLatestCodexRateLimit } = require('../lib/quota-sources.js');
+  const reading = (primary, secondary = 45) => JSON.stringify({ timestamp: '2026-10-27T10:48:01.396Z', payload: { type: 'token_count', rate_limits: {
+    limit_id: 'codex', primary: { used_percent: primary, window_minutes: 300, resets_at: 1793104807 }, secondary: { used_percent: secondary, window_minutes: 10080, resets_at: 1793607427 } } } });
+  // Codex then logs a reading with no windows and ends the turn with the error.
+  const premium = JSON.stringify({ timestamp: '2026-10-27T10:48:01.868Z', payload: { type: 'token_count', rate_limits: { limit_id: 'premium', primary: null, secondary: null } } });
+  const limitError = JSON.stringify({ timestamp: '2026-10-27T10:48:01.897Z', payload: { type: 'task_complete', error: { message: 'You’ve hit your usage limit.', codex_error_info: 'usage_limit_exceeded' } } });
+  const echoed = JSON.stringify({ payload: { type: 'function_call_output', output: 'match: "codex_error_info":"usage_limit_exceeded"' } });
+
+  const spent = findLatestCodexRateLimit([reading(99), premium, limitError].join('\n'));
+  assert.equal(spent.used, 100);
+  assert.equal(spent.remaining, 0);
+  assert.equal(spent.secondary.remaining, 55, 'the week is untouched');
+
+  const weekSpent = findLatestCodexRateLimit([reading(20, 99), limitError].join('\n'));
+  assert.equal(weekSpent.remaining, 80, 'the fuller window is the one that ran out');
+  assert.equal(weekSpent.secondary.remaining, 0);
+
+  assert.equal(findLatestCodexRateLimit([limitError, reading(40)].join('\n')).remaining, 60, 'an error from before the latest reading says nothing about it');
+  assert.equal(findLatestCodexRateLimit([reading(99), echoed].join('\n')).remaining, 1, 'tool output that quotes the token is not an error');
 });
 
 test('session dir: Clanker keeps its own storage and copies a legacy session folder once', () => {
@@ -695,12 +956,13 @@ test('P16-K: SchedulerQueue reorder sets dispatch priority and editPrompt only t
 
 // P16-L: fake ffmpeg -- `-list_devices` prints the given devices; a recording
 // either exits at once (missing device), keeps running, or dies mid-recording.
-function fakeFfmpeg({ devices, recording }) {
+function fakeFfmpeg({ devices, recording, audioAfterMs = 30 }) {
   const { EventEmitter } = require('node:events');
   const spawned = [];
   const spawnImpl = (cmd, args) => {
     const proc = new EventEmitter();
     proc.stderr = new EventEmitter();
+    proc.stdout = new EventEmitter();
     proc.stdin = { write() {}, end() { if (proc.exitCode === null) setTimeout(() => { proc.exitCode = 0; proc.emit('exit', 0); proc.emit('close', 0); }, 5); }, on() {} };
     proc.exitCode = null; proc.signalCode = null; proc.kill = () => { proc.exitCode = 1; proc.emit('close', 1); };
     spawned.push(args);
@@ -709,12 +971,13 @@ function fakeFfmpeg({ devices, recording }) {
       return proc;
     }
     const device = args[args.indexOf('-i') + 1].slice('audio='.length);
-    const wav = args.find((a) => typeof a === 'string' && a.endsWith('.wav')) || args[args.length - 1];
+    const wav = (args.find((a) => typeof a === 'string' && a.endsWith('.wav')) || args[args.length - 1]).replace('%03d', '000'); // the segment pattern's first file
     if (!devices.includes(device) || recording === 'exit-now') {
       setTimeout(() => { proc.stderr.emit('data', Buffer.from(`Could not find audio only device with name [${device}]\n`)); proc.exitCode = 1; proc.emit('exit', 1); proc.emit('close', 1); }, 20);
     } else {
       fs.writeFileSync(wav, Buffer.alloc(2000));
-      if (recording === 'crash') setTimeout(() => { proc.exitCode = 1; proc.emit('exit', 1); proc.emit('close', 1); }, 450);
+      if (audioAfterMs !== null) setTimeout(() => proc.stdout.emit('data', Buffer.alloc(3200)), audioAfterMs); // the first PCM: the device is really open
+      if (recording === 'crash') setTimeout(() => { proc.exitCode = 1; proc.emit('exit', 1); proc.emit('close', 1); }, (audioAfterMs ?? 0) + 60);
     }
     return proc;
   };
@@ -732,10 +995,26 @@ test('P16-L: a configured mic missing on this workstation falls back to the firs
   const capture = new VoiceCapture({ config: { micDevice: 'Mikrofonarray (Realtek(R) Audio)', ffmpegPath: 'ffmpeg' }, spawnImpl });
   assert.equal(await capture.start(), 'Microphone (Anker PowerConf C200)');
   assert.ok(spawned.some((args) => args.includes('audio=Microphone (Anker PowerConf C200)')));
-  const wav = await capture.stop();
-  assert.ok(fs.existsSync(wav));
-  fs.rmSync(wav, { force: true });
+  const files = await capture.stop();
+  assert.equal(files.length, 1);
+  assert.ok(fs.existsSync(files[0]) && /seg-000.wav$/.test(files[0]));
+  assert.ok(spawned.some((args) => args.includes('segment') && args.includes('300')), 'ffmpeg writes 5-minute segments, so a recording has no length limit');
+  fs.rmSync(capture.dir, { recursive: true, force: true });
   assert.equal(capture.isRecording(), false);
+});
+
+test('Automatic follows the Windows default input, ahead of the configured mic, and a chosen mic still wins', async () => {
+  const { VoiceCapture } = require('../lib/voice-capture.js');
+  const devices = ['Mikrofon (2- Wireless microphone)', 'Mikrofonarray (Realtek(R) Audio)'];
+  const make = (defaultMic, micDevice = 'Mikrofonarray (Realtek(R) Audio)') => new VoiceCapture({ config: { micDevice }, spawnImpl: fakeFfmpeg({ devices, recording: 'ok' }).spawnImpl, defaultMicImpl: async () => defaultMic });
+  const windows = make('Mikrofon (2- Wireless microphone)');
+  assert.equal((await windows.probe()).automatic, 'Mikrofon (2- Wireless microphone)');
+  assert.equal(await windows.resolveDevice(), 'Mikrofon (2- Wireless microphone)', 'the configured Realtek no longer beats the Windows default');
+  windows.setPreferred('Mikrofonarray (Realtek(R) Audio)');
+  assert.equal(await windows.resolveDevice(), 'Mikrofonarray (Realtek(R) Audio)');
+  assert.equal((await make('Mikrofon (2- Wireless microphone) long name cut by DirectShow').probe()).automatic, 'Mikrofon (2- Wireless microphone)', 'a cut name still matches');
+  assert.equal((await make('', '').probe()).automatic, devices[0], 'no Windows answer and no config: the first device');
+  assert.equal((await make('Unplugged mic').probe()).automatic, 'Mikrofonarray (Realtek(R) Audio)', 'an unknown default falls back to the configured mic');
 });
 
 test('P16-L: ffmpeg dying at startup rejects start() instead of reporting "recording"', async () => {
@@ -778,14 +1057,62 @@ test('dictation pauses media only when enabled and restores on stop, disposal an
       assert.equal(paused, mode !== 'disabled');
       assert.equal(pauses, mode === 'disabled' ? 0 : 1);
       if (mode === 'crash') {
-        await new Promise(resolve => setTimeout(resolve, 120));
+        await new Promise(resolve => setTimeout(resolve, 300));
         assert.equal(paused, false, 'a crashed recorder restores without another hotkey press');
       }
       if (mode === 'dispose') await capture.dispose();
-      else fs.unlinkSync(await capture.stop());
+      else { await capture.stop(); fs.rmSync(capture.dir, { recursive: true, force: true }); }
     }
     assert.equal(paused, false, mode);
   }
+});
+
+test('dictation is "recording" when the first audio arrives, not after a fixed wait, so the start cue never beats the microphone', async () => {
+  const { VoiceCapture } = require('../lib/voice-capture.js');
+  const { spawnImpl, spawned } = fakeFfmpeg({ devices: ['Mic A'], recording: 'ok', audioAfterMs: 150 });
+  const capture = new VoiceCapture({ config: { micDevice: '' }, spawnImpl });
+  await capture.warm();
+  const begun = Date.now();
+  await capture.start();
+  const took = Date.now() - begun;
+  assert.ok(took >= 140, `start() resolved after ${took}ms, before the first audio`);
+  const args = spawned.find((a) => a.some((x) => String(x).startsWith('audio=')));
+  assert.equal(args[args.indexOf('-audio_buffer_size') + 1], '50', 'a small device buffer so audio flows at once');
+  assert.ok(args.indexOf('-audio_buffer_size') < args.indexOf('-i'), 'input option comes before -i');
+  await capture.stop(); fs.rmSync(capture.dir, { recursive: true, force: true });
+});
+
+test('dictation never reports recording for a device that opens but stays silent forever (falls through after the timeout)', async () => {
+  const { VoiceCapture } = require('../lib/voice-capture.js');
+  const { spawnImpl } = fakeFfmpeg({ devices: ['Mic A'], recording: 'ok', audioAfterMs: null });
+  const capture = new VoiceCapture({ config: { micDevice: '' }, spawnImpl });
+  const settled = await Promise.race([capture.start().then(() => 'resolved'), new Promise((r) => setTimeout(() => r('pending'), 1000))]);
+  assert.equal(settled, 'pending', 'no audio yet means not recording yet');
+  await capture.dispose();
+});
+
+test('the media pause runs beside opening the microphone, not before it', async () => {
+  const { VoiceCapture } = require('../lib/voice-capture.js');
+  const events = [];
+  const mediaControl = { pause: () => { events.push('pause'); return new Promise((resolve) => setTimeout(() => { events.push('paused'); resolve(); }, 60)); }, resume: () => {} };
+  const base = fakeFfmpeg({ devices: ['Mic A'], recording: 'ok', audioAfterMs: 10 });
+  const spawnImpl = (cmd, args, opts) => { if (!args.includes('-list_devices')) events.push('ffmpeg'); return base.spawnImpl(cmd, args, opts); };
+  const capture = new VoiceCapture({ config: { micDevice: '' }, spawnImpl, mediaControl });
+  await capture.warm();
+  await capture.start({ pauseMedia: true });
+  assert.deepEqual(events.slice(0, 2), ['pause', 'ffmpeg'], 'ffmpeg does not wait for the pause helper');
+  await capture.stop(); fs.rmSync(capture.dir, { recursive: true, force: true });
+});
+
+test('warm() probes the microphone once and a start right after reuses it', async () => {
+  const { VoiceCapture } = require('../lib/voice-capture.js');
+  const { spawnImpl, spawned } = fakeFfmpeg({ devices: ['Mic A'], recording: 'ok' });
+  const capture = new VoiceCapture({ config: { micDevice: '' }, spawnImpl });
+  const warm = capture.warm();
+  await capture.start();
+  await warm;
+  assert.equal(spawned.filter((args) => args.includes('-list_devices')).length, 1);
+  await capture.stop(); fs.rmSync(capture.dir, { recursive: true, force: true });
 });
 
 test('CLI command lines use only flags the real CLIs accept, and stdin payloads they parse', () => {
@@ -821,6 +1148,9 @@ test('vendor stream shapes (claude, codex exec --json, agy) map to delta/tool/tu
   assert.equal(contextTokensOf({ type: 'turn.completed', usage: { input_tokens: 4601075, output_tokens: 1000 } }), 0, 'Codex turn consumption is not context occupancy');
   assert.equal(contextTokensOf({ type: 'assistant', message: { usage: { input_tokens: 100, cache_read_input_tokens: 200, output_tokens: 10 } } }), 310);
   assert.equal(contextTokensOf({ event: 'step_update', step_update: { usage: { input_tokens: 142000, output_tokens: 500 } } }), 142500, 'Gemini step_update provides live context tokens');
+  assert.equal(contextTokensOf({ event: 'step_update', step_update: { usage: { input_tokens: 4000, cache_read_tokens: 138000, output_tokens: 500 } } }), 142500, 'agy cache reads are part of the context');
+  assert.equal(contextTokensOf({ event: 'result', result: { usage: { input_tokens: 34009, cache_read_tokens: 92633, output_tokens: 5026 } } }), 0, 'agy result usage sums every call of the turn');
+  assert.equal(require('../lib/stream-engine.js').contextGrowthOf({ event: 'result', result: { usage: { input_tokens: 34009, cache_read_tokens: 92633, output_tokens: 5026 } } }), 39035, 'its new tokens are how far the chat grew');
 });
 
 test('interactive claude: control_request -> approval/question cards, clicks -> control_response on stdin', () => {
@@ -892,6 +1222,15 @@ test('edit tool starts carry a diff; Gemini reads are not edits', () => {
   const gem = (tool_name, parameters) => normalizeEvent({ event: 'step_update', step_update: { step_type: 'tool', step_index: 1, tool_name, state: 'ACTIVE', tool_info: { parameters } } }, 'gemini');
   const read = gem('view_file', { AbsolutePath: 'C:\\a.js' });
   assert.deepEqual([read.name, read.command, read.diff], ['view_file', 'C:\\a.js', '']);
+  // Newer agy builds: read_file/write_file/edit_file/list_dir with other parameter names. The card must still say what is being opened.
+  assert.equal(gem('read_file', { path: 'C:\\a.js' }).command, 'C:\\a.js');
+  assert.equal(gem('read_file', { file_path: 'C:\\b.js', offset: 1, limit: 50 }).command, 'C:\\b.js');
+  assert.equal(gem('read_file', { filePath: 'C:\\c.js' }).command, 'C:\\c.js');
+  assert.equal(gem('list_dir', { DirectoryPath: 'C:\\src' }).command, 'C:\\src');
+  assert.equal(gem('read_file', { paths: ['a.js', 'b.js'] }).command, 'a.js, b.js');
+  assert.equal(gem('edit_file', { path: 'C:\\d.js', old_string: 'a', new_string: 'b' }).command, 'C:\\d.js');
+  assert.equal(gem('write_file', { path: 'C:\\e.js', content: 'x' }).command, 'C:\\e.js');
+  assert.equal(gem('read_file', { content: 'C:\\not-a-path-key' }).command, '', 'content fields are not paths');
   assert.equal(gem('search_web', { query: 'astro visual editor' }).command, 'astro visual editor');
   assert.equal(gem('manage_task', { Action: 'status', TaskId: 'task-1' }).command, 'status task-1');
   assert.equal(gem('read_url_content', { Url: 'https://example.com' }).command, 'https://example.com');
@@ -899,7 +1238,7 @@ test('edit tool starts carry a diff; Gemini reads are not edits', () => {
   assert.equal(gem('invoke_subagent', { Subagents: [{ Role: 'Codebase Researcher' }] }).command, 'Codebase Researcher');
   assert.equal(gem('send_message', { Recipient: 'agent-1', Message: 'hello' }).command, 'agent-1: hello');
   assert.equal(gem('generate_image', { ImageName: 'hero', Prompt: 'a sunset' }).command, 'hero: a sunset');
-  assert.equal(gem('ask_question', { questions: [{ question: 'Which mode?' }] }).command, 'Which mode?');
+  assert.equal(gem('ask_question', { questions: [{ question: 'Which mode?' }] }).questions[0].question, 'Which mode?', 'headless agy cannot wait, so the question is a card, not a tool step');
   const edit = gem('replace_file_content', { TargetFile: 'C:\\a.js', TargetContent: 'keep\nold\nend', ReplacementContent: 'keep\nnew\nend' });
   assert.deepEqual([edit.name, edit.file, edit.diff], ['edit', 'C:\\a.js', ' keep\n-old\n+new\n end']);
   assert.equal(gem('write_to_file', { TargetFile: 'b.txt', CodeContent: 'hi' }).diff, '+hi');
@@ -1121,13 +1460,309 @@ test('chat memory: the handoff briefs only missed turns, without tool output, wi
   ], 'gemini');
   assert.match(handoff, /User: Pick a codename/);
   assert.match(handoff, /Codex answered: NIGHT-HERON/);
-  assert.match(handoff, /Codex used: edit added codename\.md/);
+  assert.match(handoff, /Codex used 1 tool call:\n {2}- edit added codename\.md \[no result\]/);
   assert.doesNotMatch(handoff, /SECRET RAW OUTPUT/);
   const long = Array.from({ length: 60 }, (_, i) => [{ role: 'user', text: `question ${i} ${'x'.repeat(500)}`, agent: 'claude' }, { role: 'assistant', text: `answer ${i} ${'y'.repeat(2000)}`, agent: 'claude' }]).flat();
   const clipped = buildHandoff(long, 'codex');
-  assert.ok(clipped.length < 12000, `handoff stays small (${clipped.length} chars)`);
+  assert.ok(clipped.length <= 20000, `handoff stays within budget (${clipped.length} chars)`);
   assert.match(clipped, /earlier turns omitted/);
   assert.match(clipped, /question 59/, 'the newest turns are the ones kept');
+});
+
+test('chat memory: final replies survive intermediate messages in both handoff formats', () => {
+  const { buildHandoff } = require('../lib/chat-handoff.js');
+  const conclusion = 'Soll ich die fertige Änderung jetzt übernehmen?';
+  const messages = [
+    { role: 'user', text: 'Bitte den Fehler beheben', agent: 'claude' },
+    ...Array.from({ length: 20 }, (_, i) => ({ role: 'assistant', text: `Zwischenmeldung ${i}: ${'x'.repeat(200)}`, agent: 'claude' })),
+    { role: 'assistant', text: `Ergebnis: ${'y'.repeat(6000)}\n${conclusion}`, agent: 'claude' },
+  ];
+  for (const structured of [false, true]) {
+    // Also exercise the ordinary 4000-character limit on an older turn.
+    for (const newer of [[], [{ role: 'user', text: 'ja' }, { role: 'assistant', text: 'Erledigt.' }]]) {
+      const handoff = buildHandoff([...messages, ...newer], 'codex', { structured });
+      assert.ok(handoff.includes(conclusion));
+      assert.ok(handoff.includes('y'.repeat(1200)), 'at least the final 1200 characters survive');
+      // Intermediate messages shrink to a one-line digest each; their bodies are what is omitted.
+      assert.match(handoff, /message 1: Zwischenmeldung 0:/);
+      assert.match(handoff, /message 20: Zwischenmeldung 19:/);
+      assert.doesNotMatch(handoff, /Zwischenmeldung 0: x/);
+      if (structured) assert.equal(JSON.parse(handoff.split('\n\n').find(line => line.startsWith('{'))).earlierMessages.length, 20);
+      if (newer.length) assert.match(handoff, /\[\.\.\.\d+ chars omitted\.\.\.\]/);
+      else assert.ok(handoff.includes(messages.at(-1).text.replace(/\n/g, structured ? '\\n' : '\n')), 'newest final reply fits without clipping');
+    }
+  }
+});
+
+test('chat memory: oversized newest replies fit the complete budget and retain their ending', () => {
+  const { buildHandoff } = require('../lib/chat-handoff.js');
+  const tail = `${'z'.repeat(1200)} FINAL QUESTION: proceed?`;
+  for (const structured of [false, true]) {
+    for (const maxChars of [20000, 6000]) {
+      const handoff = buildHandoff([
+        { role: 'user', text: 'older request' }, { role: 'assistant', text: 'older answer' },
+        { role: 'user', text: 'newest request' },
+        { role: 'assistant', text: `ANSWER HEAD ${'"\\\n'.repeat(30000)}${tail}`, agent: 'claude' },
+      ], 'codex', { structured, maxChars });
+      assert.ok(handoff.length <= maxChars, `${handoff.length} <= ${maxChars}`);
+      assert.ok(handoff.includes(tail));
+      assert.match(handoff, /ANSWER HEAD/);
+      assert.match(handoff, /earlier turns omitted/);
+      assert.doesNotMatch(handoff, /older answer/);
+      if (structured) {
+        const record = JSON.parse(handoff.split('\n\n').find(line => line.startsWith('{')));
+        assert.ok(record.reportedResponses[0].text.endsWith(tail));
+      }
+    }
+  }
+});
+
+test('chat memory: user requests and task state preserve their head and conclusion', () => {
+  const { buildHandoff, taskState } = require('../lib/chat-handoff.js');
+  const request = `REQUEST HEAD ${'x'.repeat(5000)} REQUEST END`;
+  const messages = [{ role: 'user', text: request }, { role: 'assistant', text: 'Done.' }];
+  const latest = taskState(messages).latestRequest;
+  assert.ok(latest.length <= 1400);
+  assert.match(latest, /^REQUEST HEAD/);
+  assert.match(latest, /REQUEST END$/);
+  assert.match(latest, /\[\.\.\.\d+ chars omitted\.\.\.\]/);
+  for (const structured of [false, true]) {
+    const handoff = buildHandoff([...messages, { role: 'user', text: 'next' }], 'codex', { structured });
+    assert.match(handoff, /REQUEST HEAD/);
+    assert.match(handoff, /REQUEST END/);
+    assert.ok(handoff.length <= 20000);
+  }
+});
+
+// A handoff plus the transcript it points into: `lines` is the transcript file line by line (1-based via lines[n - 1]).
+function withTranscript(messages) {
+  const { renderTranscript } = require('../lib/chat-transcript.js');
+  const model = renderTranscript({ id: 'c-1', title: 'Fixture', messages });
+  return { transcript: { file: 'C:\\tmp\\session\\chats\\transcripts\\c-1.md', locate: model.locate, turnOf: model.turnOf }, text: model.text, lines: model.text.split('\n') };
+}
+const markersOf = (text) => text.match(/\[\.\.\.[^\]]*?\.\.\.\]/g) || [];
+// Everything after the briefing's explanatory header paragraph (which quotes a marker as an example).
+const bodyOf = (handoff) => handoff.slice(handoff.indexOf('\n\n'));
+const POINTER = /^\[\.\.\.(\d+) chars omitted; full text: C:\/tmp\/session\/chats\/transcripts\/c-1\.md line (\d+), turn (\d+), (?:message \d+|user message)\.\.\.\]$/;
+
+test('chat memory: every omission marker names the transcript line, turn and message that holds the omitted text', () => {
+  const { buildHandoff } = require('../lib/chat-handoff.js');
+  const prose = (label, count) => Array.from({ length: count }, (_, i) => `${label} paragraph ${i}: ${'lorem ipsum '.repeat(12)}`).join('\n');
+  const messages = [
+    { role: 'user', text: `Old request\n${prose('request', 120)}`, agent: 'claude' },
+    { role: 'assistant', text: prose('old answer', 150), agent: 'claude' },
+    { role: 'user', text: 'Newest request', agent: 'claude' },
+    { role: 'assistant', text: prose('newest answer', 40), agent: 'claude' },
+  ];
+  const { transcript, lines } = withTranscript(messages);
+  for (const structured of [false, true]) {
+    const handoff = buildHandoff(messages, 'codex', { structured, transcript });
+    const markers = markersOf(bodyOf(handoff));
+    assert.ok(markers.length >= 2, `both the long request and the long answer were shortened (${markers.length})`);
+    for (const marker of markers) {
+      const [, , line, turn] = POINTER.exec(marker) || assert.fail(`marker without a pointer: ${marker}`);
+      const target = lines[Number(line) - 1];
+      assert.match(target, /paragraph \d+:|^Old request/, `line ${line} (turn ${turn}) is part of the shortened text`);
+      assert.ok(messages.some(entry => entry.text.includes(target)), 'the pointed line is real chat text');
+    }
+    assert.match(handoff, /C:\/tmp\/session\/chats\/transcripts\/c-1\.md/);
+    assert.match(handoff, /characters of conversation text are omitted in this briefing/);
+    assert.match(handoff, /file Read tool/);
+  }
+  assert.doesNotMatch(buildHandoff(messages, 'codex'), /full text:/, 'without a transcript there is nothing to point at');
+});
+
+test('chat memory: a numbered list is cut at item boundaries, so no entry between the first and the last disappears', () => {
+  const { buildHandoff } = require('../lib/chat-handoff.js');
+  const { clipText } = require('../lib/handoff-clip.js');
+  const findings = Array.from({ length: 10 }, (_, i) => `${i + 1}. **Finding ${i + 1}**${i === 6 ? ' [critical]' : ''} in src/file${i}.js\n   ${'Detail text. '.repeat(90)}`).join('\n');
+  const answer = `Review of the diff, ten findings:\n\n${findings}\n\nShall I fix them now?`;
+  const messages = [{ role: 'user', text: 'Review it', agent: 'claude' }, { role: 'assistant', text: answer, agent: 'claude' }, { role: 'user', text: 'ok', agent: 'claude' }, { role: 'assistant', text: 'Done.', agent: 'claude' }];
+  const { transcript } = withTranscript(messages);
+  for (const structured of [false, true]) {
+    for (const withPointers of [true, false]) {
+      const handoff = buildHandoff(messages, 'codex', { structured, transcript: withPointers ? transcript : null });
+      assert.ok(handoff.length < answer.length, 'the older turn really was clipped');
+      for (let n = 1; n <= 10; n += 1) assert.ok(handoff.includes(`${n}. **Finding ${n}**`), `item ${n} survives (structured=${structured}, pointers=${withPointers})`);
+      assert.ok(handoff.includes('Shall I fix them now?'), 'the closing question survives');
+      assert.ok(handoff.includes('Review of the diff, ten findings:'), 'the introduction survives');
+    }
+  }
+  // Direct, at several budgets: all ten numbers each time, and the critical item's body wins the spare budget.
+  for (const max of [3000, 2000, 1500, 900]) {
+    const clipped = clipText(answer, max).text;
+    for (let n = 1; n <= 10; n += 1) assert.ok(clipped.includes(`${n}. **Finding ${n}**`), `item ${n} at ${max} chars`);
+    assert.ok(clipped.length <= max, `${clipped.length} <= ${max}`);
+  }
+  const body = (text, n) => text.slice(text.indexOf(`${n}. **Finding`), text.indexOf(`${n + 1}. **Finding`)).split('Detail').length;
+  const tight = clipText(answer, 2000).text;
+  assert.ok(body(tight, 7) > body(tight, 1) && body(tight, 7) > body(tight, 3), 'the critical finding keeps more of its body than the others');
+  // Code blocks inside an item are not mistaken for items.
+  const fenced = clipText(`Intro\n\n1. First\n\`\`\`\n# not a heading\n- not an item\n\`\`\`\n${'filler line\n'.repeat(80)}\n2. Second\n3. Third\n${'more filler\n'.repeat(80)}`, 700).text;
+  for (const item of ['1. First', '2. Second', '3. Third']) assert.ok(fenced.includes(item));
+});
+
+test('chat memory: intermediate messages keep a one-line digest and a pointer instead of just a count', () => {
+  const { buildHandoff } = require('../lib/chat-handoff.js');
+  const first = `Ich prüfe zuerst die Konfiguration. ${'Danach lese ich die Logs und vergleiche sie. '.repeat(20)}`;
+  const second = `Der Fehler liegt im Parser; ${'ich habe drei Stellen gefunden. '.repeat(30)}`;
+  const messages = [
+    { role: 'user', text: 'Bitte den Fehler beheben', agent: 'claude' },
+    { role: 'assistant', text: first, agent: 'claude' },
+    { role: 'assistant', text: 'Kurz.', agent: 'claude' },
+    { role: 'assistant', text: second, agent: 'claude' },
+    { role: 'assistant', text: 'Behoben: der Parser prüft jetzt die Länge.', agent: 'claude' },
+  ];
+  const { transcript, lines } = withTranscript(messages);
+  for (const structured of [false, true]) {
+    const handoff = buildHandoff(messages, 'codex', { structured, transcript });
+    assert.match(handoff, /message 1: Ich prüfe zuerst die Konfiguration\. \[\.\.\.\d+ chars omitted; full text: [^\]]*line \d+, turn 1, message 1\.\.\.\]/);
+    assert.match(handoff, /message 2: Kurz\.(?! \[)/, 'a message shorter than its digest is kept whole, without a marker');
+    assert.match(handoff, /message 3: Der Fehler liegt im Parser; ich habe drei Stellen gefunden\. \[\.\.\.\d+ chars omitted; full text: [^\]]*turn 1, message 3\.\.\.\]/);
+    assert.ok(handoff.includes('Behoben: der Parser prüft jetzt die Länge.'), 'the final message is the reported response');
+    assert.ok(!handoff.includes('Danach lese ich die Logs und vergleiche sie. Danach'), 'the body of an intermediate message is not repeated');
+    const digest = /message 1: ([^\[]*?) \[/.exec(handoff)[1];
+    assert.ok(digest.length <= 160, `digest stays short (${digest.length})`);
+    const line = Number(/message 3: [^\[]*\[\.\.\.\d+ chars omitted; full text: [^\]]*? line (\d+),/.exec(handoff)[1]);
+    assert.ok(lines[line - 1].startsWith('Der Fehler liegt im Parser'), 'the pointer opens the transcript at that message');
+  }
+});
+
+test('chat memory: tool lines keep the start of the command and how each call ended, uncapped while the budget allows', () => {
+  const { buildHandoff } = require('../lib/chat-handoff.js');
+  const command = `cd "C:/Users/user/Nextcloud/Example Projects/Visor" && git diff --stat -- ${'src/components/Panel.tsx '.repeat(12)}`;
+  const tool = (event, state = {}) => ({ role: 'tool', done: true, error: false, event, ...state });
+  const messages = [
+    { role: 'user', text: 'Prüfe den Diff', agent: 'claude' },
+    tool({ name: 'Bash', command, output: 'ok' }),
+    tool({ name: 'Bash', command: 'npm test', output: 'FAIL src/a.test.js\n  1 failed', exitCode: 1 }, { error: true }),
+    tool({ name: 'PowerShell', command: 'Get-Item missing.txt', output: '\nGet-Item : Cannot find path\nmore' }, { error: true }),
+    ...[1, 2, 3].map(() => tool({ name: 'Read', file: 'src/a.js' })),
+    ...Array.from({ length: 20 }, (_, i) => tool({ name: 'Edit', file: `src/file${i}.js` })),
+    { role: 'tool', done: false, event: { name: 'Bash', command: 'sleep 60' } },
+    { role: 'assistant', text: 'Fertig.', agent: 'claude' },
+  ];
+  const { transcript } = withTranscript(messages);
+  const handoff = buildHandoff([...messages, { role: 'user', text: 'weiter' }], 'codex', { transcript });
+  const shown = command.replace(/\s+/g, ' ').trim();
+  assert.ok(handoff.includes(shown.slice(0, 150)), 'the command is kept far beyond 90 characters');
+  assert.ok(!handoff.includes(shown), 'but it is still cut at about 200');
+  assert.match(handoff, /Bash cd "C:\/Users\/user[^\n]*… \[ok\]/);
+  assert.match(handoff, /Bash npm test \[exit 1: FAIL src\/a\.test\.js\]/);
+  assert.match(handoff, /PowerShell Get-Item missing\.txt \[failed: Get-Item : Cannot find path\]/);
+  assert.match(handoff, /Read src\/a\.js \[ok\] ×3/, 'identical calls are counted, not repeated');
+  for (let i = 0; i < 20; i += 1) assert.ok(handoff.includes(`Edit src/file${i}.js [ok]`), 'more than eight tools are listed');
+  assert.match(handoff, /Bash sleep 60 \[no result\]/);
+  assert.match(handoff, /used 27 tool calls/);
+  assert.doesNotMatch(handoff, /Fertig\.[\s\S]*tool calls shortened/);
+
+  // A turn whose tools do not fit is summarized and pointed at, never reported as having no tools.
+  const many = [{ role: 'user', text: 'Viel Arbeit', agent: 'claude' }, ...Array.from({ length: 400 }, (_, i) => tool({ name: i % 4 ? 'Read' : 'Bash', command: i % 4 ? '' : `build step ${i} ${'x'.repeat(100)}`, file: `src/f${i}.js` })), { role: 'assistant', text: 'ok', agent: 'claude' }];
+  const manyTranscript = withTranscript(many).transcript;
+  for (const structured of [false, true]) {
+    const handoff = buildHandoff(many, 'codex', { structured, transcript: manyTranscript });
+    assert.match(handoff, /\+\d+ more calls:/);
+    assert.match(handoff, /tool calls summarized; full commands, exit status and output: C:\/tmp\/session\/chats\/transcripts\/c-1\.md line \d+, turn 1\.\.\.\]/);
+    assert.ok(handoff.length <= 20000);
+    if (structured) assert.ok(JSON.parse(handoff.split('\n\n').find(line => line.startsWith('{'))).tools.length > 0);
+  }
+});
+
+test('chat memory: an oversized newest turn still reports its tools (it used to print an empty list)', () => {
+  const { buildHandoff } = require('../lib/chat-handoff.js');
+  const messages = [{ role: 'user', text: 'fix it', agent: 'claude' }, { role: 'tool', done: true, error: false, event: { name: 'Bash', command: 'git diff' } }, { role: 'tool', done: true, error: false, event: { name: 'Edit', file: 'a.js' } }, { role: 'assistant', text: 'x'.repeat(40000), agent: 'claude' }];
+  for (const structured of [false, true]) {
+    const handoff = buildHandoff(messages, 'codex', { structured });
+    assert.ok(handoff.length <= 20000);
+    assert.match(handoff, /Bash git diff \[ok\]/);
+    assert.match(handoff, /Edit a\.js \[ok\]/);
+    assert.doesNotMatch(handoff, /"tools":\[\]|used: ; /);
+  }
+});
+
+test('chat memory: the hard size cap holds in plain and structured mode, with and without pointers', () => {
+  const { buildHandoff } = require('../lib/chat-handoff.js');
+  const items = (turn) => Array.from({ length: 12 }, (_, i) => `${i + 1}. **Point ${i + 1} of turn ${turn}** ${'because '.repeat(40)}`).join('\n');
+  const messages = Array.from({ length: 40 }, (_, turn) => [
+    { role: 'user', text: `Question ${turn}\n${'context line\n'.repeat(60)}`, agent: 'claude' },
+    ...Array.from({ length: 3 }, (_, i) => ({ role: 'tool', done: true, error: i === 1, event: { name: 'Bash', command: `step ${turn}-${i} ${'y'.repeat(150)}`, output: 'out' } })),
+    { role: 'assistant', text: `Working on it. ${'detail '.repeat(100)}`, agent: 'claude' },
+    { role: 'assistant', text: `Result for turn ${turn}:\n${items(turn)}\nAnything else?`, agent: 'claude' },
+  ]).flat();
+  const { transcript } = withTranscript(messages);
+  for (const structured of [false, true]) {
+    for (const withPointers of [true, false]) {
+      for (const maxChars of [20000, 9000, 6000]) {
+        const handoff = buildHandoff(messages, 'codex', { structured, maxChars, transcript: withPointers ? transcript : null });
+        assert.ok(handoff.length <= maxChars, `${handoff.length} <= ${maxChars} (structured=${structured}, pointers=${withPointers})`);
+        assert.match(handoff, /Question 39/, 'the newest turn is always there');
+        assert.match(handoff, /earlier turns omitted/);
+        for (let n = 1; n <= 12; n += 1) assert.ok(handoff.includes(`${n}. **Point ${n} of turn 39**`), `newest list item ${n}`);
+        if (withPointers) {
+          assert.match(handoff, /\(\d+ earlier turns omitted\. \[\.\.\.\d+ chars omitted; full text: [^\]]*line \d+, turn 1-\d+\.\.\.\]\)/, 'dropped turns are pointed at too');
+          for (const marker of markersOf(bodyOf(handoff))) assert.match(marker, /full (?:text|commands, exit status and output): C:\/tmp\/session\/chats\/transcripts\/c-1\.md/, 'every marker carries the pointer');
+        }
+      }
+    }
+  }
+});
+
+test('chat transcript: complete, readable, and its line index matches the file', () => {
+  const { renderTranscript } = require('../lib/chat-transcript.js');
+  const long = `Intro\n${'filler\n'.repeat(30)}Middle part\n${'filler\n'.repeat(30)}Last part`;
+  const user = { role: 'user', text: 'Q1 with ``` backticks', agent: 'claude', at: '2026-10-23T10:00:00Z', attachments: ['shot.png'] };
+  const reply = { role: 'assistant', text: long, agent: 'claude', modelLabel: 'Opus' };
+  const tool = { role: 'tool', done: true, error: true, offset: long.indexOf('Middle part'), event: { name: 'Bash', command: 'npm test -- --grep "a b"\n&& echo done', output: 'fail ``` here\nsecond line', exitCode: 3, diff: '-a\n+b' } };
+  const capped = { role: 'tool', done: true, error: false, offset: long.length, event: { name: 'Bash', command: 'big', output: 'z'.repeat(16000) } };
+  const second = { role: 'user', text: 'Q2' };
+  const reply2 = { role: 'assistant', text: 'A2a' };
+  const reply3 = { role: 'assistant', text: 'A2b', interrupted: true };
+  const model = renderTranscript({ id: 'c-9', title: 'My chat', createdAt: '2026-10-23', messages: [user, reply, tool, capped, second, reply2, reply3] });
+  for (const part of ['# Clanker chat transcript: My chat', '## Turn 1 · Q1 with', '## Turn 2 · Q2', 'Attachments: shot.png', 'A2a', 'A2b', 'stopped by the user', 'npm test -- --grep "a b"\n&& echo done', 'second line', '```diff\n-a\n+b', '#### Tool 1 · Bash · exit 3: fail ``` here', 'truncated when recorded at 16000 characters']) {
+    assert.ok(model.text.includes(part), `transcript contains ${JSON.stringify(part)}`);
+  }
+  assert.ok(model.text.includes('````\nfail ``` here'), 'a longer fence protects output that contains backticks');
+  const lines = model.text.split('\n');
+  const at = (message, offset) => lines[model.locate(message, offset).line - 1];
+  assert.equal(at(user, 0), 'Q1 with ``` backticks');
+  assert.equal(at(reply, 0), 'Intro');
+  assert.equal(at(reply, long.indexOf('Middle part')), 'Middle part', 'text after a tool call is located past the tool block');
+  assert.equal(at(reply, long.indexOf('Last part')), 'Last part');
+  assert.equal(at(reply, long.indexOf('filler', 10) ), 'filler');
+  assert.deepEqual({ turn: model.locate(reply2).turn, message: model.locate(reply2).message }, { turn: 2, message: 1 });
+  assert.equal(model.locate(reply3).message, 2);
+  assert.equal(lines[model.turnOf(second).line - 1], '## Turn 2 · Q2');
+  assert.ok(lines[model.turnOf(user).toolLine - 1].startsWith('#### Tool 1 · Bash'));
+  assert.equal(model.locate({ role: 'assistant', text: 'not in the chat' }), null);
+});
+
+test('chat transcript: ChatStore writes it beside the chats, rewrites only on change, and the storage sweep leaves it alone', () => {
+  const { ChatStore } = require('../lib/chat-store.js');
+  const { sweepStorage } = require('../lib/storage-gc.js');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'clanker-transcript-'));
+  try {
+    const store = new ChatStore(dir);
+    const chat = store.create();
+    chat.messages = [{ role: 'user', text: 'Hello transcript' }, { role: 'assistant', text: 'Hi', agent: 'claude' }];
+    store.save(chat);
+    const first = store.transcript(chat);
+    assert.equal(first.file, path.join(dir, 'chats', 'transcripts', `${chat.id}.md`));
+    assert.match(fs.readFileSync(first.file, 'utf8'), /## Turn 1 · Hello transcript/);
+    fs.utimesSync(first.file, new Date(1e12), new Date(1e12));
+    store.transcript(chat);
+    assert.equal(Math.round(fs.statSync(first.file).mtimeMs), 1e12, 'unchanged chat: file not rewritten');
+    chat.messages.push({ role: 'user', text: 'Second' });
+    store.transcript(chat);
+    assert.match(fs.readFileSync(first.file, 'utf8'), /## Turn 2 · Second/);
+    assert.ok(fs.statSync(first.file).mtimeMs > 1e12 + 1000, 'changed chat: file rewritten');
+    assert.deepEqual(store.list().map(entry => entry.id), [chat.id], 'the transcript folder is not mistaken for a chat');
+    const old = new Date(Date.now() - 365 * 24 * 3600 * 1000);
+    fs.utimesSync(first.file, old, old);
+    assert.deepEqual(sweepStorage(dir, { graceMs: 0 }), { attachments: 0, staging: 0, bytes: 0 });
+    assert.ok(fs.existsSync(first.file), 'the sweep never touches a transcript a briefing may point at');
+    assert.equal(store.delete(chat.id), true);
+    assert.ok(!fs.existsSync(first.file), 'deleting a chat removes its transcript');
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });
 
 test('compaction: a checkpoint bounds the briefing and always survives the budget', () => {
@@ -1149,6 +1784,13 @@ test('compaction: a checkpoint bounds the briefing and always survives the budge
   assert.match(handoff, /detailed chronology/, 'the hidden detailed context survives alongside the generated summary');
   assert.match(handoff, /after 19/, 'recent turns still follow it');
   const rich = buildCompactionHandoff(long, 'codex');
+  const multiPart = buildCompactionHandoff([
+    { role: 'user', text: 'Detailed work' },
+    { role: 'assistant', text: 'IMPORTANT INTERMEDIATE DECISION', agent: 'claude' },
+    { role: 'assistant', text: 'FINAL COMPACTION DETAIL', agent: 'claude' },
+  ], 'codex');
+  assert.match(multiPart, /IMPORTANT INTERMEDIATE DECISION/, 'archival compaction still retains intermediate messages');
+  assert.match(multiPart, /FINAL COMPACTION DETAIL/);
   assert.ok(rich.length > 40000 && rich.length <= COMPACT_TARGET_TOKENS * 4 + 1000, `rich handoff uses the larger bounded budget (${rich.length} chars)`);
   assert.ok(estimateTokens(rich) > estimateTokens(buildHandoff(long, 'codex')), 'compaction retains more detail than an ordinary cross-agent briefing');
   const repeated = buildCompactionHandoff(messages, 'codex');
@@ -1246,6 +1888,54 @@ test('A turn that ends with background agents running keeps its Claude process u
   line({ type: 'system', subtype: 'task_notification', tool_use_id: 'bg1', status: 'completed' });
   assert.equal(ended, 1, 'no agents left and the turn is over: the process may close');
   assert.equal(e.lingering, null);
+});
+
+test('background shell commands keep the turn open until Claude finishes responding to their results', () => {
+  const { StreamEngine } = require('../lib/stream-engine.js');
+  const e = new StreamEngine({ cwd: TEST_CWD, interactive: true });
+  let ended = 0;
+  e.child = { stdin: { writable: true, end() { ended++; } } };
+  const events = []; e.on('event', event => events.push(event));
+  const line = raw => e.consumeLine(JSON.stringify(raw), 'claude');
+  line({ type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 'scraper', content: 'Command running in background with ID: scrape-job. Output is being written to: scrape.output' }] } });
+  line({ type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 'monitor', content: 'Command running in background with ID: wait-job.' }] } });
+  line({ type: 'result', session_id: 's1' });
+  assert.equal(ended, 0);
+  assert.equal(events.some(event => event.type === 'turn_complete'), false);
+  line({ type: 'system', subtype: 'task_notification', task_id: 'scrape-job', status: 'completed' });
+  line({ type: 'system', subtype: 'task_notification', tool_use_id: 'monitor', status: 'completed' });
+  assert.equal(ended, 0, 'the model still needs to respond after the last notification');
+  line({ type: 'assistant', message: { content: [{ type: 'text', text: '256 images downloaded.' }] } });
+  line({ type: 'result', session_id: 's1' });
+  assert.equal(ended, 1);
+  assert.equal(events.filter(event => event.type === 'turn_complete').length, 1);
+  assert.equal(events.filter(event => event.type === 'remote_prompt').length, 0, 'background work belongs to the original turn');
+  assert.equal(e.backgroundCommands.size, 0);
+});
+
+test('Claude limit or error ends a turn even with background commands', () => {
+  const { StreamEngine } = require('../lib/stream-engine.js');
+  for (const isError of [true, false]) {
+    const e = new StreamEngine({ cwd: TEST_CWD });
+    e.child = { stdin: { writable: true, end() {} } };
+    e.backgroundCommands.set('job', 'background-job');
+    const events = []; e.on('event', event => events.push(event));
+    if (!isError) e.consumeLine(JSON.stringify({ type: 'assistant', message: { content: [{ type: 'text', text: "You've hit your 5-hour limit · resets 11:40am (Europe/Berlin)" }] } }), 'claude');
+    e.consumeLine(JSON.stringify({ type: 'result', session_id: 's1', is_error: isError }), 'claude');
+    assert.equal(events.filter(event => event.type === 'turn_complete').length, 1);
+    assert.equal(e.child.turnCompleted, true);
+    assert.equal(e.backgroundCommands.size, 0);
+  }
+});
+
+test('late Claude output reopens persistence even when the CLI did not announce its background job', () => {
+  const { StreamEngine } = require('../lib/stream-engine.js');
+  const e = new StreamEngine({ cwd: TEST_CWD });
+  e.child = { turnCompleted: true };
+  const events = []; e.on('event', event => events.push(event));
+  e.consumeLine(JSON.stringify({ type: 'assistant', message: { content: [{ type: 'text', text: 'Later result' }] } }), 'claude');
+  assert.deepEqual(events.filter(event => ['remote_prompt', 'delta'].includes(event.type)).map(event => event.type), ['remote_prompt', 'delta']);
+  assert.equal(e.child.turnCompleted, false);
 });
 
 test('unified permission selector: effectivePermissionMode, CLI flags, fallback, and resumed chats', () => {
@@ -1529,4 +2219,48 @@ test('compaction: StreamEngine flags compact turn and notifyReply suppresses chi
     if (origNoChime === undefined) delete process.env.NO_CHIME;
     else process.env.NO_CHIME = origNoChime;
   }
+});
+
+test('toast text is the part of the reply after its last tool call', () => {
+  const { textAfterLastTool, firstSentence } = require('../lib/notify.js');
+  const opening = "I'm checking the fix in a render. ";
+  const middle = 'Edge is not installed, so I will use Chrome. ';
+  const closing = 'The scrollbar no longer appears. Cause: the row is scaled.';
+  const reply = { role: 'assistant', text: opening + middle + closing };
+  const messages = [
+    { role: 'user', text: 'fix it' },
+    reply,
+    { role: 'tool', offset: opening.length },
+    { role: 'tool', offset: opening.length + middle.length },
+  ];
+  assert.equal(firstSentence(textAfterLastTool(reply, messages)), 'The scrollbar no longer appears.');
+  // No tool calls, a reply missing from the list, or nothing written after the last tool: the whole reply.
+  assert.equal(textAfterLastTool(reply, [{ role: 'user' }, reply]), reply.text);
+  assert.equal(textAfterLastTool(reply, []), reply.text);
+  assert.equal(textAfterLastTool(reply, [reply, { role: 'tool', offset: reply.text.length }]), reply.text);
+  // Tools from an earlier turn (before the reply) do not cut it.
+  assert.equal(textAfterLastTool(reply, [{ role: 'tool', offset: 20 }, reply]), reply.text);
+});
+
+test('agy ask_question becomes a deferred question card that ends the turn instead of being auto-skipped', () => {
+  const { StreamEngine, normalizeEvent } = require('../lib/stream-engine.js');
+  const step = (state) => ({ event: 'step_update', step_update: { step_type: 'tool', step_index: 7, tool_name: 'ask_question', state, tool_info: { parameters: { questions: [{ question: 'Layout?', options: ['A', 'B (Recommended)'], is_multi_select: false }, { question: 'Extras?', options: ['X', 'Y'], is_multi_select: true }] } } } });
+  const card = normalizeEvent(step('ACTIVE'), 'gemini');
+  assert.equal(card.type, 'question_required');
+  assert.equal(card.deferred, true);
+  assert.deepEqual(card.questions[0], { question: 'Layout?', multiSelect: false, options: [{ label: 'A' }, { label: 'B (Recommended)' }] });
+  assert.equal(card.questions[1].multiSelect, true);
+  assert.equal(normalizeEvent(step('DONE'), 'gemini'), null, 'the auto-skipped result shows nothing');
+
+  const e = new StreamEngine({ cwd: process.cwd(), models: {}, interactive: true });
+  const events = [];
+  e.on('event', (event) => events.push(event));
+  let killed = false;
+  e.child = { killed: false, pid: 0, stdin: { writable: false }, kill() { killed = true; } };
+  e.consumeLine(JSON.stringify(step('ACTIVE')), 'gemini');
+  assert.deepEqual(events.map((event) => event.type), ['question_required', 'turn_complete'], 'card, then the turn ends');
+  assert.equal(e.approvals.size, 0, 'nothing waits on the process');
+  assert.equal(e.child, null);
+  e.consumeLine(JSON.stringify(step('DONE')), 'gemini');
+  assert.equal(events.length, 2, 'no further output from the stopped turn');
 });

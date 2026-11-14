@@ -6,7 +6,7 @@
 
 const fs = require('node:fs');
 const path = require('node:path');
-const { git } = require('./loop-exec');
+const { git, run, nodeCommand } = require('./loop-exec');
 
 const MAX_FILE_BYTES = 25 * 1024 * 1024, MAX_TOTAL_BYTES = 2 * 1024 * 1024 * 1024;
 const SKIP_DIRS = /(?:^|\/)(?:node_modules|\.git|\.agents|\.venv|__pycache__|Pods|DerivedData|\.gradle|\.next|\.nuxt|\.turbo|\.cache|\.parcel-cache|coverage)(?:\/|$)/;
@@ -82,7 +82,7 @@ function linkDependencies(root, checkout) {
 async function snapshotProject(root, workspace) {
   const checkout = path.join(workspace, 'snapshot'); fs.mkdirSync(checkout, { recursive: true });
   let bytes = 0, copied = 0, skipped = 0;
-  const jobs = [], made = new Set();
+  const jobs = [], made = new Map();
   for (const file of listProjectFiles(root)) {
     if (SKIP_DIRS.test(file) || SECRETS.test(file)) { skipped++; continue; }
     const source = path.resolve(root, file);
@@ -95,7 +95,8 @@ async function snapshotProject(root, workspace) {
   for (let index = 0; index < jobs.length; index += 64) {
     await Promise.all(jobs.slice(index, index + 64).map(async ([source, target]) => {
       const dir = path.dirname(target);
-      if (!made.has(dir)) { made.add(dir); await fs.promises.mkdir(dir, { recursive: true }); }
+      if (!made.has(dir)) made.set(dir, fs.promises.mkdir(dir, { recursive: true }));
+      await made.get(dir);
       await fs.promises.copyFile(source, target); copied++;
     }));
   }
@@ -118,9 +119,11 @@ function cleanupWorktrees(checkout, workspace) {
 }
 
 /** The workspace's checkout, rewound to its last commit; created from the real project the first time. */
-async function prepareWorkspace(root, workspace) {
+async function prepareWorkspaceInProcess(root, workspace) {
   const checkout = path.join(workspace, 'snapshot');
-  if (fs.existsSync(path.join(checkout, '.git'))) {
+  // `git init` may have succeeded before staging/committing failed. Such a copy has no
+  // baseline to reset to; rebuild it just like an interrupted copy operation.
+  if (fs.existsSync(path.join(checkout, '.git')) && git(checkout, ['rev-parse', '--verify', 'HEAD'], { allowFail: true }).trim()) {
     cleanupWorktrees(checkout, workspace);
     git(checkout, ['cherry-pick', '--abort'], { allowFail: true });
     revert(checkout); linkDependencies(root, checkout); return checkout;
@@ -133,6 +136,30 @@ async function prepareWorkspace(root, workspace) {
   for (const [key, value] of [['user.email', 'loop@clanker.invalid'], ['user.name', 'Clanker loop'], ['core.autocrlf', 'false'], ['core.safecrlf', 'false'], ['commit.gpgsign', 'false']]) git(checkout, ['config', key, value]);
   git(checkout, ['add', '-A']); git(checkout, ['commit', '-q', '--allow-empty', '-m', 'baseline']);
   return checkout;
+}
+
+/** Discovery, cleanup and Git can block for minutes on a large project. Keep them off the extension host. */
+async function prepareWorkspace(root, workspace, { signal } = {}) {
+  signal?.throwIfAborted();
+  const node = nodeCommand();
+  const result = await run(node.command, [__filename, '--prepare'], {
+    cwd: root, env: node.env, signal, input: JSON.stringify({ root, workspace }), timeoutMs: 30 * 60000,
+  });
+  if (result.code !== 0) throw new Error(result.stderr.trim() || 'Could not prepare the loop workspace.');
+  return JSON.parse(result.output).checkout;
+}
+
+// A native Node child owns the entire preparation, including its blocking Git processes.
+// The parent's runner hides its window and kills its process tree on cancellation.
+if (require.main === module && process.argv[2] === '--prepare') {
+  const os = require('node:os');
+  try { os.setPriority(0, os.constants.priority.PRIORITY_BELOW_NORMAL); } catch { /* best effort */ }
+  Promise.resolve().then(() => {
+    const { root, workspace } = JSON.parse(fs.readFileSync(0, 'utf8'));
+    return prepareWorkspaceInProcess(root, workspace);
+  }).then(checkout => process.stdout.write(JSON.stringify({ checkout })), error => {
+    process.stderr.write(error.message); process.exitCode = 1;
+  });
 }
 
 /** A worktree for one fix, on its own branch off the current head, with dependency folders linked. Returns its path. */

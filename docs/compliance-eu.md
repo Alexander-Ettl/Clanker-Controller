@@ -1,16 +1,17 @@
 # EU and GDPR compliance
 
 Technical guidance for building in the EU and Germany with Clanker Controller. It is not legal advice. You are responsible for
-what you publish; a lawyer or your data protection officer has the last word. Settings > **Compliance** holds the switches, the
-data-flow list and the pre-ship checklist described here.
+what you publish; a lawyer or your data protection officer has the last word. Settings > **Loops** holds the two switches described here.
 
 ## What leaves your computer
 
 Every agent you chat with sends its input to its provider: Claude Code to Anthropic, Codex to OpenAI, Antigravity to Google.
 That input is your messages, attachments and the project files the agent reads or edits. Smart routing sends message text to
 Cloudflare and Groq (secrets redacted, private projects never), Groq also receives dictation audio, Telegram receives the alerts
-you configure. Project files, chat history, routing logs and a loop's private copy stay local. The Compliance tab lists each flow
-and links the provider's own terms; certifications and agreements change, so the tab states none and you check the current ones.
+you configure. Project files, chat history, routing logs and a loop's private copy stay local. Certifications and agreements change,
+so this page states none; check each provider's current processing terms: [Anthropic](https://www.anthropic.com/legal/data-processing-addendum),
+[OpenAI](https://openai.com/policies/data-processing-addendum/), [Google](https://cloud.google.com/terms/data-processing-addendum),
+[Cloudflare](https://www.cloudflare.com/cloudflare-customer-dpa/), [Groq](https://groq.com/privacy-policy/), [Telegram](https://telegram.org/privacy).
 
 The point that matters most: a processing agreement (Art. 28 GDPR) is normally offered for business, team and API accounts, not for
 personal chat subscriptions. Before an agent reads real customer, patient or employee data, check which plan each CLI uses.
@@ -45,4 +46,4 @@ a request, whether a provider agreement is in place, or whether a legal basis ex
 
 `node --test ai-chat-panel/test/loop-compliance.test.js` (redaction and rules), `ai-chat-panel/test/loop-engine.test.js` (no
 prompt carries the address, indicators are listed and never edited, both switches off), and `npm.cmd run test:compliance-ui`
-(the tab, its switches and links, no overflow at 364 px; pictures go to the temp folder).
+(the Loops tab and its switches, no overflow at 364 px; pictures go to the temp folder).

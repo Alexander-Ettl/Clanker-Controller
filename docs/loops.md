@@ -39,7 +39,7 @@ lists confirmed problems and edits nothing. Both are stored per loop (`mode: 'fi
 Gemini is **not** an editor while Codex or Claude Code is installed, because they fix better today. Turn on **Let Gemini make the
 fixes** (or choose a Gemini model for the editor roles) to use it anyway; with neither of the others installed it edits by itself.
 
-**EU compliance.** Unless switched off in Settings > Compliance, an eleventh scout and a set of free text rules look for GDPR and
+**EU compliance.** Unless switched off in Settings > Loops, an eleventh scout and a set of free text rules look for GDPR and
 TDDDG indicators, and real e-mail addresses, IBANs and phone numbers are replaced with placeholders before any text goes to a
 cloud model. Indicators appear under the report's additional findings and are never fixed automatically. See
 `docs/compliance-eu.md`.

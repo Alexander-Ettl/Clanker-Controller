@@ -19,6 +19,19 @@ function parseLatest(text) {
   return version && rollout === 100 ? version : null;
 }
 
+/**
+ * agy has no status command, but Antigravity's language server (running whenever the IDE is) lists the account's tier and the
+ * tiers each model is allowed for. An account whose tier unlocks none of them cannot use the CLI. null when fine, undefined when it cannot be told.
+ */
+async function entitlement({ languageServer }) {
+  const user = (await languageServer?.('GetUserStatus'))?.userStatus;
+  const tier = user?.planStatus?.planInfo?.teamsTier;
+  const models = user?.cascadeModelConfigData?.clientModelConfigs;
+  if (!tier || !Array.isArray(models) || !models.length) return undefined;
+  if (models.some((model) => !model.allowedTiers?.length || model.allowedTiers.includes(tier))) return null;
+  return { kind: 'plan', reason: 'No Antigravity models on this plan.', detail: `Account tier ${tier} is not allowed for any model. If your plan changed, sign in to Antigravity again, then press Try again.` };
+}
+
 module.exports = {
   id: 'gemini',
   name: 'Antigravity',
@@ -35,6 +48,7 @@ module.exports = {
   login: [],
   // agy has no separate auth-status command. A model-list response confirms CLI readiness, not account validity.
   authStatus: { args: ['models'], interpret: (result) => (result.ok && parseModels(result.stdout).length ? 'ready' : 'signin') },
+  entitlement,
   install: 'Invoke-RestMethod https://antigravity.google/cli/install.ps1 | Invoke-Expression; & "$env:LOCALAPPDATA\\agy\\bin\\agy.exe"',
   discoverModels: async ({ file, runCli }) => {
     const result = await runCli(file, ['models'], 30000);

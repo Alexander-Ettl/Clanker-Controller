@@ -1,0 +1,29 @@
+{
+  "version": 1,
+  "status": "wired-in",
+  "note": "Eight non-coding categories for studying, protocols, planning and information management. Wired in 2026-10-29: the live list is ai-chat-panel/lib/work-context-categories.json and the live icons are ai-chat-panel/media/context-icons/. SVGs for these are in docs/plans/context-icons-proposed/.",
+  "categories": [
+    { "id": "study", "label": "Studying", "symbol": "Graduation cap", "example": "Quiz me on thermodynamics for Friday's exam.", "description": "Learning or revising course material: explaining concepts, working through exercises, exam preparation, quizzes and flashcards." },
+    { "id": "notes", "label": "Notes and minutes", "symbol": "Clipboard with bullet list", "example": "Turn my meeting notes into minutes with action items.", "description": "Meeting minutes, lab or session protocols, logs and journals, and summarizing or extracting key points from a given text." },
+    { "id": "organizing", "label": "Organizing", "symbol": "Folder with lines", "example": "Suggest a folder structure and naming scheme for my project archive.", "description": "Structuring information: notes, files and folders, naming schemes, tags, archives and personal knowledge bases." },
+    { "id": "schedule", "label": "Schedule and tasks", "symbol": "Calendar with check", "example": "Spread my thesis tasks over the next six weeks.", "description": "Calendars, deadlines, to-do lists, routines and time management; excludes planning what to build." },
+    { "id": "math", "label": "Math and numbers", "symbol": "Calculator", "example": "Work out the confidence interval for these measurements.", "description": "Calculations, math problems, statistics, units, formulas and spreadsheet or data analysis; excludes database work." },
+    { "id": "language", "label": "Language", "symbol": "Two speech bubbles, A and script", "example": "Translate this paragraph into German and fix the grammar.", "description": "Translating, proofreading, rephrasing and grammar of existing text, and learning languages; writing a new document is writing." },
+    { "id": "ideas", "label": "Ideas", "symbol": "Light bulb", "example": "Give me ten names for the app and weigh the best three.", "description": "Brainstorming, naming, creative writing and weighing options to reach a decision." },
+    { "id": "life", "label": "Everyday life", "symbol": "House", "example": "Which form do I need to register the move?", "description": "Everyday matters: forms and paperwork, money, travel, shopping, health and other personal decisions." }
+  ],
+  "adjustsExisting": [
+    { "id": "documentation", "description": "Writing or revising guides, explanations, emails, letters, reports and other new text as the deliverable." },
+    { "id": "research", "description": "Finding documentation, facts, files, products or external information; excludes studying course material and deciding an implementation architecture." },
+    { "id": "planning", "description": "Architecture, tradeoffs, specifications, task decomposition and discussing what to build; excludes calendars and to-do lists." }
+  ],
+  "budget": {
+    "method": "Offline: lib/work-context.js loaded with the 24-category manifest and these description tweaks, payloads built with buildPayload(), tokens estimated as the code does (bytes / 3, about 15% above real). Clef Flash costs 3,455 Neurons per million input tokens and nothing for output. No network calls.",
+    "criteriaBlockTokens": { "now16": 902, "proposed24": 1315 },
+    "requiredLimitChange": "LIMITS.inputTokens in lib/work-context.js must go from 1500 to 2000. At 1500 the 24-category payload no longer fits (the budget left after the router's 256-token margin is 1,244), buildPayload returns null and no icon is ever chosen.",
+    "perCall": { "now16MeasuredNeurons": 2.8, "proposed24EstimatedNeurons": 4.0, "worstCaseReserveNeurons": 8 },
+    "perDay": "About 250 classifications fit under the feature's own 1,000-Neuron cap (about 125 if every call hit the worst-case reservation); that is at most 10% of the 10,000 free Neurons per day. The 8,000 shared stop and the stop-when-spent behaviour are unchanged.",
+    "tradeoff": "At 2000 a long request (900 characters) leaves no room for earlier messages, so references like \"do that\" fall back to the current category. 2400 keeps four earlier messages for about 2 Neurons more per call."
+  },
+  "instructionsAddition": "Studying course material is study, not research; summaries and protocols are notes; calendars and to-do lists are schedule; translating or correcting existing text is language."
+}

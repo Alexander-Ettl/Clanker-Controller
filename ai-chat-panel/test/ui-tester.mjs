@@ -35,6 +35,12 @@ await test('nested summaries inside closed details are excluded from geometry ch
   assert.deepEqual(kinds(report, 'closed-details@400'), []);
 });
 
+await test('controls inside a transparent hover dock are excluded from geometry checks', async () => {
+  const html = '<body><div style="opacity:0;pointer-events:none"><button id="hidden-action" style="width:40px;height:30px"></button></div><div style="position:fixed;inset:0;background:#fff"></div></body>';
+  const report = await run([{ id: 'transparent-dock', html }]);
+  assert.deepEqual(kinds(report, 'transparent-dock@400'), []);
+});
+
 await test('overlap, a covered control, clipped text, sideways scrolling and an unnamed control are all measured', async () => {
   const report = await run([{ id: 'broken', html: BROKEN }]);
   for (const kind of ['overlap', 'covered-control', 'clipped-text', 'page-overflow', 'unnamed-control']) assert.ok(kinds(report, 'broken@400').includes(kind), `${kind} missing from ${kinds(report, 'broken@400')}`);

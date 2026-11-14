@@ -4,7 +4,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
 const { spawnSync, execFileSync } = require('node:child_process');
-const { locate } = require('./binary-locator');
+const { locate, headlessEnv } = require('./binary-locator');
 const { normalizeEvent } = require('./stream-engine');
 const { run } = require('./loop-exec');
 
@@ -109,7 +109,7 @@ const helpCache = new Map();
 function cliHelp(binary, args = ['--help']) {
   const key = `${binary}\0${args.join(' ')}`;
   if (helpCache.has(key)) return helpCache.get(key);
-  const result = spawnSync(binary, args, { windowsHide: true, timeout: 10000, encoding: 'utf8' });
+  const result = spawnSync(binary, args, { windowsHide: true, timeout: 10000, encoding: 'utf8', env: { ...process.env, ...headlessEnv(binary) } });
   if (result.error) throw new Error(`Antigravity CLI could not report its options: ${result.error.message}`);
   const text = `${result.stdout || ''}
 ${result.stderr || ''}`;
@@ -125,7 +125,7 @@ function viewAllowed(raw, readRoot) {
   return paths.length > 0 && paths.every(value => /\.png$/i.test(value) && inside(readRoot, path.resolve(readRoot, value)));
 }
 
-async function runFlash({ cwd, prompt, model, signal, maxTokens, timeoutMs, idleMs = 0, onActivity, logFile, task = TASK, schema = REPORT_SCHEMA, tools = [], readRoot = null, maxViews = 0 },
+async function runFlash({ cwd, prompt, model, signal, maxTokens, timeoutMs, idleMs = 0, onActivity, onStatus, logFile, task = TASK, schema = REPORT_SCHEMA, tools = [], readRoot = null, maxViews = 0 },
   { binary = locate('gemini').path, help = cliHelp, execute = processOutput } = {}) {
   if (!binary) throw new Error('Antigravity CLI unavailable.');
   // Agent configuration is confined to this run's scratch folder, never global settings.
@@ -146,6 +146,7 @@ async function runFlash({ cwd, prompt, model, signal, maxTokens, timeoutMs, idle
       let raw; try { raw = JSON.parse(line); } catch { return; }
       if (raw.event === 'result') tokens = usageTotal(raw.result?.usage || raw.usage);
       const event = normalizeEvent(raw, 'gemini');
+      if (event?.type === 'delta' || event?.type === 'thought') onStatus?.('running');
       if (event?.type === 'tool_start' && viewAllowed(raw, readRoot)) { if (++views > maxViews) throw new Error('Visual agent opened more pictures than it was given.'); }
       else if (['tool_start', 'approval_required', 'question_required'].includes(event?.type)) throw new Error('Diagnostic agent attempted a forbidden tool or approval.');
       if (event?.type === 'delta') deltas += event.text || '';

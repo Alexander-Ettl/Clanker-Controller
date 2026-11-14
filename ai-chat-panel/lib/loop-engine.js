@@ -189,7 +189,7 @@ const adoptBaseline = (captureDir, baselineDir) => { const staged = path.join(ca
 
 async function fullCycle(context, deps = {}) {
   const { job, run: runRecord, directory, signal, onProgress = () => {}, resolveRole = async () => ({ target: null, skipped: [] }), slots = null, gate = async () => {}, expired = () => false, visorDir = null } = context;
-  // EU compliance (Settings > Compliance): the extra scout and the static indicators, and redaction of personal data in model input. Both default on.
+  // EU compliance (Settings > Loops): the extra scout and the static indicators, and redaction of personal data in model input. Both default on.
   const eu = { scout: true, redact: true, ...(context.compliance || {}) };
   const scrub = text => eu.redact ? redactText(text) : text;
   const exec = deps.exec || run, analyze = deps.analyze || agents.analyze, edit = deps.edit || agents.edit, capture = deps.capture || visual.capture, now = deps.now || Date.now;
@@ -209,7 +209,7 @@ async function fullCycle(context, deps = {}) {
   // ---- prepare
   report('prepare', { note: 'Copying the project' });
   const workspace = path.join(path.dirname(directory), 'workspaces', job.id);
-  const checkout = await prepareWorkspace(job.root, workspace);
+  const checkout = await prepareWorkspace(job.root, workspace, { signal });
   const profile = detectProfile(checkout);
   const baseline = baselineOf(checkout);
   const resumed = Boolean(cp.data.cycleStart);
@@ -252,7 +252,16 @@ async function fullCycle(context, deps = {}) {
   let shards = cp.data.shards || 1;
   const runScout = async aspect => {
     if (cp.data.scouts[aspect.id]?.status === 'done') return;
-    const mark = (state, extra = {}) => { const entry = live.agents.find(item => item.id === aspect.id); Object.assign(entry, { state }, extra); report('scan'); };
+    const mark = (state, extra = {}) => {
+      const entry = live.agents.find(item => item.id === aspect.id);
+      if (entry.state === state && !Object.keys(extra).length) return;
+      const reason = { running: 'Model output received', waiting: 'Waiting for model output', queued: 'Waiting for an available scout slot', paused: 'Waiting for foreground work to finish' }[state];
+      Object.assign(entry, { state, reason }, extra);
+      const counts = [['running', 'responding'], ['waiting', 'awaiting response'], ['queued', 'queued'], ['paused', 'waiting for idle'], ['done', 'done'], ['failed', 'failed'], ['skipped', 'skipped']]
+        .map(([key, label]) => { const n = live.agents.filter(item => item.state === key).length; return n ? `${n} ${label}` : ''; }).filter(Boolean);
+      const scoutTokens = Object.values(cp.data.scouts).reduce((total, scout) => total + (Number.isFinite(scout.tokens) ? scout.tokens : 0), 0);
+      report('scan', { note: `${aspects.length} scouts on ${scout.target?.label || 'unavailable model'}: ${counts.join(', ')}`, scoutTokens });
+    };
     if (!scout.target) { cp.data.scouts[aspect.id] = { status: 'skipped', reason: 'No scout model' }; mark('skipped'); return; }
     if (expired() || budget.remaining < MIN_CALL_TOKENS) { cp.data.scouts[aspect.id] = { status: 'skipped', reason: expired() ? 'Time budget used up' : 'Token budget used up' }; mark('skipped'); return; }
     const dir = path.join(directory, 'scouts', aspect.id); fs.mkdirSync(dir, { recursive: true });
@@ -265,11 +274,16 @@ async function fullCycle(context, deps = {}) {
       + `${known.length ? `Already known or fixed, do not report again: ${JSON.stringify(known)}\n` : ''}`
       + `Source excerpts (${packet.files} of ${packet.total} files${packet.shards > 1 ? `, slice ${packet.shard + 1} of ${packet.shards}` : ''}; may be truncated):\n${packet.packet}`;
     fs.writeFileSync(path.join(dir, 'prompt.txt'), prompt);
-    mark('running');
+    mark('paused', { reason: 'Waiting for foreground work to finish' });
     try {
       await gate(signal);
-      const result = await pool.run(() => analyze({ target: scout.target, cwd: dir, prompt, task: scoutTask(aspect, profile.label), schema: FIND_SCHEMA, supplied: packet.supplied, signal,
-        maxTokens: Math.min(450000, budget.remaining), logFile: path.join(dir, 'log.jsonl') }));
+      mark('queued', { reason: 'Waiting for an available scout slot' });
+      const result = await pool.run(() => {
+        mark('waiting', { reason: 'Starting request; waiting for model output' });
+        return analyze({ target: scout.target, cwd: dir, prompt, task: scoutTask(aspect, profile.label), schema: FIND_SCHEMA, supplied: packet.supplied, signal,
+          maxTokens: Math.min(450000, budget.remaining), logFile: path.join(dir, 'log.jsonl'),
+          onStatus: state => mark(state) });
+      });
       budget.charge(result.tokens, 150000);
       const findings = result.report.findings.map(finding => ({ ...finding, source: 'scout', aspects: [aspect.id], agreement: 1, suggestion: aspect.fixes === false }));
       cp.data.scouts[aspect.id] = { status: 'done', findings, summary: result.report.summary, questions: result.report.questions, tokens: result.tokens, found: findings.length };

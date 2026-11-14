@@ -445,7 +445,7 @@ body {
 }
 .agents-steps { margin-left: auto; font-variant-numeric: tabular-nums; }
 .agents-log { flex: 1; min-height: 0; min-width: 0; overflow-x: hidden; overflow-y: auto; display: flex; flex-direction: column; gap: 10px; padding: 2px 2px 8px; }
-.agents-log > * { min-width: 0; max-width: 100%; }
+.agents-log > * { min-width: 0; max-width: 100%; flex-shrink: 0; } /* a long run scrolls; its steps never squash to fit the sheet */
 /* Steps: one truncated line each; open one to read its full command and output. */
 .agents-log .tool-card summary .tool-label { flex: 1; min-width: 0; }
 .agents-log .tool-body { overflow-wrap: anywhere; }
@@ -522,6 +522,10 @@ body {
 @container composer (max-width: 340px) {
   .model-picker-label { display: none; }
   .model-picker { padding: 0 8px; }
+}
+
+@container composer (min-width: 341px) and (max-width: 440px) {
+  .model-picker-label { max-width: 100px; overflow: hidden; text-overflow: ellipsis; }
 }
 
 /* The menu grows out of the composer's top edge above the picker and rests on
@@ -1003,6 +1007,14 @@ body {
   font-variant-numeric: tabular-nums;
 }
 .history-projects { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+/* The project's icon ahead of its name: a small squircle tile like the rail's, overlapping when a chat touched several. */
+.history-project-icons { flex: none; align-self: center; display: inline-flex; }
+.history-project-icon { position: relative; flex: none; display: grid; place-items: center; width: 20px; height: 20px; border-radius: 6px; background: linear-gradient(180deg, rgba(255, 255, 255, 0.08), rgba(255, 255, 255, 0) 60%), rgb(40, 42, 50); box-shadow: 0 0 0 1.5px var(--card-fill), inset 0 0 0 1px rgba(255, 255, 255, 0.12); }
+.history-project-icon + .history-project-icon { margin-left: -7px; }
+.history-project-icon .project-mark { font: 700 8.5px var(--font-text); letter-spacing: -0.02em; }
+.history-project-icon .project-icon { width: 14px; height: 14px; border-radius: 4px; }
+.history-project-icon .project-icon.is-dark { padding: 2px; }
+.history-project-icons + .history-projects { margin-left: -2px; }
 .history-when {
   font: 600 12.5px var(--font-text);
   color: var(--text-primary);
@@ -1032,6 +1044,55 @@ body {
 .history-search::placeholder { color: var(--text-tertiary); }
 .history-search:focus { border-color: color-mix(in srgb, var(--accent) 60%, transparent); background-color: rgba(255, 255, 255, 0.08); }
 .history-search::-webkit-search-cancel-button { filter: invert(0.7); cursor: pointer; }
+
+/* Search field and Filter button share a row; the panel under them holds the project, provider, status and sort chips. */
+.history-tools { display: flex; align-items: center; gap: 8px; margin: 12px 14px 0; }
+.history-tools[hidden] { display: none; }
+.history-tools .history-search { flex: 1; min-width: 0; width: auto; margin: 0; }
+.history-filter-btn {
+  display: inline-flex; align-items: center; gap: 6px; flex-shrink: 0;
+  padding: 7px 13px; border: 1px solid var(--eo-border); border-radius: var(--pill);
+  background: rgba(255, 255, 255, 0.05); color: var(--text-secondary, var(--text-primary));
+  font: 600 12.5px var(--font-text); cursor: pointer;
+  transition: border-color 0.15s var(--eo-ease), background-color 0.15s var(--eo-ease), color 0.15s var(--eo-ease);
+}
+.history-filter-btn svg { width: 14px; height: 14px; }
+.history-filter-btn:hover, .history-filter-btn[aria-expanded="true"] { background: rgba(255, 255, 255, 0.1); color: var(--text-primary); }
+.history-filter-btn:focus-visible { outline: 2px solid color-mix(in srgb, var(--accent) 70%, transparent); outline-offset: 2px; }
+.history-filter-btn.is-filtered { border-color: color-mix(in srgb, var(--accent) 60%, transparent); color: var(--text-primary); }
+.history-filter-badge {
+  min-width: 17px; padding: 0 5px; border-radius: var(--pill); box-sizing: border-box;
+  background: var(--accent); color: #fff; font: 700 11px/17px var(--font-text); text-align: center;
+}
+.history-filter-badge[hidden] { display: none; }
+.history-filter-panel {
+  display: flex; flex-direction: column; gap: 10px; margin: 10px 14px 0; padding: 12px 14px;
+  border: 1px solid var(--eo-border); border-radius: 18px; background: rgba(255, 255, 255, 0.04);
+  animation: history-filter-in 0.18s var(--eo-ease);
+}
+.history-filter-panel[hidden] { display: none; }
+@keyframes history-filter-in { from { opacity: 0; transform: translateY(-4px); } }
+@media (prefers-reduced-motion: reduce) { .history-filter-panel { animation: none; } }
+.history-filter-row { display: flex; flex-direction: column; gap: 6px; }
+.history-filter-label { font: 600 11px var(--font-text); letter-spacing: 0.04em; text-transform: uppercase; color: var(--text-tertiary); }
+.history-filter-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.history-chip {
+  display: inline-flex; align-items: center; gap: 6px; max-width: 100%;
+  padding: 5px 11px; border: 1px solid var(--eo-border); border-radius: var(--pill);
+  background: rgba(255, 255, 255, 0.04); color: var(--text-secondary, var(--text-primary));
+  font: 500 12.5px var(--font-text); cursor: pointer;
+  transition: border-color 0.15s var(--eo-ease), background-color 0.15s var(--eo-ease), color 0.15s var(--eo-ease);
+}
+.history-chip > span:last-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.history-chip:hover { background: rgba(255, 255, 255, 0.1); color: var(--text-primary); }
+.history-chip:focus-visible { outline: 2px solid color-mix(in srgb, var(--accent) 70%, transparent); outline-offset: 2px; }
+.history-chip[aria-pressed="true"] { border-color: color-mix(in srgb, var(--accent) 70%, transparent); background: color-mix(in srgb, var(--accent) 22%, transparent); color: var(--text-primary); }
+.history-chip .agent-mark { display: inline-flex; width: 14px; height: 14px; }
+.history-chip .agent-mark svg { width: 100%; height: 100%; }
+.history-chip .history-project-icon { width: 16px; height: 16px; margin: 0; flex-shrink: 0; }
+.history-filter-reset { align-self: flex-start; padding: 2px 0; border: 0; background: none; color: var(--accent); font: 600 12.5px var(--font-text); cursor: pointer; }
+.history-filter-reset[hidden] { display: none; }
+.history-filter-reset:hover { text-decoration: underline; }
 
 .history-card .title-edit {
   flex: 1;
@@ -1154,6 +1215,7 @@ body {
   box-shadow: none;
   filter: drop-shadow(0 6px 14px rgba(0, 0, 0, 0.28));
 }
+
 .history-card:not(.has-shape) { border-radius: 20px; background-color: rgb(26, 28, 34); } /* until the shape is drawn */
 .history-card.is-recent { --card-rim: rgba(100, 210, 255, 0.48); }
 .history-card.is-current { --card-rim: rgba(255, 255, 255, 0.85); }
@@ -1268,7 +1330,8 @@ body {
 
 .transcript > .turn:first-child,
 .transcript > :first-child:not(.empty-state) {
-  margin-top: 100px;
+  /* The first message lands near the vertical middle of the chat (at least 100px down); --transcript-h is set from main.js. */
+  margin-top: max(100px, calc(var(--transcript-h, 0px) * 0.4));
 }
 
 /* P17-E: an overflow:hidden flex item's automatic min-height is 0 (CSS Flexbox
@@ -1477,8 +1540,13 @@ body {
   position: relative;
   background-repeat: no-repeat;
   background-size: 100% 100%;
+  background-image: var(--bubble-image);
   filter: drop-shadow(0 6px 14px rgba(0, 0, 0, 0.28));
   animation: msg-liquid-in 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+html:not(.is-window-blurred) .msg-group-user:is(.is-dock-hovered, :has(.msg-actions :focus-visible)) {
+  background-image: var(--bubble-dock-image);
 }
 
 /* The same shape as the rail's chat tiles: superellipse corners and a tail under the right one. Fill and rim are drawn
@@ -1512,18 +1580,38 @@ body {
   mask-image: linear-gradient(180deg, #000 55%, transparent);
   transition: max-height 0.4s var(--eo-ease);
 }
+.msg-user-content { position: relative; }
+.msg-user.is-clamped.is-expanded .msg-user-content { padding-bottom: 32px; }
 .msg-user.is-clamped.is-expanded .msg-user-text {
   max-height: none;
   -webkit-mask-image: none;
   mask-image: none;
 }
-/* Show more / less lives beside the timestamp and inherits the dock's hover/focus reveal. */
-.msg-action.msg-clamp-toggle {
-  width: auto;
-  padding: 0 6px;
-  font: inherit;
+/* Always visible over the faded text, so expanding the prompt does not depend on finding the hover dock. */
+.msg-user .msg-clamp-toggle {
+  position: absolute;
+  left: 0;
+  bottom: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  min-height: 28px;
+  padding: 4px 10px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 10px;
+  background: rgba(26, 28, 34, 0.86);
+  backdrop-filter: blur(4px);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.18);
+  color: var(--text-primary);
+  font: 600 11px var(--font-text);
   white-space: nowrap;
+  cursor: pointer;
+  transition: background 0.15s var(--eo-ease), border-color 0.15s var(--eo-ease);
 }
+.msg-clamp-toggle::after { content: ''; width: 5px; height: 5px; border: solid currentColor; border-width: 0 1.4px 1.4px 0; transform: translateY(-1px) rotate(45deg); }
+.msg-clamp-toggle[aria-expanded='true']::after { transform: translateY(1px) rotate(225deg); }
+.msg-user .msg-clamp-toggle:hover { background: rgba(46, 49, 57, 0.94); border-color: rgba(255, 255, 255, 0.24); }
+.msg-clamp-toggle:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 
 /* A prompt the scheduler sent: the same bubble, with a quiet clock tag above it. */
 .msg-scheduled-tag {
@@ -1634,6 +1722,33 @@ body {
 .queue-usage-warning > svg { width: 16px; height: 16px; flex-shrink: 0; }
 .queue-usage-warning > span { flex: 1; min-width: 180px; }
 .queue-usage-warning .context-compact { height: 28px; border-color: rgba(255, 222, 64, 0.4); background: rgba(255, 222, 64, 0.12); }
+/* The queue is held because its CLI is signed out: a card in the transcript with the fix beside it. */
+.auth-hold {
+  display: flex;
+  align-items: flex-start;
+  flex-wrap: wrap;
+  gap: 12px 14px;
+  margin: 12px 0;
+  padding: 14px 16px;
+  border: 1px solid rgba(255, 122, 92, 0.34);
+  border-radius: 20px;
+  background: rgba(255, 122, 92, 0.07);
+  color: rgb(255, 160, 138);
+  font: 500 12px/1.5 var(--font-text);
+}
+.auth-hold-icon { display: flex; margin-top: 2px; }
+.auth-hold-icon svg { width: 16px; height: 16px; flex-shrink: 0; }
+.auth-hold-body { flex: 1; min-width: 200px; display: flex; flex-direction: column; gap: 3px; }
+.auth-hold-body strong { color: rgb(255, 196, 180); font-weight: 650; font-size: 13px; }
+.auth-hold-body span { color: var(--text-secondary, rgba(255, 255, 255, 0.66)); }
+.auth-hold-step::before { content: '• '; }
+.auth-hold-body .auth-hold-error { color: rgb(255, 138, 128); }
+.auth-hold-actions { display: flex; gap: 8px; margin-left: auto; align-self: center; }
+.auth-hold .context-compact { height: 30px; padding: 0 14px; color: inherit; border-color: rgba(255, 122, 92, 0.4); background: rgba(255, 122, 92, 0.12); }
+.auth-hold .auth-hold-primary { background: rgb(232, 121, 90); border-color: rgb(232, 121, 90); color: rgb(26, 15, 11); font-weight: 650; }
+.auth-hold .context-compact:disabled { opacity: 0.6; cursor: default; }
+@media (prefers-reduced-motion: no-preference) { .auth-hold { animation: auth-hold-in 220ms cubic-bezier(0.2, 0.9, 0.3, 1.1); } }
+@keyframes auth-hold-in { from { opacity: 0; transform: translateY(6px) scale(0.985); } }
 .context-warning > svg { width: 14px; height: 14px; flex-shrink: 0; }
 .context-compact {
   height: 22px;
@@ -1679,7 +1794,10 @@ body {
 .voice-dictionary-row { position: relative; padding-bottom: 5px; }
 .voice-dictionary-row::after { content: ''; position: absolute; bottom: 0; left: 0; right: 0; height: 2px; border-radius: 2px; background: var(--text-secondary); opacity: 0.4; transform: scaleX(var(--dictionary-remaining, 1)); transform-origin: left; }
 .voice-dictionary-label { flex: 1 1 140px; overflow-wrap: anywhere; }
-.voice-dictionary-countdown { font-variant-numeric: tabular-nums; min-width: 24px; text-align: right; }
+.voice-dictionary-row::after { transition: opacity 0.2s ease; }
+.voice-dictionary-row[data-held]::after { opacity: 0.85; }
+.voice-dictionary-row[data-held] .voice-dictionary-countdown { color: var(--text-primary); }
+.voice-dictionary-countdown { font-variant-numeric: tabular-nums; min-width: 24px; text-align: right; transition: color 0.2s ease; }
 .voice-dictionary-cancel svg { display: block; width: 16px; height: 16px; }
 .voice-dictionary-cancel { min-width: 32px; min-height: 32px; display: grid; place-items: center; }
 .voice-dictionary-row > button[hidden] { display: none; }
@@ -1886,9 +2004,8 @@ body {
   opacity: 1;
 }
 
-/* The dock is part of the bubble: while the pointer is on the message, bubble-shape.js adds the dock's pill to the
-   bubble's outline, so they share one rim. The dock itself has no background; its row sits in that pill, tucked up
-   into the tail's 10px, and its contents ease in. */
+/* The dock and its contour share one reveal state. The pointer is hit-tested again after scrolling; keyboard focus
+   on a dock button also reveals both. The row sits in that pill, tucked into the tail's 10px of padding. */
 .msg-group-user .msg-actions {
   position: relative;
   z-index: 2; /* above the bubble's tail zone that it overlaps, so the buttons stay clickable */
@@ -1897,14 +2014,15 @@ body {
   margin: -10px 0 0;
   color: var(--text-secondary);
   opacity: 0;
+  pointer-events: none;
   transform: translateY(-22px) scale(0.7);
   transform-origin: 100% 0;
   transition: opacity 0.14s var(--eo-ease), transform 0.5s cubic-bezier(0.34, 1.45, 0.64, 1);
 }
 
-.msg-group-user:hover .msg-actions,
-.msg-group-user .msg-actions:focus-within {
+html:not(.is-window-blurred) .msg-group-user:is(.is-dock-hovered, :has(.msg-actions :focus-visible)) .msg-actions {
   opacity: 1;
+  pointer-events: auto;
   transform: none;
 }
 
@@ -2604,6 +2722,23 @@ body {
   animation: none;
 }
 
+/* Opening the microphone: neutral with a slow breath, so the click is answered at once. Red is reserved for "live", which
+   is also when the start cue plays; nothing here may look like listening. */
+.mic-pill.is-starting:disabled {
+  opacity: 1;
+  background: color-mix(in srgb, currentColor 8%, transparent);
+  animation: mic-opening 1.1s ease-in-out infinite;
+}
+
+@keyframes mic-opening {
+  0%, 100% { box-shadow: 0 0 0 1px color-mix(in srgb, currentColor 10%, transparent); }
+  50% { box-shadow: 0 0 0 3px color-mix(in srgb, currentColor 18%, transparent); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .mic-pill.is-starting:disabled { animation: none; box-shadow: 0 0 0 2px color-mix(in srgb, currentColor 14%, transparent); }
+}
+
 /* One pill grows upward to offer the alternate action; the chosen action stays in the composer. */
 .mic-wrap {
   position: relative;
@@ -2647,10 +2782,6 @@ body {
 
 .mic-wrap:is(:hover, :has(button:focus-visible))::before {
   height: 72px;
-  opacity: 1;
-}
-
-.mic-wrap.polish-default::before {
   opacity: 1;
 }
 
@@ -2766,6 +2897,8 @@ body {
   gap: 4px;
   max-height: 34vh;
   overflow-y: auto;
+  /* The lifted row is scaled up while dragging; transforms count as scrollable overflow, so without this a horizontal bar appears. */
+  overflow-x: hidden;
   padding: 6px;
   border-radius: 18px;
   animation: msg-in 0.28s var(--eo-ease);
@@ -2795,8 +2928,9 @@ body {
   padding: 3px 4px 3px 6px;
   border-radius: 12px;
   background: rgba(255, 255, 255, 0.04);
-  animation: msg-in 0.28s var(--eo-ease);
 }
+
+.turn-queue-item.is-entering { animation: msg-in 0.28s var(--eo-ease); }
 
 .turn-queue-item .model-pill {
   flex-shrink: 0;
@@ -2818,7 +2952,6 @@ body {
 .turn-queue-item:hover .turn-queue-grip { opacity: 1; }
 
 .turn-queue-strip.is-sorting .turn-queue-item {
-  animation: none;
   transition: transform 0.38s cubic-bezier(0.16, 1, 0.3, 1), scale 0.2s var(--eo-ease), box-shadow 0.2s var(--eo-ease);
   will-change: transform;
 }
@@ -2913,6 +3046,13 @@ body {
   flex-shrink: 0;
 }
 
+.turn-queue-btn[hidden] { display: none; }
+.turn-queue-btn:disabled, .queue-take:disabled { opacity: 0.4; cursor: not-allowed; }
+
+@media (prefers-reduced-motion: reduce) {
+  .turn-queue-item.is-entering { animation: none; }
+}
+
 .turn-queue-btn.is-icon {
   padding: 0 6px;
 }
@@ -3002,7 +3142,8 @@ body {
   max-height: calc(100% - 40px);
   min-height: 0;
 }
-.image-lightbox-close {
+.image-lightbox-close,
+.image-lightbox-download {
   position: absolute;
   top: 8px;
   right: 8px;
@@ -3021,10 +3162,15 @@ body {
   cursor: pointer;
   transition: background 0.2s var(--eo-ease), transform 0.25s cubic-bezier(0.34, 1.56, 0.64, 1);
 }
-.image-lightbox-close svg { width: 14px; height: 14px; }
-.image-lightbox-close:hover { background: rgba(40, 40, 46, 0.75); transform: scale(1.08); }
-.image-lightbox-close:active { transform: scale(0.94); }
-.image-lightbox-close:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.image-lightbox-download { right: 42px; }
+.image-lightbox-close svg,
+.image-lightbox-download svg { width: 14px; height: 14px; }
+.image-lightbox-close:hover,
+.image-lightbox-download:hover { background: rgba(40, 40, 46, 0.75); transform: scale(1.08); }
+.image-lightbox-close:active,
+.image-lightbox-download:active { transform: scale(0.94); }
+.image-lightbox-close:focus-visible,
+.image-lightbox-download:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .image-lightbox img {
   max-width: 100%;
   max-height: 100%;
@@ -3053,7 +3199,62 @@ body {
 .pdf-preview-controls button { flex-shrink: 0; width: 28px; height: 28px; border: 1px solid var(--eo-border); border-radius: 50%; background: var(--eo-surface); color: var(--text-primary); font-size: 22px; cursor: pointer; }
 .pdf-preview-controls button:disabled { opacity: 0.35; cursor: default; }
 .pdf-preview-controls button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
-.attachment-chip button { border: 0; background: transparent; color: var(--text-secondary); cursor: pointer; }
+.attachment-chip button {
+  flex-shrink: 0;
+  width: 22px;
+  height: 22px;
+  display: inline-grid;
+  place-items: center;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: color 0.15s var(--eo-ease), background 0.15s var(--eo-ease);
+}
+.attachment-chip button:hover { color: var(--text-primary); background: rgba(255, 255, 255, 0.1); }
+.attachment-chip button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.attachment-chip button svg { width: 13px; height: 13px; }
+.image-context-menu {
+  position: fixed;
+  z-index: 1200;
+  min-width: 136px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 4px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 10px;
+  background: rgba(22, 24, 30, 0.88);
+  -webkit-backdrop-filter: blur(20px) saturate(180%);
+  backdrop-filter: blur(20px) saturate(180%);
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.48), inset 0 1px 0 rgba(255, 255, 255, 0.1);
+}
+.image-context-item {
+  width: 100%;
+  min-height: 28px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 10px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-primary);
+  font: 500 12px var(--vscode-font-family, var(--font-text));
+  text-align: left;
+  cursor: pointer;
+  transition: background 0.14s var(--eo-ease);
+}
+.image-context-item svg { width: 14px; height: 14px; flex-shrink: 0; color: var(--text-secondary); }
+.image-context-item:hover,
+.image-context-item:focus-visible {
+  background: rgba(255, 255, 255, 0.1);
+  outline: none;
+}
+.image-context-item:hover svg,
+.image-context-item:focus-visible svg { color: var(--text-primary); }
 /* Drop zone: the whole window dims behind a glass card while files hover over it. */
 .drop-overlay {
   position: fixed;
@@ -3085,8 +3286,6 @@ body {
   transition: transform 0.4s cubic-bezier(0.34, 1.56, 0.64, 1);
 }
 .drop-overlay-card svg { width: 18px; height: 18px; color: #64d2ff; }
-.drop-overlay-card small { display: block; margin-top: 5px; color: var(--vscode-descriptionForeground, #a1a3b1); font-size: 12px; font-weight: 400; }
-.drop-overlay-card kbd { padding: 1px 5px; border: 1px solid currentColor; border-radius: 4px; font: inherit; }
 body.attachment-dragging .drop-overlay { opacity: 1; }
 body.attachment-dragging .drop-overlay-card { transform: scale(1); }
 @media (prefers-reduced-motion: reduce) { .drop-overlay, .drop-overlay-card { transition: none; } }
@@ -3210,21 +3409,35 @@ body.attachment-dragging .drop-overlay-card { transform: scale(1); }
   50% { opacity: 1; }
 }
 
+/* One microphone, every window animated in step. The window the text will land in (the one used last) is the dictation target:
+   a red edge that swells with the voice (--mic-level, set per frame on the composer). The other windows echo the same waveform
+   quietly (no red edge, a dimmer wave, a neutral mic button), so it is clear where F9 will send. */
+.composer.is-voice:not(.is-voice-mirror)::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  pointer-events: none;
+  box-shadow: inset 0 0 0 calc(1px + 0.8px * var(--mic-level, 0)) rgba(255, 69, 58, calc(0.34 + 0.4 * var(--mic-level, 0))),
+    0 0 calc(8px + 16px * var(--mic-level, 0)) rgba(255, 69, 58, calc(0.1 + 0.18 * var(--mic-level, 0)));
+}
+
+.composer.is-voice-mirror > .voice-overlay { opacity: 0.42; }
+.mic-pill.recording.is-mirror {
+  background: color-mix(in srgb, currentColor 8%, transparent);
+  color: var(--text-secondary);
+  box-shadow: 0 0 0 1px color-mix(in srgb, currentColor calc(14% + 24% * var(--mic-level, 0)), transparent);
+}
+
 @media (prefers-reduced-motion: reduce) {
   .waveform-bar { height: 11px; opacity: 0.6; }
+  .composer.is-voice-starting .waveform-bar { height: 6px; opacity: 0.34; transform: rotate(90deg); } /* shut dashes until live */
   .composer.is-voice-processing > .voice-overlay::after { top: calc(100% - 3px); }
 }
 
 .composer.is-scheduled {
   border-color: rgba(100, 210, 255, 0.4);
   box-shadow: 0 0 0 1px rgba(100, 210, 255, 0.18), 0 8px 32px rgba(0, 0, 0, 0.35);
-}
-
-/* The schedule button's own clock, in the composer's cyan, ahead of the placeholder (a placeholder is text and cannot
-   hold an icon). The room for it stays while typing so the text does not jump; the icon shows only on an empty box. */
-.composer.is-scheduled > #promptInput { padding-left: 22px; }
-.composer.is-scheduled > #promptInput:placeholder-shown {
-  background: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='%2364d2ff' stroke-width='1.3' stroke-linecap='round' stroke-linejoin='round'%3E%3Ccircle cx='8' cy='8.5' r='5.5'/%3E%3Cpath d='M8 5.5v3l2 1.2'/%3E%3C/svg%3E") no-repeat 2px center / 15px 15px;
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -3268,6 +3481,9 @@ body.attachment-dragging .drop-overlay-card { transform: scale(1); }
 .tool-dir { min-width: 0; overflow: hidden; text-overflow: ellipsis; color: var(--text-tertiary); font-size: 11px; }
 .tool-meta { flex-shrink: 0; font: 11px var(--font-text); font-variant-numeric: tabular-nums; color: var(--text-tertiary); }
 .tool-meta:empty { display: none; }
+.tool-time { flex-shrink: 0; font: 11px var(--font-mono); font-variant-numeric: tabular-nums; color: var(--text-tertiary); white-space: nowrap; }
+.tool-time:empty { display: none; }
+.tool-card.is-running .tool-time { color: var(--text-secondary); }
 .tool-state { flex-shrink: 0; width: 8px; height: 8px; border-radius: 50%; }
 .tool-card.is-running .tool-state { background: transparent; border: 1.5px solid rgba(255, 255, 255, 0.25); border-top-color: var(--accent); animation: tool-spin 0.8s linear infinite; }
 .tool-card.is-error { border-color: rgba(255, 69, 58, 0.45); }
@@ -3509,6 +3725,17 @@ body.attachment-dragging .drop-overlay-card { transform: scale(1); }
   text-decoration-color: currentColor;
 }
 
+.msg a.code-link { text-decoration: none; cursor: pointer; }
+.msg a.code-link code {
+  color: inherit;
+  box-shadow: inset 0 -1px 0 rgba(108, 184, 255, 0.35);
+  transition: background 0.15s var(--eo-ease), box-shadow 0.15s var(--eo-ease);
+}
+.msg a.code-link:hover code {
+  background: rgba(108, 184, 255, 0.16);
+  box-shadow: inset 0 -1px 0 currentColor;
+}
+
 .msg del {
   color: var(--text-tertiary);
   text-decoration-color: rgba(255, 255, 255, 0.4);
@@ -3694,6 +3921,9 @@ body.attachment-dragging .drop-overlay-card { transform: scale(1); }
 .pending-time:empty {
   display: none;
 }
+
+/* "Timer": the pill while the agent only waits on a tool; its figure is the wait, so it reads a step brighter than the turn clock. */
+.msg-pending.is-timer .pending-time { color: var(--text-secondary); }
 
 /* P17-V: live token draw, after the clock with a muted separator dot. */
 .pending-tokens {
@@ -3994,7 +4224,9 @@ body.attachment-dragging .drop-overlay-card { transform: scale(1); }
 
 /* Scheduled prompts in the queue strip: the same rows as queued ones, with a clock where the grip is (they are not dragged)
    and when they go out. */
-.turn-queue-item.is-scheduled .turn-queue-clock { cursor: default; opacity: 1; color: #64d2ff; }
+.turn-queue-item.is-scheduled .turn-queue-clock { opacity: 1; color: #64d2ff; }
+.turn-queue-item.is-scheduled { flex-wrap: wrap; }
+.turn-queue-item.is-scheduled .turn-queue-text { flex: 1 1 80px; }
 .turn-queue-item.is-scheduled .turn-queue-clock svg { width: 13px; height: 13px; }
 .turn-queue-when { flex: none; font: 500 11px var(--font-text); font-variant-numeric: tabular-nums; color: #64d2ff; white-space: nowrap; }
 

@@ -38,7 +38,7 @@ function normalizeModels(entries) {
     const label = displayName(entry.label || entry.model);
     const base = label.replace(/\s+(none|minimal|low|medium|high|xhigh|max|ultra)$/i, '');
     const family = base.replace(/^(Claude\s+|(?:GPT|Gemini)\s+[\d.]+\s+)/i, '').split(' ')[0];
-    unique.set(id, { ...entry, ...(entry.vision == null && visionSupported(entry) ? { vision: true } : {}), id, company: owner?.company || entry.company || providers.get(entry.agent).company, label, shortLabel: /^(GPT|Gemini)$/.test(family) ? base : family, ...(/^opus$/i.test(family) ? { brand: 'opus' } : {}) });
+    unique.set(id, { ...entry, ...(entry.vision == null && visionSupported(entry) ? { vision: true } : {}), id, company: owner?.company || entry.company || providers.get(entry.agent).company, label, shortLabel: /^(GPT|Gemini)$/.test(family) ? base : family, ...(/^opus$/i.test(family) ? { brand: 'opus' } : {}), ...(/argon/i.test(entry.model) ? { brand: 'antigravityArgon' } : {}) });
   }
   const order = providers.ids();
   return [...unique.values()].sort((a, b) => order.indexOf(a.agent) - order.indexOf(b.agent)

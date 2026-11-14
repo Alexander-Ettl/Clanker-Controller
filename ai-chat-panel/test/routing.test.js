@@ -217,13 +217,32 @@ test('real runtime saves, resets and reloads routing settings', async t => {
 test('Clef reserves token-based Neurons and reconciles reported input usage',async()=>{
   const {router}=make({},async()=>{const response=cf();const read=response.json;response.json=async()=>{const data=await read();data.result.usage={input_tokens:1000};return data;};return response;});
   await router.route({prompt:'Debug'},models);
-  assert.ok(Math.abs(router.usage().neurons-8.182)<.001);
+  assert.ok(Math.abs(router.usage().neurons-3.455)<.001);
 });
 
 test('ten screenshot decisions fit the daily budget without flat image fees',async()=>{
   const {router,calls}=make();router.image=async()=>'copy';
   for(let i=0;i<10;i++)assert.equal((await router.route({prompt:'Inspect',screenshot:true},models)).tier,'cloudflare');
   assert.equal(calls.length,10);assert.ok(router.usage().neurons<2000);
+});
+
+test('free-tier ceilings migrate old Groq settings and reject larger budgets',()=>{
+  for(const groq_tpm of [8001,12000,18000]) assert.equal(config({groq_tpm}).groq_tpm,8000);
+  assert.equal(config({groq_tpm:4000}).groq_tpm,4000);
+  for(const settings of [{groq_tpm:18001},{groq_tpm:Infinity},{cloudflare_neurons:10001},{groq_tpd:200001}]) assert.throws(()=>config(settings),/Invalid/);
+});
+
+test('Clef uses current rates, preserves spent budget and refuses calls above the remaining allowance',async()=>{
+  const {router,calls}=make({},async()=>({ok:true,status:200,json:async()=>({result:{answers:{},usage:{input_tokens:1000}}})}));
+  router.usage().neurons=9000;
+  await router.callTier('cloudflare',{state:'Backend task',questions:{}},true);
+  assert.ok(Math.abs(router.usage().neurons-9021.818)<.001);
+  const before=router.usage().neurons;
+  await router.callTier('cloudflare',{state:'Frontend task',questions:{}});
+  assert.ok(Math.abs(router.usage().neurons-before-3.455)<.001);
+  router.usage().neurons=9999;
+  await assert.rejects(router.callTier('cloudflare',{state:'x'.repeat(3000),questions:{}}),/budget exhausted/);
+  assert.equal(calls.length,2,'no request is sent after budget exhaustion');
 });
 
 const decision=JSON.stringify({pick:'fast',confidence:.9,complexity:.2,needs_vision:false,needs_long_context:false,continuation:true});

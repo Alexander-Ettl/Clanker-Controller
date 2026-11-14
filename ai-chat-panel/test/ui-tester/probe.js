@@ -21,7 +21,7 @@ function probe(options) {
     // Closed <details> keep their content laid out but not rendered; only the summary shows.
     for (let node = el; node && node !== document.documentElement; node = node.parentElement) {
       const s = getComputedStyle(node);
-      if (s.display === 'none' || s.visibility === 'hidden' || node.hidden) return false;
+      if (s.display === 'none' || s.visibility === 'hidden' || Number(s.opacity) === 0 || node.hidden) return false;
       if (node !== el && node.matches('details:not([open])') && !node.querySelector(':scope > summary')?.contains(el)) return false;
     }
     return true;

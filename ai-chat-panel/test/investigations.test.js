@@ -324,3 +324,22 @@ test('Flash keeps a successful final response over budget and sums distinct step
     assert.fail('must stop before another request');
   } }), error => error.tokenUsage === 61000 && /allowance/.test(error.message));
 });
+
+test('Gemini scout startup does not count as a model response, and status reaches the caller through analyze', async t => {
+  const f = fixture(t), states = [];
+  const { analyze } = require('../lib/loop-agents');
+  const result = await analyze({ target: { agent: 'gemini', model: 'gemini-3.8-flash-high' }, cwd: f.dir, prompt: 'fixture',
+    signal: new AbortController().signal, maxTokens: 1000, timeoutMs: 1000, onStatus: state => states.push(state) }, {
+    flash: options => runFlash(options, { binary: 'fake-cli', help: () => '--agent --json-schema --disable-slash-commands --sandbox --mode --print-timeout',
+      execute: async (_command, _args, { onLine }) => {
+        onLine(JSON.stringify({ event: 'init', conversation_id: 'fixture' }));
+        onLine(JSON.stringify({ event: 'step_update', step_update: { step_type: 'user_input', state: 'DONE' } }));
+        assert.deepEqual(states, ['waiting']);
+        onLine(JSON.stringify({ event: 'step_update', step_update: { step_type: 'agent_response', state: 'ACTIVE', text_delta: 'answer' } }));
+        assert.deepEqual(states, ['waiting', 'running']);
+        onLine(JSON.stringify({ event: 'result', result: { status: 'SUCCESS', response: '{"summary":"ok","findings":[],"questions":[]}', usage: { total_tokens: 10 } } }));
+        return { code: 0 };
+      } })
+  });
+  assert.equal(result.tokens, 10);
+});

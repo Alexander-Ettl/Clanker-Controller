@@ -9,6 +9,8 @@
 
 Use **Manage projects…** in the project menu to rename a project or locate its folder after a move. Stop its running work before changing folders; chat history stays, while native CLI sessions restart in the new location.
 
+The sidebar shows the current project and up to two pinned favorites. **All projects** (the grid button below those tiles) opens a visual list with icons, names and running status. Unpin a favorite there to pin another. Your favorites survive reloads and are shared across chat windows. Choosing another project replaces the current slot; hidden projects, chats and scheduled prompts remain open and keep running. A green dot on All projects indicates running work in a hidden project. Add and Manage projects are available inside the grid.
+
 Choose **New planning project…** if you don't have a folder yet. Attach one later through **Manage projects… → Locate / attach folder**.
 
 Older conversations ask you to choose their project once. Select the folder those conversations actually belonged to. Clanker keeps their messages and available attachments, and starts fresh CLI sessions for that folder.

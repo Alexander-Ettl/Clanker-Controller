@@ -28,6 +28,22 @@ function firstSentence(markdown) {
   return sentence.length > 140 ? `${sentence.slice(0, 137).trimEnd()}...` : sentence;
 }
 
+/**
+ * The part of a reply written after its last tool call: the agent's closing summary, which says what happened, rather
+ * than the "I'll start by reading..." that opens the turn. Tool entries sit after the reply in `messages` and carry the
+ * reply's text length at the moment they started. Falls back to the whole reply when nothing follows the last tool.
+ */
+function textAfterLastTool(reply, messages) {
+  const text = String(reply?.text || '');
+  const from = (messages || []).indexOf(reply);
+  if (from < 0) return text;
+  let cut = 0;
+  for (const entry of messages.slice(from + 1)) {
+    if (entry?.role === 'tool' && Number.isFinite(entry.offset)) cut = Math.max(cut, entry.offset);
+  }
+  return text.slice(cut).trim() ? text.slice(cut) : text;
+}
+
 /** Fire and forget; never throws. `toast` is { agent, text, chatTitle } or null; `chime: false` makes it a silent toast (or nothing). */
 function notifyReply({ toast = null, appName = '', chime = true } = {}) {
   if (process.env.NO_CHIME === '1' || process.env.AI_CHAT_PANEL_COMPACT === '1') chime = false;
@@ -45,4 +61,4 @@ function notifyReply({ toast = null, appName = '', chime = true } = {}) {
   } catch { /* a chime is never worth an error */ }
 }
 
-module.exports = { notifyReply, firstSentence };
+module.exports = { notifyReply, firstSentence, textAfterLastTool };

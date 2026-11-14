@@ -44,7 +44,7 @@ body.has-rail > .fs-modal { right: 85px; }
   display: flex;
   flex-direction: column;
   align-items: stretch;
-  justify-content: safe center; /* the same space above and below; "safe" so a short window scrolls from the top instead of clipping it */
+  justify-content: flex-start;
   gap: 22px;
   margin-left: -330px;
   padding: 10px 10px 10px 340px;
@@ -53,13 +53,13 @@ body.has-rail > .fs-modal { right: 85px; }
   pointer-events: none;
 }
 .rail-scroll > * { flex: none; pointer-events: auto; }
-/* The divider fades in over its top 100px instead of running into the IDE's sidebar header. */
+/* The divider runs at full strength up to the top edge; it sits above the chat's top fade, which only masks the chat column. */
 .rail::before {
   content: '';
   position: absolute;
   inset: 0 auto 0 0;
   width: 1px;
-  background: linear-gradient(180deg, transparent, var(--eo-border) 100px);
+  background: var(--eo-border);
   pointer-events: none;
 }
 
@@ -119,6 +119,58 @@ body.has-rail > .fs-modal { right: 85px; }
 .is-add .project-tile::before { background: rgba(255, 255, 255, 0.03); }
 .is-add .project-mark { color: var(--text-secondary); }
 .is-add .project-tile:hover .project-mark { color: var(--text-primary); }
+.is-all .project-mark { color: var(--text-secondary); }
+.project-overflow-live { position: absolute; top: -3px; right: -3px; width: 8px; height: 8px; border-radius: 50%; background: var(--success, #34c759); border: 2px solid var(--rail-pill); pointer-events: none; }
+/* All projects: a search row with the favorites counter, then one compact row per project (icon, name, live status) with
+   the pin tucked into its right edge. Pinned rows take a sky rim, the chat's own project the white one, like the rail. */
+.project-gallery-tools { display: flex; align-items: center; gap: 8px; }
+.project-gallery-searchbox { position: relative; flex: 1; min-width: 0; display: flex; }
+.project-gallery-searchbox > svg { position: absolute; left: 13px; top: 50%; width: 14px; height: 14px; translate: 0 -50%; color: var(--text-secondary); pointer-events: none; }
+.project-gallery-search.cs-field { width: 100%; height: 34px; padding-left: 34px; }
+.project-gallery-quota { flex: none; display: inline-flex; align-items: center; gap: 5px; height: 34px; padding: 0 12px 0 10px; border: 1px solid var(--eo-border); border-radius: var(--pill); background: rgba(255, 255, 255, 0.04); color: var(--text-secondary); font: 600 11.5px var(--font-text); font-variant-numeric: tabular-nums; transition: color .15s var(--eo-ease), background .15s var(--eo-ease), border-color .15s var(--eo-ease); }
+.project-gallery-quota svg { width: 14px; height: 14px; }
+.project-gallery-quota.is-full { color: #64d2ff; border-color: rgba(100, 210, 255, 0.3); background: rgba(100, 210, 255, 0.1); }
+.project-gallery-note { margin: 10px 2px 14px; color: var(--text-tertiary); font: 400 11.5px/1.5 var(--font-text); }
+.project-gallery { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(220px, 100%), 1fr)); gap: 8px; }
+.project-gallery-card { position: relative; min-width: 0; }
+.project-gallery-open { width: 100%; min-height: 68px; padding: 12px 48px 12px 12px; display: flex; align-items: center; gap: 12px; border: 1px solid var(--eo-border); border-radius: 16px; color: var(--text-primary); background: var(--rail-tile); box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.05); text-align: left; cursor: pointer; transition: background .15s var(--eo-ease), border-color .15s var(--eo-ease), transform .25s var(--eo-ease); }
+.project-gallery-open:hover { background: var(--rail-tile-hover); transform: translateY(-1px); }
+.project-gallery-card.is-pinned .project-gallery-open { border-color: rgba(100, 210, 255, 0.3); }
+.project-gallery-open.is-active { border-color: rgba(255, 255, 255, 0.55); background: var(--rail-tile-hover); cursor: default; }
+.project-gallery-open.is-active:hover { transform: none; }
+.project-gallery-open:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.project-gallery-open .project-mark { width: 42px; height: 42px; flex: none; border-radius: 12px; background: linear-gradient(180deg, rgba(255, 255, 255, 0.08), rgba(255, 255, 255, 0) 60%), rgba(0, 0, 0, 0.28); box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.1); }
+.project-gallery-text { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+.project-gallery-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font: 600 13px/1.3 var(--font-text); letter-spacing: -0.01em; }
+.project-gallery-status { display: flex; align-items: center; gap: 6px; min-width: 0; color: var(--text-secondary); font: 400 11px/1.3 var(--font-text); }
+.project-gallery-status.is-running { color: var(--success, #34c759); }
+.project-gallery-status.is-waiting { color: var(--warning); }
+.project-gallery-status:is(.is-running, .is-waiting)::before { content: ''; flex: none; width: 6px; height: 6px; border-radius: 50%; background: currentColor; box-shadow: 0 0 0 3px color-mix(in srgb, currentColor 22%, transparent); }
+.project-gallery-pin { position: absolute; top: 50%; right: 11px; translate: 0 -50%; display: grid; place-items: center; width: 32px; height: 32px; padding: 0; border: 0; border-radius: 50%; background: transparent; color: var(--text-secondary); opacity: .7; cursor: pointer; transition: opacity .15s var(--eo-ease), background .15s var(--eo-ease), color .15s var(--eo-ease), transform .25s cubic-bezier(0.34, 1.5, 0.5, 1); }
+.project-gallery-pin svg { width: 17px; height: 17px; }
+.project-gallery-pin .pin-head { transition: fill .15s var(--eo-ease); }
+.project-gallery-card:is(:hover, :focus-within) .project-gallery-pin:not(:disabled) { opacity: 1; }
+.project-gallery-pin:hover:not(:disabled) { background: rgba(255, 255, 255, 0.1); color: var(--text-primary); transform: scale(1.08); }
+.project-gallery-pin:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.project-gallery-pin[aria-pressed='true'] { opacity: 1; color: #64d2ff; background: rgba(100, 210, 255, 0.14); }
+.project-gallery-pin[aria-pressed='true']:hover { background: rgba(100, 210, 255, 0.22); color: #8fe0ff; }
+.project-gallery-pin[aria-pressed='true'] .pin-head { fill: currentColor; fill-opacity: .85; }
+.project-gallery-pin:disabled { opacity: .35; cursor: not-allowed; }
+/* Rename and Remove: a small glass chip that slides in left of the pin while the row is hovered or focused. */
+.project-gallery-more { position: absolute; top: 50%; right: 46px; translate: 6px -50%; display: flex; gap: 2px; padding: 2px; border: 1px solid var(--eo-border); border-radius: var(--pill); background: rgb(36, 38, 46); box-shadow: 0 4px 14px rgba(0, 0, 0, 0.4); opacity: 0; pointer-events: none; transition: opacity .15s var(--eo-ease), translate .25s var(--eo-ease); }
+.project-gallery-card:is(:hover, :focus-within) .project-gallery-more { opacity: 1; translate: 0 -50%; pointer-events: auto; }
+.project-gallery-tool { display: grid; place-items: center; width: 26px; height: 26px; padding: 0; border: 0; border-radius: 50%; background: transparent; color: var(--text-secondary); cursor: pointer; transition: background .15s var(--eo-ease), color .15s var(--eo-ease); }
+.project-gallery-tool svg { width: 14px; height: 14px; }
+.project-gallery-tool:hover { background: rgba(255, 255, 255, 0.12); color: var(--text-primary); }
+.project-gallery-tool.is-danger:hover { background: rgba(255, 69, 58, 0.18); color: #ff8a80; }
+.project-gallery-tool:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.project-gallery-rename { position: absolute; top: 50%; left: 66px; right: 48px; translate: 0 -50%; height: 32px; padding: 0 12px; border: 1px solid rgba(255, 255, 255, 0.28); border-radius: 10px; background: rgba(0, 0, 0, 0.3); color: var(--text-primary); font: 600 13px var(--font-text); }
+.project-gallery-rename:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.project-gallery-card.is-editing .project-gallery-text { visibility: hidden; }
+.project-gallery-card.is-editing .project-gallery-more { display: none; }
+.project-gallery-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 16px; padding-top: 16px; border-top: 1px solid var(--eo-border); }
+.project-gallery-actions .cs-btn:not(.is-quiet) { padding-left: 11px; }
+@media (prefers-reduced-motion: reduce) { .project-gallery-open, .project-gallery-pin, .project-gallery-more { transition: none; } .project-gallery-open:hover, .project-gallery-pin:hover:not(:disabled) { transform: none; } }
 /* Hover: the tile's left edge is pulled out over the chat into a card with the project's name beside its icon, the way a
    chat in the Recent list grows into its preview (launcher.js redraws the squircle at every width the transition passes,
    main.js sets --peek-w from the name). The icon stays at the right end; closing runs the motion backwards. */
@@ -255,6 +307,107 @@ body.has-rail > .fs-modal { right: 85px; }
 .launcher-actions .round-btn-loop.is-pill { height: 64px; }
 @media (prefers-reduced-motion: reduce) { .launcher-actions .round-btn-loop { transition: none; } }
 
+/* The update button. The up arrow becomes a circulating arrow while a CLI updates, then a check (or a "!") for a few
+   seconds. While it is active, hovering opens a pill leftward out of the circle, built like the usage ring's: one row
+   per CLI with its version change and a progress bar. The
+   pill also opens by itself when the update ends, so the result is seen without hovering. launcher.js drives the
+   classes (is-updating / is-done / is-failed / is-peek) and the --rows count. */
+.launcher-actions .round-btn-update .upd-icon {
+  grid-area: 1 / 1;
+  position: relative;
+  z-index: 1;
+  transition: opacity .25s var(--eo-ease), transform .5s cubic-bezier(.34, 1.4, .64, 1);
+}
+.round-btn-update :is(.upd-spin, .upd-ok, .upd-fail) { opacity: 0; transform: scale(.4); }
+.round-btn-update.is-updating { color: var(--accent); }
+.round-btn-update.is-done { color: #7de3b5; }
+.round-btn-update.is-failed { color: #ff6961; }
+.round-btn-update:is(.is-updating, .is-done, .is-failed) .upd-up { opacity: 0; transform: scale(.4); }
+.round-btn-update.is-updating .upd-spin { opacity: 1; transform: none; transform-box: view-box; transform-origin: center; animation: upd-turn 2.8s linear infinite; }
+.round-btn-update.is-done .upd-ok, .round-btn-update.is-failed .upd-fail { opacity: 1; transform: none; }
+@keyframes upd-turn { to { rotate: 360deg; } } /* `rotate`, not `transform`, so it composes with the scale-in above */
+.round-btn-update:is(.is-updating, .is-done, .is-failed) .round-btn-tip { display: none; }
+.launcher-actions .round-btn-update:is(.is-updating, .is-done, .is-failed):hover { transform: none; } /* the pill is a child: don't scale it */
+
+.rail:has(.round-btn-update:is(:hover, :focus-visible, .is-peek)) { z-index: 55; } /* over the chat and its panels (.fs-modal is 50) while open */
+.upd-pill {
+  position: absolute;
+  top: -1px;
+  right: -1px;
+  z-index: 0;
+  box-sizing: border-box;
+  width: calc(100% + 2px);
+  height: calc(100% + 2px);
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 8px;
+  padding: 4px 46px 4px 14px; /* the right padding keeps the icon clear */
+  border-radius: 21px; /* top-right arc shares the 42px button's centre */
+  text-align: left;
+  cursor: default;
+  pointer-events: none;
+  transition: width .6s cubic-bezier(.32, .72, 0, 1), height .6s cubic-bezier(.32, .72, 0, 1);
+}
+.upd-pill::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.05), rgba(255, 255, 255, 0) 28%), rgb(26, 28, 34); /* the ring pill's charcoal */
+  border: 1px solid var(--eo-border);
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.35), inset 0 1px 0 rgba(255, 255, 255, 0.06);
+  opacity: 0;
+  transition: opacity .25s var(--eo-ease);
+}
+.upd-status, .upd-rows { position: relative; opacity: 0; transition: opacity .1s var(--eo-ease); }
+.upd-status { display: none; } /* keep the status for the button's accessible label */
+.upd-status::before { content: ''; width: 6px; height: 6px; border-radius: 50%; background: var(--accent); animation: pending-breathe 1.8s ease-in-out infinite; }
+.round-btn-update.is-done .upd-status::before { background: #7de3b5; animation: none; }
+.round-btn-update.is-failed .upd-status::before { background: #ff6961; animation: none; }
+.upd-rows { display: flex; flex-direction: column; gap: 0; }
+.upd-row { --agent: var(--text-secondary); display: grid; grid-template-columns: 14px minmax(0, 1fr) 24px; min-height: 34px; align-items: center; column-gap: 8px; font: 500 10.5px var(--font-text); font-variant-numeric: tabular-nums; }
+.upd-mark { width: 14px; height: 14px; color: var(--agent); }
+.upd-mark svg { width: 100%; height: 100%; display: block; }
+.upd-main { min-width: 0; display: flex; flex-direction: column; gap: 5px; }
+.upd-title { display: flex; justify-content: space-between; gap: 8px; white-space: nowrap; }
+.upd-name { font-weight: 600; color: var(--text-primary); }
+.upd-ver { min-width: 0; overflow: hidden; text-overflow: ellipsis; color: var(--text-tertiary); }
+.upd-bar { height: 5px; border-radius: 999px; background: rgba(255, 255, 255, 0.09); overflow: hidden; }
+.upd-bar b { display: block; height: 100%; border-radius: inherit; background: var(--accent); transform-origin: left; transform: scaleX(var(--p, 0)); transition: transform .3s linear, background .3s var(--eo-ease); }
+.upd-pct { text-align: right; font-weight: 600; color: var(--text-primary); }
+.upd-row.is-done .upd-bar b { background: #7de3b5; }
+.upd-row.is-failed .upd-bar b { background: #ff6961; }
+.upd-row.is-failed .upd-pct { color: #ff6961; }
+.upd-row.is-done .upd-pct { color: #7de3b5; }
+.upd-row.is-done .upd-ver { display: none; }
+.round-btn-update.is-single .upd-row { grid-template-columns: 14px minmax(0, 1fr); }
+.round-btn-update.is-single .upd-pct { display: none; }
+.round-btn-update:is(.is-updating, .is-done, .is-failed):is(:hover, :focus-visible, .is-peek) .upd-pill {
+  width: min(300px, calc(100vw - 32px));
+  height: calc(8px + var(--rows, 1) * 34px);
+  pointer-events: auto;
+}
+.round-btn-update:is(.is-updating, .is-done, .is-failed):is(:hover, :focus-visible, .is-peek) .upd-pill::before { opacity: 1; }
+.round-btn-update:is(.is-updating, .is-done, .is-failed):is(:hover, :focus-visible, .is-peek) :is(.upd-status, .upd-rows) { opacity: 1; transition: opacity .25s var(--eo-ease) .2s; }
+.round-btn-update.is-collapsing .upd-pill {
+  width: calc(100% + 2px) !important;
+  height: calc(100% + 2px) !important;
+  padding: 0;
+  overflow: hidden;
+  pointer-events: none;
+}
+.round-btn-update.is-collapsing .upd-rows { opacity: 0 !important; transition: opacity .15s ease-out !important; }
+.round-btn-update.is-collapsing .upd-pill::before { opacity: 1; }
+.launcher-actions .round-btn-update { transition: scale .36s cubic-bezier(.4, 0, .6, 1), opacity .3s ease-out, transform .25s var(--eo-ease), color .2s var(--eo-ease); }
+.round-btn-update.is-exiting { scale: 0; opacity: 0; pointer-events: none; }
+@media (prefers-reduced-motion: reduce) {
+  .launcher-actions .round-btn-update { transition: none; }
+  .round-btn-update .upd-icon, .upd-pill, .upd-pill::before, .upd-status, .upd-rows, .upd-bar b { transition: none !important; }
+  .round-btn-update.is-updating .upd-spin { animation: pending-breathe 1.8s ease-in-out infinite; }
+  .upd-status::before { animation: none; }
+}
+
 /* A section is its label plus what it labels; the gap between sections is much wider than inside one. */
 .launcher-section { display: flex; flex-direction: column; gap: 8px; }
 .launcher-label {
@@ -348,7 +501,7 @@ body.has-rail > .fs-modal { right: 85px; }
   transition: opacity 0.25s var(--eo-ease);
 }
 .ring > svg { position: relative; z-index: 1; transition: opacity 0.3s ease-out; } /* above the growing pill, so the circle dissolves into its end cap */
-.ring-row, .ring-burn {
+.ring-row, .ring-burn, .ring-group-name {
   position: relative; /* above the ::before fill */
   opacity: 0;
   transition: opacity 0.1s var(--eo-ease);
@@ -377,6 +530,7 @@ body.has-rail > .fs-modal { right: 85px; }
 }
 .ring-burn-val { font: 700 15px var(--font-text); letter-spacing: -0.015em; font-variant-numeric: tabular-nums; color: color-mix(in srgb, var(--burn) 35%, white); }
 .ring-burn-label { font: 500 10px var(--font-text); letter-spacing: 0.005em; color: var(--text-secondary); }
+.ring-burn.is-spent .ring-burn-label { display: none; }
 .ring-burn.is-low { --burn: var(--usage-low); }
 .ring-burn.is-low .ring-burn-val { color: color-mix(in srgb, var(--burn) 70%, white); }
 .ring-rows { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 6px; }
@@ -407,12 +561,121 @@ body.has-rail > .fs-modal { right: 85px; }
 }
 .ring-row.is-low .ring-bar b { background: var(--usage-low); }
 
+/* Antigravity's two quota pools grow together out of the same circle. */
+.rail-scroll:has(.model-card-gemini .ring:is(:hover, :focus-visible)) { margin-left: -600px; padding-left: 610px; }
+.model-card-gemini .ring-pill {
+  top: 50%;
+  bottom: auto;
+  height: 100%;
+  transform: translateY(-50%);
+  flex-direction: row;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 44px 8px 14px;
+  transition: width 0.6s cubic-bezier(0.32, 0.72, 0, 1), height 0.6s cubic-bezier(0.32, 0.72, 0, 1);
+}
+.model-card-gemini .ring-burn { height: 48px; width: 130px; padding: 0 8px; }
+.model-card-gemini .ring-rows { gap: 4px; font-size: 9px; }
+.model-card-gemini .ring-row { grid-template-columns: 12px minmax(0, 1fr) 24px 32px; column-gap: 3px; }
+.ring-group-name { display: flex; align-items: center; height: 22px; color: var(--text-secondary); font-weight: 600; line-height: 11px; }
+.ring-rows-claude-gpt, .ring-rows-argon { border-left: 1px solid var(--eo-border); padding-left: 10px; }
+.ring-rows[hidden] { display: none; }
+.ring-rows-argon { min-height: 54px; } /* one weekly row, but as tall as the two-row groups (54px) so its title stays level with theirs */
+.model-cards:not(.is-loading) .model-card-gemini .ring:is(:hover, :focus-visible) .ring-pill { width: min(600px, calc(100vw - 32px)); height: 76px; }
+/* The third pool (Gemini 4 Argon, Pro plans) makes the pill longer. */
+.rail-scroll:has(.model-card-gemini.has-argon .ring:is(:hover, :focus-visible)) { margin-left: -760px; padding-left: 770px; }
+.model-cards:not(.is-loading) .model-card-gemini.has-argon .ring:is(:hover, :focus-visible) .ring-pill { width: min(760px, calc(100vw - 32px)); }
+@media (max-width: 540px) {
+  .model-card-gemini .ring-burn { display: none; }
+  .model-card-gemini .ring-pill { gap: 8px; }
+  .ring-rows-claude-gpt, .ring-rows-argon { padding-left: 8px; }
+}
+@media (max-width: 380px) {
+  /* Three pools will not fit side by side with their reset times: each keeps its bar and percentage, the tooltip has the resets. */
+  .has-argon .ring-rows { flex: 1; }
+  .has-argon .ring-rows-argon { flex: 0.7; }
+  .has-argon .ring-row { grid-template-columns: 12px minmax(0, 1fr) 24px; }
+  .has-argon .ring-row-eta { display: none; }
+  .ring-rows-argon .ring-group-name { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; display: block; line-height: 22px; }
+}
+
 .model-cards:not(.is-loading) .ring:is(:hover, :focus-visible) > svg { opacity: 0; }
 .model-cards:not(.is-loading) .ring:is(:hover, :focus-visible) .ring-pill { width: min(356px, calc(100vw - 32px)); pointer-events: auto; }
 .model-cards:not(.is-loading) .ring:is(:hover, :focus-visible) .ring-pill::before { opacity: 1; }
-.model-cards:not(.is-loading) .ring:is(:hover, :focus-visible) :is(.ring-row, .ring-burn) { opacity: 1; transition: opacity 0.25s var(--eo-ease) 0.2s; }
+.model-cards:not(.is-loading) .ring:is(:hover, :focus-visible) :is(.ring-row, .ring-burn, .ring-group-name) { opacity: 1; transition: opacity 0.25s var(--eo-ease) 0.2s; }
 .model-cards:not(.is-loading) .ring:is(:hover, :focus-visible) .ring-bar b { width: calc(var(--pct, 0) * 1%); transition: width 0.7s var(--eo-ease) 0.2s; }
 .is-loading .ring-pill { display: none; }
+
+/* Not available (not signed in, damaged install, plan ended): a full red ring, "Not available" under it, and on hover the same
+   pill, taller, with the exit code, the reason and the button that fixes it. The pill is anchored on the ring's centre like
+   Antigravity's, so the mark stays put while it grows. */
+.model-card { --fault: #ff453a; }
+.model-card.is-faulty .ring-track { stroke: color-mix(in srgb, var(--fault) 22%, transparent); }
+.model-card.is-faulty .ring-fill { stroke: var(--fault); transition: stroke 0.3s var(--eo-ease), stroke-dasharray 0.7s var(--eo-ease); }
+.model-card.is-faulty .ring-logo { color: var(--fault); }
+.model-card.is-faulty .model-card-5h { max-width: 100%; text-align: center; font-size: 9.5px; line-height: 1.15; color: var(--fault); }
+.ring-fault { display: none; }
+.model-card.is-faulty .ring-fault {
+  position: relative; /* above the ::before fill */
+  display: flex;
+  align-items: center;
+  flex: 1;
+  min-width: 0;
+  gap: 10px;
+  opacity: 0;
+  transition: opacity 0.1s var(--eo-ease);
+}
+.model-card.is-faulty :is(.ring-burn, .ring-rows, .ring-group-name) { display: none; }
+.model-card.is-faulty .ring-pill { top: 50%; bottom: auto; height: 100%; transform: translateY(-50%); padding: 8px 44px 8px 16px; transition: width 0.6s cubic-bezier(0.32, 0.72, 0, 1), height 0.6s cubic-bezier(0.32, 0.72, 0, 1); }
+.model-card.is-faulty .ring-pill::before { border-color: color-mix(in srgb, var(--fault) 45%, var(--eo-border)); box-shadow: 0 8px 32px rgba(0, 0, 0, 0.35), 0 0 22px -6px color-mix(in srgb, var(--fault) 55%, transparent), inset 0 1px 0 rgba(255, 255, 255, 0.06); }
+.model-cards:not(.is-loading) .model-card.is-faulty .ring:is(:hover, :focus-visible, :focus-within) .ring-pill { width: min(380px, calc(100vw - 32px)); height: 92px; pointer-events: auto; }
+.model-cards:not(.is-loading) .model-card.is-faulty .ring:is(:hover, :focus-visible, :focus-within) .ring-pill::before { opacity: 1; }
+.model-cards:not(.is-loading) .model-card.is-faulty .ring:is(:hover, :focus-visible, :focus-within) > svg { opacity: 0; }
+.model-cards:not(.is-loading) .model-card.is-faulty .ring:is(:hover, :focus-visible, :focus-within) .ring-fault { opacity: 1; transition: opacity 0.25s var(--eo-ease) 0.2s; }
+.rail:has(.model-card.is-faulty .ring:focus-within) { z-index: 55; }
+.ring-fault-text { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+.ring-fault-head { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 6px; }
+.ring-fault-title { font: 700 12px var(--font-text); letter-spacing: -0.01em; color: color-mix(in srgb, var(--fault) 45%, white); white-space: nowrap; }
+.ring-fault-code {
+  font: 600 9.5px var(--font-text);
+  font-style: normal;
+  letter-spacing: 0.01em;
+  padding: 2px 7px;
+  border-radius: 999px;
+  white-space: nowrap;
+  color: color-mix(in srgb, var(--fault) 40%, white);
+  background: color-mix(in srgb, var(--fault) 20%, transparent);
+  border: 1px solid color-mix(in srgb, var(--fault) 40%, transparent);
+}
+.ring-fault-code[hidden] { display: none; }
+.ring-fault-detail {
+  font: 400 10px/1.35 var(--font-text);
+  color: var(--text-secondary);
+  display: -webkit-box;
+  -webkit-line-clamp: 4;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.ring-fault-btn {
+  flex: none;
+  align-self: center;
+  max-width: 112px;
+  padding: 8px 14px;
+  font: 600 11px var(--font-text);
+  white-space: normal;
+  text-align: center;
+  line-height: 1.2;
+  color: #fff;
+  cursor: pointer;
+  border-radius: 999px;
+  border: 1px solid color-mix(in srgb, var(--fault) 60%, transparent);
+  background: linear-gradient(180deg, color-mix(in srgb, var(--fault) 62%, #000), color-mix(in srgb, var(--fault) 42%, #000));
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.18), 0 0 14px -4px color-mix(in srgb, var(--fault) 60%, transparent);
+  transition: filter 0.2s var(--eo-ease), transform 0.2s var(--eo-ease);
+}
+.ring-fault-btn:hover { filter: brightness(1.18); }
+.ring-fault-btn:active { transform: scale(0.97); }
+.ring-fault-btn:focus-visible { outline: 1px solid #fff; outline-offset: 2px; }
 
 .model-card-5h { font-size: 11px; font-weight: 600; color: var(--text-primary); }
 .model-card.is-empty .model-card-5h { color: var(--text-tertiary); }
@@ -441,7 +704,7 @@ body.has-rail > .fs-modal { right: 85px; }
 .is-loading .model-card-reset { display: none; }
 
 @media (prefers-reduced-motion: reduce) {
-  .ring-fill, .ring-pill, .ring-pill::before, .ring-row, .ring-burn, .ring-bar b, .ring > svg { transition: none !important; }
+  .ring-fill, .ring-pill, .ring-pill::before, .ring-row, .ring-burn, .ring-group-name, .ring-bar b, .ring > svg { transition: none !important; }
   .is-loading .ring::before, .is-loading .model-card-5h { animation: none; }
 }
 
@@ -467,6 +730,13 @@ body.has-rail > .fs-modal { right: 85px; }
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.05);
 }
 .history-list:has(> .history-empty:only-child) { display: none; }
+
+/* Match the loaded project and recent tiles, using the chat/usage shimmer. */
+.rail-skeleton { pointer-events: none; }
+.rail-skeleton-tile { width: 40px; height: 40px; border-radius: 9px; clip-path: url(#squircle); }
+.rail-skeleton .history-row.skeleton { height: 46px; border-radius: 0; cursor: default; }
+.rail-skeleton .history-row::before { content: none; }
+.rail-skeleton-time { width: 24px; height: 9px; margin-top: 3px; }
 
 /* A chat: its tile with the time under it. The label is wider than the 40px tile, so it overhangs into the pill's
    8px padding on both sides. */
@@ -552,6 +822,36 @@ body.has-rail > .fs-modal { right: 85px; }
   pointer-events: none;
 }
 
+/* What the chat is working on now (a bundled icon from media/context-icons, chosen in lib/work-context.js): a small glass disc on
+   the tile's lower-left corner, in the provider's colour so the pair reads as one mark. The agent stays the main mark. It lives
+   on the item (the tile is clipped to the bubble), under the hover preview, which covers it while open. The shape carries the
+   meaning; the colour only ties it to its provider. */
+.history-context {
+  position: absolute;
+  z-index: 1;
+  left: -6px;
+  top: 28px;
+  box-sizing: border-box;
+  display: grid;
+  place-items: center;
+  width: 19px;
+  height: 19px;
+  border-radius: 50%;
+  background: rgb(26, 28, 34);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--agent) 38%, rgba(255, 255, 255, 0.1)), 0 2px 5px rgba(0, 0, 0, 0.4);
+  color: #fff;
+  pointer-events: none;
+  transition: transform 0.25s var(--eo-ease), box-shadow 0.25s var(--eo-ease), opacity 0.15s var(--eo-ease) 0.45s, visibility 0s 0.45s;
+}
+.history-context svg { width: 12px; height: 12px; display: block; }
+.history-item:has(.is-selected) .history-context { box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.7), 0 2px 5px rgba(0, 0, 0, 0.4); }
+.history-item:is(:hover, :focus-within) .history-context {
+  transform: scale(0.85);
+  opacity: 0;
+  visibility: hidden;
+  transition-delay: 0s;
+}
+
 .history-lead { position: relative; z-index: 2; display: flex; }
 .agent-mark { display: inline-grid; place-items: center; vertical-align: middle; }
 .history-row .agent-logo { width: 22px; height: 22px; }
@@ -574,7 +874,7 @@ body.has-rail > .fs-modal { right: 85px; }
    said what last), the way the usage rings grow into a pill. Same height and same tail, so only the left border moves, and
    the two left corners keep their curvature (launcher.js redraws the outline at every width the transition passes). The
    mark stays at the right end; closing runs the motion backwards. It sits over the tile, opaque, and takes over its click. */
-.rail:has(.history-item:hover) { z-index: 55; } /* over the chat and its panels (.fs-modal is 50) while open */
+.rail:has(.history-item:is(:hover, :focus-within)) { z-index: 55; } /* over the chat and its panels (.fs-modal is 50) while open */
 .history-peek {
   --history-rim: rgba(255, 255, 255, 0.14);
   position: absolute;
@@ -589,7 +889,7 @@ body.has-rail > .fs-modal { right: 85px; }
   pointer-events: none;
   transition: width 0.6s cubic-bezier(0.32, 0.72, 0, 1), opacity 0.15s var(--eo-ease) 0.45s, filter 0.25s var(--eo-ease);
 }
-.history-item:hover .history-peek {
+.history-item:is(:hover, :focus-within) .history-peek {
   width: min(356px, calc(100vw - 32px));
   opacity: 1;
   pointer-events: auto;
@@ -615,9 +915,34 @@ body.has-rail > .fs-modal { right: 85px; }
   overflow: hidden;
   opacity: 0;
 }
-.history-item:hover .history-peek-text { opacity: 1; transition: opacity 0.25s var(--eo-ease) 0.2s; }
-.history-peek-title { font: 600 13px/1.3 var(--font-text); letter-spacing: -0.01em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.history-item:is(:hover, :focus-within) .history-peek-text { opacity: 1; transition: opacity 0.25s var(--eo-ease) 0.2s; }
+.history-peek-head { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.history-peek-title { flex: 0 1 auto; min-width: 0; font: 600 13px/1.3 var(--font-text); letter-spacing: -0.01em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+/* The category spelled out, so recognition never rests on the icon's shape or colour alone. */
+.history-peek-context {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: auto;
+  font: 500 10.5px/1.4 var(--font-text);
+  color: var(--text-secondary);
+}
+.history-peek-context[hidden] { display: none; }
+.history-peek-context svg { width: 12px; height: 12px; display: block; color: #fff; }
 .history-peek-meta { display: flex; align-items: baseline; gap: 6px; font: 400 11.5px/1.3 var(--font-text); white-space: nowrap; }
+.history-peek-icons { flex: none; align-self: center; display: inline-flex; margin-right: -1px; }
+.history-peek-icons:empty { display: none; }
+.history-peek-icons .history-project-icon { --card-fill: rgb(26, 28, 34); width: 16px; height: 16px; border-radius: 5px; }
+.history-peek-icons .history-project-icon + .history-project-icon { margin-left: -6px; }
+.history-peek-icons .project-mark { font-size: 7px; }
+.history-peek-icons .project-icon { width: 12px; height: 12px; border-radius: 3px; }
+.history-peek-icons .project-icon.is-dark { padding: 1.5px; }
+/* The project as a tile's main mark (and the peek's, at its right end): the same chip, at the size of a provider logo's footprint. */
+.history-project-icon.is-tile { --card-fill: transparent; width: 26px; height: 26px; border-radius: 8px; box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.12); }
+.history-project-icon.is-tile .project-mark { font-size: 11px; }
+.history-project-icon.is-tile .project-icon { width: 20px; height: 20px; border-radius: 5px; }
+.history-project-icon.is-tile .project-icon.is-dark { padding: 2.5px; }
 .history-peek-project { flex: none; max-width: 45%; overflow: hidden; text-overflow: ellipsis; font-weight: 600; color: var(--text-primary); opacity: 0.88; }
 .history-peek-project:empty { display: none; }
 .history-peek-project::after { content: '\00b7'; margin-left: 6px; font-weight: 400; color: var(--text-tertiary); }
@@ -626,7 +951,7 @@ body.has-rail > .fs-modal { right: 85px; }
 .history-peek-mark { position: absolute; top: 0; right: 0; width: 40px; height: 40px; display: grid; place-items: center; }
 .history-peek .agent-logo { width: 22px; height: 22px; }
 @media (prefers-reduced-motion: reduce) {
-  .history-peek, .history-peek-text { transition: none !important; }
+  .history-peek, .history-peek-text, .history-context { transition: none !important; }
 }
 
 .history-empty { display: none; }

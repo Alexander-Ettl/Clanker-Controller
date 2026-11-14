@@ -351,10 +351,11 @@
       node.append(summary, body);
       return node;
     }
-    function fact(label, value, { mono = false, title = '' } = {}) {
+    function fact(label, value, { mono = false, title = '', preview = false } = {}) {
       const node = el('div', 'inv-fact');
       node.append(el('dt', '', label));
       const dd = el('dd', mono ? 'is-mono' : '', value);
+      if (preview) dd.classList.add('inv-preview');
       if (title) dd.title = title;
       node.append(dd);
       return node;
@@ -606,7 +607,7 @@
       for (const item of items) {
         const name = item.short || item.label || item.title || item.id;
         const chip = el('span', `inv-chip is-${String(item.state).replace(/[^\w-]/g, '')}`, name);
-        chip.setAttribute('role', 'listitem'); chip.title = `${item.label || item.title || item.id}: ${item.state}${item.found ? `, ${plural(item.found, 'candidate')}` : ''}`;
+        chip.setAttribute('role', 'listitem'); chip.title = `${item.label || item.title || item.id}: ${item.state}${item.reason ? ` — ${item.reason}` : ''}${item.found ? `, ${plural(item.found, 'candidate')}` : ''}`;
         box.append(chip);
       }
       return box;
@@ -651,7 +652,7 @@
       const facts = el('dl', 'inv-facts');
       const reason = job.reason || '';
       facts.append(
-        fact(job.enabled ? 'Waiting because' : 'Status', reason || '—'),
+        fact(run ? 'Activity' : job.enabled ? 'Waiting because' : 'Status', run ? run.live?.note || 'Run in progress' : reason || '—', { preview: true }),
         fact('Expires', job.expiresAt == null ? 'Never. It ends when it is done or you stop it.' : job.expiresAt > now ? `${clock(job.expiresAt, now)} (in ${duration(job.expiresAt - now)})` : `${clock(job.expiresAt, now)} (past)`),
         fact('Next eligible run', run ? 'Running now' : !job.enabled ? 'Not scheduled' : job.nextRunAt > now ? `${clock(job.nextRunAt, now)} (in ${duration(job.nextRunAt - now)})` : 'As soon as the conditions above allow'),
         fact('Runs started', `${job.completedRuns} of ${job.limits.maxRuns}`),
@@ -731,7 +732,8 @@
       return run.status === 'failed' ? 'bad' : run.status === 'interrupted' ? 'warn' : run.status === 'running' ? 'run' : run.status === 'completed' && run.loop?.mode === 'find' ? ((run.loop.found || []).length ? 'warn' : 'ok') : run.status === 'completed' && run.loop ? ((run.loop.unfixed || []).length ? 'warn' : run.loop.fixed.length ? 'ok' : '') : run.status === 'completed' && run.findings.length ? 'warn' : '';
     }
     function usageText(run) {
-      if (run.status === 'running') return `${count(run.chargedTokens)} tokens reserved, usage not reported yet`;
+      if (run.status === 'running' && run.live?.scoutTokens > 0) return `${count(run.chargedTokens)} tokens reserved; ${count(run.live.scoutTokens)} tokens reported by completed scouts (run total pending)`;
+      if (run.status === 'running') return `${count(run.chargedTokens)} tokens reserved; measured usage is reported when the run finishes`;
       if (run.tokenUsage !== null && run.tokenUsage !== undefined) return `${count(run.tokenUsage)} tokens measured`;
       return `Usage unknown, full ${count(run.chargedTokens)} token reservation kept`;
     }
@@ -821,7 +823,7 @@
       const info = el('div', 'cs-info');
       const finished = run.finishedAt || run.startedAt;
       info.append(el('span', 'cs-title', topicName(run.topic)),
-        el('span', 'cs-desc', `${clock(finished, now)} · ${run.status === 'completed' ? (run.loop?.mode === 'find' ? plural(run.loop.found.length, 'problem') + ' found' : run.loop ? plural(run.loop.fixed.length, 'problem') + ' fixed' : plural(run.findings.length, 'finding')) : run.status === 'running' ? 'in progress' : run.reason || run.status}`));
+        el('span', 'cs-desc inv-preview', `${clock(finished, now)} · ${run.status === 'completed' ? (run.loop?.mode === 'find' ? plural(run.loop.found.length, 'problem') + ' found' : run.loop ? plural(run.loop.fixed.length, 'problem') + ' fixed' : plural(run.findings.length, 'finding')) : run.status === 'running' ? 'in progress' : run.reason || run.status}`));
       summary.append(info, tag(run.status === 'completed' ? incomplete ? 'Review incomplete' : (run.loop ? (run.loop.mode === 'find' ? (run.loop.found.length ? `${run.loop.found.length} found` : emptyLabel) : run.loop.fixed.length ? `${run.loop.fixed.length} fixed` : run.findings.length ? `${run.findings.length} found` : emptyLabel) : run.findings.length ? `${run.findings.length} found` : emptyLabel) : run.status[0].toUpperCase() + run.status.slice(1), incomplete ? 'warn' : runTone(run)));
       summary.insertAdjacentHTML('beforeend', ICON.chevron);
 

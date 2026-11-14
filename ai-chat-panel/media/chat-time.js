@@ -38,6 +38,19 @@
     return `${date.toLocaleDateString(locale, { month: 'short', day: 'numeric' })}, ${clock}`;
   }
 
+  /** The stamp on a message: the clock time today, "Yesterday, 15:30", then "Sep 29, 18:56" ("Sep 29, 2025, 18:56" from another year). */
+  function messageTime(when, { now = Date.now(), locale, hourCycle } = {}) {
+    const at = new Date(when).getTime();
+    if (Number.isNaN(at)) return '';
+    const date = new Date(at);
+    const clock = date.toLocaleTimeString(locale, { hour: '2-digit', minute: '2-digit', ...(hourCycle ? { hourCycle } : {}) });
+    const days = daysAgo(at, now);
+    if (days <= 0) return clock;
+    if (days === 1) return `Yesterday, ${clock}`;
+    const sameYear = date.getFullYear() === new Date(now).getFullYear();
+    return `${date.toLocaleDateString(locale, sameYear ? { month: 'short', day: 'numeric' } : { month: 'short', day: 'numeric', year: 'numeric' })}, ${clock}`;
+  }
+
   /** The heading of the day group a chat falls under: Today, Yesterday, Last 7 days, Last 30 days, then by month. */
   function chatDayGroup(when, { now = Date.now(), locale } = {}) {
     const at = new Date(when).getTime();
@@ -52,7 +65,7 @@
     return date.toLocaleDateString(locale, sameYear ? { month: 'long' } : { month: 'long', year: 'numeric' });
   }
 
-  const api = { chatTime, chatDayGroup };
+  const api = { chatTime, chatDayGroup, messageTime };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   else root.chatTime = api;
 })(typeof window !== 'undefined' ? window : globalThis);

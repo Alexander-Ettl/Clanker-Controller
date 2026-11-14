@@ -22,13 +22,14 @@ try {
     ] });
   });
   await page.locator('[data-company="claude"]').click();
-  assert.equal(await page.locator('.cs-model-row').count(), 2);
-  assert.deepEqual(await page.locator('.cs-head-name').allTextContents(), ['Claude Code', 'Antigravity']);
-  await page.locator('[data-company="gemini"]').click();
   assert.equal(await page.locator('.cs-model-row').count(), 1);
-  assert.equal(await page.locator('.cs-model-label').innerText(), 'Gemini Future');
+  assert.deepEqual(await page.locator('.cs-head-name').allTextContents(), ['Claude Code']);
+  await page.locator('[data-company="gemini"]').click();
+  assert.equal(await page.locator('.cs-model-row').count(), 2);
+  assert.deepEqual(await page.locator('.cs-model-label').allTextContents(), ['Claude Future Medium', 'Gemini Future']);
+  assert.equal(await page.locator('[data-company="gemini"]').innerText(), 'Antigravity CLI');
   assert.deepEqual(errors, []);
-  console.log('Company filters preserve both Claude routes and isolate Google models.');
+  console.log('CLI filters keep hosted Claude models under Antigravity CLI.');
 } finally {
   await browser.close();
 }

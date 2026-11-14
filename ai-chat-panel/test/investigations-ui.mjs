@@ -157,7 +157,8 @@ try {
     assert.equal(await page.locator('.inv-stages li.is-now').innerText(), 'Tests');
     assert.equal(await page.locator('.inv-stages li.is-done').count(), 2);
     const text = await pane(page).innerText();
-    assert.ok(text.includes('usage not reported yet'));
+    assert.ok(text.includes('measured usage is reported when the run finishes'));
+    assert.ok(!(await page.locator('.inv-job dt').allTextContents()).includes('Waiting because'), 'an active run must not show its stale scheduling reason');
     assert.ok(/Pause and cancel run/.test(text));
     await shot(page, 'running-wide');
     await page.evaluate(() => { window.setFakeState('stopped'); window.pushState(); });
@@ -573,8 +574,19 @@ try {
     for (const part of ['Models chosen automatically', 'Never. It ends when it is done', '5 scouts on Gemini 3.8 Flash High', 'Resumed 1 time after a restart', '1 open problem for the next cycle']) assert.ok(text.includes(part), part);
     assert.equal(await job.locator('.inv-chip.is-done').count(), 3);
     assert.equal(await job.locator('.inv-chip.is-running').count(), 1);
+    assert.ok((await job.locator('dt').allTextContents()).includes('Activity'));
+    assert.ok(!text.includes('Waiting for next investigation'));
     assert.equal(await job.locator('.cs-tag').first().innerText(), 'Full loop');
     assert.ok(!text.includes('Expired'), 'a loop without expiry never reads as expired');
+    await page.evaluate(() => {
+      const run = window.fake.state.runs.find(run => run.status === 'running');
+      run.live.scoutTokens = 731214;
+      run.live.agents[4] = { ...run.live.agents[4], state: 'waiting', reason: 'Waiting for model output' };
+      run.live.note = '5 scouts on Gemini 3.8 Flash High: 1 responding, 1 awaiting response, 3 done';
+      window.pushState();
+    });
+    await job.getByText(/731,214 tokens reported by completed scouts/).waitFor();
+    assert.equal(await job.locator('.inv-chip.is-waiting').getAttribute('title'), 'Perf: waiting — Waiting for model output');
     await shot(page, 'full-running-wide');
     await page.setViewportSize({ width: 320, height: 2600 });
     assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), 'no horizontal overflow at 320px');

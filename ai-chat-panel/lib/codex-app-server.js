@@ -3,6 +3,7 @@
 const { EventEmitter } = require('node:events');
 const { spawn } = require('node:child_process');
 const { locate, resolveShim } = require('./binary-locator.js');
+const { launchFailure } = require('./providers/shared.js');
 
 const REQUEST_TIMEOUT_MS = 30000;
 
@@ -45,9 +46,10 @@ function processSpec(binary) {
 }
 
 class CodexAppServer extends EventEmitter {
-  constructor({ cwd, locateImpl = locate, spawnImpl = spawn, timeoutMs = REQUEST_TIMEOUT_MS } = {}) {
+  constructor({ cwd, env = process.env, locateImpl = locate, spawnImpl = spawn, timeoutMs = REQUEST_TIMEOUT_MS } = {}) {
     super();
     this.cwd = cwd || process.cwd();
+    this.env = env;
     this.locate = locateImpl;
     this.spawn = spawnImpl;
     this.timeoutMs = timeoutMs;
@@ -57,6 +59,7 @@ class CodexAppServer extends EventEmitter {
     this.nextId = 1;
     this.stdoutBuffer = '';
     this.stderrBuffer = '';
+    this.stderrTail = []; // the last stderr lines, so an early exit can say why
   }
 
   async connect() {
@@ -75,18 +78,19 @@ class CodexAppServer extends EventEmitter {
     const spec = processSpec(binary);
     this.stdoutBuffer = '';
     this.stderrBuffer = '';
+    this.stderrTail = [];
     const child = this.spawn(spec.command, spec.args, {
       cwd: this.cwd,
       windowsHide: true,
       shell: spec.shell,
-      env: process.env,
+      env: this.env,
       stdio: ['pipe', 'pipe', 'pipe'],
     });
     this.child = child;
     child.stdout.on('data', (chunk) => { if (this.child === child) this.consumeStdout(chunk); });
     child.stderr.on('data', (chunk) => { if (this.child === child) this.consumeStderr(chunk); });
     child.on('error', (error) => this.close(child, error));
-    child.on('close', (code) => this.close(child, new Error(`Codex App Server exited${code == null ? '' : ` with code ${code}`}`)));
+    child.on('close', (code) => this.close(child, new Error(this.exitMessage(code))));
     child.stdin.on('error', (error) => this.close(child, error));
 
     try {
@@ -116,7 +120,15 @@ class CodexAppServer extends EventEmitter {
     this.stderrBuffer += chunk.toString();
     const lines = this.stderrBuffer.split(/\r?\n/);
     this.stderrBuffer = lines.pop();
-    for (const line of lines) if (line.trim()) this.emit('diagnostic', line);
+    for (const line of lines) if (line.trim()) { this.stderrTail = [...this.stderrTail, line.trim()].slice(-40); this.emit('diagnostic', line); }
+  }
+
+  // "exited with code 1" alone hides why; the launcher's own error (damaged install, missing module) is what to show.
+  exitMessage(code) {
+    const base = `Codex App Server exited${code == null ? '' : ` with code ${code}`}`;
+    const pending = this.stderrBuffer.trim();
+    const detail = launchFailure([...(this.stderrTail || []), pending].join('\n')) || (this.stderrTail || []).filter((line) => !/^WARNING:/i.test(line)).at(-1) || pending;
+    return detail ? `${base}: ${detail.slice(0, 400)}` : base;
   }
 
   consumeLine(line) {
@@ -144,10 +156,17 @@ class CodexAppServer extends EventEmitter {
 
   requestRaw(method, params = {}) {
     const id = String(this.nextId++);
+    const child = this.child;
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
         this.pending.delete(id);
-        reject(new Error(`${method}: no response from Codex App Server`));
+        const error = new Error(`${method}: no response from Codex App Server`);
+        reject(error);
+        // A server that went silent stays silent: drop it so the retry spawns a fresh one instead of hitting the same hang.
+        if (child && this.child === child) {
+          try { child.kill(); } catch { /* already gone */ }
+          this.close(child, error);
+        }
       }, this.timeoutMs);
       timer.unref?.();
       this.pending.set(id, { resolve, reject, timer, method });

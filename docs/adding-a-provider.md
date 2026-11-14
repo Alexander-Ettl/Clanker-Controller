@@ -1,6 +1,6 @@
 # Adding a provider (Cursor, Grok, …)
 
-Clanker drives coding-agent CLIs. Each one is a **descriptor** in `tools/ai-chat-panel/lib/providers/`; the registry
+Clanker drives coding-agent CLIs. Each one is a **descriptor** in `ai-chat-panel/lib/providers/`; the registry
 (`lib/providers/index.js`) is the one list the rest of the extension reads. Nothing outside the registry needs to name
 `claude`, `codex` or `gemini` for the steps below to work.
 
@@ -33,6 +33,8 @@ The webviews get `window.PROVIDERS` (no functions) and a generated accent styles
 and follows it through the whole list above.
 
 ## Not covered yet (the next step)
+
+Tracked as PROVIDER-01 in the [root backlog](../TODO.md); the remaining work below is design context for that task.
 
 These still know the three built-ins by name and need a provider-shaped seam before a new CLI can **run a chat**:
 

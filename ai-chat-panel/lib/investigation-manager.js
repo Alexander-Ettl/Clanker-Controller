@@ -161,12 +161,12 @@ class InvestigationManager extends EventEmitter {
   syncAwake() {
     const needed = !this.disposed && (this.actives.size > 0 || this.state.jobs.some(job => job.enabled));
     if (needed && !this.awake && this.keepAwakeFactory) {
-      try { this.awake = this.keepAwakeFactory() || null; } catch (error) { this.emit('managerError', error); }
+      try { this.awake = this.keepAwakeFactory({ onChange: () => { if (!this.disposed) this.emit('change', this.snapshot()); }, onError: error => this.emit('managerError', error) }) || null; } catch (error) { this.emit('managerError', error); }
     } else if (!needed && this.awake) { try { this.awake.release(); } finally { this.awake = null; } }
   }
   snapshot() {
     const ids = [...this.actives.values()].map(entry => entry.run.id);
-    return clone({ ...this.state, defaults: DEFAULTS, fixDefaults: FIX_DEFAULTS, testerDefaults: TESTER_DEFAULTS, fullDefaults: FULL_DEFAULTS, recipes: RECIPES, topics: TOPICS, lenses: LENSES, activeRunId: ids[0] || null, activeRunIds: ids, maxParallel: this.parallelLimit(), keepingAwake: Boolean(this.awake) });
+    return clone({ ...this.state, defaults: DEFAULTS, fixDefaults: FIX_DEFAULTS, testerDefaults: TESTER_DEFAULTS, fullDefaults: FULL_DEFAULTS, recipes: RECIPES, topics: TOPICS, lenses: LENSES, activeRunId: ids[0] || null, activeRunIds: ids, maxParallel: this.parallelLimit(), keepingAwake: Boolean(this.awake && this.awake.active !== false) });
   }
   parallelLimit() { const value = Math.floor(Number(this.maxParallel())); return Number.isFinite(value) ? Math.min(4, Math.max(1, value)) : 1; }
   create({ projectId, model = 'gemini-3.8-flash-high', recipe = 'diagnose', mode, roles, options, limits = {}, expiresAt } = {}) {
