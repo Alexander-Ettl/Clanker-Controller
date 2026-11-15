@@ -188,7 +188,10 @@ const adoptBaseline = (captureDir, baselineDir) => { const staged = path.join(ca
 // ---------------------------------------------------------------------------------------------------------------------
 
 async function fullCycle(context, deps = {}) {
-  const { job, run: runRecord, directory, signal, onProgress = () => {}, resolveRole = async () => ({ target: null, skipped: [] }), slots = null, gate = async () => {}, expired = () => false, visorDir = null } = context;
+  const { job, run: runRecord, directory, signal, onProgress = () => {}, resolveRole = async () => ({ target: null, skipped: [] }), slots = null, gate = async () => {}, expired = () => false, visorDir = null, quotaLow = () => false } = context;
+  // No new model call starts once the time budget is used up or the Gemini pool is nearly empty (editors are gated by their own quota).
+  const halted = () => expired() || quotaLow();
+  const haltReason = () => expired() ? 'Time budget used up' : quotaLow() ? 'Gemini quota is low' : 'Token budget used up';
   // EU compliance (Settings > Loops): the extra scout and the static indicators, and redaction of personal data in model input. Both default on.
   const eu = { scout: true, redact: true, ...(context.compliance || {}) };
   const scrub = text => eu.redact ? redactText(text) : text;
@@ -199,6 +202,17 @@ async function fullCycle(context, deps = {}) {
   signal.throwIfAborted();
   fs.mkdirSync(directory, { recursive: true });
   const cp = openCheckpoint(directory);
+  // Editors out of quota: scouting more would only grow a queue nobody can work on and spend the Gemini pool for nothing. Wait for the
+  // reset without scanning. Only a quota shortfall waits; an editor that is not installed or switched off still skips as before.
+  if (fixLimit && !cp.data.queue) {
+    const editors = await Promise.all(['editor', 'visualEditor'].map(role => resolveRole(role, { area: role === 'editor' ? 'backend' : 'visual' })));
+    const blocked = editors.flatMap(pick => pick.target ? [] : (pick.skipped || []).filter(entry => entry.quota));
+    if (editors.every(pick => !pick.target) && blocked.length) {
+      const times = blocked.map(entry => entry.retryAt).filter(Number.isFinite);
+      const names = [...new Set(blocked.map(entry => ({ claude: 'Claude', codex: 'Codex', gemini: 'Gemini' })[entry.agent] || entry.agent))].join(' and ');
+      return { skipped: true, waiting: true, reason: `${names} ${blocked.length > 1 ? 'are' : 'is'} short on quota for fixes; nothing was scanned`, retryAt: times.length ? Math.min(...times) : null };
+    }
+  }
   const live = { agents: [], fixes: [], note: '', resumed: Boolean(runRecord.resumes) };
   const report = (stage, patch = {}) => { Object.assign(live, patch); onProgress(stage, clone(live)); };
   const budget = new Budget(job.limits.maxTokensPerRun);
@@ -263,7 +277,7 @@ async function fullCycle(context, deps = {}) {
       report('scan', { note: `${aspects.length} scouts on ${scout.target?.label || 'unavailable model'}: ${counts.join(', ')}`, scoutTokens });
     };
     if (!scout.target) { cp.data.scouts[aspect.id] = { status: 'skipped', reason: 'No scout model' }; mark('skipped'); return; }
-    if (expired() || budget.remaining < MIN_CALL_TOKENS) { cp.data.scouts[aspect.id] = { status: 'skipped', reason: expired() ? 'Time budget used up' : 'Token budget used up' }; mark('skipped'); return; }
+    if (halted() || budget.remaining < MIN_CALL_TOKENS) { cp.data.scouts[aspect.id] = { status: 'skipped', reason: haltReason() }; mark('skipped'); return; }
     const dir = path.join(directory, 'scouts', aspect.id); fs.mkdirSync(dir, { recursive: true });
     const packet = buildAspectPacket(shown, aspect, { budget: options.packetChars, cycle, recent: recent.files });
     shards = Math.max(shards, packet.shards);
@@ -316,7 +330,7 @@ async function fullCycle(context, deps = {}) {
       const batches = []; for (let index = 0; index < proposed.length; index += VERIFY_BATCH) batches.push(proposed.slice(index, index + VERIFY_BATCH));
       const verdicts = new Map();
       await Promise.all(batches.map(async (batch, index) => {
-        if (expired() || budget.remaining < MIN_CALL_TOKENS) { unchecked.push(...batch); return; }
+        if (halted() || budget.remaining < MIN_CALL_TOKENS) { unchecked.push(...batch); return; }
         const dir = path.join(directory, 'verify', String(index + 1)); fs.mkdirSync(dir, { recursive: true });
         const prompt = `${schemaNote(CONFIRM_SCHEMA)}\nProject: ${profile.label}\n\n${batch.map(item => `CANDIDATE ${item.id}: ${item.title}\nSeverity: ${item.severity}. Found by: ${item.aspects.join(', ')}.\nClaim: ${item.observed}\nExpected: ${item.expected}\n`
           + `Scout's evidence:\n${item.evidence.map(evidenceLine).join('\n')}\nCurrent text around the evidence:\n${excerptAround(shown, item.evidence)}`).join('\n\n')}`;
@@ -344,7 +358,7 @@ async function fullCycle(context, deps = {}) {
     if (captureBefore) {
       const images = visionRole.target && captureBefore.needsVision?.length ? pickImages(captureBefore, visualBefore.captureDir, path.join(directory, 'vision-before'), 10) : [];
       let review = null;
-      if (images.length && !expired() && budget.remaining >= MIN_CALL_TOKENS) {
+      if (images.length && !halted() && budget.remaining >= MIN_CALL_TOKENS) {
         report('confirm', { note: `Reviewing ${images.length} screenshots` });
         try {
           await gate(signal);
@@ -390,7 +404,8 @@ async function fullCycle(context, deps = {}) {
   const fixOne = async item => {
     const saved = cp.data.fixes[item.id];
     if (saved && FINAL.has(saved.status)) { item.fix = saved; return; }
-    const role = await resolveRole(item.area === 'visual' ? 'visualEditor' : 'editor', { area: item.area });
+    // The first attempt uses the cheaper editor (Sonnet); a finding that already failed once goes to the stronger model.
+    const role = await resolveRole(item.area === 'visual' ? 'visualEditor' : 'editor', { area: item.area, escalate: (item.attempts || 0) >= 1 });
     if (!role.target) { item.fix = cp.data.fixes[item.id] = { status: 'skipped', reason: role.skipped?.[0]?.reason || 'No editor with spare quota is available for this kind of work' }; cp.save(); setFixState(item, 'skipped'); return; }
     if (expired()) { item.fix = cp.data.fixes[item.id] = { status: 'skipped', reason: 'Time budget used up' }; cp.save(); setFixState(item, 'skipped'); return; }
     await gate(signal);
@@ -466,7 +481,7 @@ async function fullCycle(context, deps = {}) {
 
     // Judges read every diff. They are an extra opinion; the checks above are the hard evidence.
     const judge = applied.length ? await resolveRole('scout') : { target: null };
-    if (judge.target && applied.length && !expired() && budget.remaining >= MIN_CALL_TOKENS) {
+    if (judge.target && applied.length && !halted() && budget.remaining >= MIN_CALL_TOKENS) {
       const groups = []; for (let index = 0; index < applied.length; index += JUDGE_BATCH) groups.push(applied.slice(index, index + JUDGE_BATCH));
       const supplied = readContents(checkout);
       const verdicts = new Map(), more = [];
@@ -512,16 +527,19 @@ async function fullCycle(context, deps = {}) {
     patch: patch ? 'changes.patch' : null, agents: agentsList, confirm: cp.data.confirm, regressions,
     visual: { provider: visualBefore.provider, ok: Boolean(visualBefore.ok), reason: visualBefore.reason || cp.data.visionNotes || '', routes: visualBefore.routes || [], states: captureBefore?.summary?.states || 0, measured: captureBefore?.summary?.newFindings || 0, afterOk: Boolean(visualAfter?.ok) },
     profile: { kind: profile.kind, label: profile.label, checks: profile.checks.map(check => check.name) }, tokens: { spent: budget.spent, unknown: budget.unknown } };
+  // A cycle whose scouts failed or were skipped (quota, time, tokens) has not read the whole project: it is neither clean nor finished.
+  const covered = aspects.every(aspect => cp.data.scouts[aspect.id]?.status === 'done') || !scout.target;
   const confirmed = cp.data.confirm?.confirmed || 0;
   const summary = [`${aspects.length} scouts read ${profile.label}: ${cp.data.confirm?.proposed || 0} candidates, ${confirmed} confirmed, ${cp.data.confirm?.rejected || 0} refuted.`,
     loop.mode === 'fix' ? `${loop.fixed.length} fixed and verified, ${loop.unverified.length} applied but unverified, ${loop.unfixed.length} unfixed, ${loop.newIssues.length} new from verification, ${rest.length} queued.` : `Find only: ${queue.length} problem${queue.length === 1 ? '' : 's'} listed, nothing edited.`,
     cp.data.compliance?.length ? `${cp.data.compliance.length} EU compliance indicator${cp.data.compliance.length === 1 ? '' : 's'} to review (not legal advice).` : '',
-    regressions.length ? `${regressions.length} fix${regressions.length === 1 ? ' was' : 'es were'} thrown out for breaking a check.` : '', cp.data.visionNotes || ''].filter(Boolean).join(' ');
+    regressions.length ? `${regressions.length} fix${regressions.length === 1 ? ' was' : 'es were'} thrown out for breaking a check.` : '', cp.data.visionNotes || '',
+    covered ? '' : `Incomplete: ${aspects.filter(aspect => cp.data.scouts[aspect.id]?.status !== 'done').length} of ${aspects.length} scouts did not finish (${[...new Set(Object.values(cp.data.scouts).filter(entry => entry.status !== 'done').map(entry => entry.reason || entry.status))].slice(0, 2).join('; ')}), so the project was not fully reviewed.`].filter(Boolean).join(' ');
   fs.writeFileSync(path.join(directory, 'report.json'), JSON.stringify({ summary, loop, findings: cp.data.fresh || [] }, null, 2));
   if (captureBefore || visualAfter?.ok) adoptBaseline(visualAfter?.ok ? visualAfter.captureDir : visualBefore.captureDir, baselineDir);
-  const clean = !queue.length && !newIssues.length;
+  const clean = covered && !queue.length && !newIssues.length;
   const cleanStreak = clean ? (job.cleanStreak || 0) + 1 : 0;
-  const done = loop.mode === 'find' ? cycle + 1 >= shards : cleanStreak >= shards && !nextBacklog.length;
+  const done = covered && (loop.mode === 'find' ? cycle + 1 >= shards : cleanStreak >= shards && !nextBacklog.length);
   const artifacts = ['report.json', 'changes.patch', 'capture.txt', 'capture-after.txt'].map(name => path.join(directory, name)).filter(file => fs.existsSync(file));
   for (const name of fs.existsSync(path.join(directory, 'checks')) ? fs.readdirSync(path.join(directory, 'checks')) : []) artifacts.push(path.join(directory, 'checks', name));
   return { summary, findings: cp.data.fresh || [], questions, loop, backlog: nextBacklog, cleanStreak, done, finishedReason: done ? (loop.mode === 'find' ? 'Finished: every part of the project was reviewed' : 'Finished: nothing left to fix') : '',

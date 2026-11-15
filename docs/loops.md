@@ -31,13 +31,43 @@ lists confirmed problems and edits nothing. Both are stored per loop (`mode: 'fi
 
 | Role | Automatic |
 | --- | --- |
-| Scouts and verifiers | Gemini Flash, then Claude, then Codex |
-| Editor (backend) | Codex, then Claude |
-| Editor (visual) | Claude, then Codex |
-| Screenshot review | Gemini (the only agent that opens an image headlessly) |
+| Scouts and verifiers | Gemini 4 Hydrogen High, else the newest Flash, then Claude, then Codex |
+| Editor (backend) | Claude Sonnet, then Codex (`aiChatPanel.investigationsBackendAgent` puts Codex first) |
+| Editor (visual) | Claude Sonnet, then Codex |
+| Screenshot review | Gemini Flash (the only agent known to open an image headlessly) |
 
 Gemini is **not** an editor while Codex or Claude Code is installed, because they fix better today. Turn on **Let Gemini make the
 fixes** (or choose a Gemini model for the editor roles) to use it anyway; with neither of the others installed it edits by itself.
+
+**Hydrogen, never Argon.** Hydrogen draws on the ordinary Gemini pool, like Flash, and scored 51 against 31 on the Artificial Analysis
+index at High, with fewer tokens per task. Automatic never picks Argon, Carbon or an Orchestrator as a scout, not even as a last
+resort, because their weekly pool is small; choosing one on purpose still works. High is the setting: xhigh adds a few points for about
+1.7 times the cost, and Hydrogen Low scores below Flash. Without Hydrogen in the model list the scouts fall back to Flash.
+
+**Cheap context on the expensive models.** An editor sees one finding (its evidence, expected and observed behavior, the fix task), never
+the scouts' output or the chat. Sonnet makes the first attempt. A finding that was not fixed or was rejected goes to Opus on its second
+attempt (`escalate`), so Opus is only paid for what Sonnet could not do.
+
+## Overnight loop
+
+**Clanker Controller: Start Loop > Overnight: find and fix** starts a full loop with these limits (`OVERNIGHT_LIMITS` in
+`investigation-manager.js`): up to 12 cycles, 10 minutes apart, a soft 150 minutes per cycle, 8 fixes per cycle, 20 minutes per fix, a
+Gemini reserve of 25% and an editor reserve of 15%. The reserve limits are the quota that must remain *before* work starts.
+
+- **Waiting, not stopping, when the editors are out.** At the start of a fix cycle the loop checks the Claude and Codex quota. If every
+  editor is short, it does not scan at all: no Gemini is spent, the run is not counted, and the loop wakes at the editors' reset (at
+  least 5 minutes, at most 4 hours; 30 minutes when no reset time is known). The card reads "…short on quota for fixes; nothing was
+  scanned; waiting until HH:MM". An editor that is merely not installed still skips its fixes as before.
+- **Gemini watched during the cycle.** The Gemini pool is read every minute. Below half the reserve (12% overnight) no new scout,
+  verifier or judge starts, the cycle writes up what it has, and admission holds the next cycle until the pool has recovered.
+- **No false "finished".** A cycle whose scouts failed or were skipped (quota, time, tokens) is not clean and not finished; its
+  summary says "Incomplete: n of m scouts did not finish (reason)". Only a cycle in which every scout completed can count towards the
+  clean streak that ends the loop.
+- **Limits.** `editorReservePercent` is a new limit (0 to 95, default 20) next to `reservePercent`. Nothing is applied to your project
+  while it runs: in the morning read the report and apply `changes.patch` from the card.
+
+Not measured yet: how much of the Gemini pool a cycle uses with Hydrogen, and how many cycles a night actually completes. Read the
+first night's run cards (tokens, scouts finished, waits) before raising `maxRuns` or `fixesPerCycle`.
 
 **EU compliance.** Unless switched off in Settings > Loops, an eleventh scout and a set of free text rules look for GDPR and
 TDDDG indicators, and real e-mail addresses, IBANs and phone numbers are replaced with placeholders before any text goes to a

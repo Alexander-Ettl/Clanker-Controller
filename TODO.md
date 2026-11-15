@@ -60,6 +60,8 @@ Completed 2026-10-30: Gemini 4 Argon usage. Antigravity quota discovery finds th
 
 ### LOOP-01 · Resume loop integration
 
+Completed 2026-11-16: overnight loop. Scouts are Gemini 4 Hydrogen High (Flash as the fallback; Argon, Carbon and Orchestrator are never chosen automatically), editors are Claude Sonnet with Opus on a second attempt, then Codex. A fix cycle whose editors are out of quota waits for the reset without scanning, the Gemini pool is watched during a cycle, and an incomplete cycle no longer counts as clean or finished. **Start Loop > Overnight** uses new `OVERNIGHT_LIMITS`; `editorReservePercent` is a new limit. Details in [loops.md](docs/loops.md#overnight-loop). Not verified: a real Hydrogen scout run through `runFlash` (Antigravity custom-agent mode), Gemini pool use per cycle, and how many cycles a night completes. Still open from the redesign: reproduction-gated findings, a finding store across cycles, and "Apply verified patch" with a baseline check.
+
 - [ ] Reconcile the interrupted Codex work with the [redesign proposal](docs/plans/loop-redesign.md), [loop guide](docs/loops.md) and existing changes in the loop/investigation modules.
 
 **Next:** identify which changes already exist and which redesign requirements remain; use the earlier conversation if available, otherwise record the missing context. Don't restart or apply an old private-checkout patch blindly.

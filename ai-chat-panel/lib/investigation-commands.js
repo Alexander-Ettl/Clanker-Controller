@@ -2,7 +2,7 @@
 
 const fs = require('node:fs');
 const path = require('node:path');
-const { InvestigationManager } = require('./investigation-manager');
+const { InvestigationManager, OVERNIGHT_LIMITS } = require('./investigation-manager');
 const { investigate } = require('./investigation-runner');
 const { keepAwake } = require('./keep-awake');
 const { fetchQuotaSummary } = require('./antigravity-quota');
@@ -66,17 +66,20 @@ function installInvestigations({ vscode, context, storageDir, projects, availabl
     const ctx = roleContext(), saved = setting('investigationsModels', {}) || {};
     return Object.fromEntries(ROLES.map(role => [role, { name: ROLE_NAMES[role], hint: ROLE_HINTS[role], value: typeof saved[role] === 'string' ? saved[role] : 'auto', auto: describeAuto(role, ctx), choices: choicesFor(role, ctx) }]));
   };
-  const pickRole = async (role, job) => {
+  const pickRole = async (role, job, extra = {}) => {
     const ctx = roleContext();
     const value = roleValue(role, job);
     const needsQuota = role === 'editor' || role === 'visualEditor' || value === 'auto' || !/^gemini/.test(String(value));
-    return resolveRole(role, ctx, { value, quotas: needsQuota && fixers ? await fixers.readQuotas() : null, reservePercent: job?.limits?.reservePercent || 0 });
+    // Editors spend the Claude or Codex subscription, so they have their own, usually lower, reserve than the Gemini pool the scouts use.
+    const editing = role === 'editor' || role === 'visualEditor';
+    const reservePercent = (editing ? job?.limits?.editorReservePercent : null) ?? job?.limits?.reservePercent ?? 0;
+    return resolveRole(role, ctx, { value, quotas: needsQuota && fixers ? await fixers.readQuotas() : null, reservePercent, escalate: Boolean(extra?.escalate) });
   };
 
   const create = () => new InvestigationManager({ storageDir, projects, availableModels, isForegroundBusy, runner: investigate, keepAwake,
     resolveFixer: async (finding, limits) => fixers && pickFixer(finding, limits, { ...fixers, quotas: await fixers.readQuotas(),
       visualAgent: setting('investigationsVisualAgent', 'claude'), backendAgent: setting('investigationsBackendAgent', 'codex') }),
-    resolveRole: (role, job) => pickRole(role, job),
+    resolveRole: (role, job, extra) => pickRole(role, job, extra),
     canRun: job => { const pick = resolveRole('scout', roleContext(), { value: roleValue('scout', job) }); return pick.target ? { ok: true } : { ok: false, reason: pick.skipped?.[0]?.reason || 'No model for the scouts: connect Antigravity, Claude Code or Codex' }; },
     maxParallel: () => setting('investigationsMaxParallel', 3), maxAgents: () => setting('investigationsMaxAgents', 12), visorDir: () => findVisor(),
     compliance: () => ({ scout: setting('complianceScout', true), redact: setting('complianceRedact', true) }),
@@ -154,10 +157,14 @@ function installInvestigations({ vscode, context, storageDir, projects, availabl
       if (!holder.manager) throw new Error('Loops are managed by another IDE window.');
       const project = await vscode.window.showQuickPick(projects.list().filter(item => item.root).map(item => ({ label: item.name, description: item.root, projectId: item.id })), { title: 'Start loop: choose project' });
       if (!project) return;
-      const mode = await vscode.window.showQuickPick([{ label: 'Find and fix', description: 'Scouts review, editors fix in a private copy, checks and screenshots verify', mode: 'fix' }, { label: 'Find only', description: 'Review and report; nothing is edited', mode: 'find' }], { title: 'What should the loop do?' });
+      const mode = await vscode.window.showQuickPick([
+        { label: 'Overnight: find and fix', description: 'Gemini 4 Hydrogen scouts, Claude Sonnet fixes (Opus on a second try), up to 12 cycles, waits for quota', mode: 'fix', overnight: true },
+        { label: 'Find and fix', description: 'Scouts review, editors fix in a private copy, checks and screenshots verify', mode: 'fix' },
+        { label: 'Find only', description: 'Review and report; nothing is edited', mode: 'find' }], { title: 'What should the loop do?' });
       if (!mode) return;
-      const job = holder.manager.create({ projectId: project.projectId, recipe: 'full', mode: mode.mode }); holder.manager.start(job.id);
-      vscode.window.showInformationMessage('Loop started. It keeps going until it is done, and picks up again if you close and reopen the IDE.');
+      const job = holder.manager.create({ projectId: project.projectId, recipe: 'full', mode: mode.mode, ...(mode.overnight ? { limits: OVERNIGHT_LIMITS } : {}) }); holder.manager.start(job.id);
+      vscode.window.showInformationMessage(mode.overnight ? 'Overnight loop started. It waits for quota instead of stopping, and picks up again if you close and reopen the IDE. Review changes.patch in the morning.'
+        : 'Loop started. It keeps going until it is done, and picks up again if you close and reopen the IDE.');
     } catch (error) { vscode.window.showErrorMessage(error.message); }
   }));
   context.subscriptions.push(vscode.commands.registerCommand('aiChatPanel.investigationsStop', () => holder.manager?.stopAll()));
