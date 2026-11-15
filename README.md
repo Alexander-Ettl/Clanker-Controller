@@ -1,65 +1,119 @@
-# Clanker Controller
+<p align="center">
+  <img src="docs/images/hero.svg" alt="Clanker Controller: one chat for Claude Code, Codex and Gemini, built on flat-rate subscriptions" width="100%">
+</p>
 
-Independent repository for the chat controller, native voice routing, and CLI usage display.
+**Clanker Controller** is an IDE extension that puts your coding agents in one chat window. Claude Code, Codex, Antigravity (Gemini) and GitHub Copilot sit side by side. You pick a model per message, or let Auto pick for you. It drives the official CLIs you already have installed, so you keep your sign-ins, your plans and your setup. You give nothing up.
 
-## Start here
+It runs in **Antigravity** and **VS Code**.
 
-For **“What's left to do on this project?”**, read [TODO.md](TODO.md). It is the single list of open work, with stable task IDs, next actions and completion criteria. Report interrupted work first, then ready tasks, then deferred ideas and items needing investigation. Reading the backlog doesn't authorize implementation of every item.
+<p align="center">
+  <img src="docs/images/hero-chat.png" alt="One chat where Claude Opus writes a fix, GPT-6.1-Sol reviews it and Gemini writes the changelog. The usage rings for all three sit on the right." width="900">
+</p>
 
-Read [AGENTS.md](AGENTS.md) before editing. Use the [documentation index](docs/README.md) to find current behavior, proposals and historical material. Old specs and their unchecked lists are context; they aren't another backlog. Check the working tree before resuming a task, since recent changes may already cover part of it.
+> The picture above is the real chat page with invented demo data. [`scripts/readme-shots.mjs`](scripts/readme-shots.mjs) renders every screenshot in this README.
 
-## Repository map
+## Why you would want this
 
-| Folder | Owns |
+- **Every agent in one place.** One conversation can go from Claude to Codex to Gemini. Each agent gets a condensed briefing of what the others did, and nothing is thrown away: every shortened part points to a full transcript it can open.
+- **A usage indicator you can read at a glance.** Each provider gets a ring with the percentage left in its 5-hour window and the time until it resets.
+- **A scheduler.** Hit a limit at 2 a.m.? The next prompt waits for the reset and runs by itself. You can also schedule prompts for a clock time.
+- **Usage windows that start early.** A tiny background ping keeps each 5-hour window rolling, so one is nearly always already under way when you sit down.
+- **Subscriptions first.** A flat plan costs far less than the same work at API prices. [The math is below.](#the-math-subscriptions-vs-api-prices)
+
+## Keep your Claude Code and Codex setup
+
+Clanker does not replace your tools. It runs the real `claude`, `codex` and `agy` CLIs headlessly and streams what they do into the chat.
+
+- Your **own CLI sign-ins and plans** stay as they are. The coding agents run on those sign-ins, so Clanker needs no API key for them and never bills you. Voice and the Auto router use their own free Groq and Cloudflare keys, and both are optional.
+- Sessions stay native. A Codex thread keeps syncing with the ChatGPT app, and Claude Code can still be opened in the Claude app through Remote Control.
+- Use each environment next to the others, in the same chat, on the same project.
+- Add another CLI with one provider file. The GitHub Copilot CLI is the worked example: [adding a provider](docs/adding-a-provider.md).
+
+## Several agents, one picker
+
+Models come from the CLIs themselves, with their reasoning levels, and each provider shows how much usage it has left. Mark favorites, or leave it on **Auto** and a router (free Cloudflare and Groq tiers) picks a model for the task.
+
+<p align="center">
+  <img src="docs/images/model-menu.png" alt="The model picker listing Claude Code, Codex and Antigravity models with the remaining usage next to each provider" width="270">
+</p>
+
+## A scheduler that works while you sleep
+
+When a task runs into its usage limit, Clanker queues **Continue** for the reset, in the same chat, model and project. You can also schedule any prompt for a clock time or queue it behind the running task, reorder the queue by dragging, and move a waiting prompt to another provider with **Change model**.
+
+<p align="center">
+  <img src="docs/images/scheduler.png" alt="Three scheduled prompts waiting in the composer: two for the Claude reset in one and a half hours, one for a clock time" width="620">
+</p>
+
+The IDE has to stay open for scheduled prompts to run.
+
+## Start usage windows early
+
+Subscription limits work in rolling 5-hour windows that begin with your first message. Clanker can start the window for you: every 5 hours it sends "respond with 1" to the cheapest model of each connected CLI, from an empty temporary folder with tools off. It costs a few tokens, and it only touches CLIs signed in with a subscription. A CLI billed per token through an API key is never pinged.
+
+<p align="center">
+  <img src="docs/images/settings-windows.png" alt="Settings rows for automatic continue, automatic CLI updates and starting usage windows early, with the last warm-up per provider" width="560">
+</p>
+
+No PC running? An experimental option runs the warm-ups in your own Google Cloud project on a weekly calendar: [setup, costs and removal](docs/cloud-usage-windows.md).
+
+## The math: subscriptions vs API prices
+
+Clanker keeps an **API value** meter. For every turn it prices the tokens at each provider's pay-per-token rates and adds them up. It is a comparison, not a bill: the work itself ran on your subscriptions.
+
+<p align="center">
+  <img src="docs/images/cost.svg" alt="October 2026 at API prices: 1,465 dollars. The same work on example subscriptions: 420 dollars, 3.5 times cheaper." width="100%">
+</p>
+
+How to read it, with the numbers from the author's own use:
+
+| Measure | Value |
 |---|---|
-| `ai-chat-panel/` | IDE extension, chat UI, project manager, scheduler and CLI runners |
-| `voice-router/` | Native capture, transcription, vocabulary and prompt routing |
-| `antigravity-usage-statusbar/` | Usage and quota status extension |
-| `scripts/` | Browser checks for the chat controller and the Visor bridge |
-| `docs/` | Current guides and specifications; [index](docs/README.md) |
-| `docs/plans/` | Proposals linked to open tasks |
-| `docs/archive/` | Historical specs and research, excluded from the active backlog |
-| `assets/` | Master brand assets; extension runtime assets stay in its `media/` folder |
-| `out/` | Ignored generated reports, screenshots and local experiments |
+| Work measured | Sep 22 to Nov 15, 2026, 285 chats, 2,506 priced turns |
+| At API prices | **$2,314** in total (±20%), about $1,300 a month |
+| By provider | Claude Code $1,750 · Codex $423 · Antigravity $141 |
+| October alone | **$1,465** at API prices |
+| Example subscriptions | Claude $200 + ChatGPT $200 + Google $20 = **$420 a month** |
+| Result | 1,465 ÷ 420 ≈ **3.5x cheaper**, about $1,045 saved in October |
 
-The extension folders are installed through junctions; keep their names and locations stable. Dependencies (`node_modules/`), UI baselines (`.ui-tester/`) and migration backups are local, ignored directories. `out/` may also contain recovery work or private checkouts; inspect it before deleting anything beyond known generated artifacts.
+Read the comparison with care. The API value is an estimate with a ±20% band, and turns on models without a known price count as zero rather than a guess. Plan prices change, so plug in what you pay. The trade is that a subscription has usage windows instead of a pay-as-you-go meter, and the scheduler and early window starts exist to make those windows painless.
 
-## Development
+<p align="center">
+  <img src="docs/images/settings-api-value.png" alt="The API value card in settings: about 2.3 thousand dollars in total, split by provider, 359 dollars this month" width="520">
+</p>
 
-Run `npm.cmd install`, `npm.cmd run check`, and `npm.cmd test` from this folder. Browser checks use Playwright and the installed Edge browser. To install into VS Code and/or Antigravity on any OS (no PowerShell), run `node scripts/install-extension.mjs [vscode|antigravity|all]` (or `npm run install:extension`). It builds `out/ai-chat-panel-<version>.vsix` and installs it with the editor CLI (`code`, `antigravity`) when on PATH, otherwise copies into the extensions folder. Add `--link` to symlink/junction this checkout for live development, `--vsix-only` to just build the package (install via **Extensions: Install from VSIX...**), or `--dir <path>` for a custom extensions folder. The legacy `ai-chat-panel/install-into-antigravity.ps1 -Link` still works on Windows.
+You can see your own number under **Chat Settings > General > API value**.
 
-First-run onboarding (`#cliSetupModal`, also reopenable anytime via **Chat Settings > General > Setup guide**) connects your installed coding CLIs (Claude Code, Codex, Antigravity, and GitHub Copilot), links directly to **Voice** (Groq Whisper dictation) and **Routing** (free Cloudflare + Groq Auto router), and includes **Set up with AI** to prefill a guided setup and provider-customization prompt. The GitHub Copilot CLI foundation lives in [`ai-chat-panel/lib/providers/copilot.js`](ai-chat-panel/lib/providers/copilot.js); see [docs/adding-a-provider.md](docs/adding-a-provider.md) to fine-tune flags, models, or stream events.
+## And more
 
-Use the [project guide](ai-chat-panel/PROJECTS.md) to choose the website, Visor, or Clanker as a chat's destination. They have independent Git roots. The current chat model supports one primary project per conversation; several open chats can target different repositories. Project registration doesn't itself grant or restrict filesystem access.
+- **Voice dictation.** A global hotkey, speech to text through Groq Whisper, and a personal dictionary that learns your project's names.
+- **Projects.** Each chat is bound to one project root that stays explicit across queued and scheduled turns.
+- **Telegram and a Cloudflare tunnel** to check on a long task from your phone.
+- **Loops.** Unattended review and fix runs with their own token budgets.
+- **Liquid Glass UI.** Movable chat windows, a launcher rail, and a composer that behaves like a Dynamic Island.
 
-Visor is optional. The bridge smoke check discovers `../Visor` or `VISOR_DIR`. Clanker stores chats, schedules and attachments in per-user extension storage, so moving this source repository doesn't move that history.
+## Install
 
-Open chat editor tabs and pop-outs use Antigravity's native layout restoration. Leave them open when closing the IDE to reopen them in their saved locations with the same conversations and drafts. Each restored webview requests its conversation after its message listener is ready, including when several windows reopen together. Closing an individual chat tab removes it from that layout; its history remains in Manage Chats. Window placement depends on the IDE restoring its previous session.
+You need Node.js, Antigravity or VS Code, and at least one CLI: Claude Code, Codex, Antigravity or GitHub Copilot.
 
-## Usage windows and CLI maintenance
+```bash
+git clone https://github.com/Alexander-Ettl/Clanker-Controller.git
+cd Clanker-Controller
+npm install
+node scripts/install-extension.mjs        # vscode, antigravity or all; add --link to develop live
+```
 
-If Claude returns a Cloudflare-branded HTTP 403 authentication failure, Clanker pauses the affected chat queue and keeps the failed request first (or queues Continue if work was already performed). Further Claude sends are blocked until you explicitly allow a retry. Check the provider status page before retrying, then resume the paused queue manually. A successful local sign-in check alone cannot confirm that the provider has recovered.
+Reload the IDE window. The first-run guide connects your CLIs, sets up voice and routing, or offers **Set up with AI** to walk you through it. You can reopen it anytime from **Chat Settings > General > Setup guide**.
 
-Open chats linked to Codex check their native thread every two seconds for messages continued in ChatGPT. New prompts, reply text and supported tool records update automatically, including growing replies, while preserving the composer draft. Clanker waits while the external turn is active; stop that turn in ChatGPT. Sync requires the same locally accessible Codex thread and a running IDE. It pauses while Clanker runs its own turn. Deleted or forked threads, attachments and provider-specific UI may not mirror completely.
+On Windows you can also run `ai-chat-panel/install-into-antigravity.ps1 -Link`. Built and used daily on Windows; the installer also works on Linux and macOS, but voice dictation is Windows-only for now.
 
-Codex permits only one writer per thread. ChatGPT may retain that ownership after its answer finishes. If Clanker reports it is waiting for the chat to be released, close the conversation in ChatGPT, or quit ChatGPT if it stays locked. Clanker keeps the pending prompt and retries every five seconds; Stop cancels it. Reading shared history does not grant simultaneous write access.
+## Repository
 
-When a task hits its usage limit, Clanker automatically schedules Continue for the reset in the same chat, model and project, ahead of later prompts. This is on by default; turn off **Automatically continue after usage resets** in **Chat Settings > General** to use the manual Continue button instead. The IDE must remain running for scheduled prompts to dispatch.
+| Folder | What it is |
+|---|---|
+| [`ai-chat-panel/`](ai-chat-panel/README.md) | The extension: chat UI, scheduler, projects, CLI runners |
+| [`voice-router/`](voice-router/README.md) | Native capture, transcription and prompt routing |
+| [`antigravity-usage-statusbar/`](antigravity-usage-statusbar/README.md) | Usage and quota status extension |
+| [`docs/`](docs/README.md) | Guides, specifications and proposals |
 
-Claude prompts waiting for the same reset share a deadline: reset readings up to one minute apart use the later time, including when restoring an older saved queue. Calendar schedules and separate usage windows keep their own times.
-
-Drag the left handle to reorder scheduled prompts in the composer dock, including while another reply runs. Future prompts show a clock; ready prompts show a grip. Their saved order survives a reload. Scheduled prompts and ordinary queued turns each keep their own ordering group.
-
-Scheduled rows show attached images/files with the same thumbnail and count badge as queued turns. Hover the badge for filenames; narrow windows reduce it to a compact count.
-
-To continue with another provider, click **Change model** on the scheduled prompt, pick a model, and confirm with the checkmark. Changing providers removes the old provider's reset deadline and sends when the chat is idle and the selected provider has usage and is signed in. Changing models within the same provider keeps its reset wait. **Ctrl+Enter** from the edited composer steers immediately; ordinary confirmation keeps the prompt queued. Calendar and timer schedules retain their chosen time.
-
-**Start usage windows early** (**Chat Settings > General**, on by default) keeps each provider's 5-hour window (plus Gemini 4 Argon's separate 7-day window on Pro plans) rolling in the background, so one is nearly always already under way when you start. Whenever a window isn't running and no prompt is queued for its usage reset (that prompt starts the window itself), Clanker sends "respond with 1" to the cheapest model of that pool (`Gemini 4 Argon Low` for Argon), from an empty temporary folder with tools and project settings off. It only applies to CLIs signed in with a subscription: one that is billed per token through an API key (an API key in its environment or settings, or Codex in API-key mode) is never pinged. That repeats every 5 hours (7 days for Argon; a failed ping is retried up to 3 times, 10 minutes apart). The settings row shows what each ping used. The IDE must be running.
-
-**Cloud usage windows** (**Chat Settings > General > Start windows in Google Cloud**, off by default) can run Claude Code and Codex warmups against a weekly work calendar while the PC is off, in your own Google Cloud project. It requires the Google Cloud CLI, billing-enabled project, deployment and separate cloud subscription sign-ins. Google Cloud may charge for incorrect setup or usage outside its shared free allowances. There is no shared Clanker backend. Antigravity is not supported by the cloud runner. See [setup, costs, credentials, pause and removal](docs/cloud-usage-windows.md).
-
-Migration recovery files live in `.migration-backup/`, which Git ignores. Visor holds the original Git bundle and working-tree snapshot. No GitHub remote or push is implied by the split.
-
-**Automatically update idle CLIs** (**Chat Settings > General**, on by default) silently installs available updates for connected providers when they have no active work and you have not typed with that provider for 30 seconds. Claude can update while you use ChatGPT/Codex, and vice versa. Typing in Auto mode protects all providers until the idle period ends. Versions are checked at startup and every 6 hours; deferred updates are reconsidered every 15 seconds. Failed attempts wait 6 hours before retrying and remain available for manual update. Turn the toggle off to update manually. The IDE must remain running.
-
-Pending updates and failed attempts also recheck the installed version every minute and when Settings opens. If another updater finishes, Clanker refreshes the version, clears stale errors and removes the update button automatically, without an IDE reload. This status refresh also runs when automatic installation is off.
+Working on the code? Start with the [development guide](docs/development.md), [AGENTS.md](AGENTS.md) and the backlog in [TODO.md](TODO.md).

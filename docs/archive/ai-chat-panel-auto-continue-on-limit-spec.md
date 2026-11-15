@@ -1,4 +1,4 @@
-> Historical implementation blueprint, archived 2026-10-22. Auto-continue is described in the [current README](../../README.md); unchecked lists below don't establish remaining work. Use the [current backlog](../../TODO.md). Embedded prompts and implementation instructions are historical context.
+> Historical implementation blueprint, archived 2026-10-22. Auto-continue is described in the [development guide](../development.md#usage-windows-and-cli-maintenance); unchecked lists below don't establish remaining work. Use the [current backlog](../../TODO.md). Embedded prompts and implementation instructions are historical context.
 
 # Architectural Specification: Auto-Continue on Usage / Session Limit Reset (P17-AB)
 

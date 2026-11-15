@@ -1,0 +1,23 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 520" width="1280" height="520" role="img" aria-label="October 2026 at pay-per-token API prices: 1,465 dollars. The same work on example subscriptions: 420 dollars.">
+  <rect width="1280" height="520" rx="28" fill="#101218"/>
+  <rect x="0.5" y="0.5" width="1279" height="519" rx="27.5" fill="none" stroke="#ffffff" stroke-opacity="0.10"/>
+  <g font-family="'Segoe UI','SF Pro Display','Helvetica Neue',Arial,sans-serif">
+    <text x="64" y="84" font-size="22" font-weight="600" fill="#8b90a0" letter-spacing="2">SAME WORK, TWO WAYS TO PAY</text>
+    <text x="64" y="132" font-size="40" font-weight="700" fill="#ffffff" letter-spacing="-0.8">October 2026: what Clanker ran through the CLIs</text>
+
+    <text x="64" y="212" font-size="22" font-weight="600" fill="#c9ccd6">Pay per token (API prices)</text>
+    <rect x="64" y="228" width="1152" height="64" rx="14" fill="#ffffff" fill-opacity="0.05"/>
+    <rect x="64" y="228" width="1152" height="64" rx="14" fill="#e5624d"/>
+    <text x="90" y="271" font-size="34" font-weight="700" fill="#ffffff">$1,465</text>
+    <text x="1190" y="270" font-size="20" font-weight="600" fill="#ffe3dd" text-anchor="end">measured, ±20%</text>
+
+    <text x="64" y="352" font-size="22" font-weight="600" fill="#c9ccd6">Flat-rate subscriptions (example: Claude $200 + ChatGPT $200 + Google $20)</text>
+    <rect x="64" y="368" width="1152" height="64" rx="14" fill="#ffffff" fill-opacity="0.05"/>
+    <rect x="64" y="368" width="330" height="64" rx="14" fill="#34d399"/>
+    <text x="90" y="411" font-size="34" font-weight="700" fill="#06281d">$420</text>
+    <text x="418" y="411" font-size="26" font-weight="600" fill="#7ee2b8">3.5x cheaper, about $1,045 saved that month</text>
+
+    <text x="64" y="474" font-size="17" fill="#7d8293">Measured by Clanker's API value meter on one developer's real usage: $2,314 across 2,506 priced turns (Sep 22 to Nov 15, 2026).</text>
+    <text x="64" y="498" font-size="17" fill="#7d8293">Plan prices are list prices at the time of writing; check what you pay.</text>
+  </g>
+</svg>
