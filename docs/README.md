@@ -7,6 +7,7 @@ Start at the [root README](../README.md). For remaining work, use [TODO.md](../T
 | Read | When |
 |---|---|
 | [Agent instructions](../AGENTS.md) | Before edits or commands |
+| [Development guide](development.md) | Repository map, install, checks, usage windows and CLI maintenance |
 | [Chat extension](../ai-chat-panel/README.md) | Architecture, installation, voice input and local checks |
 | [Projects and storage](../ai-chat-panel/PROJECTS.md) | Project selection, chat ownership and repository boundaries |
 | [Voice router](../voice-router/README.md) | CLI/daemon setup, capture, routing and batch commands |
@@ -21,7 +22,7 @@ Start at the [root README](../README.md). For remaining work, use [TODO.md](../T
 | UI and assets | [Dynamic Island composer rules](dynamic-island-composer-spec.md), [mascot assets and motion](clanker-controller-mascot-spec.md) |
 | Provider integration | [Adding a provider](adding-a-provider.md), [routing configuration](routing-config.md), [Visor bridge](ai-bridge-interface.md), [cross-vendor agents](agent-bridge.md) |
 | Voice | [Microphone and dictionary](microphone-dictionary-review.md), [OpenWhispr privacy](openwhispr-privacy.md) |
-| Usage windows | [Google Cloud setup, costs and removal](cloud-usage-windows.md); local warmups and automatic updates are in the [root README](../README.md#usage-windows-and-cli-maintenance) |
+| Usage windows | [Google Cloud setup, costs and removal](cloud-usage-windows.md); local warmups and automatic updates are in the [development guide](development.md#usage-windows-and-cli-maintenance) |
 | Loops | [Loop guide](loops.md); LOOP-01 tracks reconciliation with recent work |
 | Remote access and compliance | [Telegram setup](telegram-setup.md), [Telegram risks](telegram-security-and-risks.md), [EU compliance notes](compliance-eu.md) |
 | Performance already implemented | [Paged chat history](chat-performance.md), [rendering and persistence improvements](performance-implementation.md) |
