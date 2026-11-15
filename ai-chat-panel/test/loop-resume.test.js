@@ -5,7 +5,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const { InvestigationManager, HOST_CLOSING } = require('../lib/investigation-manager');
+const { InvestigationManager, HOST_CLOSING, OVERNIGHT_LIMITS, FULL_DEFAULTS, validateLimits } = require('../lib/investigation-manager');
 const { resolveRole, describeAuto } = require('../lib/loop-roles');
 const { cleanRequest } = require('../lib/investigation-bridge');
 const { createPool } = require('../lib/loop-agents');
@@ -108,7 +108,9 @@ test('role choices: Automatic never gives Gemini the editor while Codex or Claud
   const ctx = (agents) => ({ models: models.filter(model => agents.includes(model.agent)), isEnabled: agent => agents.includes(agent), installed: agent => agents.includes(agent), defaultModel: agent => models.find(model => model.agent === agent && model.id !== 'claude-sonnet') || null });
   const all = ctx(['gemini', 'codex', 'claude']);
   assert.equal(resolveRole('scout', all).target.model, 'gemini-3.8-flash-high', 'newest Flash scouts');
-  assert.equal(resolveRole('editor', all).target.agent, 'codex'); assert.equal(resolveRole('visualEditor', all).target.agent, 'claude', 'visual work goes to Claude first');
+  assert.equal(resolveRole('editor', all).target.model, 'claude-sonnet-5-5', 'Claude Sonnet edits first'); assert.equal(resolveRole('visualEditor', all).target.agent, 'claude', 'visual work goes to Claude first');
+  assert.equal(resolveRole('editor', all, { escalate: true }).target.model, 'claude-opus', 'a second attempt escalates to Opus');
+  assert.equal(resolveRole('editor', { ...all, legacy: { backendAgent: 'codex' } }).target.agent, 'codex', 'Codex first when chosen in Settings');
   assert.equal(resolveRole('visualEditor', { ...all, legacy: { visualAgent: 'codex' } }).target.agent, 'codex');
   assert.equal(resolveRole('editor', all, { value: 'gemini-3.7-flash-high' }).target.model, 'gemini-3.7-flash-high', 'picked on purpose');
   assert.equal(resolveRole('editor', all, { value: 'gemini' }).target.agent, 'gemini');
@@ -119,10 +121,34 @@ test('role choices: Automatic never gives Gemini the editor while Codex or Claud
   assert.equal(resolveRole('vision', claudeOnly).target, null); assert.equal(resolveRole('editor', ctx([])).target, null);
   assert.equal(resolveRole('vision', all, { value: 'gpt-6' }).target, null, 'only Antigravity can look at pictures');
   assert.match(resolveRole('editor', all, { value: 'nonsense' }).skipped[0].reason, /not available/);
-  assert.match(describeAuto('editor', all), /Codex/); assert.equal(describeAuto('editor', ctx([])), 'Nothing available');
+  assert.match(describeAuto('editor', all), /Claude/); assert.equal(describeAuto('editor', ctx([])), 'Nothing available');
   const quotas = { codex: { remaining: 10 }, claude: { remaining: 80 } };
-  assert.equal(resolveRole('editor', all, { quotas, reservePercent: 50 }).target.agent, 'claude', 'a short agent is skipped');
+  assert.equal(resolveRole('editor', { ...all, legacy: { backendAgent: 'codex' } }, { quotas, reservePercent: 50 }).target.agent, 'claude', 'a short agent is skipped');
   assert.equal(resolveRole('editor', all, { value: 'codex', quotas, reservePercent: 50 }).target, null, 'a pinned agent that is short waits');
+});
+
+test('scouts: Hydrogen High when Antigravity has it, never Argon, Carbon or an Orchestrator on Automatic', () => {
+  const entry = (model, agent = 'gemini') => ({ id: model, agent, model, label: model });
+  const models = ['gemini-3.8-flash-high', 'gemini-4-argon-high', 'gemini-4-hydrogen-low', 'gemini-4-hydrogen-xhigh', 'gemini-4-hydrogen-high', 'gemini-4-hydrogen-medium', 'gemini-pro-orchestrator-g1-pro'].map(model => entry(model));
+  const ctx = { models, isEnabled: () => true, installed: () => true, defaultModel: agent => agent === 'gemini' ? models.find(model => /argon/.test(model.model)) : null };
+  assert.equal(resolveRole('scout', ctx).target.model, 'gemini-4-hydrogen-high', 'High beats xhigh (3 index points for 1.7x the cost)');
+  assert.equal(resolveRole('scout', { ...ctx, models: models.filter(model => !/hydrogen/.test(model.model)) }).target.model, 'gemini-3.8-flash-high', 'Flash without Hydrogen');
+  const argonOnly = { ...ctx, models: models.filter(model => /argon|orchestrator/.test(model.model)) };
+  assert.equal(resolveRole('scout', argonOnly).target, null, 'Argon is not a fallback scout: its weekly pool is small');
+  assert.equal(resolveRole('scout', argonOnly, { value: 'gemini-4-argon-high' }).target.model, 'gemini-4-argon-high', 'but a deliberate pick is honoured');
+  assert.equal(resolveRole('scout', ctx, { value: 'gemini' }).target.model, 'gemini-4-hydrogen-high', 'the "gemini" shortcut also means Hydrogen');
+  assert.equal(resolveRole('vision', ctx).target.model, 'gemini-3.8-flash-high', 'screenshots stay on the model that is proven to open images');
+  assert.match(describeAuto('scout', ctx), /hydrogen/i);
+});
+
+test('an editor that is short on quota reports when it resets, so the loop can wait instead of rescanning', () => {
+  const models = [{ id: 'claude-sonnet-5-5', agent: 'claude', model: 'claude-sonnet-5-5' }, { id: 'gpt-6', agent: 'codex', model: 'gpt-6' }];
+  const ctx = { models, isEnabled: () => true, installed: () => true, defaultModel: agent => models.find(model => model.agent === agent) };
+  const quotas = { claude: { remaining: 5, resetsAt: 2000, secondary: { remaining: 3, resetsAt: 9000 } }, codex: { remaining: 4, resetsAt: 1500 } };
+  const pick = resolveRole('editor', ctx, { quotas, reservePercent: 15 });
+  assert.equal(pick.target, null);
+  assert.deepEqual(pick.skipped.map(item => [item.agent, item.quota, item.retryAt]), [['claude', true, 9000000], ['codex', true, 1500000]], 'the latest short window decides when an agent is back');
+  assert.equal(resolveRole('editor', ctx, { quotas: { ...quotas, codex: { remaining: 60 } }, reservePercent: 15 }).target.agent, 'codex');
 });
 
 test('create validates mode, roles and options; roles of "auto" are not stored', () => {
@@ -146,4 +172,33 @@ test('the pool runs at most its limit at once, shares slots across pools, and ba
   assert.equal(value, 'ok'); assert.equal(tries, 2); assert.equal(limited.throttled, true);
   await assert.rejects(limited.run(async () => { throw new Error('Measured token allowance reached.'); }), /allowance/);
   await assert.rejects(limited.run(async () => { throw new Error('syntax error in my code'); }), /syntax error/);
+});
+
+test('a cycle blocked on editor quota is not a run: nothing is charged, the loop stays armed and wakes at the reset', async t => {
+  const f = fixture(t);
+  const resetsAt = f.clock.now + 90 * 60000;
+  let calls = 0, floors = [];
+  const manager = f.open({ readQuota: async () => ({ remaining: 90, observedAt: f.clock.now }),
+    runner: async context => { calls++; floors.push(typeof context.quotaLow, context.quotaLow()); return calls === 1 ? { skipped: true, waiting: true, reason: 'Claude is short on quota for fixes; nothing was scanned', retryAt: resetsAt } : { tokens: 10, findings: [], done: true, finishedReason: 'Finished: nothing left to fix', shards: 1 }; } });
+  const job = manager.create({ projectId: 'p', recipe: 'full', limits: OVERNIGHT_LIMITS }); manager.start(job.id); // start() already ticks
+  await until(() => calls === 1 && manager.job(job.id).nextRunAt === resetsAt);
+  assert.equal(manager.job(job.id).enabled, true, 'still armed'); assert.equal(manager.job(job.id).completedRuns, 0); assert.equal(manager.job(job.id).nextRunAt, resetsAt);
+  assert.match(manager.job(job.id).reason, /short on quota.*waiting until/); assert.equal(manager.snapshot().runs.length, 0); assert.equal(manager.snapshot().ledger['2026-10-08'].tokens, 0);
+  await manager.tick(); assert.equal(calls, 1, 'not before the reset');
+  f.clock.now = resetsAt + 1; await manager.tick(); await until(() => manager.job(job.id).enabled === false);
+  assert.equal(calls, 2); assert.match(manager.job(job.id).reason, /Finished/); assert.equal(manager.job(job.id).waitingSince, undefined);
+  assert.deepEqual(floors.filter(item => typeof item !== 'boolean'), ['function', 'function'], 'the runner is told when the Gemini pool is low');
+});
+
+test('the Gemini pool is watched while a full loop runs, and the overnight limits are valid', async t => {
+  assert.doesNotThrow(() => validateLimits({ ...FULL_DEFAULTS, ...OVERNIGHT_LIMITS }));
+  assert.equal(OVERNIGHT_LIMITS.maxRuns, 12); assert.ok(OVERNIGHT_LIMITS.editorReservePercent < OVERNIGHT_LIMITS.reservePercent, 'editors may run lower than the scouts’ pool');
+  assert.deepEqual(cleanRequest({ action: 'create', projectId: 'p', recipe: 'full', limits: { editorReservePercent: 15 } }).limits, { editorReservePercent: 15 });
+  const f = fixture(t);
+  let reads = 0, low;
+  const manager = f.open({ readQuota: async () => ({ remaining: ++reads > 1 ? 8 : 90, observedAt: f.clock.now }),
+    runner: async context => { await new Promise(resolve => setTimeout(resolve, 40)); low = context.quotaLow(); return { tokens: 1, findings: [], shards: 1 }; } });
+  const job = manager.create({ projectId: 'p', recipe: 'full', limits: OVERNIGHT_LIMITS }); manager.start(job.id);
+  await until(() => low !== undefined);
+  assert.equal(low, true, 'below half the reserve (12%) the engine is told to stop starting calls');
 });

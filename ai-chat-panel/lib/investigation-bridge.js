@@ -4,7 +4,7 @@
 // this bridge checks the request shape, runs the backend action, and answers with the same requestId plus a fresh
 // snapshot. Manager changes are pushed as `investigationsState` until the bridge is disposed with its view.
 
-const LIMIT_KEYS = ['intervalMinutes', 'maxRuns', 'maxRunMinutes', 'maxTokensPerRun', 'reservePercent', 'hourlyTokens', 'fixesPerCycle', 'fixMinutes'];
+const LIMIT_KEYS = ['intervalMinutes', 'maxRuns', 'maxRunMinutes', 'maxTokensPerRun', 'reservePercent', 'editorReservePercent', 'hourlyTokens', 'fixesPerCycle', 'fixMinutes'];
 const UNAVAILABLE = 'Loops are managed by another IDE window. Close that window or use it to manage them.';
 
 const ROLE_KEYS = ['scout', 'editor', 'visualEditor', 'vision'];

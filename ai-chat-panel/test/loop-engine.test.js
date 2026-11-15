@@ -232,3 +232,39 @@ test('EU compliance can be switched off: no scout, no indicators, nothing redact
   assert.equal(result.loop.additional.filter(item => item.kind === 'compliance').length, 0);
   assert.doesNotMatch(result.summary, /compliance/i);
 });
+
+test('editors out of quota: the cycle waits for the reset without scanning, and an editor that is merely not installed still skips', async t => {
+  const p = project(t); const h = harness(p);
+  const short = { target: null, skipped: [{ agent: 'claude', reason: 'short on quota', quota: true, retryAt: 5000000 }, { agent: 'codex', reason: 'short on quota', quota: true, retryAt: 4000000 }] };
+  const result = await fullCycle(h.context({}, { resolveRole: async role => role === 'scout' ? { target: { agent: 'gemini', model: 'gemini-4-hydrogen-high' }, skipped: [] } : short }), h.deps);
+  assert.equal(result.skipped, true); assert.equal(result.waiting, true); assert.equal(result.retryAt, 4000000, 'wakes when the first editor is back');
+  assert.match(result.reason, /Claude and Codex are short on quota/);
+  assert.equal(h.calls.scouts.length, 0, 'not one Gemini call was spent'); assert.equal(h.calls.edits.length, 0);
+  const q = project(t), g = harness(q);
+  const none = await fullCycle(g.context({}, { resolveRole: async role => role === 'scout' ? { target: { agent: 'gemini', model: 'm' }, skipped: [] } : { target: null, skipped: [{ agent: 'claude', reason: 'not installed' }] } }), g.deps);
+  assert.ok(!none.waiting, 'no quota shortfall, so the cycle runs and the fix is skipped as before');
+  assert.equal(g.calls.edits.length, 0); assert.ok(g.calls.scouts.length > 0);
+});
+
+test('a low Gemini pool stops new model calls, and the incomplete cycle is neither clean nor finished', async t => {
+  const p = project(t); const h = harness(p, { mode: 'find', scoutFindings: {} });
+  const result = await fullCycle(h.context({}, { quotaLow: () => true }), h.deps);
+  assert.equal(h.calls.scouts.length, 0, 'no scout started');
+  assert.equal(result.done, false, 'a find pass that read nothing does not claim the project was reviewed');
+  assert.equal(result.cleanStreak, 0);
+  assert.match(result.summary, /Incomplete: \d+ of \d+ scouts did not finish \(Gemini quota is low\)/);
+  assert.equal(result.loop.agents.every(agent => agent.status === 'skipped'), true);
+});
+
+test('a finding that failed once is retried by the stronger editor', async t => {
+  const p = project(t); const picks = [];
+  const h = harness(p, { editBody: () => {} });
+  // The quota probe before scanning passes no `escalate`; only a real fix does.
+  const ask = async (role, extra) => { if (role === 'editor' && extra && 'escalate' in extra) picks.push(extra.escalate); return role === 'scout' ? { target: { agent: 'gemini', model: 'gemini-4-hydrogen-high' }, skipped: [] } : { target: { agent: 'claude', model: extra?.escalate ? 'claude-opus' : 'claude-sonnet' }, skipped: [] }; };
+  const first = await fullCycle(h.context({}, { resolveRole: ask }), h.deps);
+  assert.deepEqual(picks, [false], 'Sonnet first'); assert.equal(first.backlog.length, 1); assert.equal(first.backlog[0].attempts, 1);
+  const second = harness(project(t), { editBody: () => {}, scoutFindings: {} }); // scouts are told what is already in the backlog
+  second.job.backlog = first.backlog;
+  await fullCycle(second.context({ id: 'run2' }, { resolveRole: ask }), second.deps);
+  assert.equal(picks.at(-1), true, 'Opus on the second attempt');
+});

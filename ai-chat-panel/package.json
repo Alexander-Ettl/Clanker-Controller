@@ -289,8 +289,8 @@
                 "aiChatPanel.investigationsBackendAgent": {
                     "type": "string",
                     "enum": ["claude", "codex"],
-                    "default": "codex",
-                    "markdownDescription": "Which agent fixes backend problems in a fix loop. If it is off, not installed or short on quota, the other agent is used."
+                    "default": "claude",
+                    "markdownDescription": "Which agent fixes backend problems in a fix loop. Claude edits with Sonnet (Opus on a second attempt at the same problem). If it is off, not installed or short on quota, the other agent is used."
                 },
                 "aiChatPanel.voiceHotkey": {
                     "type": "string",

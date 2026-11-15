@@ -60,6 +60,10 @@ agent (any vendor) --shell--> clanker-agent start --to "<model>" ... --> detache
 
 ## The skill
 
+The skill recommends **Gemini 4 Hydrogen High** for bulk searching, scraping and reading (papers, e-books, many sites): start several
+agents with different topic prompts and one shared output format, wait for all, and let one stronger agent merge the `result.md` files.
+Hydrogen is a reader here, not an editor. Reasons and numbers are in the [loop guide](loops.md#who-does-what).
+
 `ClaudeConfig/skills/clanker-load-agent/SKILL.md` is the single copy. Claude reads that folder as its skills, Antigravity
 through the `~/.gemini/config/skills` junction, and Codex through a junction in `~/.agents/skills` (`codex-skill-links.ps1`
 of `claude-config-sync` creates it on a new machine). The name is `clanker-load-agent` because skill names allow only
