@@ -54,24 +54,24 @@ No PC running? An experimental option runs the warm-ups in your own Google Cloud
 Clanker keeps an **API value** meter. For every turn it prices the tokens at each provider's pay-per-token rates and adds them up. It is a comparison, not a bill: the work itself ran on your subscriptions.
 
 <p align="center">
-  <img src="docs/images/cost.svg" alt="October 2026 at API prices: 1,465 dollars. The same work on subscriptions at 45 dollars a month, 32 times cheaper." width="100%">
+  <img src="docs/images/cost.svg" alt="October 2026 at API prices: 989 dollars. The same work on subscriptions at 45 dollars a month, 22 times cheaper." width="100%">
 </p>
 
 How to read it. These numbers are the maintainer's own: real usage and the plans the maintainer actually pays for.
 
 | Measure | Value |
 |---|---|
-| Work measured | Sep 22 to Nov 15, 2026, 285 chats, 2,506 priced turns |
-| At API prices | **$2,314** in total (±20%), about $1,300 a month |
-| By provider | Claude Code $1,750 · Codex $423 · Antigravity $141 |
-| October alone | **$1,465** at API prices |
+| Work measured | Sep 22 to Nov 15, 2026, 285 chats, 2,545 priced turns |
+| At API prices | **$1,751** in total (±20%), about $1,000 a month |
+| By provider | Claude Code $1,169 · Codex $423 · Antigravity $160 |
+| October alone | **$989** at API prices |
 | Subscriptions | Claude Pro $20 + ChatGPT Plus $20 + Gemini student plan $5 = **$45 a month** |
-| Result | 1,465 ÷ 45 ≈ **32x cheaper**, about $1,420 saved in October |
+| Result | 989 ÷ 45 ≈ **22x cheaper**, about $940 saved in October |
 
-Read the comparison with care. The API value is an estimate with a ±20% band, and turns on models without a known price count as zero rather than a guess. Plan prices change, so plug in what you pay. The trade is that a subscription has usage windows instead of a pay-as-you-go meter, and the scheduler and early window starts exist to make those windows painless.
+Read the comparison with care. The API value is an estimate with a ±20% band, and turns on models without a known price count as zero rather than a guess. Claude turns are priced from their token counts at Anthropic's list prices, because Claude Code's own cost figure runs about 1.8x too high for Sonnet 5.x. Prices were last checked on 2026-11-15. Plan prices change, so plug in what you pay. The trade is that a subscription has usage windows instead of a pay-as-you-go meter, and the scheduler and early window starts exist to make those windows painless.
 
 <p align="center">
-  <img src="docs/images/settings-api-value.png" alt="The API value card in settings: about 2.3 thousand dollars in total, split by provider, 359 dollars this month" width="520">
+  <img src="docs/images/settings-api-value.png" alt="The API value card in settings: about 1.8 thousand dollars in total, split by provider, 300 dollars this month" width="520">
 </p>
 
 You can see your own number under **Chat Settings > General > API value**.

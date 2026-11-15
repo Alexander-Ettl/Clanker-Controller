@@ -2,7 +2,7 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { normalizeModel, fromLitellm, priceFor, costOf, turnCost, legacyChatCost, chatCost, addTurn, CostMeter, LEDGER_VERSION } = require('../lib/api-cost.js');
+const { normalizeModel, fromLitellm, priceFor, costOf, turnCost, chatTurns, chatTotal, chatCost, addTurn, CostMeter, LEDGER_VERSION } = require('../lib/api-cost.js');
 const { formatUsd, formatRange } = require('../media/api-value.js');
 
 const close = (a, b) => assert.ok(Math.abs(a - b) < 1e-9, `${a} != ${b}`);
@@ -22,10 +22,11 @@ test('normalizeModel: effort and variant suffixes go, aliases resolve', () => {
   assert.equal(normalizeModel('codex-auto-review'), 'gpt-5.6-sol');
 });
 
-test('costOf: each kind of token at its own rate (Claude Sonnet 5.5: 2 / 0.20 / 2.50 / 10 per MTok)', () => {
+test('costOf: each kind of token at its own rate (Claude Sonnet 5.5: 2 / 0.10 / 2.50 / 10 per MTok, 1-hour writes 4)', () => {
   const price = priceFor('claude-sonnet-5-5');
   close(costOf(price, { fresh: M, cachedInput: 0, cacheWrite: 0, output: 0 }, OCT), 2);
-  close(costOf(price, { fresh: 0, cachedInput: M, cacheWrite: M, output: M }, OCT), 0.2 + 2.5 + 10);
+  close(costOf(price, { fresh: 0, cachedInput: M, cacheWrite: M, output: M }, OCT), 0.1 + 2.5 + 10);
+  close(costOf(price, { fresh: 0, cachedInput: 0, cacheWrite: M, cacheWrite1h: M / 2, output: 0 }, OCT), 2.5 / 2 + 4 / 2);
 });
 
 test('costOf: long-context rates follow the largest single prompt, not the turn total (GPT-6.1 Sol 2/10 -> 4/15)', () => {
@@ -47,11 +48,21 @@ test('costOf: Gemini Flash introductory rates end after 2026-12-31', () => {
   close(costOf(price, { fresh: M, output: M }, Date.parse('2027-01-01T08:00:00Z')), 1.5 + 7.5);
 });
 
-test('turnCost: Claude Code’s own figure wins; unknown models are unpriced, not guessed', () => {
-  assert.deepEqual(turnCost({ model: 'claude-opus-5-5', reportedUsd: 0.42, usage: { fresh: 10, output: 10 } }), { usd: 0.42, source: 'reported' });
+test('turnCost: tokens are priced first; Claude Code’s inflated figure is a corrected fallback; unknown models are unpriced', () => {
+  const usage = { fresh: 1000, cachedInput: 100000, cacheWrite: 0, output: 1000 };
+  const priced = turnCost({ model: 'claude-sonnet-5-5', reportedUsd: 0.42, usage });
+  assert.equal(priced.source, 'bundled'); close(priced.usd, (1000 * 2 + 100000 * 0.1 + 1000 * 10) / M);
+  const fallback = turnCost({ model: 'claude-sonnet-5-5', reportedUsd: 1, usage: null });
+  assert.equal(fallback.source, 'reported'); close(fallback.usd, 0.56);
   assert.equal(turnCost({ model: 'some-new-model', usage: { fresh: 1000, output: 1000 } }), null);
   assert.equal(turnCost({ model: 'gpt-6-luna', usage: { fresh: 0, output: 0 } }), null);
   assert.equal(turnCost({ model: 'gpt-6-luna', usage: { fresh: M, output: 0 } }).source, 'bundled');
+});
+
+test('costOf: Gemini 4 Argon doubles on 2026-12-01', () => {
+  const price = priceFor('gemini-4-argon-medium');
+  close(costOf(price, { fresh: M, output: M }, Date.parse('2026-11-30T20:00:00Z')), 2 + 10);
+  close(costOf(price, { fresh: M, output: M }, Date.parse('2026-12-01T08:00:00Z')), 4 + 20);
 });
 
 test('fromLitellm / priceFor: the live table converts per-token rates and wins over the bundled table', () => {
@@ -70,11 +81,16 @@ test('fromLitellm / priceFor: the live table converts per-token rates and wins o
   assert.equal(priceFor('gpt-6-astra', live).source, 'bundled');
 });
 
-test('legacyChatCost: running totals become the chat total; a drop is a fresh process', () => {
-  const reply = (costUsd) => ({ role: 'assistant', costUsd });
-  close(legacyChatCost([reply(1), { role: 'user' }, reply(2.5), reply(4)]), 4);
-  close(legacyChatCost([reply(3), reply(0.5), reply(1)]), 3 + 0.5 + 0.5);
-  assert.equal(legacyChatCost([{ role: 'assistant' }]), 0);
+test('chatTurns: saved Claude Code figures are corrected, a running costUsd counts its rises, token turns are repriced', () => {
+  const chat = { agent: 'claude', messages: [
+    { role: 'assistant', costUsd: 1 }, { role: 'user' }, { role: 'assistant', costUsd: 2.5 }, { role: 'assistant', costUsd: 0.5 },
+    { role: 'assistant', apiCost: { usd: 10, source: 'reported', model: 'claude-sonnet-5-5' } },
+    { role: 'assistant', apiCost: { usd: 10, source: 'bundled', model: 'claude-sonnet-5-5' } },
+  ] };
+  const usd = chatTurns(chat, {}, OCT).map((turn) => turn.usd);
+  [1, 1.5, 0.5].forEach((v, n) => close(usd[n], v * 0.56)); close(usd[3], 5.6); close(usd[4], 10);
+  close(chatTotal(chat, {}, OCT), (1 + 1.5 + 0.5 + 10) * 0.56 + 10);
+  assert.equal(chatTotal({ messages: [{ role: 'assistant' }] }), 0);
 });
 
 test('addTurn: totals by provider and month; unpriced turns are counted, not added', () => {
@@ -130,10 +146,10 @@ test('CostMeter.seed: calculates multi-agent totals from chat history (Claude, C
   const msg = meter.message();
   assert.equal(msg.type, 'apiValue');
   assert.equal(meter.ledger.v, LEDGER_VERSION);
-  assert.ok(msg.byAgent.claude >= 10);
+  close(msg.byAgent.claude, 5.6);
   assert.ok(msg.byAgent.codex > 0);
   assert.ok(msg.byAgent.gemini > 0);
-  assert.ok(msg.totalUsd > 10);
+  assert.ok(msg.totalUsd > 5.6);
   assert.deepEqual(broadcastMsg, msg);
 });
 
@@ -150,3 +166,9 @@ test('chatCost: computes API cost of a chat from assistant turns', () => {
   assert.ok(cost > 0);
 });
 
+
+test('chatCost: a saved figure counts only when it is from the current pricing', () => {
+  const messages = [{ role: 'assistant', agent: 'claude', costUsd: 10 }];
+  close(chatCost({ messages, apiCostUsd: 99 }, {}, OCT), 5.6);
+  close(chatCost({ messages, apiCostUsd: 99, apiCostV: LEDGER_VERSION }, {}, OCT), 99);
+});
