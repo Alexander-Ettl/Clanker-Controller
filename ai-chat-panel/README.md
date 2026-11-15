@@ -45,7 +45,9 @@ provider). It marks the CLI "Not available" in
 General > Your CLIs with the reason and a Try again button, and drops its usage
 ring, picker models and Auto routing. A plan flag clears itself once the plan is back;
 a failed-turn flag waits for Try again or a new sign-in.
-Limits that reset keep their gauge and scheduled-continue flow.
+Limits that reset keep their gauge and scheduled-continue flow. A prompt scheduled for a reset
+is sent as soon as that window turns out to have reset early (you reset it by hand, or the provider
+did): the model's usage is back and its window now ends after the time the prompt waited for.
 
 The spec allows either `node-pty` or `vscode.window.createTerminal`. This
 machine has no C++ build toolchain (no `cl.exe`/`node-gyp`), and a native

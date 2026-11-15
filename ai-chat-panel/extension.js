@@ -14,8 +14,9 @@ const { probeClaudeUsage } = require('./lib/claude-usage.js');
 // (0 tokens), so it's asked whenever the last real reading is 15+ minutes old or a window rolled over.
 const USAGE_PROBE_AFTER_MS = 15 * 60 * 1000;
 let usageProbe = null;
-function refreshClaudeUsage(cwd) {
-  if (usageProbe || claudeUsageAge() < USAGE_PROBE_AFTER_MS) return usageProbe;
+const WAITING_PROBE_AFTER_MS = 90 * 1000; // a prompt is waiting for Claude's reset: look often enough to notice a manual one
+function refreshClaudeUsage(cwd, maxAge = USAGE_PROBE_AFTER_MS) {
+  if (usageProbe || claudeUsageAge() < maxAge) return usageProbe;
   usageProbe = probeClaudeUsage(cwd).then((windows) => recordClaudeUsage(windows)).catch(() => {}).finally(() => { usageProbe = null; });
   return usageProbe;
 }
@@ -60,7 +61,7 @@ const { accessFailure } = require('./lib/provider-access.js');
 const { AuthGate } = require('./lib/auth-gate.js');
 const clankerAgent = require('./lib/clanker-agent.js');
 const { showAuthPrompt } = require('./lib/auth-prompt.js');
-const { SchedulerQueue, ACTIVE_STATUSES, isDue, waitsForContinue } = require('./lib/scheduler-queue.js');
+const { SchedulerQueue, ACTIVE_STATUSES, isDue, resetObserved, waitsForContinue } = require('./lib/scheduler-queue.js');
 const { keepAwake } = require('./lib/keep-awake');
 const { SessionWarmup } = require('./lib/session-warmup');
 const { CloudWarmup } = require('./lib/cloud-warmup');
@@ -153,6 +154,7 @@ class SchedulerWatchdog {
     this.running = true;
     try {
       await refreshClaudeUsage(this.workspaceDir); // real numbers before deciding a Claude task may run
+      await this.releaseObservedResets();
       // A task that goes back into its chat is handed over once that chat is idle, and only one at a time: the model finishes
       // the "continue" (or any earlier prompt) before it is given the next one. A headless run holds the watchdog until it ends.
       for (let guard = 0; guard < 50; guard++) {
@@ -171,6 +173,18 @@ class SchedulerWatchdog {
       }
     } catch (error) { this.failed = error.message; }
     finally { this.running = false; }
+  }
+  /** A usage reset that comes early (you reset it by hand, or the provider did) frees the prompts waiting for the old reset time. */
+  async releaseObservedResets() {
+    const waiting = (await this.queue.getQueue()).filter((task) => task.status === 'pending' && task.dispatchTrigger === 'quota-reset' && Date.parse(task.notBefore) > Date.now() && this.isAgentEnabled(task.model));
+    if (!waiting.length) return;
+    if (waiting.some((task) => task.model === 'claude')) await refreshClaudeUsage(this.workspaceDir, WAITING_PROBE_AFTER_MS);
+    const quotas = await readQuotas();
+    const released = waiting.filter((task) => resetObserved(task, quotas?.[task.model]));
+    if (!released.length) return;
+    const now = new Date().toISOString(); // a time in the past reads as "ready" everywhere, not as the new window's countdown
+    for (const task of released) await this.queue.update(task.id, (item) => { if (item.status === 'pending') item.notBefore = now; });
+    this.onQueueChange();
   }
   /** P17-H: Run Now on an interrupted card dispatches at once, quota or not. False while another task runs. */
   async runNow(taskId) {
