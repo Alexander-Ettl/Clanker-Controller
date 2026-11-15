@@ -1720,6 +1720,12 @@ test('downloadAttachment and copyAttachment preserve image.png or renamed filena
   assert.equal(await host.copyAttachment(renamedImg), true);
   assert.deepEqual(copied, [renamedImg]);
   assert.equal(await host.copyAttachment(path.join(outDir, 'image.png')), false);
+  run.chat.messages.push({ role: 'user', text: 'Sent image', attachments: [rawImg] });
+  run.save();
+  host.renameAttachment(rawImg, 'hero-banner');
+  const renamedEvent = host.messages.findLast(m => m.type === 'attachmentRenamed');
+  assert.equal(cleanAttachmentName(renamedEvent.attachment.name), 'hero-banner.png');
+  assert.deepEqual(run.chat.messages.at(-1).attachments, [renamedEvent.attachment.path]);
 });
 
 test('tool_start and tool_end record startedAt and durationMs on saved tool steps', async t => {

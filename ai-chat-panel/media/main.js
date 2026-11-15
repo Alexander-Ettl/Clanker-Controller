@@ -974,7 +974,7 @@
   }
 
   let closeImageMenu = null;
-  function openImageContextMenu(x, y, attachment, imageEl) {
+  function openImageContextMenu(x, y, attachment, imageEl, onRename) {
     closeImageMenu?.();
     const menu = document.createElement('div');
     menu.className = 'image-context-menu';
@@ -992,7 +992,9 @@
     };
     const copyBtn = makeItem(COPY_ICON, 'Copy', 'copy', () => { void copyImageToClipboard(attachment, imageEl); });
     const downloadBtn = makeItem(DOWNLOAD_ICON, 'Download', 'download', () => downloadAttachment(attachment));
-    menu.append(copyBtn, downloadBtn);
+    const renameBtn = makeItem(PENCIL_SVG, 'Rename', 'rename', () => onRename?.());
+    const items = [copyBtn, downloadBtn, renameBtn];
+    menu.append(...items);
     document.body.appendChild(menu);
     const rect = menu.getBoundingClientRect();
     menu.style.left = `${Math.max(8, Math.min(x, window.innerWidth - rect.width - 8))}px`;
@@ -1002,7 +1004,9 @@
       if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); closeImageMenu?.(); return; }
       if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
         event.preventDefault();
-        (document.activeElement === copyBtn ? downloadBtn : copyBtn).focus({ preventScroll: true });
+        const idx = items.indexOf(document.activeElement);
+        const step = event.key === 'ArrowDown' ? 1 : -1;
+        (items[(idx + step + items.length) % items.length] || items[0]).focus({ preventScroll: true });
       }
     };
     const dismiss = () => closeImageMenu?.();
@@ -1022,7 +1026,7 @@
   }
 
   // P17-J/K: one shared lightbox for composer chips and transcript images. The X, a click outside the image, or Esc closes it.
-  function openLightbox(src, caption = '', pdf = false, attachment = null) {
+  function openLightbox(src, caption = '', pdf = false, attachment = null, onChipRenamed = null) {
     const previousFocus = document.activeElement;
     const box = document.createElement('div');
     box.className = 'image-lightbox';
@@ -1030,21 +1034,13 @@
     box.setAttribute('aria-modal', 'true');
     const frame = document.createElement('div');
     frame.className = 'image-lightbox-frame';
+    const toolbar = document.createElement('div');
+    toolbar.className = 'image-lightbox-toolbar';
     const viewer = pdf ? window.attachmentPdf.viewer(src, caption) : null;
     const image = viewer?.element || document.createElement('img');
     const targetAttachment = attachment || { uri: src, name: caption.split('  ')[0] || 'image.png' };
-    if (!pdf) {
-      image.src = src;
-      image.alt = caption;
-      if (/\.svg(?:\s|$)/i.test(caption)) image.classList.add('attachment-svg-preview');
-      image.addEventListener('contextmenu', (event) => {
-        event.preventDefault();
-        event.stopPropagation();
-        openImageContextMenu(event.clientX, event.clientY, targetAttachment, image);
-      });
-    }
-    else box.classList.add('is-pdf');
-    box.setAttribute('aria-label', caption || 'Attachment preview');
+    const label = document.createElement('div');
+    label.className = 'image-lightbox-caption'; label.textContent = caption;
     const closeBtn = document.createElement('button');
     closeBtn.type = 'button';
     closeBtn.className = 'image-lightbox-close';
@@ -1054,22 +1050,41 @@
       const downloadBtn = document.createElement('button');
       downloadBtn.type = 'button';
       downloadBtn.className = 'image-lightbox-download';
-      const downloadTitle = `Download ${shownName(targetAttachment.name) || 'image.png'}`;
-      downloadBtn.title = downloadTitle;
-      downloadBtn.setAttribute('aria-label', downloadTitle);
+      const syncLightboxName = () => {
+        const clean = shownName(targetAttachment.name) || 'image.png';
+        const dims = targetAttachment.dims ? `${targetAttachment.dims} px` : '';
+        const nextCaption = `${clean}  ${dims}`.trim();
+        label.textContent = nextCaption;
+        image.alt = nextCaption;
+        box.setAttribute('aria-label', nextCaption);
+        const downloadTitle = `Download ${clean}`;
+        downloadBtn.title = downloadTitle;
+        downloadBtn.setAttribute('aria-label', downloadTitle);
+        onChipRenamed?.();
+      };
+      syncLightboxName();
       downloadBtn.innerHTML = DOWNLOAD_ICON;
       downloadBtn.addEventListener('click', (event) => { event.stopPropagation(); downloadAttachment(targetAttachment); });
-      frame.append(image, downloadBtn, closeBtn);
+      image.src = src;
+      if (/\.svg(?:\s|$)/i.test(caption)) image.classList.add('attachment-svg-preview');
+      image.addEventListener('contextmenu', (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        openImageContextMenu(event.clientX, event.clientY, targetAttachment, image, () => renameAttachmentInline(label, targetAttachment, syncLightboxName));
+      });
+      toolbar.append(downloadBtn, closeBtn);
     } else {
-      frame.append(image, closeBtn);
+      box.classList.add('is-pdf');
+      box.setAttribute('aria-label', caption || 'Attachment preview');
+      toolbar.append(closeBtn);
     }
-    const label = document.createElement('div');
-    label.className = 'image-lightbox-caption'; label.textContent = caption;
+    frame.append(toolbar, image);
     box.append(frame, label);
     let closed = false;
-    const close = () => { if (closed) return; closed = true; viewer?.dispose(); box.classList.remove('is-open'); document.removeEventListener('keydown', onKey, true); previousFocus?.focus({ preventScroll: true }); setTimeout(() => box.remove(), 220); };
-    // Capture phase: Esc closes the preview before anything else sees it.
+    const close = () => { if (closed) return; closed = true; closeImageMenu?.(); viewer?.dispose(); box.classList.remove('is-open'); document.removeEventListener('keydown', onKey, true); previousFocus?.focus({ preventScroll: true }); setTimeout(() => box.remove(), 220); };
+    // Capture phase: Esc closes the preview before anything else sees it (unless context menu or inline rename is active).
     const onKey = (event) => {
+      if (closeImageMenu || box.querySelector('.attachment-rename')) return;
       if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); close(); }
       if (event.key === 'Tab') {
         const buttons = [...box.querySelectorAll('button:not(:disabled)')];
@@ -1079,7 +1094,7 @@
       }
     };
     closeBtn.addEventListener('click', close);
-    box.addEventListener('click', (event) => { if (event.target === box || event.target === label) close(); });
+    box.addEventListener('click', (event) => { if (event.target === box || event.target === frame || event.target === toolbar || event.target === label) close(); });
     document.addEventListener('keydown', onKey, true);
     document.body.appendChild(box);
     requestAnimationFrame(() => { if (!closed) { box.classList.add('is-open'); closeBtn.focus({ preventScroll: true }); } });
@@ -1091,12 +1106,15 @@
     saveQueueEdit();
     saveDraft(); // attached files keep the chat alive like typed text does
   }
-  // Click the name on a composer chip to rename the file: a plain field, no model. Enter or clicking away saves, Esc cancels.
-  function renameAttachmentInline(nameEl, attachment) {
+  // Click the name on a composer chip (or pick Rename from the image right-click menu) to rename the file. Enter or clicking away saves, Esc cancels.
+  function renameAttachmentInline(nameEl, attachment, onRenamed) {
+    if (!nameEl?.isConnected) return;
     const input = document.createElement('input');
     input.className = 'attachment-rename';
-    const ext = attachment.name.includes('.') ? attachment.name.slice(attachment.name.lastIndexOf('.')) : '';
-    input.value = shownName(attachment.name).slice(0, shownName(attachment.name).length - ext.length);
+    const clean = shownName(attachment.name);
+    const ext = clean.includes('.') ? clean.slice(clean.lastIndexOf('.')) : '';
+    const currentBase = clean.slice(0, clean.length - ext.length);
+    input.value = currentBase;
     input.maxLength = 60;
     input.setAttribute('aria-label', 'Image name');
     nameEl.replaceWith(input);
@@ -1104,9 +1122,14 @@
     let done = false;
     const finish = (save) => {
       if (done) return; done = true;
-      const next = input.value.trim();
-      if (save && next && next !== input.defaultValue) vscode.postMessage({ type: 'renameAttachment', path: attachment.path, name: next });
+      const next = input.value.trim().replace(new RegExp(`${ext.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'i'), '').trim();
       input.replaceWith(nameEl);
+      if (save && next && next !== currentBase) {
+        const stamp = /^(?:[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}[_-]|\d{10,}_)+/i.exec(attachment.name)?.[0] || '';
+        attachment.name = `${stamp}${next}${ext}`;
+        onRenamed?.();
+        if (attachment.path) vscode.postMessage({ type: 'renameAttachment', path: attachment.path, name: next });
+      }
     };
     input.addEventListener('keydown', (event) => { event.stopPropagation(); if (event.key === 'Enter') { event.preventDefault(); finish(true); } if (event.key === 'Escape') { event.preventDefault(); finish(false); } });
     input.addEventListener('click', (event) => event.stopPropagation());
@@ -1124,6 +1147,22 @@
     const withPx = (dims) => (dims ? `${dims} px` : '');
     meta.textContent = isImage ? withPx(attachment.dims) : formatSize(attachment.size);
     label.append(name, meta);
+    let remove = null;
+    const syncChip = () => {
+      const clean = shownName(attachment.name);
+      name.textContent = clean;
+      if (isImage) meta.textContent = withPx(attachment.dims);
+      if (isImage || isPdf) {
+        chip.title = isPdf ? `Open ${clean} in editor` : `Preview ${clean}`;
+        chip.setAttribute('aria-label', chip.title);
+      }
+      if (remove) {
+        remove.title = `Remove ${clean}`;
+        remove.setAttribute('aria-label', remove.title);
+      }
+    };
+    chip._attachment = attachment;
+    chip._syncChip = syncChip;
     if (isImage || isPdf) {
       const image = document.createElement('img'); image.alt = '';
       if (isSvg) image.classList.add('attachment-svg');
@@ -1143,32 +1182,23 @@
       chip.tabIndex = 0;
       chip.setAttribute('aria-label', chip.title);
       if (isPdf) { chip.title = `Open ${shownName(attachment.name)} in editor`; chip.setAttribute('aria-label', chip.title); }
-      const preview = () => isPdf ? vscode.postMessage({ type: 'openFile', path: attachment.path }) : openLightbox(attachment.uri, `${shownName(attachment.name)}  ${withPx(attachment.dims)}`.trim(), false, attachment);
+      const preview = () => isPdf ? vscode.postMessage({ type: 'openFile', path: attachment.path }) : openLightbox(attachment.uri, `${shownName(attachment.name)}  ${withPx(attachment.dims)}`.trim(), false, attachment, syncChip);
       chip.addEventListener('click', preview);
       chip.addEventListener('keydown', event => { if (event.target === chip && (event.key === 'Enter' || event.key === ' ')) { event.preventDefault(); preview(); } });
     }
     chip.append(label);
     if (isImage) {
-      const download = document.createElement('button');
-      download.type = 'button';
-      download.className = 'attachment-download';
-      download.title = `Download ${shownName(attachment.name)}`;
-      download.setAttribute('aria-label', download.title);
-      download.innerHTML = DOWNLOAD_ICON;
-      download.addEventListener('click', (event) => { event.stopPropagation(); downloadAttachment(attachment); });
-      download.addEventListener('keydown', (event) => event.stopPropagation());
-      chip.append(download);
       chip.addEventListener('contextmenu', (event) => {
         event.preventDefault();
         event.stopPropagation();
-        openImageContextMenu(event.clientX, event.clientY, attachment, chip.querySelector('img'));
+        openImageContextMenu(event.clientX, event.clientY, attachment, chip.querySelector('img'), () => renameAttachmentInline(name, attachment, syncChip));
       });
     }
     if (onRemove) {
       name.title = 'Click to rename';
       name.classList.add('is-renamable');
-      name.addEventListener('click', (event) => { event.stopPropagation(); renameAttachmentInline(name, attachment); });
-      const remove = document.createElement('button'); remove.type = 'button'; remove.className = 'attachment-remove'; remove.textContent = '×'; remove.title = `Remove ${shownName(attachment.name)}`; remove.setAttribute('aria-label', remove.title);
+      name.addEventListener('click', (event) => { event.stopPropagation(); renameAttachmentInline(name, attachment, syncChip); });
+      remove = document.createElement('button'); remove.type = 'button'; remove.className = 'attachment-remove'; remove.textContent = '×'; remove.title = `Remove ${shownName(attachment.name)}`; remove.setAttribute('aria-label', remove.title);
       remove.addEventListener('click', (event) => { event.stopPropagation(); onRemove(); });
       remove.addEventListener('keydown', (event) => event.stopPropagation());
       chip.append(remove);
@@ -3566,12 +3596,34 @@
     });
   }
 
-  function appendUserMessage(text, at = new Date().toISOString(), files = [], { scheduled = false, clientTurnId = null } = {}) {
+  // Claude woke up on its own (a background agent reported back). Nobody typed it, so it is a quiet divider, not a bubble.
+  const isBackgroundPrompt = (message) => Boolean(message?.background || (message?.remote && message.text === 'Background work continued'));
+
+  function appendUserMessage(text, at = new Date().toISOString(), files = [], { scheduled = false, clientTurnId = null, background = false } = {}) {
     if (clientTurnId && [...transcriptEl.querySelectorAll('.msg-group-user')].some(group => group.dataset.clientTurnId === clientTurnId)) return;
     clearEmptyState();
     const group = document.createElement('div');
     group.className = 'msg-group msg-group-user';
     if (clientTurnId) group.dataset.clientTurnId = clientTurnId;
+    if (background) {
+      group.classList.add('msg-group-background');
+      const label = document.createElement('div');
+      label.className = 'msg-background-divider';
+      label.textContent = text || 'Background work continued';
+      group.append(label);
+      const index = nextUserIndex++; // keeps stored user positions aligned
+      group.dataset.userIndex = index;
+      const turn = document.createElement('div');
+      turn.className = 'turn';
+      turn.appendChild(group);
+      transcriptEl.appendChild(turn);
+      currentTurnEl = turn;
+      turnAnchor = group;
+      turnStartedAt = Date.now();
+      currentAssistantBubble = null;
+      scrollTranscriptToEnd(true);
+      return;
+    }
     // Sent by the scheduler, not typed just now: the same bubble, with a quiet clock tag above it.
     if (scheduled) {
       const tag = document.createElement('div');
@@ -4594,7 +4646,7 @@
           if (active) { currentTurnEl = null; currentAssistantBubble = null; }
           return;
         }
-        appendUserMessage(message.text || '', message.at || null, message.files, { scheduled: message.scheduled, clientTurnId: message.clientTurnId });
+        appendUserMessage(message.text || '', message.at || null, message.files, { scheduled: message.scheduled, clientTurnId: message.clientTurnId, background: isBackgroundPrompt(message) });
         anchor = currentTurnEl.firstElementChild; startedAt = message.at; endedAt = null;
       }
       else if (hiddenCompactTurn) return;
@@ -5007,7 +5059,22 @@
         } else { attachments.push(message.attachment); renderAttachments(); }
         break;
       }
-      case 'attachmentRenamed': { const at = attachments.findIndex((item) => item.path === message.from); if (at >= 0) { attachments[at] = { ...attachments[at], ...message.attachment, dims: attachments[at].dims }; renderAttachments(); } break; }
+      case 'attachmentRenamed': {
+        const at = attachments.findIndex((item) => item.path === message.from);
+        if (at >= 0) {
+          attachments[at] = { ...attachments[at], ...message.attachment, dims: attachments[at].dims };
+          renderAttachments();
+        }
+        for (const chip of document.querySelectorAll('.attachment-chip')) {
+          if (chip._attachment && (chip._attachment.path === message.from || chip._attachment.path === message.attachment?.path)) {
+            Object.assign(chip._attachment, message.attachment, { dims: chip._attachment.dims });
+            const img = chip.querySelector('img');
+            if (img && message.attachment?.uri) img.src = message.attachment.uri;
+            chip._syncChip?.();
+          }
+        }
+        break;
+      }
       case 'attachmentCopied': {
         if (message.ok) showToast(`Copied ${message.name || 'image'} to clipboard.`);
         else showToast(message.error || 'Could not copy image to the clipboard.', { error: true });
@@ -5470,7 +5537,7 @@
           continueSentAfterLimit = true;
           transcriptEl.querySelectorAll('.continue-at-reset').forEach(button => button.remove());
         }
-        appendUserMessage(message.text || '', message.at || undefined, message.files || [], { scheduled: message.scheduled, clientTurnId: message.clientTurnId });
+        appendUserMessage(message.text || '', message.at || undefined, message.files || [], { scheduled: message.scheduled, clientTurnId: message.clientTurnId, background: isBackgroundPrompt(message) });
         break;
       }
       case 'taskScheduled': {

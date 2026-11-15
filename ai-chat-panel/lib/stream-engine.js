@@ -1258,7 +1258,8 @@ class StreamEngine extends EventEmitter {
     if (agent === 'claude' && this.child?.turnCompleted && SELF_STARTED.has(event.type)) {
       this.turn = { agent, prompt: '', attachments: [], attempt: 0 };
       this.beginLiveTurn();
-      this.emit('event', { type: 'remote_prompt', text: 'Background work continued', agent });
+      // Nobody typed this: flagged so the chat shows a quiet divider, not a user bubble.
+      this.emit('event', { type: 'remote_prompt', text: 'Background work continued', background: true, agent });
     }
     if (event.type === 'delta' || event.type === 'tool_start' || event.type === 'thought') this.sawOutput = true;
     if (event.type === 'turn_complete' && 'response' in event) {

@@ -31,8 +31,8 @@ function chatHtml(sidebar) {
 }
 
 /** A page showing the chat window. `problems` collects page errors, console errors and failed requests as they happen. */
-export async function openChat(browser, { width, height, sidebar = false }) {
-  const page = await browser.newPage({ viewport: { width, height } });
+export async function openChat(browser, { width, height, sidebar = false, scale = 1 }) {
+  const page = await browser.newPage({ viewport: { width, height }, deviceScaleFactor: scale });
   const problems = [];
   page.on('pageerror', error => problems.push({ kind: 'page-error', detail: error.message.slice(0, 300) }));
   page.on('console', message => { if (message.type() === 'error') problems.push({ kind: 'console-error', detail: message.text().slice(0, 300) }); });

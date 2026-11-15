@@ -446,6 +446,33 @@ export const scenarios = [
     if (await page.getByText(/^Worked for/).count()) throw Error('A background command must not mark the active turn finished');
     if (!await page.locator('#stopBtn').isVisible()) throw Error('Background work must remain stoppable');
   } },
+  { id: 'claude-background-continued', height: 700, setup: async page => {
+    await page.evaluate(() => {
+      const post = data => window.dispatchEvent(new MessageEvent('message', { data }));
+      // One stored turn from an older build (no flag), one live self-started turn.
+      post({ type: 'chatLoaded', chat: { id: 'bg', messages: [
+        { role: 'user', text: 'continue', at: new Date(Date.now() - 9 * 60000).toISOString() },
+        { role: 'user', text: 'Background work continued', remote: true, agent: 'claude', at: new Date(Date.now() - 8 * 60000).toISOString() },
+        { role: 'assistant', text: 'Immich is down; I will check the logs first.', agent: 'claude', modelLabel: 'Claude Sonnet 5.5 High', at: new Date().toISOString() },
+      ] } });
+      post({ type: 'userMessage', text: 'Background work continued', background: true });
+    });
+    await page.locator('.msg-background-divider').nth(1).waitFor();
+    const bubbles = await page.locator('.msg-user').allInnerTexts();
+    assert.deepEqual(bubbles.map(text => text.trim()), ['continue'], 'only the typed message is a bubble');
+  } },
+  { id: 'settings-scrollbar-constant', height: 900, focus: MODAL, setup: async page => {
+    await openSettings('general')(page);
+    const body = page.locator('#settingsModal .fs-modal-body');
+    const widths = [];
+    for (const tab of ['general', 'cloud', 'voice']) {
+      await openSettings(tab)(page);
+      await page.waitForTimeout(150);
+      widths.push(await body.evaluate(el => el.clientWidth));
+      assert.equal(await body.evaluate(el => getComputedStyle(el).overflowY), 'scroll');
+    }
+    assert.equal(new Set(widths).size, 1, `settings width changed between tabs: ${widths}`);
+  } },
   { id: 'codex-capacity', focus: '.setup-card.is-upstream', setup: async page => {
     await page.evaluate(() => window.dispatchEvent(new MessageEvent('message', { data: {
       type: 'upstream_error', agent: 'codex', detail: 'Selected model is at capacity. Please try a different model.',
@@ -557,18 +584,37 @@ export const scenarios = [
     await page.evaluate(files => {
       window.sent = [];
       window.dispatchEvent(new MessageEvent('message', { data: { type: 'userMessage', text: 'Check these two images', files } }));
+      window.dispatchEvent(new MessageEvent('message', { data: { type: 'attachmentSaved', attachment: files[0] } }));
     }, files);
     const chips = page.locator('.msg-attachments .attachment-chip');
-    await page.waitForFunction(() => [...document.querySelectorAll('.msg-attachments .attachment-chip img')].every(img => img.complete && img.naturalWidth > 0));
-    await chips.nth(0).locator('.attachment-download').click();
-    await chips.nth(1).locator('.attachment-download').click();
+    await page.waitForFunction(() => [...document.querySelectorAll('.attachment-chip img')].every(img => img.complete && img.naturalWidth > 0));
+    assert.equal(await page.locator('.attachment-chip .attachment-download').count(), 0, 'chips must not show an inline download button');
+    await chips.nth(0).click();
+    await page.locator('.image-lightbox.is-open img').waitFor();
+    const toolbarBox = await page.locator('.image-lightbox-toolbar').boundingBox();
+    const imgBox = await page.locator('.image-lightbox img').boundingBox();
+    assert.ok(toolbarBox.y + toolbarBox.height <= imgBox.y - 6, 'download and close buttons must sit above the enlarged image with a gap');
+    await page.locator('.image-lightbox-download').click();
+    await page.locator('.image-lightbox-close').click();
+    await page.locator('.image-lightbox').waitFor({ state: 'detached' });
+    await chips.nth(1).click({ button: 'right' });
+    await page.locator('.image-context-menu').waitFor();
+    assert.deepEqual(await page.locator('.image-context-item').evaluateAll(els => els.map(el => el.dataset.action)), ['copy', 'download', 'rename']);
+    await page.locator('.image-context-item[data-action="download"]').click();
     const downloads = await page.evaluate(() => window.sent.filter(m => m.type === 'downloadAttachment').map(m => m.name));
     assert.deepEqual(downloads, ['image.png', 'wordmark.png']);
     await chips.nth(1).click({ button: 'right' });
-    await page.locator('.image-context-menu').waitFor();
     await page.locator('.image-context-item[data-action="copy"]').click();
     assert.equal(await page.locator('.image-context-menu').count(), 0);
     await page.waitForFunction(() => window.sent.some(m => m.type === 'copyAttachment' && m.path === '/attachments/1794686684461_wordmark.png'));
+    await chips.nth(1).click({ button: 'right' });
+    await page.locator('.image-context-item[data-action="rename"]').click();
+    const renameInput = chips.nth(1).locator('input.attachment-rename');
+    await renameInput.waitFor();
+    await renameInput.fill('brand-logo');
+    await renameInput.press('Enter');
+    assert.equal(await chips.nth(1).locator('.attachment-name').textContent(), 'brand-logo.png');
+    assert.deepEqual(await page.evaluate(() => window.sent.filter(m => m.type === 'renameAttachment').at(-1)), { type: 'renameAttachment', path: '/attachments/1794686684461_wordmark.png', name: 'brand-logo' });
     await chips.nth(1).click({ button: 'right' });
     await page.locator('.image-context-menu').waitFor();
   } },

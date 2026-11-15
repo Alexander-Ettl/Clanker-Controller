@@ -1936,6 +1936,7 @@ test('late Claude output reopens persistence even when the CLI did not announce 
   e.consumeLine(JSON.stringify({ type: 'assistant', message: { content: [{ type: 'text', text: 'Later result' }] } }), 'claude');
   assert.deepEqual(events.filter(event => ['remote_prompt', 'delta'].includes(event.type)).map(event => event.type), ['remote_prompt', 'delta']);
   assert.equal(e.child.turnCompleted, false);
+  assert.equal(events.find(event => event.type === 'remote_prompt').background, true, 'a self-started turn is flagged so no user bubble is shown for it');
 });
 
 test('unified permission selector: effectivePermissionMode, CLI flags, fallback, and resumed chats', () => {

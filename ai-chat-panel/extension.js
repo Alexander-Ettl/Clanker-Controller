@@ -784,22 +784,23 @@ class ChatRun {
   }
 
   /** A prompt typed in the Claude app: shown and saved like any turn, run by the live process that received it. */
-  beginRemoteTurn(text) {
+  beginRemoteTurn(text, background = false) {
     this.turnAgent = 'claude';
     const label = this.remote?.model?.label || this.chat.messages.findLast((message) => message.role === 'assistant' && message.agent === 'claude')?.modelLabel;
-    const user = { role: 'user', text, at: new Date().toISOString(), agent: 'claude', remote: true };
+    // background: Claude started on its own (a background agent finished); nobody typed `text`.
+    const user = { role: 'user', text, at: new Date().toISOString(), agent: 'claude', remote: true, ...(background ? { background: true } : {}) };
     const reply = { role: 'assistant', text: '', agent: 'claude', modelLabel: label, inProgress: true, hostPid: process.pid };
     this.chat.messages.push(user, reply);
     this.activeAssistantMessage = reply;
     this.chat.lastRunAt = new Date().toISOString();
     this.save();
     const isFirstUserMessage = !this.chat.title && !this.chat.customTitle;
-    if (isFirstUserMessage && text) {
+    if (isFirstUserMessage && text && !background) {
       void this.autoGenerateTitle(text);
     }
     this.considerWorkContext();
     this.turn = { agentId: 'claude', modelLabel: label, startedAt: Date.now(), remote: true };
-    this.post({ type: 'userMessage', text, at: user.at });
+    this.post({ type: 'userMessage', text, at: user.at, background });
     this.post({ type: 'routing', agentId: 'claude', modelLabel: label });
     this.deps.notifyHistory();
   }
@@ -1119,7 +1120,7 @@ class ChatRun {
     if (event.type === 'turn_complete' && this.subagentLog.length) this.rememberSubagent({ type: 'subagent_settle', interrupted: Boolean(event.interrupted) });
     this.deps.onTelegramEvent?.(this, event);
     if (event.type === 'rate_limits' && event.agent === 'claude') recordClaudeUsage(event.windows);
-    if (event.type === 'remote_prompt') { this.beginRemoteTurn(event.text); return; }
+    if (event.type === 'remote_prompt') { this.beginRemoteTurn(event.text, Boolean(event.background)); return; }
     if (event.type === 'remote_state') {
       // The live process ended or the bridge dropped: say so, and fall back to per-turn runs.
       if (event.state === 'ended' && this.remote) { this.remote = null; this.post({ type: 'remoteState', on: false }); this.post({ type: 'notice', text: 'Remote Control ended (the Claude process exited). Send /remote-control to start it again.' }); }
@@ -2125,14 +2126,26 @@ class ChatWindowHost {
   }
   /** A name the user gave an attached image: the file keeps its timestamp prefix (so names never collide) and its extension. */
   renameAttachment(file, name) {
-    const [safe] = this.safeAttachmentPaths([file]);
+    const safe = this.safeReadableAttachmentPath(file) || this.safeAttachmentPaths([file])[0];
     if (!safe) return;
     const ext = path.extname(safe);
     const stamp = /^\d{10,}_/.exec(path.basename(safe))?.[0] || `${Date.now()}_`;
-    const base = String(name || '').replace(ext, '').replace(/[^\p{L}\p{N} ._-]/gu, '').replace(/\s+/g, ' ').trim().slice(0, 60) || 'image';
+    const base = String(name || '').replace(new RegExp(`${ext.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'i'), '').replace(/[^\p{L}\p{N} ._-]/gu, '').replace(/\s+/g, ' ').trim().slice(0, 60) || 'image';
     let target = path.join(path.dirname(safe), `${stamp}${base}${ext}`);
     for (let n = 2; fs.existsSync(target) && target !== safe; n++) target = path.join(path.dirname(safe), `${stamp}${base} ${n}${ext}`);
     try { if (target !== safe) fs.renameSync(safe, target); } catch { return; }
+    if (this.run?.chat && target !== safe) {
+      let changed = false;
+      const swap = (list) => Array.isArray(list) ? list.map((p) => (p === file || p === safe ? (changed = true, target) : p)) : list;
+      for (const msg of this.run.chat.messages || []) {
+        if (msg.attachments?.length) msg.attachments = swap(msg.attachments);
+      }
+      if (this.run.chat.draftAttachments?.length) this.run.chat.draftAttachments = swap(this.run.chat.draftAttachments);
+      for (const turn of this.run.queue || []) {
+        if (turn.attachments?.length) turn.attachments = swap(turn.attachments);
+      }
+      if (changed) this.run.save?.();
+    }
     this.panel.webview.postMessage({ type: 'attachmentRenamed', from: file, attachment: this.attachmentMetadata(target) });
   }
   removeAttachment(file) { const [safe] = this.safeAttachmentPaths([file]); if (safe) fs.promises.unlink(safe).catch(() => {}); }
