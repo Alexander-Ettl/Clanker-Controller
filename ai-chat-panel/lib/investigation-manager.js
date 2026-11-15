@@ -10,7 +10,7 @@ const { Semaphore, sleep } = require('./loop-exec');
 const { ROLES } = require('./loop-roles');
 
 const DEFAULTS = Object.freeze({ intervalMinutes: 0, maxRuns: 4, maxRunMinutes: 8,
-  maxTokensPerRun: 250000, reservePercent: 50,
+  maxTokensPerRun: 250000, reservePercent: 50, editorReservePercent: 20,
   hourlyTokens: 1000000, fixesPerCycle: 3, fixMinutes: 12 });
 // The fix loop works in cycles of one lens each; its defaults are tighter per hour and longer per run than a diagnosis.
 const FIX_DEFAULTS = Object.freeze({ ...DEFAULTS, maxRuns: 6, maxRunMinutes: 45, maxTokensPerRun: 300000,
@@ -21,6 +21,11 @@ const TESTER_DEFAULTS = Object.freeze({ ...DEFAULTS, maxRuns: 6, maxRunMinutes: 
 // The full loop: ten scouts, refutation, parallel fixes, regression checks and visual checks in one run. It is bounded by what it
 // reserves and by its own per-call limits, not by one wall clock; maxRunMinutes is a soft budget after which it wraps up.
 const FULL_DEFAULTS = Object.freeze({ ...DEFAULTS, maxRuns: 8, maxRunMinutes: 180, maxTokensPerRun: 3000000, hourlyTokens: 10000000, fixesPerCycle: 6, fixMinutes: 20 });
+// Overnight: many cycles with a pause between them, a lower Gemini reserve (the scouts' pool is rarely more than half used) and a low
+// reserve for the Claude/Codex editors, whose quota is checked before every fix. A cycle whose editors are out of quota does not
+// rescan: the loop waits for the reset (see `waiting` in execute) and carries on, so a night is not spent on repeated scouting.
+const OVERNIGHT_LIMITS = Object.freeze({ maxRuns: 12, intervalMinutes: 10, maxRunMinutes: 150, reservePercent: 25, editorReservePercent: 15, fixesPerCycle: 8, fixMinutes: 20 });
+const WAIT_MIN_MS = 5 * 60000, WAIT_MAX_MS = 4 * 3600000, WAIT_GUESS_MS = 30 * 60000;
 const RECIPE_DEFAULTS = { diagnose: DEFAULTS, fixloop: FIX_DEFAULTS, tester: TESTER_DEFAULTS, full: FULL_DEFAULTS };
 const RECIPES = ['diagnose', 'fixloop', 'tester', 'full'];
 const VISUAL_CHOICES = ['auto', 'visor', 'playwright', 'off'];
@@ -39,7 +44,7 @@ function validateLimits(input = {}) {
   const { dailyTokens, dailyRuns, ...current } = input; // the daily allowance was removed; saved loops may still carry it
   const limits = { ...DEFAULTS, ...current };
   const ranges = { intervalMinutes: [0, 1440], maxRuns: [1, 24], maxRunMinutes: [1, 720],
-    maxTokensPerRun: [1000, 6000000], reservePercent: [25, 95],
+    maxTokensPerRun: [1000, 6000000], reservePercent: [25, 95], editorReservePercent: [0, 95],
     hourlyTokens: [1000, 30000000], fixesPerCycle: [0, 12], fixMinutes: [1, 60] };
   for (const [key, [min, max]] of Object.entries(ranges)) {
     if (!Number.isInteger(limits[key]) || limits[key] < min || limits[key] > max) throw new Error(`Invalid ${key}: use ${min}–${max}.`);
@@ -346,9 +351,18 @@ class InvestigationManager extends EventEmitter {
         else if (this.yieldsToForeground(job)) controller.abort(new Error(YIELDED));
       }, 2000);
       yieldTimer.unref?.(); // a runner that ignores its abort signal must not keep the process alive
+      // While a full loop runs, the Gemini pool is read once a minute. Below half the admission reserve the loop stops starting model
+      // calls and writes up what it has; the next cycle is then held back by admission until the pool has recovered.
+      const gemini = { low: false };
+      let quotaTimer = null;
+      if (full) {
+        const floor = Math.max(5, Math.floor(job.limits.reservePercent / 2));
+        const poll = () => Promise.resolve().then(() => this.readQuota()).then(quota => { if (quota) gemini.low = [quota, quota.secondary].filter(Boolean).some(window => Number.isFinite(window.remaining) && window.remaining < floor); }).catch(() => {});
+        void poll(); quotaTimer = setInterval(poll, 60000); quotaTimer.unref?.();
+      }
       let result;
       try {
-        result = await this.runner({ job: clone(job), run: clone(run), directory: path.join(this.dir, run.id), signal: controller.signal, resolveFixer: this.resolveFixer,
+        result = await this.runner({ job: clone(job), run: clone(run), directory: path.join(this.dir, run.id), signal: controller.signal, resolveFixer: this.resolveFixer, quotaLow: () => gemini.low,
           resolveRole: (role, extra) => Promise.resolve(this.roleResolver(role, job, extra)), slots: this.slots, visorDir: this.visorDir(), compliance: this.compliance(),
           gate: signal => this.gate(job, run, signal), expired: () => this.now() > run.startedAt + job.limits.maxRunMinutes * 60000 + (run.pausedMs || 0),
           onProgress: (stage, live) => {
@@ -357,20 +371,28 @@ class InvestigationManager extends EventEmitter {
             if (live) run.live = live;
             if (changed) this.persist(); else this.persistSoon();
           } });
-      } finally { clearTimeout(timeout); clearInterval(yieldTimer); }
+      } finally { clearTimeout(timeout); clearInterval(yieldTimer); clearInterval(quotaTimer); }
       if (controller.signal.aborted) throw controller.signal.reason;
       if (result.skipped) {
         // No model invocation happened, so there is nothing to report: the loop's own status carries the reason.
         ledger.tokens -= run.chargedTokens; ledger.runs--; job.completedRuns--;
         this.state.runs = this.state.runs.filter(item => item !== run);
         try { fs.rmSync(path.join(this.dir, run.id), { recursive: true, force: true }); } catch (error) { this.emit('managerError', error); }
+        if (result.waiting) {
+          // Blocked on the editors' quota: nothing is rescanned and nothing is spent. The loop stays armed and wakes at the reset.
+          const at = Number.isFinite(result.retryAt) ? Math.min(this.now() + WAIT_MAX_MS, Math.max(this.now() + WAIT_MIN_MS, result.retryAt)) : this.now() + WAIT_GUESS_MS;
+          job.nextRunAt = at; job.waitingSince ||= this.now();
+          job.reason = `${result.reason}; waiting until ${new Date(at).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' })}`;
+          this.persist(); return;
+        }
+        delete job.waitingSince;
         job.enabled = false; job.reason = result.finished ? `Finished: ${String(result.reason).replace(/^./, c => c.toLowerCase())}` : `${result.reason}; paused until restarted`;
         this.persist(); return;
       } else {
         if (Number.isFinite(result.tokens) && result.tokens >= 0) {
           run.tokenUsage = result.tokens; ledger.tokens += result.tokens - run.chargedTokens; run.chargedTokens = result.tokens;
         } else { job.enabled = false; job.reason = 'Usage unavailable; full reservation retained, review before resuming'; }
-        job.yields = 0; job.failures = 0; run.status = 'completed'; run.artifacts = result.artifacts || []; run.snapshotHash = result.snapshotHash; delete run.live;
+        job.yields = 0; job.failures = 0; delete job.waitingSince; run.status = 'completed'; run.artifacts = result.artifacts || []; run.snapshotHash = result.snapshotHash; delete run.live;
         const known = new Set(); // Deduplicate within this report; earlier reports cannot make this run look clean.
         run.findings = (result.findings || []).map(finding => ({ ...finding, fingerprint: hash(JSON.stringify([finding.title, finding.evidence])) }))
           .filter(finding => { if (known.has(finding.fingerprint)) return false; known.add(finding.fingerprint); return true; });
@@ -429,4 +451,4 @@ class InvestigationManager extends EventEmitter {
 }
 
 
-module.exports = { InvestigationManager, DEFAULTS, FIX_DEFAULTS, TESTER_DEFAULTS, FULL_DEFAULTS, TOPICS, LENSES, validateLimits, removeTree, cleanRoles, cleanOptions, HOST_CLOSING };
+module.exports = { InvestigationManager, DEFAULTS, FIX_DEFAULTS, TESTER_DEFAULTS, FULL_DEFAULTS, OVERNIGHT_LIMITS, TOPICS, LENSES, validateLimits, removeTree, cleanRoles, cleanOptions, HOST_CLOSING };
