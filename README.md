@@ -2,7 +2,7 @@
   <img src="docs/images/hero.svg" alt="Clanker Controller: one chat for Claude Code, Codex and Gemini, built on flat-rate subscriptions" width="100%">
 </p>
 
-**Clanker Controller** is an IDE extension that puts your coding agents in one chat window. Claude Code, Codex, Antigravity (Gemini) and GitHub Copilot sit side by side. You pick a model per message, or let Auto pick for you. It drives the official CLIs you already have installed, so you keep your sign-ins, your plans and your setup. You give nothing up.
+**Clanker Controller** is an IDE extension that puts your coding agents in one chat window. Claude Code, Codex, Antigravity (Gemini) and GitHub Copilot sit side by side. You pick a model per message. It drives the official CLIs you already have installed, so you keep your sign-ins, your plans and your setup. You give nothing up.
 
 It runs in **Antigravity** and **VS Code**.
 
@@ -24,18 +24,10 @@ It runs in **Antigravity** and **VS Code**.
 
 Clanker does not replace your tools. It runs the real `claude`, `codex` and `agy` CLIs headlessly and streams what they do into the chat.
 
-- Your **own CLI sign-ins and plans** stay as they are. The coding agents run on those sign-ins, so Clanker needs no API key for them and never bills you. Voice and the Auto router use their own free Groq and Cloudflare keys, and both are optional.
+- Your **own CLI sign-ins and plans** stay as they are. The coding agents run on those sign-ins, so Clanker needs no API key for them and never bills you. Voice dictation uses its own free Groq key, which is optional.
 - Sessions stay native. A Codex thread keeps syncing with the ChatGPT app, and Claude Code can still be opened in the Claude app through Remote Control.
 - Use each environment next to the others, in the same chat, on the same project.
 - Add another CLI with one provider file. The GitHub Copilot CLI is the worked example: [adding a provider](docs/adding-a-provider.md).
-
-## Several agents, one picker
-
-Models come from the CLIs themselves, with their reasoning levels, and each provider shows how much usage it has left. Mark favorites, or leave it on **Auto** and a router (free Cloudflare and Groq tiers) picks a model for the task.
-
-<p align="center">
-  <img src="docs/images/model-menu.png" alt="The model picker listing Claude Code, Codex and Antigravity models with the remaining usage next to each provider" width="270">
-</p>
 
 ## A scheduler that works while you sleep
 

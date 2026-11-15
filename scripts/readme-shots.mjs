@@ -37,7 +37,7 @@ const rail = async page => {
 const tool = (id, name, command, offset) => ({ role: 'tool', event: { type: 'tool_start', toolId: id, name, command, output: '' }, done: true, offset });
 const conversation = async page => {
   const claude = 'Claude Opus 5.5', codex = 'GPT-6.1-Sol', gemini = 'Gemini 3.8 Flash';
-  await post(page, { type: 'chatLoaded', chat: { id: 'demo', modelId: 'auto', messages: [
+  await post(page, { type: 'chatLoaded', chat: { id: 'demo', modelId: 'claude-opus-5-5-medium', messages: [
     { role: 'user', text: 'The sync worker drops jobs when the API rate-limits. Add retries with backoff and cover it with tests.', at: ago(14) },
     { role: 'assistant', agent: 'claude', modelLabel: claude, at: ago(11), text: 'Retries now use exponential backoff with jitter, capped at 30 seconds. A 429 honours `Retry-After`, and a job that exhausts its attempts goes to the dead-letter queue instead of vanishing.', },
     tool('t1', 'Edit', 'src/sync/worker.ts', 0),
@@ -68,13 +68,6 @@ const span = async (page, first, last) => {
 
 const SHOTS = [
   { id: 'hero-chat', width: 1000, height: 880, sidebar: true, setup: async page => { await providers(page); await quotas(page); await rail(page); await conversation(page); } },
-  // One model picker listing every connected provider, each with its own usage.
-  { id: 'model-menu', width: 560, height: 700, setup: async page => {
-    await providers(page); await quotas(page);
-    await page.locator('#modelPill').click();
-    await page.locator('.model-option').first().waitFor();
-    await page.waitForTimeout(800);
-  }, clip: page => page.locator('#modelMenu') },
   // Prompts waiting for a usage reset, a clock time, or their turn.
   { id: 'scheduler', width: 620, height: 640, setup: async page => {
     await providers(page);
