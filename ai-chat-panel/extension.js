@@ -3726,7 +3726,6 @@ function activate(context) {
     onChange: () => notifyHistory(),
     log: (text) => console.log('[clanker]', text),
   });
-  chatWindowManager.refreshWorkContexts();
   // The mode lives in the composer's picker, so a change from anywhere (a window, Visor, the settings pane) reaches every window.
   context.subscriptions.push(routing.onDidChange(() => {
     for (const host of chatWindowManager.hosts || []) void host.pushRoutingMode();
@@ -3818,6 +3817,7 @@ function activate(context) {
     try { costMeter.seed(chatStore.list().map((session) => chatStore.load(session.id)).filter(Boolean), { force: true }); } catch { /* a start from zero */ }
   }
   void costMeter.refreshPrices(MODEL_CATALOG.map((entry) => entry.model));
+  chatWindowManager.refreshWorkContexts(); // builds ChatRuns, which read costMeter: only valid once it is declared
   const updateTimer = setInterval(() => void cliHub.check(), 6 * 60 * 60 * 1000);
   const autoUpdateTimer = setInterval(() => void cliHub.autoUpdate(), 15000);
   const installedVersionTimer = setInterval(() => void cliHub.refreshInstalled(), 60000);
