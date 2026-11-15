@@ -65,7 +65,7 @@ Clanker keeps an **API value** meter. For every turn it prices the tokens at eac
   <img src="docs/images/cost.svg" alt="October 2026 at API prices: 1,465 dollars. The same work on subscriptions at 45 dollars a month, 32 times cheaper." width="100%">
 </p>
 
-How to read it, with the numbers from the author's own use:
+How to read it. These numbers are the maintainer's own: real usage and the plans the maintainer actually pays for.
 
 | Measure | Value |
 |---|---|

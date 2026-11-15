@@ -17,7 +17,7 @@
     <text x="120" y="411" font-size="34" font-weight="700" fill="#34d399">$45</text>
     <text x="214" y="411" font-size="26" font-weight="600" fill="#7ee2b8">32x cheaper, about $1,420 saved that month</text>
 
-    <text x="64" y="474" font-size="17" fill="#7d8293">Measured by Clanker's API value meter on one developer's real usage: $2,314 across 2,506 priced turns (Sep 22 to Nov 15, 2026).</text>
-    <text x="64" y="498" font-size="17" fill="#7d8293">Bars are drawn to scale. Plan prices are the author's own monthly cost; check what you pay.</text>
+    <text x="64" y="474" font-size="17" fill="#7d8293">Measured by Clanker's API value meter on the maintainer's own real usage: $2,314 across 2,506 priced turns (Sep 22 to Nov 15, 2026).</text>
+    <text x="64" y="498" font-size="17" fill="#7d8293">Bars are drawn to scale. Plan prices are what the maintainer pays each month; check what you pay.</text>
   </g>
 </svg>
