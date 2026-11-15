@@ -336,10 +336,23 @@ function isDue(task, now) {
   if (task.retryAfter && Date.parse(task.retryAfter) > now) return false; // backoff after a failed attempt
   return task.dispatchTrigger !== 'fixed-time' || Date.parse(task.dispatchTime) <= now;
 }
+const RESET_SLACK_MS = 2 * 60 * 1000; // a provider's reset clock and the notice's own minute can disagree a little
+/**
+ * A "when usage resets" task waits for the reset time it was scheduled against, but the window can end early: a manual reset,
+ * or one the provider hands out. That shows as the model's window now ending after the task's saved time (a new window began),
+ * or as a fresh undated window; either way with usage left and no other limit (the week) still holding.
+ */
+function resetObserved(task, quota, now = Date.now()) {
+  if (task?.dispatchTrigger !== 'quota-reset' || !(Date.parse(task.notBefore) > now)) return false;
+  const window = task.resetWindow === '7d' ? quota?.secondary : quota;
+  if (typeof window?.remaining !== 'number' || window.remaining <= 0 || quota?.secondary?.remaining === 0) return false;
+  if (typeof window.resetsAt === 'number') return window.resetsAt * 1000 > Date.parse(task.notBefore) + RESET_SLACK_MS;
+  return window.remaining >= 99; // "0% used" right after a reset, before the next window has a time
+}
 async function exists(file) { try { await fs.access(file); return true; } catch { return false; } }
 function mimeFor(name) {
   const ext = path.extname(name).toLowerCase();
   return ({ '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.webp': 'image/webp', '.gif': 'image/gif', '.svg': 'image/svg+xml', '.pdf': 'application/pdf', '.json': 'application/json', '.md': 'text/markdown', '.txt': 'text/plain' })[ext] || 'application/octet-stream';
 }
 
-module.exports = { SchedulerQueue, isDue, waitsForContinue, MAX_QUEUE_SIZE, MAX_ATTACHMENT_BYTES, ACTIVE_STATUSES: [...ACTIVE] };
+module.exports = { SchedulerQueue, isDue, resetObserved, waitsForContinue, MAX_QUEUE_SIZE, MAX_ATTACHMENT_BYTES, ACTIVE_STATUSES: [...ACTIVE] };

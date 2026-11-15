@@ -9,7 +9,7 @@ const os = require('node:os');
 const path = require('node:path');
 const { ChatStore } = require('../lib/chat-store');
 const { ProjectRegistry } = require('../lib/projects');
-const { SchedulerQueue } = require('../lib/scheduler-queue');
+const { SchedulerQueue, isDue, resetObserved } = require('../lib/scheduler-queue');
 require('./model-fixture').seedModels();
 
 // Run the real chat/queue lifecycle and persistence without spawning a model or an IDE.
@@ -134,6 +134,36 @@ test('Send Now cannot remove a reset-waiting task, but the saved deadline expire
   await host.takeScheduledTask(task.id, true);
   assert.equal((await queue.getQueue()).filter(task => task.status === 'pending').length, 0);
   assert.equal(host.messages.findLast(message => message.type === 'restoreScheduledDraft').modelId, 'gpt-6.1-sol-high');
+});
+
+test('a usage reset that comes early frees the prompt waiting for the old reset time, and a plain wait stays', async t => {
+  const f = fixture(t), run = f.chat();
+  const queue = f.deps.schedulerQueue = new SchedulerQueue({ workspaceDir: f.deps.workspaceDir, sessionDir: f.deps.sessionDir });
+  const notBefore = new Date(Date.now() + 7200000).toISOString();
+  const oldEnd = Date.parse(notBefore) / 1000;
+  const task = await queue.enqueue({ model: 'codex', modelId: 'gpt-6.1-sol-high', chatId: run.chat.id, prompt: 'continue', dispatchTrigger: 'quota-reset', notBefore });
+  const watcher = new SchedulerWatchdog({ queue, workspaceDir: f.deps.workspaceDir, getModels: () => ({}), chatStore: f.deps.chatStore, onQueueChange() {}, resumeInChat: () => false, isChatBusy: () => true });
+  t.after(() => watcher.engine.dispose());
+  const waitingFor = async () => (await queue.getQueue()).find(item => item.id === task.id).notBefore;
+  for (const still of [{ remaining: 0, resetsAt: oldEnd }, { remaining: 60, resetsAt: oldEnd + 30 }, { remaining: 0, resetsAt: oldEnd + 18000 }, { remaining: 100, resetsAt: oldEnd, secondary: { remaining: 0, resetsAt: oldEnd + 86400 } }]) {
+    quotaHook = () => ({ codex: still });
+    await watcher.tick();
+    assert.equal(await waitingFor(), notBefore, `still waiting at ${JSON.stringify(still)}`);
+  }
+  quotaHook = () => ({ codex: { remaining: 100, resetsAt: oldEnd + 18000 } }); // a manual reset: a new window, usage back
+  await watcher.tick();
+  assert.ok(Date.parse(await waitingFor()) <= Date.now(), 'the saved reset time no longer holds it back');
+  assert.equal(isDue((await queue.getQueue())[0], Date.now()), true);
+});
+
+test('a reset is recognised from a fresh undated window and for the weekly window', () => {
+  const task = { dispatchTrigger: 'quota-reset', notBefore: new Date(Date.now() + 3600000).toISOString() };
+  const end = Date.parse(task.notBefore) / 1000;
+  assert.equal(resetObserved(task, { remaining: 100, resetsAt: null }), true);
+  assert.equal(resetObserved(task, { remaining: 40, resetsAt: null }), false);
+  assert.equal(resetObserved({ ...task, resetWindow: '7d' }, { remaining: 0, secondary: { remaining: 100, resetsAt: end + 604800 } }), true);
+  assert.equal(resetObserved({ ...task, resetWindow: '7d' }, { remaining: 100, secondary: { remaining: 100, resetsAt: end } }), false);
+  assert.equal(resetObserved({ ...task, dispatchTrigger: 'fixed-time' }, { remaining: 100, resetsAt: end + 18000 }), false);
 });
 
 test('Steer Now and automatic queue draining preserve an active saved reset wait', async t => {
