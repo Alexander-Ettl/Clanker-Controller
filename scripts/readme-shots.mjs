@@ -56,8 +56,8 @@ const settings = async page => {
     claude: { label: 'Claude Code', at: PINNED - 52 * 60000, status: 'ok', tokens: 31 },
     codex: { label: 'Codex', at: PINNED - 49 * 60000, status: 'ok', tokens: 24 },
     gemini: { label: 'Antigravity', at: PINNED - 47 * 60000, status: 'ok', tokens: 19 } } } } });
-  await post(page, { type: 'apiValue', totalUsd: 2313.61, monthUsd: 358.58, since: '2026-09-22T08:00:00Z', unpriced: 0,
-    byAgent: { claude: 1750.05, codex: 422.5, gemini: 141.05 }, prices: { verified: '2026-11-01' } });
+  await post(page, { type: 'apiValue', totalUsd: 1751, monthUsd: 300, since: '2026-09-22T08:00:00Z', unpriced: 342,
+    byAgent: { claude: 1169, codex: 423, gemini: 160 }, prices: { verified: '2026-11-15' } });
   await page.waitForTimeout(500);
 };
 /** The box from the top of `first` to the bottom of `last` (or `first` alone). */
