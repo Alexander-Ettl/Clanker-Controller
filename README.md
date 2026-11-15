@@ -62,7 +62,7 @@ No PC running? An experimental option runs the warm-ups in your own Google Cloud
 Clanker keeps an **API value** meter. For every turn it prices the tokens at each provider's pay-per-token rates and adds them up. It is a comparison, not a bill: the work itself ran on your subscriptions.
 
 <p align="center">
-  <img src="docs/images/cost.svg" alt="October 2026 at API prices: 1,465 dollars. The same work on example subscriptions: 420 dollars, 3.5 times cheaper." width="100%">
+  <img src="docs/images/cost.svg" alt="October 2026 at API prices: 1,465 dollars. The same work on subscriptions at 45 dollars a month, 32 times cheaper." width="100%">
 </p>
 
 How to read it, with the numbers from the author's own use:
@@ -73,8 +73,8 @@ How to read it, with the numbers from the author's own use:
 | At API prices | **$2,314** in total (±20%), about $1,300 a month |
 | By provider | Claude Code $1,750 · Codex $423 · Antigravity $141 |
 | October alone | **$1,465** at API prices |
-| Example subscriptions | Claude $200 + ChatGPT $200 + Google $20 = **$420 a month** |
-| Result | 1,465 ÷ 420 ≈ **3.5x cheaper**, about $1,045 saved in October |
+| Subscriptions | Claude Pro $20 + ChatGPT Plus $20 + Gemini student plan $5 = **$45 a month** |
+| Result | 1,465 ÷ 45 ≈ **32x cheaper**, about $1,420 saved in October |
 
 Read the comparison with care. The API value is an estimate with a ±20% band, and turns on models without a known price count as zero rather than a guess. Plan prices change, so plug in what you pay. The trade is that a subscription has usage windows instead of a pay-as-you-go meter, and the scheduler and early window starts exist to make those windows painless.
 
