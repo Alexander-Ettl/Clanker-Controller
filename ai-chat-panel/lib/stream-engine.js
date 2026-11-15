@@ -167,7 +167,10 @@ function tokenCountsOf(raw) {
   // What each kind of token is billed as (api-cost.js): Claude reports fresh input apart from cache reads and writes;
   // Codex's input includes its cached part; Antigravity's input includes cache_read_tokens, and its thinking is billed as output.
   const detailOf = (u) => {
-    if ('cache_read_input_tokens' in u || 'cache_creation_input_tokens' in u) return { fresh: n(u.input_tokens), cachedInput: n(u.cache_read_input_tokens), cacheWrite: n(u.cache_creation_input_tokens), output: outputOf(u) };
+    if ('cache_read_input_tokens' in u || 'cache_creation_input_tokens' in u) {
+      const write1h = n(u.cache_creation?.ephemeral_1h_input_tokens); // Claude Code writes its cache for an hour: twice the input rate
+      return { fresh: n(u.input_tokens), cachedInput: n(u.cache_read_input_tokens), cacheWrite: n(u.cache_creation_input_tokens), ...(write1h ? { cacheWrite1h: write1h } : {}), output: outputOf(u) };
+    }
     const cached = n(u.cached_input_tokens) || n(u.cache_read_tokens);
     return { fresh: Math.max(0, inputOf(u) - cached), cachedInput: cached, cacheWrite: 0, output: outputOf(u) + n(u.thinking_tokens) };
   };
@@ -176,7 +179,10 @@ function tokenCountsOf(raw) {
   return final ? { final: true, input: inputOf(final), output: outputOf(final), detail: detailOf(final) } : null;
 }
 const noTokens = () => ({ input: 0, output: 0, lastId: null, detail: { fresh: 0, cachedInput: 0, cacheWrite: 0, output: 0 } });
-const addDetail = (a, b) => ({ fresh: a.fresh + b.fresh, cachedInput: a.cachedInput + b.cachedInput, cacheWrite: a.cacheWrite + b.cacheWrite, output: a.output + b.output });
+const addDetail = (a, b) => {
+  const write1h = (a.cacheWrite1h || 0) + (b.cacheWrite1h || 0);
+  return { fresh: a.fresh + b.fresh, cachedInput: a.cachedInput + b.cachedInput, cacheWrite: a.cacheWrite + b.cacheWrite, ...(write1h ? { cacheWrite1h: write1h } : {}), output: a.output + b.output };
+};
 
 /** agy's ask_question parameters in the shape the question card renders (Claude's AskUserQuestion): options as {label}, `multiSelect`. */
 function agyQuestions(raw) {

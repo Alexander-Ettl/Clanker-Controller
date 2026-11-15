@@ -1,11 +1,11 @@
 'use strict';
 
 // "API value": what the tokens Clanker Controller ran through the CLIs would have cost on the providers' pay-per-token
-// APIs. A comparison, never a bill: the work runs on the user's subscriptions. Three sources, best first:
-//   1. Claude Code's own cost figure (exact for its model, cache tiers and speed). It is a running total for the
-//      process, so a turn's share is the rise since the last one (stream-engine.js does that).
-//   2. A daily copy of LiteLLM's community price table, for models it lists (tracks price changes between releases).
-//   3. The bundled table (api-prices.js), checked against the providers' pages.
+// APIs. A comparison, never a bill: the work runs on the user's subscriptions. A turn's token counts are priced at, best first:
+//   1. A daily copy of LiteLLM's community price table, for models it lists (tracks price changes between releases).
+//   2. The bundled table (api-prices.js), checked against the providers' pages.
+// Claude Code's own cost figure is only the fallback for a turn without token counts: its built-in table prices Sonnet 5
+// like Sonnet 4 (about 1.8x too high for our cache-heavy turns, measured against its own logs; anthropics issue 87855).
 // A model none of them prices counts as unpriced: it adds nothing rather than a guess.
 
 const { PRICES, ALIASES, VERIFIED } = require('./api-prices.js');
@@ -13,6 +13,9 @@ const { PRICES, ALIASES, VERIFIED } = require('./api-prices.js');
 const FEED_URL = 'https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json';
 const FEED_MAX_AGE = 24 * 60 * 60 * 1000;
 const PER = 1e6;
+// Claude Code's own cost figure over the same turns' tokens at Anthropic's published prices: 343 / 192 for 479 Sonnet 5.5
+// turns matched against its session logs (2026-11-15). Applied to the figures saved before turns were priced from tokens.
+const CLI_FIGURE_FACTOR = 0.56;
 
 /** The id a price table knows: lower case, without the CLI's effort or variant suffix ("gemini-3.8-flash-high"). */
 function normalizeModel(model) {
@@ -41,6 +44,7 @@ function fromLitellm(table, model) {
         input,
         cachedInput: Number.isFinite(entry.cache_read_input_token_cost) ? entry.cache_read_input_token_cost * PER : input,
         ...(Number.isFinite(entry.cache_creation_input_token_cost) ? { cacheWrite: entry.cache_creation_input_token_cost * PER } : {}),
+        ...(Number.isFinite(entry.cache_creation_input_token_cost_above_1hr) ? { cacheWrite1h: entry.cache_creation_input_token_cost_above_1hr * PER } : {}),
         output: entry.output_cost_per_token * PER,
       };
       const tier = Object.keys(entry).map((k) => /^input_cost_per_token_above_(\d+)k_tokens$/.exec(k)).find(Boolean);
@@ -70,7 +74,7 @@ function priceFor(model, live = {}) {
 }
 
 /**
- * USD for one turn's tokens at `price`. usage: { fresh, cachedInput, cacheWrite, output } (output includes thinking).
+ * USD for one turn's tokens at `price`. usage: { fresh, cachedInput, cacheWrite, cacheWrite1h (part of cacheWrite), output } (output includes thinking).
  * A dated change (until/then) applies from the day after `until`; a long prompt is priced at the long-context rates.
  */
 function costOf(price, usage, now = Date.now()) {
@@ -93,35 +97,21 @@ function costOf(price, usage, now = Date.now()) {
   // requests, so without a peak (usage.peakPrompt) the standard rates apply.
   if (price.longContext && n(usage.peakPrompt) > price.longContext.above) rates = { ...rates, ...price.longContext };
   const usd = (n(usage.fresh) * rates.input + n(usage.cachedInput) * (rates.cachedInput ?? rates.input)
-    + n(usage.cacheWrite) * (rates.cacheWrite ?? rates.input) + n(usage.output) * rates.output) / PER;
+    + (n(usage.cacheWrite) - n(usage.cacheWrite1h)) * (rates.cacheWrite ?? rates.input)
+    + n(usage.cacheWrite1h) * (rates.cacheWrite1h ?? rates.cacheWrite ?? rates.input) + n(usage.output) * rates.output) / PER;
   return usd;
 }
 
-/** One turn's API value: Claude Code's own figure when it gave one, else the tokens at the model's rates; null if neither. */
+/** One turn's API value: the tokens at the model's rates; Claude Code's own (inflated, see above) figure only without them. */
 function turnCost({ model, reportedUsd, usage, live, now }) {
-  if (Number.isFinite(reportedUsd) && reportedUsd > 0) return { usd: reportedUsd, source: 'reported' };
   const price = priceFor(model, live);
-  if (!price) return null;
-  const usd = costOf(price, usage, now);
-  return usd > 0 ? { usd, source: price.source } : null;
+  const usd = price ? costOf(price, usage, now) : null;
+  if (usd > 0) return { usd, source: price.source };
+  if (Number.isFinite(reportedUsd) && reportedUsd > 0) return { usd: reportedUsd * CLI_FIGURE_FACTOR, source: 'reported' };
+  return null;
 }
 
-/**
- * A chat saved before chats kept their own total: its Claude replies carry the CLI's running figure. The rises add up
- * to the chat's total; a drop means a new process started from zero, so that reply's whole figure is new.
- */
-function legacyChatCost(messages) {
-  let total = 0;
-  let previous = 0;
-  for (const entry of messages || []) {
-    if (entry?.role !== 'assistant' || !(entry.costUsd > 0)) continue;
-    total += entry.costUsd >= previous ? entry.costUsd - previous : entry.costUsd;
-    previous = entry.costUsd;
-  }
-  return total;
-}
-
-const LEDGER_VERSION = 4; // bump when pricing changes: the saved ledger is rebuilt from the chats on the next start
+const LEDGER_VERSION = 5; // bump when pricing changes: the saved ledger is rebuilt from the chats on the next start
 const emptyLedger = (now) => ({ v: LEDGER_VERSION, since: new Date(now).toISOString(), totalUsd: 0, turns: 0, unpriced: 0, byAgent: {}, byMonth: {} });
 
 /** The ledger after one more turn (a new object). `usd` null: the turn could not be priced. */
@@ -136,29 +126,44 @@ function addTurn(ledger, { agent, usd }, now = Date.now()) {
   return next;
 }
 
-/** Total pay-per-token API cost for a single chat, computed from its messages or cached apiCostUsd. */
-function chatCost(chat, livePrices = {}, now = Date.now()) {
-  if (Number.isFinite(chat?.apiCostUsd) && chat.apiCostUsd > 0) return chat.apiCostUsd;
-  let total = 0;
+/**
+ * A chat's replies as { agent, usd (null: unpriced), at }. A saved figure from Claude Code ("reported", or a running
+ * costUsd whose rises are the turns) is corrected by CLI_FIGURE_FACTOR; everything else is priced from tokens.
+ */
+function chatTurns(chat, live = {}, now = Date.now()) {
+  const turns = [];
   let prevClaude = 0;
   for (const entry of chat?.messages || []) {
     if (entry?.role !== 'assistant') continue;
     const agent = entry.agent || chat?.agent || 'claude';
+    const at = Date.parse(entry.at || chat?.updatedAt) || now;
     let usd = null;
     const tokens = Number.isFinite(entry.tokens) ? entry.tokens : entry.totalTokens;
     if (Number.isFinite(entry.apiCost?.usd) && entry.apiCost.usd > 0) {
-      usd = entry.apiCost.usd;
+      usd = entry.apiCost.usd * (entry.apiCost.source === 'reported' ? CLI_FIGURE_FACTOR : 1);
     } else if (agent === 'claude' && Number.isFinite(entry.costUsd) && entry.costUsd > 0) {
-      usd = entry.costUsd >= prevClaude ? entry.costUsd - prevClaude : entry.costUsd;
+      usd = (entry.costUsd >= prevClaude ? entry.costUsd - prevClaude : entry.costUsd) * CLI_FIGURE_FACTOR;
       prevClaude = entry.costUsd;
     } else if (entry.usage || tokens > 0) {
       const model = entry.apiCost?.model || entry.model || entry.modelLabel || chat?.modelId;
-      const cost = turnCost({ model, usage: entry.usage || tokens, live: livePrices, now: Date.parse(entry.at || chat?.updatedAt) || now });
-      usd = cost?.usd ?? null;
+      usd = turnCost({ model, usage: entry.usage || tokens, live, now: at })?.usd ?? null;
     }
-    if (usd > 0) total += usd;
+    turns.push({ agent, usd, at });
   }
-  return total;
+  return turns;
+}
+
+/** A chat's total from its replies (current prices and corrections), never from the figure saved with it. */
+function chatTotal(chat, live = {}, now = Date.now()) {
+  const total = chatTurns(chat, live, now).reduce((sum, turn) => sum + (turn.usd > 0 ? turn.usd : 0), 0);
+  // Replies gone (a trimmed chat) leave only the saved figure, which for Claude chats came from the inflated CLI total.
+  return total || (chat?.apiCostUsd > 0 ? chat.apiCostUsd * ((chat.agent || 'claude') === 'claude' ? CLI_FIGURE_FACTOR : 1) : 0);
+}
+
+/** Total pay-per-token API cost for a single chat: the saved running figure when it is current, else rebuilt from the replies. */
+function chatCost(chat, livePrices = {}, now = Date.now()) {
+  if (chat?.apiCostV === LEDGER_VERSION && Number.isFinite(chat.apiCostUsd) && chat.apiCostUsd > 0) return chat.apiCostUsd;
+  return chatTotal(chat, livePrices, now);
 }
 
 /**
@@ -186,29 +191,10 @@ class CostMeter {
     let ledger = emptyLedger(this.now());
     for (const chat of chats || []) {
       if (chat.createdAt && chat.createdAt < ledger.since) ledger.since = chat.createdAt;
-      let prevClaude = 0;
-      let chatTurnsAdded = 0;
-      for (const entry of chat.messages || []) {
-        if (entry?.role !== 'assistant') continue;
-        const agent = entry.agent || chat.agent || 'claude';
-        let usd = null;
-        const tokens = Number.isFinite(entry.tokens) ? entry.tokens : entry.totalTokens;
-        if (Number.isFinite(entry.apiCost?.usd) && entry.apiCost.usd > 0) {
-          usd = entry.apiCost.usd;
-        } else if (agent === 'claude' && Number.isFinite(entry.costUsd) && entry.costUsd > 0) {
-          usd = entry.costUsd >= prevClaude ? entry.costUsd - prevClaude : entry.costUsd;
-          prevClaude = entry.costUsd;
-        } else if (entry.usage || tokens > 0) {
-          const model = entry.apiCost?.model || entry.model || entry.modelLabel || chat.modelId;
-          const cost = turnCost({ model, usage: entry.usage || tokens, live: this.live.prices, now: Date.parse(entry.at || chat.updatedAt) || this.now() });
-          usd = cost?.usd ?? null;
-        }
-        const at = Date.parse(entry.at || chat.updatedAt) || this.now();
-        ledger = addTurn(ledger, { agent, usd }, at);
-        if (usd > 0) chatTurnsAdded++;
-      }
-      if (!chatTurnsAdded && chat.apiCostUsd > 0) {
-        ledger = addTurn(ledger, { agent: chat.agent || 'claude', usd: chat.apiCostUsd }, Date.parse(chat.updatedAt) || this.now());
+      const turns = chatTurns(chat, this.live.prices, this.now());
+      for (const turn of turns) ledger = addTurn(ledger, turn, turn.at);
+      if (!turns.some((turn) => turn.usd > 0) && chat.apiCostUsd > 0) {
+        ledger = addTurn(ledger, { agent: chat.agent || 'claude', usd: chatTotal(chat) }, Date.parse(chat.updatedAt) || this.now());
       }
     }
     this.ledger = ledger;
@@ -244,4 +230,4 @@ class CostMeter {
   }
 }
 
-module.exports = { LEDGER_VERSION, FEED_URL, normalizeModel, fromLitellm, priceFor, costOf, turnCost, legacyChatCost, chatCost, addTurn, CostMeter };
+module.exports = { LEDGER_VERSION, FEED_URL, normalizeModel, fromLitellm, priceFor, costOf, turnCost, chatTurns, chatTotal, chatCost, addTurn, CostMeter };

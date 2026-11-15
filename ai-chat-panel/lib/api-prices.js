@@ -4,18 +4,19 @@
 // at runtime a daily copy of LiteLLM's community price table wins when it has the model (it tracks price changes
 // faster than a release can), and Claude Code's own cost figure wins over both for Claude turns.
 //
-// Checked 2026-10-01 against the providers' own pages:
+// Checked 2026-11-15 against the providers' own pages:
 //   Anthropic  https://platform.claude.com/docs/en/about-claude/pricing
 //   OpenAI     https://developers.openai.com/api/docs/pricing  (short context <= 272K input; above it, the long rates)
 //   Google     https://ai.google.dev/gemini-api/docs/pricing  (Flash: introductory rates through 2026-12-31, then double)
+// Gemini 4 Argon: $2 / $10 introductory; secondary sources report the doubling on 2026-12-01 (not on Google's page when checked).
 // Entries marked `feed` were not on the provider page fetched that day and come from LiteLLM's table only.
 //
-// Fields: input (fresh input), cachedInput (cache reads), cacheWrite (when the provider bills it), output (thinking and
+// Fields: input (fresh input), cachedInput (cache reads), cacheWrite (when the provider bills it; Claude: the 5-minute rate), cacheWrite1h (Claude's 1-hour cache write, twice the input rate), output (thinking and
 // reasoning included). longContext: rates for a request whose prompt is above `above` tokens. until/then: a dated change.
 
-const VERIFIED = '2026-10-01';
+const VERIFIED = '2026-11-15';
 
-const claude = (input, cachedInput, cacheWrite, output) => ({ input, cachedInput, cacheWrite, output });
+const claude = (input, cachedInput, cacheWrite, output) => ({ input, cachedInput, cacheWrite, cacheWrite1h: input * 2, output });
 const openai = (input, cachedInput, cacheWrite, output, long) => ({ input, cachedInput, cacheWrite, output, ...(long ? { longContext: { above: 272000, ...long } } : {}) });
 const FLASH = { input: 0.75, cachedInput: 0.075, output: 3.75, until: '2026-12-31', then: { input: 1.5, cachedInput: 0.15, output: 7.5 } };
 
@@ -29,8 +30,8 @@ const PRICES = {
   'claude-opus-4-7': claude(5, 0.5, 6.25, 25),
   'claude-opus-4-6': claude(5, 0.5, 6.25, 25),
   'claude-opus-4-5': claude(5, 0.5, 6.25, 25),
-  'claude-sonnet-5-5': claude(2, 0.2, 2.5, 10),
-  'claude-sonnet-5': claude(2, 0.2, 2.5, 10),
+  'claude-sonnet-5-5': claude(2, 0.1, 2.5, 10),
+  'claude-sonnet-5': claude(2, 0.1, 2.5, 10),
   'claude-sonnet-4-6': claude(3, 0.3, 3.75, 15),
   'claude-sonnet-4-5': claude(3, 0.3, 3.75, 15),
   'claude-haiku-4-5': claude(1, 0.1, 1.25, 5),
@@ -47,6 +48,7 @@ const PRICES = {
   'gemini-3.8-flash': FLASH,
   'gemini-3.7-flash': FLASH,
   'gemini-3.6-flash': FLASH,
+  'gemini-4-argon': { input: 2, cachedInput: 0.1, output: 10, until: '2026-11-30', then: { input: 4, cachedInput: 0.2, output: 20 } },
   'gemini-3.1-pro': { input: 2, cachedInput: 0.2, output: 12, longContext: { above: 200000, input: 4, cachedInput: 0.4, output: 18 } },
   'gemini-2.5-pro': { input: 1.25, cachedInput: 0.3125, output: 5, longContext: { above: 200000, input: 2.5, cachedInput: 0.625, output: 10 } },
   'gemini-2.5-flash': { input: 0.075, cachedInput: 0.01875, output: 0.3 },

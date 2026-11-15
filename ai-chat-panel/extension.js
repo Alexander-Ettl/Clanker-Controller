@@ -54,7 +54,7 @@ const { MODEL_CATALOG, AVAILABLE_MODELS, defaultModel, modelOption, resolveModel
 const { CliHub, providerBusy } = require('./lib/cli-tools.js');
 const { CliAccounts } = require('./lib/cli-accounts.js');
 const { promptFor, permissionFor, appendInstructions } = require('./media/model-prompts.js');
-const { CostMeter, legacyChatCost, chatCost, LEDGER_VERSION } = require('./lib/api-cost.js');
+const { CostMeter, chatTotal, chatCost, LEDGER_VERSION } = require('./lib/api-cost.js');
 const { isLimitNotice, LIMIT_RE, resetsInMs } = require('./media/limit-notice.js');
 const { accessFailure } = require('./lib/provider-access.js');
 const { AuthGate } = require('./lib/auth-gate.js');
@@ -612,8 +612,11 @@ class ChatRun {
     this.subagentLogBytes = 0;
     this.streamEngine = new StreamEngine({ cwd: deps.workspaceDir, chatId: chat.id, models: deps.getModels(), permissionMode: deps.getPermissionMode?.() || 'fullAccess', interactive: true });
     this.streamEngine.on('event', (event) => this.handleStreamEvent(event));
-    // The chat's API value so far (api-cost.js). Chats saved before it was kept get theirs from their replies' figures.
-    if (!Number.isFinite(this.chat.apiCostUsd)) this.chat.apiCostUsd = legacyChatCost(this.chat.messages);
+    // The chat's API value so far (api-cost.js). Chats saved before it was kept, or before the last pricing fix, get theirs rebuilt from their replies.
+    if (!Number.isFinite(this.chat.apiCostUsd) || this.chat.apiCostV !== LEDGER_VERSION) {
+      this.chat.apiCostUsd = chatTotal(this.chat, deps.getCostMeter?.()?.live?.prices);
+      this.chat.apiCostV = LEDGER_VERSION;
+    }
   }
 
   // Background agents count as running after the turn ends: the orb stays on the chat while they work.
@@ -1228,6 +1231,7 @@ class ChatRun {
         const turnModel = this.turnModel || defaultModel(turnAgent)?.model || this.chat.modelId;
         const cost = meter.turnCost({ model: turnModel, reportedUsd: event.costUsd, usage: event.usage || event.totalTokens });
         this.chat.apiCostUsd = (this.chat.apiCostUsd || 0) + (cost?.usd || 0);
+        this.chat.apiCostV = LEDGER_VERSION;
         if (this.activeAssistantMessage && cost) this.activeAssistantMessage.apiCost = { usd: cost.usd, source: cost.source, model: turnModel };
         meter.record(turnAgent, cost);
         if (!cost && turnModel) void meter.refreshPrices([turnModel]); // a model the tables did not know yet
@@ -2091,7 +2095,7 @@ class ChatWindowHost {
   }
   /** P17-K: stored user messages keep attachment paths; the webview needs names and URIs for their pills. */
   webviewChat(chat) {
-    const apiCostUsd = chat.apiCostUsd || chatCost(chat, this.deps.getCostMeter?.()?.live?.prices);
+    const apiCostUsd = chatCost(chat,this.deps.getCostMeter?.()?.live?.prices);
     const page = historyPage(chat.messages);
     return { ...chat, ...(chat.draftAttachments?.length ? { draftFiles: this.webviewFiles(chat.draftAttachments) } : {}), ...(apiCostUsd > 0 ? { apiCostUsd } : {}), ...page, messages: this.webviewMessages(page.messages) };
   }
