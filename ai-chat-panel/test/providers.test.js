@@ -41,7 +41,7 @@ test('a provider registered at run time flows through locating, sign-in, model d
   providers.register(cursor());
   try {
     assert.deepEqual(providers.ids(), ['claude', 'codex', 'gemini', 'copilot', 'cursor']);
-    assert.match(candidates('cursor')[0], /cursor-agent\.exe$/);
+    assert.match(candidates('cursor')[0], process.platform === 'win32' ? /cursor-agent\.exe$/ : /cursor-agent$/);
     assert.deepEqual(candidates('nothing-registered'), []);
 
     const install = terminalSpec('cursor', null, 'win32');
