@@ -60,6 +60,48 @@ const unavailable = async page => {
 };
 
 export const scenarios = [
+  { id: 'attachment-documents', focus: '.image-lightbox-frame', setup: async page => {
+    await page.evaluate(() => {
+      const files = [['sample.txt', '<script>unsafe()</script>\nReadable text'], ['sample.csv', 'Name,Value\n"a,b",42']].map(([name, text]) => ({ name, path: name, size: text.length, uri: `data:text/plain;base64,${btoa(text)}` }));
+      const post = data => window.dispatchEvent(new MessageEvent('message', { data }));
+      post({ type: 'userMessage', text: 'Document previews', files });
+      files.forEach(attachment => post({ type: 'attachmentSaved', attachment }));
+    });
+    assert.equal(await page.locator('.attachment-doc').count(), 4);
+    await page.locator('.msg-attachments .attachment-chip').first().click();
+    await page.waitForFunction(() => document.querySelector('.doc-code')?.textContent.includes('<script>'));
+    assert.equal(await page.locator('.doc-code script').count(), 0);
+    await page.getByRole('button', { name: 'Close preview', exact: true }).click();
+    await page.locator('.attachment-strip .attachment-chip').last().click();
+    await page.waitForFunction(() => document.querySelector('.doc-table')?.textContent.includes('a,b'));
+    const office = await page.evaluate(() => {
+      const doc = window.attachmentDocs.docxBlocks('<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p><w:r><w:t>Word preview</w:t></w:r></w:p></w:body></w:document>');
+      return doc[0].textContent;
+    });
+    assert.equal(office, 'Word preview');
+  } },
+  { id: 'attachment-markup', focus: '.markup-editor', setup: async page => {
+    await page.evaluate(() => {
+      const canvas = document.createElement('canvas'); canvas.width = 640; canvas.height = 400;
+      const ctx = canvas.getContext('2d'); ctx.fillStyle = '#dfe8ef'; ctx.fillRect(0, 0, 640, 400);
+      ctx.fillStyle = '#466080'; ctx.fillRect(100, 100, 440, 200);
+      window.dispatchEvent(new MessageEvent('message', { data: { type: 'attachmentSaved', attachment: { name: 'sample.png', path: 'sample.png', mime: 'image/png', size: 1000, uri: canvas.toDataURL() } } }));
+    });
+    await page.locator('.attachment-strip .attachment-chip').first().click();
+    await page.getByRole('button', { name: 'Mark up image', exact: true }).click();
+    await page.locator('.markup-editor.is-open').waitFor();
+    const canvas = await page.locator('.markup-editor canvas').boundingBox();
+    await page.mouse.move(canvas.x + canvas.width * .25, canvas.y + canvas.height * .3);
+    await page.mouse.down();
+    await page.mouse.move(canvas.x + canvas.width * .7, canvas.y + canvas.height * .6, { steps: 12 });
+    await page.mouse.up();
+    await page.getByRole('button', { name: 'Save markup', exact: true }).click();
+    const saved = await page.evaluate(() => window.sent.filter(m => m.type === 'saveMarkup').at(-1));
+    assert.equal(saved.markup.items.length, 1);
+    assert.match(saved.data, /^data:image\/png;base64,/);
+    await page.evaluate(saved => window.attachmentMarkup.open({ src: saved.data, items: [], name: 'Saved composite' }), saved);
+    await page.locator('.markup-editor.is-open').waitFor();
+  } },
   { id: 'scheduled-attachments', focus: '.compose-row', setup: async page => {
     const post = data => page.evaluate(data => window.dispatchEvent(new MessageEvent('message', { data })), data);
     const svg = color => `data:image/svg+xml,${encodeURIComponent(`<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64"><rect width="64" height="64" fill="${color}"/></svg>`)}`;

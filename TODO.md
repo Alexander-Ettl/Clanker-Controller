@@ -84,7 +84,7 @@ Completed 2026-11-16: overnight loop. Scouts are Gemini 4 Hydrogen High (Flash a
 - [x] Categories are now predicted from your prompt, not read from the finished answer: Clef gets the latest prompt plus a few earlier prompts (no AI replies) and the request goes out the moment the prompt is sent, so the icon updates while the answer is still being written. This replaces the 10 s after-the-chime wait above (`settleMs`, the idle check and `cancel` are gone). Covered by `work-context.test.js` and a `ChatRun.begin` check in `recent-context.mjs`. Requires an IDE reload.
 - [x] agy file steps now show what they open: the card said only "View" because newer agy builds send `read_file`/`write_file`/`edit_file` with other parameter names than `view_file`'s `AbsolutePath`. `geminiToolTarget` now takes any path-like parameter (`path`, `file_path`, `DirectoryPath`, `paths`). The real parameter names of the new build are not captured anywhere yet; if a card still shows no target, check the step's parameters in `agy`'s stream. Older saved chats keep their empty cards (the path was never stored).
 - [x] 8 non-coding categories (Studying, Notes and minutes, Organizing, Schedule and tasks, Math and numbers, Language, Ideas, Everyday life) are wired in after your rating: icons in `media/context-icons/`, categories in `work-context-categories.json`, the three description tweaks and one classifier sentence applied, and `LIMITS.inputTokens` raised from 1500 to 2000 (about 4 Neurons per call; roughly 250 classifications a day under the 1,000 cap, still free). Offline only: not yet run against the real endpoint with 24 categories, so a live check (`CLANKER_LIVE=1 node ai-chat-panel/test/work-context.live.mjs`, about 100 Neurons) is still open if you want one.
-- [ ] Optional: a manual override of a chat's category, and a control for the setting in Clanker's own Settings pane (today only VS Code Settings).
+- [x] Manual category selection is available in Manage Chats (Choose work category), with Automatic to resume classification; Settings > General includes the work-context icon switch. Offline classifier and browser checks verified 2026-11-16.
 
 **Built 2026-10-29:** offline tests (`work-context.test.js`, `recent-context.mjs`, `context-icons.mjs`) and one live run of `work-context.live.mjs` against the real endpoint: 19/19 synthetic requests picked the right category, 16 cleared the 0.70/0.20 thresholds, none wrongly; 52.6 Neurons in total (about 2.8 per call, so the 1,000/day cap allows roughly 350 classifications). Synthetic prompts only: accuracy on your real chats is unmeasured.
 
@@ -92,7 +92,7 @@ Completed 2026-11-16: overnight loop. Scouts are Gemini 4 Hydrogen High (Flash a
 
 **24-category live check 2026-10-29:** 27/27 synthetic requests chose the expected category, including all eight non-coding categories; 24 cleared confidence thresholds, zero wrong applications. The three abstentions were Writing, Everyday life and a context-dependent Visual design request. Used 106.27 Neurons of the test's 160 cap. All 16 focused unit tests, the 24-icon asset check and the real-rail browser check passed. The live script now covers all 24 categories and exits unsuccessfully on missing results or misclassification.
 
-LOOP-02 is a high-priority loop feature requested on 2026-10-22. Text/code and tables remain the next attachment-preview work. No other ordering here implies a release commitment.
+LOOP-02 is a high-priority loop feature requested on 2026-10-22. Text/code and table previews shipped on 2026-11-16. No other ordering here implies a release commitment.
 
 ### LOOP-02 · Headless end-to-end exploration with 10 Gemini scouts (high priority)
 
@@ -119,27 +119,6 @@ Built 2026-11-11 (see [agent-bridge](docs/agent-bridge.md)): `lib/clanker-agent.
 - [ ] Ask `CliAccounts.ensureFresh` before starting, so a signed-out CLI fails at once with the sidebar's text.
 
 **Done when:** a Claude chat starts a Codex and an Antigravity task, sees both finish with tagged sources, and a deliberately signed-out CLI ends as `failed` with a hint, with no manual file hunting.
-
-### ATT-01 · Text, code and table attachment previews
-
-- [ ] Preview TXT, Markdown, JSON, logs and source files in both the composer and chat bubbles.
-- [ ] Preview the first rows of CSV/TSV attachments alongside text/code support.
-
-**Next:** extend the existing attachment viewer and metadata paths; define bounded previews that preserve the original files.
-
-**Done when:** picked and restored attachments work in both locations, table/text content renders safely, and originals still reach the CLI unchanged.
-
-### ATT-04 · Image markup (draw, erase, type) and agent visual-intent metadata
-
-User request recorded 2026-11-13.
-
-- [ ] Add direct image annotation tools (draw/pen, highlight, erase, text/type) to staged image attachments in the composer.
-- [ ] Dispatch annotated image composites while preserving original sources in user storage.
-- [ ] Inject markup metadata and intent hints into the prompt/payload sent to AI agents so models focus on the drawn/highlighted regions (ChatGPT-style markup).
-
-**Next:** design the lightweight canvas annotation layer in the composer attachment preview and define the prompt/metadata format for agent dispatch across CLIs.
-
-**Done when:** users can draw, erase, and type on image attachments in the composer, and dispatches include explicit markup metadata signaling the edited regions to downstream agents.
 
 ## Deferred
 
@@ -168,11 +147,11 @@ Older research, not a started implementation. [Plan](docs/plans/manage-chats-sea
 
 ### ATT-02 · Additional preview formats
 
-- [ ] Add audio/video controls and video thumbnails in the composer and bubbles.
-- [ ] Recognize AVIF as an image for picked and restored attachments.
-- [ ] Add DOCX/XLSX previews; lower priority because rendering needs more work.
+- [x] Audio/video controls and video thumbnails implemented in composer and bubbles. Real IDE codec/playback validation remains open.
+- [x] AVIF recognized for picked and restored attachments.
+- [x] Bounded DOCX text and XLSX sheet previews implemented; complex real-world Office file validation remains open.
 
-**Next:** choose one format and check its metadata and restoration path; split formats into separate tasks when started.
+**Next:** verify actual media playback/codecs and complex Office documents after restoration in the IDE; bounded previews are implemented.
 
 **Done when:** each implemented format works after restoration and preserves its original file.
 
@@ -218,6 +197,8 @@ These come from recent performance reviews, not new confirmed defects. Reproduce
 Consider providers beyond the main coding CLIs, including **Groq**. Keep **Groq** distinct from **Grok** and check billing, quota scope and reset rules per service; don't apply one universal five-hour or 24-hour timer. This is a design constraint, not a task to mark complete.
 
 ## Recently closed / reconciled
+
+Completed 2026-11-16: ATT-01 and ATT-04: bounded text/code and CSV/TSV previews in composer and sent bubbles, plus pen/highlighter/text/eraser markup, flattened PNG dispatch, retained originals and region hints. Added context-icon Settings toggle and manual category selection. Fixed narrow Settings permission-row wrapping. Browser checks at 900/420/320px cover safe text/table rendering, drawing and saved PNG payloads; reports in C:/Dev/clanker-review. Codec support and complex Office fidelity remain tracked under ATT-02; ONBOARD-01 and SEARCH-01 retain their design/benchmark prerequisites. Reload the IDE for host changes.
 
 | Date | Item | Evidence |
 |---|---|---|

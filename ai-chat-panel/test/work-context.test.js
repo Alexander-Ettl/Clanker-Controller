@@ -43,6 +43,15 @@ function chatRun(id, texts, workContext) {
 const settle = () => new Promise((resolve) => setImmediate(resolve));
 const REQUEST = 'Redesign the recent chat tiles so they show a small icon in the corner';
 
+test('a manual category skips automatic classification', async () => {
+  const env = setup();
+  const run = chatRun('manual', [REQUEST], { version: 1, categoryId: 'auth', manual: true });
+  env.classifier.consider(run);
+  await env.fire();
+  assert.equal(env.calls.length, 0);
+  assert.equal(run.chat.workContext.categoryId, 'auth');
+});
+
 test('every category has a bundled, allowlisted icon file', () => {
   assert.equal(ids.length, 24);
   assert.equal(new Set(ids).size, 24);

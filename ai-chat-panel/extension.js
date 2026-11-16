@@ -20,6 +20,7 @@ function refreshClaudeUsage(cwd, maxAge = USAGE_PROBE_AFTER_MS) {
   usageProbe = probeClaudeUsage(cwd).then((windows) => recordClaudeUsage(windows)).catch(() => {}).finally(() => { usageProbe = null; });
   return usageProbe;
 }
+const { readMarkup, writeMarkup, cleanMarkup, sidecarPath } = require('./lib/markup.js');
 const { VoiceCapture } = require('./lib/voice-capture.js');
 const { learnedTerms } = require('./lib/voice-learn.js');
 const providers = require('./lib/providers'); // the coding-agent CLIs Clanker drives (docs/adding-a-provider.md)
@@ -476,6 +477,14 @@ function safeAttachmentPaths(deps, paths) {
   const root = path.resolve(deps.attachmentsDir) + path.sep;
   return (Array.isArray(paths) ? paths : []).filter((file) => { const resolved = path.resolve(file); return resolved.startsWith(root) && fs.existsSync(resolved); });
 }
+
+// Types the chat can preview itself; the CLI always receives the original file. Text and tables are recognised by extension in the webview.
+const ATTACHMENT_TYPES = {
+  '.svg': 'image/svg+xml', '.pdf': 'application/pdf', '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.gif': 'image/gif', '.webp': 'image/webp', '.bmp': 'image/bmp', '.avif': 'image/avif',
+  '.mp4': 'video/mp4', '.m4v': 'video/mp4', '.webm': 'video/webm', '.mov': 'video/quicktime', '.ogv': 'video/ogg',
+  '.mp3': 'audio/mpeg', '.wav': 'audio/wav', '.ogg': 'audio/ogg', '.oga': 'audio/ogg', '.opus': 'audio/ogg', '.m4a': 'audio/mp4', '.aac': 'audio/aac', '.flac': 'audio/flac',
+  '.docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', '.xlsx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+};
 
 function cleanAttachmentName(name) {
   return path.basename(String(name || '')).replace(/^(?:[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}[_-]|\d{10,}_)+/i, '') || 'image.png';
@@ -1454,10 +1463,25 @@ class ChatWindowHost {
       case 'restoreChat': this.restoreChat(message.id); break;
       case 'deleteChat': this.deps.chatWindowManager.deleteChat(message.id); break;
       case 'renameChat': this.deps.renameChat(message.id, message.title); break;
+      case 'setChatCategory': {
+        const run = this.deps.chatWindowManager.runs.get(message.id);
+        const chat = run?.chat || this.deps.chatStore.load(message.id);
+        if (!chat) break;
+        const { CATEGORIES } = require('./lib/work-context.js');
+        const choice = await vscode.window.showQuickPick([{ label: 'Automatic', id: null }, ...CATEGORIES.map(c => ({ label: c.label, id: c.id }))], { placeHolder: 'Choose this chat’s work category' });
+        if (!choice) break;
+        if (choice.id) chat.workContext = { version: 1, categoryId: choice.id, manual: true, updatedAt: new Date().toISOString() };
+        else delete chat.workContext;
+        if (run) { run.save(); if (!choice.id) run.considerWorkContext({ initial: true }); }
+        else this.deps.chatStore.save(chat);
+        this.deps.notifyHistory();
+        break;
+      }
       case 'pickAttachments': await this.pickAttachments(message); break;
       case 'attachmentData': this.saveAttachment(message); break;
       case 'removeAttachment': this.removeAttachment(message.path); break;
       case 'renameAttachment': this.renameAttachment(message.path, message.name); break;
+      case 'saveMarkup': this.saveMarkup(message); break;
       case 'downloadAttachment': await this.downloadAttachment(message.path, message.name); break;
       case 'copyAttachment': await this.copyAttachment(message.path, { silent: message.silent === true }); break;
       case 'queueTurn': {
@@ -2050,8 +2074,13 @@ class ChatWindowHost {
   safeAttachmentPaths(paths) { return safeAttachmentPaths(this.deps, paths); }
   attachmentMetadata(file, mime = '') {
     const stat = fs.statSync(file);
-    const types = { '.svg': 'image/svg+xml', '.pdf': 'application/pdf', '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.gif': 'image/gif', '.webp': 'image/webp', '.bmp': 'image/bmp' };
-    return { path: file, name: path.basename(file), size: stat.size, mime: types[path.extname(file).toLowerCase()] || mime, uri: this.panel.webview.asWebviewUri(vscode.Uri.file(file)).toString() };
+    const ext = path.extname(file).toLowerCase();
+    const uri = (target) => this.panel.webview.asWebviewUri(vscode.Uri.file(target)).toString();
+    const metadata = { path: file, name: path.basename(file), size: stat.size, mime: ATTACHMENT_TYPES[ext] || mime, uri: uri(file) };
+    const markup = ATTACHMENT_TYPES[ext]?.startsWith('image/') ? readMarkup(file) : null;
+    // A marked-up image carries its marks and the untouched original, so the composer can reopen the editor on it.
+    if (markup && fs.existsSync(markup.original)) metadata.markup = { ...markup, originalUri: uri(markup.original) };
+    return metadata;
   }
   webviewFiles(paths) { return this.safeAttachmentPaths(paths).map((file) => this.attachmentMetadata(file)); }
   postTurnQueue(run = this.run) {
@@ -2135,7 +2164,7 @@ class ChatWindowHost {
   async pickAttachments({ chatId } = {}) {
     const run = chatId ? this.deps.chatWindowManager.runFor(chatId) : this.run;
     if (!run) return;
-    const files = await vscode.window.showOpenDialog({ canSelectMany: true, openLabel: 'Attach', filters: { 'All files': ['*'], Images: ['png', 'jpg', 'jpeg', 'webp', 'svg'], Documents: ['md', 'json', 'jsonl', 'csv', 'yaml', 'pdf', 'ts', 'js', 'txt'] } });
+    const files = await vscode.window.showOpenDialog({ canSelectMany: true, openLabel: 'Attach', filters: { 'All files': ['*'], Images: ['png', 'jpg', 'jpeg', 'webp', 'avif', 'gif', 'svg'], Documents: ['md', 'json', 'jsonl', 'csv', 'tsv', 'yaml', 'pdf', 'docx', 'xlsx', 'ts', 'js', 'txt', 'log'], 'Audio and video': ['mp3', 'wav', 'm4a', 'ogg', 'flac', 'mp4', 'webm', 'mov'] } });
     for (const uri of files || []) {
       const filename = path.basename(uri.fsPath).replace(/[^a-zA-Z0-9._-]/g, '_');
       const target = path.join(run.deps.attachmentsDir, `${attachmentStamp()}_${filename}`);
@@ -2153,6 +2182,7 @@ class ChatWindowHost {
     let target = path.join(path.dirname(safe), `${stamp}${base}${ext}`);
     for (let n = 2; fs.existsSync(target) && target !== safe; n++) target = path.join(path.dirname(safe), `${stamp}${base} ${n}${ext}`);
     try { if (target !== safe) fs.renameSync(safe, target); } catch { return; }
+    if (target !== safe && fs.existsSync(sidecarPath(safe))) { try { fs.renameSync(sidecarPath(safe), sidecarPath(target)); } catch { /* the marks are lost, the picture stays */ } }
     if (this.run?.chat && target !== safe) {
       let changed = false;
       const swap = (list) => Array.isArray(list) ? list.map((p) => (p === file || p === safe ? (changed = true, target) : p)) : list;
@@ -2167,7 +2197,34 @@ class ChatWindowHost {
     }
     this.panel.webview.postMessage({ type: 'attachmentRenamed', from: file, attachment: this.attachmentMetadata(target) });
   }
-  removeAttachment(file) { const [safe] = this.safeAttachmentPaths([file]); if (safe) fs.promises.unlink(safe).catch(() => {}); }
+  removeAttachment(file) { const [safe] = this.safeAttachmentPaths([file]); if (safe) { fs.promises.unlink(safe).catch(() => {}); fs.promises.unlink(sidecarPath(safe)).catch(() => {}); } }
+  /**
+   * Image markup (ATT-04). The webview sends the flattened PNG and the vector marks; the file the user marked up is never
+   * overwritten. Re-marking an already marked image starts again from its original and replaces only the flattened copy.
+   * Sending no marks puts the original back.
+   */
+  saveMarkup({ chatId, path: file, data, markup } = {}) {
+    const run = chatId ? this.deps.chatWindowManager.runFor(chatId) : this.run;
+    const [safe] = run ? safeAttachmentPaths(run.deps, [file]) : [];
+    if (!safe) return;
+    const previous = readMarkup(safe);
+    const original = previous && fs.existsSync(previous.original) ? previous.original : safe;
+    const clean = cleanMarkup(markup);
+    if (!clean) return;
+    const post = (attachment) => this.panel.webview.postMessage({ type: 'attachmentMarkedUp', chatId: run.chat.id, from: file, attachment });
+    // Earlier composites may still belong to sent messages, drafts or queued turns; retention owns their cleanup.
+    try {
+      if (!clean?.items.length) { post(this.attachmentMetadata(original)); return; }
+      if (typeof data !== 'string' || data.length > 40 * 1024 * 1024) return;
+      const base = cleanAttachmentName(path.basename(original)).replace(/\.[^.]+$/, '').replace(/-markup$/, '').replace(/[^a-zA-Z0-9._-]/g, '_') || 'image';
+      const target = path.join(run.deps.attachmentsDir, `${attachmentStamp()}_${base}-markup.png`);
+      const png = Buffer.from(data.replace(/^data:[^,]+,/, ''), 'base64');
+      if (!png.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]))) return;
+      fs.writeFileSync(target, png);
+      writeMarkup(target, original, clean);
+      post(this.attachmentMetadata(target));
+    } catch (error) { vscode.window.showErrorMessage(`Clanker Controller: could not save the markup (${error.message}).`); }
+  }
   safeReadableAttachmentPath(file) {
     if (typeof file !== 'string' || !file) return null;
     for (const attachmentsDir of [this.run?.deps?.attachmentsDir, this.deps.attachmentsDir, this.deps.schedulerQueue?.stagingDir].filter(Boolean)) {
@@ -2410,7 +2467,10 @@ class ChatWindowHost {
   renderHtml(webview) {
     const scriptUri = webview.asWebviewUri(vscode.Uri.joinPath(this.extensionUri, 'media', 'main.js'));
     const attachmentPreviewUri = webview.asWebviewUri(vscode.Uri.joinPath(this.extensionUri, 'media', 'attachment-preview.js'));
-    const mascotUri = webview.asWebviewUri(vscode.Uri.joinPath(this.extensionUri, 'media', 'clanker-mascot.js'));
+    const attachmentDocsStyleUri = webview.asWebviewUri(vscode.Uri.joinPath(this.extensionUri, 'media', 'attachment-docs.css'));
+    const attachmentDocsUri = webview.asWebviewUri(vscode.Uri.joinPath(this.extensionUri, 'media', 'attachment-docs.js'));
+    const attachmentMarkupUri = webview.asWebviewUri(vscode.Uri.joinPath(this.extensionUri, 'media', 'attachment-markup.js'));
+    const mascotUri =webview.asWebviewUri(vscode.Uri.joinPath(this.extensionUri, 'media', 'clanker-mascot.js'));
     const iconsUri = webview.asWebviewUri(vscode.Uri.joinPath(this.extensionUri, 'media', 'agent-icons.js'));
     const styleUri = webview.asWebviewUri(vscode.Uri.joinPath(this.extensionUri, 'media', 'style.css'));
     const settingsStyleUri = webview.asWebviewUri(vscode.Uri.joinPath(this.extensionUri, 'media', 'settings.css'));
@@ -2441,12 +2501,13 @@ class ChatWindowHost {
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${webview.cspSource} 'unsafe-inline'; script-src ${webview.cspSource} 'nonce-${nonce}' 'wasm-unsafe-eval'; worker-src ${webview.cspSource} blob:; connect-src ${webview.cspSource} data: blob:; font-src ${webview.cspSource} blob:; img-src ${webview.cspSource} data: blob:;">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${webview.cspSource} 'unsafe-inline'; script-src ${webview.cspSource} 'nonce-${nonce}' 'wasm-unsafe-eval'; worker-src ${webview.cspSource} blob:; connect-src ${webview.cspSource} data: blob:; font-src ${webview.cspSource} blob:; img-src ${webview.cspSource} data: blob:; media-src ${webview.cspSource} data: blob:;">
 <link rel="stylesheet" href="${katexCssUri}">
 <link rel="stylesheet" href="${styleUri}">
 <link rel="stylesheet" href="${settingsStyleUri}">
 <link rel="stylesheet" href="${loopsStyleUri}">
 <link rel="stylesheet" href="${timerStyleUri}">
+<link rel="stylesheet" href="${attachmentDocsStyleUri}">
 <style>${providers.accentCss()}</style>
 ${rail ? `<link rel="stylesheet" href="${railStyleUri}">` : ''}
 <title>Clanker Controller</title>
@@ -2513,6 +2574,8 @@ ${rail ? railMarkup(CHAT_BUTTONS) : `<div class="topbar"><div class="topbar-acti
   <script nonce="${nonce}" src="${bubbleUri}"></script>
   <script nonce="${nonce}" src="${mascotUri}"></script>
 <script nonce="${nonce}" src="${attachmentPreviewUri}"></script>
+<script nonce="${nonce}" src="${attachmentDocsUri}"></script>
+<script nonce="${nonce}" src="${attachmentMarkupUri}"></script>
 <script nonce="${nonce}" src="${scriptUri}"></script>
   ${rail ? `<script nonce="${nonce}">window.CONTEXT_ASSETS = ${(contextAssetsJson ||= JSON.stringify(contextAssets(path.join(__dirname, 'media')))).replace(/</g, '\\u003c')};</script>` : ''}
   ${rail ? `<script nonce="${nonce}" src="${railScriptUri}"></script>` : ''}
@@ -3172,6 +3235,7 @@ class LauncherViewProvider {
       case 'cloudWarmup': void this.deps.cloudWarmup?.handle(message); break;
       case 'setAutoContinueOnLimit': if (typeof message.enabled === 'boolean') void vscode.workspace.getConfiguration('aiChatPanel').update('autoContinueOnLimit', message.enabled, vscode.ConfigurationTarget.Global); break;
       case 'setAutoUpdateClis': if (typeof message.enabled === 'boolean') void vscode.workspace.getConfiguration('aiChatPanel').update('autoUpdateClis', message.enabled, vscode.ConfigurationTarget.Global); break;
+      case 'setWorkContextIcons': if (typeof message.enabled === 'boolean') void vscode.workspace.getConfiguration('aiChatPanel').update('workContextIcons', message.enabled, vscode.ConfigurationTarget.Global); break;
       case 'setCompliance': if (COMPLIANCE_SETTINGS[message.key]) void vscode.workspace.getConfiguration('aiChatPanel').update(COMPLIANCE_SETTINGS[message.key], Boolean(message.value), vscode.ConfigurationTarget.Global); break;
       case 'setAntigravityRing': if (ANTIGRAVITY_RINGS.includes(message.value)) void vscode.workspace.getConfiguration('aiChatPanel').update('antigravityRing', message.value, vscode.ConfigurationTarget.Global); break;
       case 'setTimeFormat': {
@@ -3261,6 +3325,7 @@ class LauncherViewProvider {
       statusBar: vscode.workspace.getConfiguration('aiChatPanel').get('showStatusBar', false),
       autoContinueOnLimit: vscode.workspace.getConfiguration('aiChatPanel').get('autoContinueOnLimit', true),
       autoUpdateClis: vscode.workspace.getConfiguration('aiChatPanel').get('autoUpdateClis', true),
+      workContextIcons: vscode.workspace.getConfiguration('aiChatPanel').get('workContextIcons', false),
       sessionWarmup: this.deps.getSessionWarmup?.(),
       cloudWarmup: this.deps.cloudWarmup?.snapshot(),
       permissionMode: vscode.workspace.getConfiguration('aiChatPanel').get('permissionMode', 'fullAccess'),

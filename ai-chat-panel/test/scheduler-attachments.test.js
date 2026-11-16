@@ -7,6 +7,20 @@ const os = require('node:os');
 const path = require('node:path');
 const { SchedulerQueue } = require('../lib/scheduler-queue.js');
 
+test('staged markup retains its source and hints after the composer files disappear', async t => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'sched-markup-'));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const { writeMarkup, readMarkup, markupPrompt } = require('../lib/markup');
+  const source = path.join(root, 'source.png'), composite = path.join(root, 'marked.png');
+  fs.writeFileSync(source, 'original'); fs.writeFileSync(composite, 'composite');
+  writeMarkup(composite, source, { width: 100, height: 100, items: [{ kind: 'text', x: 10, y: 10, size: 8, text: 'Fix here' }] });
+  const queue = new SchedulerQueue({ workspaceDir: root, sessionDir: path.join(root, 'session') });
+  const [staged] = await queue.stageAttachments([composite], path.join(root, 'staged'));
+  fs.unlinkSync(source); fs.unlinkSync(composite);
+  assert.equal(fs.readFileSync(readMarkup(staged.absolutePath).original, 'utf8'), 'original');
+  assert.match(markupPrompt(staged.absolutePath), /Fix here/);
+});
+
 test('ready scheduled prompts retain reordered priority across reload without changing their schedules', async t => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'sched-ready-order-'));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
