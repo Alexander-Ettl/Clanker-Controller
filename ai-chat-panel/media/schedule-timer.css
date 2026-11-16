@@ -26,7 +26,7 @@
 .schedule-toggle.has-time .schedule-time { display: inline-block; min-width: var(--time-w, 0); text-align: center; }
 .schedule-probe { position: absolute; visibility: hidden; pointer-events: none; white-space: nowrap; font: 600 11.5px var(--font-text); font-variant-numeric: tabular-nums; }
 /* Sent and waiting: the countdown, not the armed glow. */
-.schedule-toggle.has-time:not(.is-scheduled) { color: #64d2ff; }
+.schedule-toggle.has-time:not(.is-scheduled) { color: var(--fg-cyan); }
 /* Open: the clock sits on top of the pill, as its foot. */
 .schedule-toggle.is-timer-open { position: relative; z-index: 7; }
 
@@ -53,7 +53,7 @@
   flex-direction: column;
   gap: 8px;
   background: var(--island-surface);
-  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.07), inset 0 1px 0 rgba(255, 255, 255, 0.06);
+  box-shadow: inset 0 0 0 1px rgb(var(--ink) / 0.07), inset 0 1px 0 rgb(var(--sheen) / 0.06);
   color: var(--text-primary);
   font: 500 12px var(--font-text);
   font-variant-numeric: tabular-nums;
@@ -72,12 +72,12 @@
   place-items: center;
   border: 0;
   border-radius: 50%;
-  background: rgba(255, 255, 255, 0.07);
+  background: rgb(var(--ink) / 0.07);
   color: var(--text-secondary);
   cursor: pointer;
   transition: background 0.15s var(--eo-ease), color 0.15s var(--eo-ease);
 }
-.timer-nav:hover:not(:disabled) { background: rgba(255, 255, 255, 0.14); color: var(--text-primary); }
+.timer-nav:hover:not(:disabled) { background: rgb(var(--ink) / 0.14); color: var(--text-primary); }
 .timer-nav svg { width: 12px; height: 12px; }
 .timer-nav:disabled { opacity: 0.25; cursor: default; }
 
@@ -89,7 +89,7 @@
   padding: 0;
   border: 0;
   border-radius: 12px;
-  background: rgba(255, 255, 255, 0.05);
+  background: rgb(var(--ink) / 0.05);
   color: var(--text-secondary);
   font: 500 12px var(--font-text);
   font-variant-numeric: tabular-nums;
@@ -97,7 +97,7 @@
   cursor: pointer;
   transition: background 0.15s var(--eo-ease), color 0.15s var(--eo-ease), box-shadow 0.15s var(--eo-ease);
 }
-.timer-chip:hover:not(.is-sel) { background: rgba(255, 255, 255, 0.1); color: var(--text-primary); }
+.timer-chip:hover:not(.is-sel) { background: rgb(var(--ink) / 0.1); color: var(--text-primary); }
 .timer-chip.is-sel { background: rgba(100, 210, 255, 0.14); box-shadow: inset 0 0 0 1px rgba(100, 210, 255, 0.5); color: var(--text-primary); font-weight: 600; }
 .timer-chip:focus-visible { outline: none; box-shadow: 0 0 0 1.5px rgba(100, 210, 255, 0.7); }
 .timer-chip.is-sel:focus-visible { box-shadow: inset 0 0 0 1px rgba(100, 210, 255, 0.5), 0 0 0 1.5px rgba(100, 210, 255, 0.7); }
@@ -119,7 +119,7 @@
   padding: 0 10px;
   border: 0;
   border-radius: 12px;
-  background: rgba(255, 255, 255, 0.05);
+  background: rgb(var(--ink) / 0.05);
   color: var(--text-secondary);
   font: 500 11.5px var(--font-text);
   font-variant-numeric: tabular-nums;
@@ -127,11 +127,11 @@
   cursor: pointer;
   transition: background 0.15s var(--eo-ease), box-shadow 0.15s var(--eo-ease);
 }
-.timer-window:hover:not(.is-sel) { background: rgba(255, 255, 255, 0.1); }
+.timer-window:hover:not(.is-sel) { background: rgb(var(--ink) / 0.1); }
 .timer-window.is-sel { background: rgba(100, 210, 255, 0.14); box-shadow: inset 0 0 0 1px rgba(100, 210, 255, 0.5); color: var(--text-primary); }
-.timer-window-dot { width: 8px; height: 8px; border-radius: 50%; box-shadow: inset 0 0 0 1.5px rgba(255, 255, 255, 0.3); }
+.timer-window-dot { width: 8px; height: 8px; border-radius: 50%; box-shadow: inset 0 0 0 1.5px rgb(var(--ink) / 0.3); }
 .timer-window.is-sel .timer-window-dot { background: #64d2ff; box-shadow: none; }
-.timer-window .timer-bar { height: 5px; border-radius: 999px; background: rgba(255, 255, 255, 0.09); overflow: hidden; }
+.timer-window .timer-bar { height: 5px; border-radius: 999px; background: rgb(var(--ink) / 0.09); overflow: hidden; }
 .timer-window .timer-bar b { display: block; width: calc(var(--pct, 0) * 1%); height: 100%; border-radius: inherit; background: #8e8e93; }
 .timer-window.is-sel .timer-bar b { background: #64d2ff; }
 .timer-window.is-low .timer-bar b { background: #ff9f0a; }
@@ -145,14 +145,14 @@
   padding: 0;
   border: 0;
   border-radius: 50%;
-  background: rgba(255, 255, 255, 0.05);
+  background: rgb(var(--ink) / 0.05);
   color: var(--text-primary);
   font: 500 12px var(--font-text);
   font-variant-numeric: tabular-nums;
   cursor: pointer;
   transition: background 0.12s var(--eo-ease), color 0.12s var(--eo-ease);
 }
-.timer-day:hover:not(:disabled, .is-sel) { background: rgba(255, 255, 255, 0.14); }
+.timer-day:hover:not(:disabled, .is-sel) { background: rgb(var(--ink) / 0.14); }
 .timer-day.is-sel { background: #64d2ff; color: #06202b; font-weight: 600; }
 .timer-day.is-other { color: var(--text-tertiary); }
 .timer-day:disabled { opacity: 0.25; cursor: default; }

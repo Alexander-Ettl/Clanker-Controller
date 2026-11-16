@@ -1,6 +1,7 @@
 // Renders the README pictures from the real chat page, driven by the fake host with invented data.
 // Nothing is sent to a CLI or model, and no real chat, project or account appears in the pictures.
-//   node scripts/readme-shots.mjs [--out=docs/images] [--only=<shot id>]
+//   node scripts/readme-shots.mjs [--out=docs/images] [--only=<shot id>] [--theme=dark|light]
+// --theme=light renders the page as the IDE does under a light colour theme (body.vscode-light).
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -12,6 +13,7 @@ const args = process.argv.slice(2);
 const flag = (name, fallback) => args.find(arg => arg.startsWith(`--${name}=`))?.slice(name.length + 3) ?? fallback;
 const outDir = path.resolve(root, flag('out', 'docs/images'));
 const only = flag('only', null);
+const theme = flag('theme', 'dark');
 fs.mkdirSync(outDir, { recursive: true });
 
 const post = (page, data) => page.evaluate(data => window.dispatchEvent(new MessageEvent('message', { data })), data);
@@ -96,13 +98,14 @@ const SHOTS = [
     rect: async page => span(page, page.locator('.cs-card', { has: page.locator('[data-role=apiValueTotal]') }), null) },
 ];
 
-const browser = await chromium.launch({ channel: 'msedge' });
+const browser = await chromium.launch(process.env.CHROME_PATH ? { executablePath: process.env.CHROME_PATH } : process.platform === 'win32' ? { channel: 'msedge' } : {});
 try {
   for (const shot of SHOTS.filter(item => !only || item.id === only)) {
     const { page, problems } = await openChat(browser, { width: shot.width, height: shot.height, sidebar: shot.sidebar, scale: 2 });
+    await page.evaluate(theme => document.body.classList.add(`vscode-${theme}`), theme);
     await shot.setup(page);
     await page.waitForTimeout(900);
-    const file = path.join(outDir, `${shot.id}.png`);
+    const file = path.join(outDir, `${shot.id}${theme === 'dark' ? '' : `-${theme}`}.png`);
     const target = shot.clip?.(page);
     if (target) await target.screenshot({ path: file });
     else if (shot.rect) await page.screenshot({ path: file, clip: await shot.rect(page) });
