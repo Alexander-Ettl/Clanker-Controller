@@ -91,11 +91,12 @@ const { planUndo, applyUndo, fileCount, fileList } = require('./lib/turn-undo.js
 const { verifyInstruction, ARCHITECT_PREFIX, buildInstruction } = require('./lib/turn-extras.js');
 
 // P17-X: clock locale + format shared by both webviews ('24h' default, 'auto' follows vscode.env.language).
-// Which Antigravity usage the launcher's Gemini ring draws (Settings > General): one pool's windows, the rest stay in the hover pill.
-const ANTIGRAVITY_RINGS = ['argon', 'gemini', 'claude-gpt'];
+// Which Antigravity usage the launcher's Gemini ring draws (Settings > General): 'split' is one arc per pool (Gemini and
+// Argon); the others draw one pool's windows. The rest always stays in the hover pill.
+const ANTIGRAVITY_RINGS = ['split', 'argon', 'gemini', 'claude-gpt'];
 const antigravityRing = () => {
-  const value = vscode.workspace.getConfiguration('aiChatPanel').get('antigravityRing', 'argon');
-  return ANTIGRAVITY_RINGS.includes(value) ? value : 'argon';
+  const value = vscode.workspace.getConfiguration('aiChatPanel').get('antigravityRing', 'split');
+  return ANTIGRAVITY_RINGS.includes(value) ? value : 'split';
 };
 const timePrefs = () => JSON.stringify({ locale: vscode.env.language || 'en', timeFormat: vscode.workspace.getConfiguration('aiChatPanel').get('timeFormat', '24h') });
 
@@ -2420,6 +2421,7 @@ class ChatWindowHost {
     const bubbleUri = webview.asWebviewUri(vscode.Uri.joinPath(this.extensionUri, 'media', 'bubble-shape.js'));
     const chatTimeUri = webview.asWebviewUri(vscode.Uri.joinPath(this.extensionUri, 'media', 'chat-time.js'));
     const burnRateUri = webview.asWebviewUri(vscode.Uri.joinPath(this.extensionUri, 'media', 'burn-rate.js'));
+    const ringSegmentsUri = webview.asWebviewUri(vscode.Uri.joinPath(this.extensionUri, 'media', 'ring-segments.js'));
     const apiValueUri = webview.asWebviewUri(vscode.Uri.joinPath(this.extensionUri, 'media', 'api-value.js'));
     const voiceHotkeyUri = webview.asWebviewUri(vscode.Uri.joinPath(this.extensionUri, 'media', 'voice-hotkey.js'));
     const limitNoticeUri = webview.asWebviewUri(vscode.Uri.joinPath(this.extensionUri, 'media', 'limit-notice.js'));
@@ -2504,6 +2506,7 @@ ${rail ? railMarkup(CHAT_BUTTONS) : `<div class="topbar"><div class="topbar-acti
   ${rail ? `<script nonce="${nonce}">{ const api = acquireVsCodeApi(); window.acquireVsCodeApi = () => api; } /* a webview may acquire the API once; the chat and the rail share it */</script>` : ''}
   <script nonce="${nonce}" src="${chatTimeUri}"></script>
   <script nonce="${nonce}" src="${burnRateUri}"></script>
+  <script nonce="${nonce}" src="${ringSegmentsUri}"></script>
   <script nonce="${nonce}" src="${apiValueUri}"></script>
   <script nonce="${nonce}" src="${limitNoticeUri}"></script>
   <script nonce="${nonce}" src="${dropZoneUri}"></script>

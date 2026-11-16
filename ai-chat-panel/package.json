@@ -177,10 +177,10 @@
                 },
                 "aiChatPanel.antigravityRing": {
                     "type": "string",
-                    "enum": ["argon", "gemini", "claude-gpt"],
-                    "enumDescriptions": ["Gemini 4 Argon, its 7-day window as one circle", "Gemini models, 5h and 7d", "Claude and GPT models, 5h and 7d"],
-                    "default": "argon",
-                    "markdownDescription": "Which Antigravity usage the launcher's Gemini circle shows. The hover card always lists every group."
+                    "enum": ["split", "argon", "gemini", "claude-gpt"],
+                    "enumDescriptions": ["Two half circles: Gemini models and Gemini 4 Argon, each with its own percentage and reset", "Gemini 4 Argon, its 7-day window as one circle", "Gemini models, 5h and 7d", "Claude and GPT models, 5h and 7d"],
+                    "default": "split",
+                    "markdownDescription": "Which Antigravity usage the launcher's Gemini circle shows. `split` divides it into one arc per pool. The hover card always lists every group."
                 },
                 "aiChatPanel.workContextIcons": {
                     "type": "boolean",

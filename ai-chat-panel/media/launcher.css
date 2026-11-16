@@ -451,15 +451,34 @@ body.has-rail > .fs-modal { right: 85px; }
 }
 /* Only the ring itself starts at twelve o'clock; the provider mark inside stays upright. */
 .ring > svg { width: 100%; height: 100%; transform: rotate(-90deg); }
-.ring circle { fill: none; stroke-width: 3; stroke-linecap: round; }
-.ring-track { stroke: rgba(255, 255, 255, 0.07); }
-.ring-fill {
+.ring > svg :is(circle, path) { fill: none; stroke-width: 3; stroke-linecap: round; }
+.ring-track, .seg-track { stroke: rgba(255, 255, 255, 0.07); }
+.ring-fill, .seg-fill {
   /* The agent colour, desaturated toward grey: identifiable, not loud. */
   stroke: color-mix(in srgb, var(--agent) 50%, #8e8e93);
   stroke-dasharray: calc(var(--pct, 0) * 1px) 100px;
   transition: stroke-dasharray 0.7s var(--eo-ease);
 }
-.ring-fill.is-low { stroke: var(--usage-low); }
+.ring-fill.is-low, .seg-fill.is-low { stroke: var(--usage-low); }
+/* A pool with one window (Argon has only a week) is one arc as thick as the 5h and week rings together (radius 12.5, 8 wide). */
+.ring > svg path.is-thick { stroke-width: 8; }
+
+/* Split: the Gemini circle cut into one arc per quota pool (media/ring-segments.js), a small gap between them. The two
+   concentric circles step aside; under the ring each arc has its own percentage and reset, sitting under its half. */
+.ring-split { display: none; }
+.model-card.is-split .ring-split { display: inline; }
+.model-card.is-split .ring > svg > circle { display: none; }
+.model-card-split { display: none; }
+.model-card.is-split:not(.is-faulty) .model-card-split { display: flex; justify-content: center; gap: 6px; max-width: 100%; }
+.model-cards:not(.is-loading) .model-card.is-split:not(.is-faulty) :is(.model-card-5h, .model-card-reset) { display: none; }
+.split-col { display: flex; flex-direction: column; align-items: center; gap: 1px; min-width: 0; }
+.split-pct { font-size: 11px; font-weight: 600; color: var(--text-primary); }
+.split-pct::after { content: '%'; }
+.model-card-split.is-crowded .split-pct::after { content: none; }
+.split-col.is-low .split-pct { color: var(--usage-low); }
+.split-eta { font-size: 9.5px; color: var(--text-tertiary); white-space: nowrap; }
+.split-eta:empty { display: none; }
+.is-loading .model-card-split { display: none !important; }
 .ring-logo {
   position: absolute;
   inset: 0;
@@ -578,7 +597,8 @@ body.has-rail > .fs-modal { right: 85px; }
 .model-card-gemini .ring-rows { gap: 4px; font-size: 9px; }
 .model-card-gemini .ring-row { grid-template-columns: 12px minmax(0, 1fr) 24px 32px; column-gap: 3px; }
 .ring-group-name { display: flex; align-items: center; height: 22px; color: var(--text-secondary); font-weight: 600; line-height: 11px; }
-.ring-rows-claude-gpt, .ring-rows-argon { border-left: 1px solid var(--eo-border); padding-left: 10px; }
+.ring-rows-claude-gpt, .ring-rows-argon { border-left: 1px solid transparent; padding-left: 10px; } /* the divider shows only once the pill is open */
+.model-cards:not(.is-loading) .ring:is(:hover, :focus-visible) :is(.ring-rows-claude-gpt, .ring-rows-argon) { border-left-color: var(--eo-border); }
 .ring-rows[hidden] { display: none; }
 .ring-rows-argon { min-height: 54px; } /* one weekly row, but as tall as the two-row groups (54px) so its title stays level with theirs */
 .model-cards:not(.is-loading) .model-card-gemini .ring:is(:hover, :focus-visible) .ring-pill { width: min(600px, calc(100vw - 32px)); height: 76px; }
@@ -610,8 +630,8 @@ body.has-rail > .fs-modal { right: 85px; }
    pill, taller, with the exit code, the reason and the button that fixes it. The pill is anchored on the ring's centre like
    Antigravity's, so the mark stays put while it grows. */
 .model-card { --fault: #ff453a; }
-.model-card.is-faulty .ring-track { stroke: color-mix(in srgb, var(--fault) 22%, transparent); }
-.model-card.is-faulty .ring-fill { stroke: var(--fault); transition: stroke 0.3s var(--eo-ease), stroke-dasharray 0.7s var(--eo-ease); }
+.model-card.is-faulty :is(.ring-track, .seg-track) { stroke: color-mix(in srgb, var(--fault) 22%, transparent); }
+.model-card.is-faulty :is(.ring-fill, .seg-fill) { stroke: var(--fault); transition: stroke 0.3s var(--eo-ease), stroke-dasharray 0.7s var(--eo-ease); }
 .model-card.is-faulty .ring-logo { color: var(--fault); }
 .model-card.is-faulty .model-card-5h { max-width: 100%; text-align: center; font-size: 9.5px; line-height: 1.15; color: var(--fault); }
 .ring-fault { display: none; }
@@ -704,7 +724,7 @@ body.has-rail > .fs-modal { right: 85px; }
 .is-loading .model-card-reset { display: none; }
 
 @media (prefers-reduced-motion: reduce) {
-  .ring-fill, .ring-pill, .ring-pill::before, .ring-row, .ring-burn, .ring-group-name, .ring-bar b, .ring > svg { transition: none !important; }
+  .ring-fill, .seg-fill, .ring-pill, .ring-pill::before, .ring-row, .ring-burn, .ring-group-name, .ring-bar b, .ring > svg { transition: none !important; }
   .is-loading .ring::before, .is-loading .model-card-5h { animation: none; }
 }
 
