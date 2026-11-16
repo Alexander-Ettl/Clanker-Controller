@@ -16,12 +16,19 @@ const EXTENSION_ROOTS = ['.antigravity-ide', '.antigravity', '.vscode'].map((dir
 
 const isFile = (file) => { try { return fs.statSync(file).isFile(); } catch { return false; } };
 
+const isExecutable = (file) => { try { fs.accessSync(file, fs.constants.X_OK); return isFile(file); } catch { return false; } };
+const WIN = process.platform === 'win32';
+
 // P17-O: walks PATH in-process (what where.exe did, minus a console subprocess per lookup).
+// Elsewhere the CLIs are bare executables (e.g. ~/.local/bin/claude from install.sh).
 function onPath(name) {
-  if (process.platform !== 'win32') return [];
   const dirs = (process.env.PATH || process.env.Path || '').split(path.delimiter).map((dir) => dir.trim().replace(/^"|"$/g, '')).filter(Boolean);
+  if (!WIN) return dirs.map((dir) => path.join(dir, name)).filter(isExecutable);
   return dirs.flatMap((dir) => ['.exe', '.cmd'].map((ext) => path.join(dir, name + ext))).filter(isFile);
 }
+
+/** Providers list Windows paths; off Windows `foo.exe` is just `foo`, and npm `.cmd` shims don't exist. */
+const forPlatform = (file) => (WIN ? [file] : /\.cmd$/i.test(file) ? [] : [file.replace(/\.exe$/i, '').replace(/windows-x86_64/, `linux-${process.arch === 'arm64' ? 'aarch64' : 'x86_64'}`)]);
 
 /** Newest-first `<extensions>/<prefix>*<rel>` across every IDE's extension dir. */
 function inExtensions(prefix, rel) {
@@ -41,7 +48,7 @@ function candidates(agent) {
   if (!provider) return [];
   const local = process.env.LOCALAPPDATA || path.join(os.homedir(), 'AppData', 'Local');
   const npmGlobal = path.join(process.env.APPDATA || path.join(os.homedir(), 'AppData', 'Roaming'), 'npm');
-  return provider.locate({ onPath, inExtensions, join: path.join, home: os.homedir(), local, npmGlobal });
+  return provider.locate({ onPath, inExtensions, join: path.join, home: os.homedir(), local, npmGlobal }).flatMap(forPlatform);
 }
 
 const cache = new Map();
@@ -50,7 +57,7 @@ const cache = new Map();
 function locate(agent) {
   if (!cache.has(agent)) {
     const checked = [...new Set(candidates(agent))];
-    cache.set(agent, { agent, path: checked.find(isFile) || null, checked });
+    cache.set(agent, { agent, path: checked.find(WIN ? isFile : isExecutable) || null, checked });
   }
   return cache.get(agent);
 }
@@ -72,10 +79,10 @@ function resolveShim(cmdFile) {
   return isFile(entry) ? { command: node, args: [entry] } : null;
 }
 
-/** PowerShell terminal line for a resolved binary (the call operator handles spaces). */
+/** Terminal line for a resolved binary: PowerShell's call operator on Windows, a quoted path elsewhere. */
 function terminalCommand(agent, args = '') {
   const found = locate(agent).path;
-  const bin = found ? `& "${found}"` : providers.get(agent)?.cli || agent;
+  const bin = found ? (WIN ? `& "${found}"` : `'${found.replace(/'/g, `'\\''`)}'`) : providers.get(agent)?.cli || agent;
   return args ? `${bin} ${args}` : bin;
 }
 
