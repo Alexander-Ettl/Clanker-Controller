@@ -19,7 +19,10 @@ try {
     body { margin: 0; } .rail { position: absolute; right: 0; top: 0; width: 75px; padding: 10px; box-sizing: border-box; }
     </style><aside class="rail"><div id="modelCards" class="model-cards"></div>
     <div id="historyList"></div><button id="settingsBtn"></button><button id="popOutBtn"></button><button id="updatesBtn"></button></aside>`);
-  await page.evaluate(() => { window.acquireVsCodeApi = () => ({ postMessage() {} }); });
+  // --theme=light renders it as the IDE does under a light colour theme (body.vscode-light); pictures get a -light suffix.
+  const theme = (process.argv.find((arg) => arg.startsWith('--theme=')) || '--theme=dark').slice(8);
+  const suffix = theme === 'dark' ? '' : `-${theme}`;
+  await page.evaluate((theme) => { document.body.classList.add(`vscode-${theme}`); document.body.style.background = 'var(--chat-bg)'; window.acquireVsCodeApi = () => ({ postMessage() {} }); }, theme);
   await page.addScriptTag({ content: await read('agent-icons.js') });
   for (const name of ['burn-rate.js', 'ring-segments.js', 'launcher.js']) await page.addScriptTag({ content: await read(name) });
 
@@ -34,7 +37,7 @@ try {
   // [remaining %, window minutes, minutes until reset]; four numbers more = its week: [%, minutes, reset]
   const claude = [72, 300, 130, 88, 10080, 4000];
   const codex = [41, 300, 95, 77, 10080, 6000];
-  const shot = async (name) => { await page.locator('.rail').screenshot({ path: fileURLToPath(new URL(`${name}.png`, out)) }); };
+  const shot = async (name) => { await page.locator('.rail').screenshot({ path: fileURLToPath(new URL(`${name}${suffix}.png`, out)) }); };
   const gemini = page.locator('.model-card-gemini');
   const labels = () => gemini.locator('.split-col').evaluateAll((cols) => cols.map((col) => [col.dataset.pool, col.querySelector('.split-pct').textContent, col.querySelector('.split-eta').textContent]));
   const arcs = () => gemini.locator('.seg-fill').evaluateAll((paths) => paths.filter((path) => path.style.display !== 'none').map((path) => path.style.getPropertyValue('--pct')));
@@ -77,7 +80,7 @@ try {
   await send({ claude, codex, gemini: [80, 300, 110, 65, 10080, 3000], antigravityArgon: [100, 10080, 9000] });
   await gemini.locator('.ring').hover();
   await page.waitForFunction(() => getComputedStyle(document.querySelector('.model-card-gemini .ring-row')).opacity === '1');
-  await page.screenshot({ path: fileURLToPath(new URL('split-hover.png', out)) });
+  await page.screenshot({ path: fileURLToPath(new URL(`split-hover${suffix}.png`, out)) });
   await page.mouse.move(0, 0);
   await page.evaluate(() => window.dispatchEvent(new MessageEvent('message', { data: { type: 'antigravityRing', value: 'argon' } })));
   assert.equal(await gemini.evaluate((el) => el.classList.contains('is-split')), false);
@@ -91,7 +94,7 @@ try {
     const demo = (n, pcts) => `<svg viewBox="0 0 36 36" width="94" height="94" style="transform:rotate(-90deg)">${layout(n).map(([a, b], i) => `<path d="${arcPath(RADIUS, a, b)}" fill="none" stroke="#2a2a30" stroke-width="3" stroke-linecap="round"/><path d="${arcPath(RADIUS, a, b)}" pathLength="100" fill="none" stroke="#8aa4d6" stroke-width="3" stroke-linecap="round" stroke-dasharray="${pcts[i]} 100"/>`).join('')}</svg>`;
     document.body.insertAdjacentHTML('afterbegin', `<div id="demo" style="position:absolute;left:8px;top:8px;display:flex;gap:6px;background:#141416">${demo(1, [70])}${demo(2, [70, 40])}${demo(3, [90, 50, 20])}${demo(4, [100, 60, 30, 10])}</div>`);
   });
-  await page.locator('#demo').screenshot({ path: fileURLToPath(new URL('segments-1-to-4.png', out)) });
+  await page.locator('#demo').screenshot({ path: fileURLToPath(new URL(`segments-1-to-4${suffix}.png`, out)) });
 
   assert.deepEqual(errors, []);
   console.log('Split usage circle: arcs, labels, gap, missing pool and hover passed. Pictures in', fileURLToPath(out));
