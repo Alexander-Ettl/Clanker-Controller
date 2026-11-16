@@ -14,8 +14,14 @@
   // How far the tail hangs below the body; .msg-user reserves the room as padding (keep the two equal). The tile's tail
   // is 6px; the same tail is drawn a little larger so it reads at message size.
   const TAIL = 10;
-  const FILL = 'rgb(26,28,34)'; // the charcoal of the composer and the model menu
+  // The charcoal of the composer and the model menu, and its rim: fallbacks only, the live colours come from the
+  // stylesheet's --charcoal / --charcoal-rim (they change with the IDE's light or dark theme, see themeColors).
+  const FILL = 'rgb(26,28,34)';
   const RIM = '#2b2d32';
+  const themeColors = (el) => {
+    const style = getComputedStyle(el);
+    return { fill: style.getPropertyValue('--user-bubble').trim() || FILL, rim: style.getPropertyValue('--charcoal-rim').trim() || RIM };
+  };
 
   /** The outline of a bubble of w x h, tail included, as an SVG path in pixels. The tail is TAIL tall unless given (the rail's tiles use 6). */
   function bubblePath(w, h, tail = TAIL) {
@@ -143,7 +149,8 @@
     if (!bubble || !bubble.offsetWidth) return;
     const dockEl = group.querySelector('.msg-actions');
     const bounds = { x: bubble.offsetLeft, y: bubble.offsetTop, w: bubble.offsetWidth, h: bubble.offsetHeight };
-    const image = (dock) => `url("data:image/svg+xml,${encodeURIComponent(groupImage(group.offsetWidth, group.offsetHeight, bounds, dock))}")`;
+    const colors = themeColors(group);
+    const image = (dock) => `url("data:image/svg+xml,${encodeURIComponent(groupImage(group.offsetWidth, group.offsetHeight, bounds, dock, colors))}")`;
     // CSS selects both the contour and the controls from one state.
     group.style.setProperty('--bubble-image', image(null));
     group.style.setProperty('--bubble-dock-image', image(dockEl && { x: dockEl.offsetLeft, y: dockEl.offsetTop, w: dockEl.offsetWidth, h: dockEl.offsetHeight }));
@@ -195,5 +202,13 @@
   transcript.addEventListener('scroll', syncHover, { passive: true });
   window.addEventListener('resize', syncHover, { passive: true });
   watch(transcript);
+  // The shapes are images with their colours baked in: repaint them all when the IDE switches between light and dark.
+  const themeOf = () => [...document.body.classList].filter((name) => name.startsWith('vscode-')).join(' ');
+  let theme = themeOf();
+  new MutationObserver(() => {
+    if (themeOf() === theme) return;
+    theme = themeOf();
+    for (const group of document.querySelectorAll('.msg-group-user, .history-card.has-shape')) paint(group);
+  }).observe(document.body, { attributes: true, attributeFilter: ['class'] });
   new MutationObserver((records) => records.forEach((record) => record.addedNodes.forEach(watch))).observe(transcript, { childList: true, subtree: true });
 })();
