@@ -122,6 +122,9 @@
 .cs-row-wrap { flex-wrap: wrap; }
 .cs-row-wrap > .cs-info { flex: 1 1 150px; }
 .cs-row-wrap > .pill-track { margin-left: auto; max-width: 100%; }
+.cs-row:has(> .pill-track) { flex-wrap: wrap; }
+.cs-row:has(> .pill-track) > .cs-info { flex: 1 1 150px; }
+.cs-row > .pill-track { margin-left: auto; }
 
 .cs-icon {
   display: grid;

@@ -232,6 +232,13 @@ class SchedulerQueue {
           destination = path.join(targetDir, name);
         }
         await fs.copyFile(sourcePath, destination);
+        const { readMarkup, writeMarkup } = require('./markup');
+        const markup = readMarkup(sourcePath);
+        if (markup) {
+          const original = path.join(targetDir, `${name}.original${path.extname(markup.original)}`);
+          await fs.copyFile(markup.original, original);
+          writeMarkup(destination, original, markup);
+        }
         result.push({ name, size: stat.size, relativePath: path.relative(this.workspaceDir, destination).split(path.sep).join('/'), absolutePath: destination, mimeType: mimeFor(name) });
       }
       return result;

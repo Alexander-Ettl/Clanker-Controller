@@ -974,7 +974,7 @@
   }
 
   let closeImageMenu = null;
-  function openImageContextMenu(x, y, attachment, imageEl, onRename) {
+  function openImageContextMenu(x, y, attachment, imageEl, onRename, onMarkup = null) {
     closeImageMenu?.();
     const menu = document.createElement('div');
     menu.className = 'image-context-menu';
@@ -994,6 +994,7 @@
     const downloadBtn = makeItem(DOWNLOAD_ICON, 'Download', 'download', () => downloadAttachment(attachment));
     const renameBtn = makeItem(PENCIL_SVG, 'Rename', 'rename', () => onRename?.());
     const items = [copyBtn, downloadBtn, renameBtn];
+    if (onMarkup) items.push(makeItem(MARKUP_ICON, 'Mark up', 'markup', onMarkup));
     menu.append(...items);
     document.body.appendChild(menu);
     const rect = menu.getBoundingClientRect();
@@ -1025,8 +1026,26 @@
     copyBtn.focus({ preventScroll: true });
   }
 
+  const OPEN_ICON = '<svg viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M9 2.5h4.5V7M13.5 2.5 7.5 8.5M11.5 9.5v3a1 1 0 0 1-1 1h-6a1 1 0 0 1-1-1v-6a1 1 0 0 1 1-1h3" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+  const MARKUP_ICON = '<svg viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M10.5 3.5l2 2M3 13l.7-2.8 7-7 2.1 2.1-7 7L3 13z" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+  function lightboxButton(cls, label, html, text = '') {
+    const button = document.createElement('button');
+    button.type = 'button'; button.className = cls; button.title = label; button.setAttribute('aria-label', label);
+    button.innerHTML = text ? `${html}<span>${text}</span>` : html;
+    return button;
+  }
+  // Marks are drawn on the untouched original; the host keeps both files and tells the agents where the marks are.
+  function openMarkup(attachment) {
+    if (!attachment?.path || !window.attachmentMarkup) return;
+    void window.attachmentMarkup.open({
+      src: attachment.markup?.originalUri || attachment.uri, name: shownName(attachment.name) || 'image', items: attachment.markup?.items || [],
+      onDone: ({ dataUrl, markup }) => vscode.postMessage({ type: 'saveMarkup', chatId: currentChatId, path: attachment.path, data: dataUrl, markup }),
+      onCancel: (problem) => { if (problem) showToast(problem, { error: true }); },
+    });
+  }
   // P17-J/K: one shared lightbox for composer chips and transcript images. The X, a click outside the image, or Esc closes it.
-  function openLightbox(src, caption = '', pdf = false, attachment = null, onChipRenamed = null) {
+  // `extra.viewer` is a document preview ({ element, dispose } from attachment-docs.js); `extra.markup` opens the markup editor on the image.
+  function openLightbox(src, caption = '', pdf = false, attachment = null, onChipRenamed = null, extra = {}) {
     const previousFocus = document.activeElement;
     const box = document.createElement('div');
     box.className = 'image-lightbox';
@@ -1036,7 +1055,7 @@
     frame.className = 'image-lightbox-frame';
     const toolbar = document.createElement('div');
     toolbar.className = 'image-lightbox-toolbar';
-    const viewer = pdf ? window.attachmentPdf.viewer(src, caption) : null;
+    const viewer = extra.viewer || (pdf ? window.attachmentPdf.viewer(src, caption) : null);
     const image = viewer?.element || document.createElement('img');
     const targetAttachment = attachment || { uri: src, name: caption.split('  ')[0] || 'image.png' };
     const label = document.createElement('div');
@@ -1046,7 +1065,16 @@
     closeBtn.className = 'image-lightbox-close';
     closeBtn.setAttribute('aria-label', 'Close preview');
     closeBtn.innerHTML = '<svg viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M4.5 4.5l7 7M11.5 4.5l-7 7" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>';
-    if (!pdf) {
+    if (extra.viewer) {
+      // Text, tables, Word, Excel, audio and video: a bounded preview inside the window, the original in the editor or the file dialog.
+      box.classList.add('is-doc');
+      box.setAttribute('aria-label', caption || 'Attachment preview');
+      const openBtn = lightboxButton('image-lightbox-open', `Open ${caption} in editor`, OPEN_ICON);
+      openBtn.addEventListener('click', (event) => { event.stopPropagation(); if (targetAttachment.path) vscode.postMessage({ type: 'openFile', path: targetAttachment.path }); });
+      const downloadBtn = lightboxButton('image-lightbox-download', `Download ${caption}`, DOWNLOAD_ICON);
+      downloadBtn.addEventListener('click', (event) => { event.stopPropagation(); downloadAttachment(targetAttachment); });
+      toolbar.append(...(targetAttachment.path ? [openBtn] : []), downloadBtn, closeBtn);
+    } else if (!pdf) {
       const downloadBtn = document.createElement('button');
       downloadBtn.type = 'button';
       downloadBtn.className = 'image-lightbox-download';
@@ -1072,6 +1100,11 @@
         event.stopPropagation();
         openImageContextMenu(event.clientX, event.clientY, targetAttachment, image, () => renameAttachmentInline(label, targetAttachment, syncLightboxName));
       });
+      if (extra.markup) {
+        const markBtn = lightboxButton('image-lightbox-markup', 'Mark up image', MARKUP_ICON, 'Mark up');
+        markBtn.addEventListener('click', (event) => { event.stopPropagation(); close(); extra.markup(); });
+        toolbar.append(markBtn);
+      }
       toolbar.append(downloadBtn, closeBtn);
     } else {
       box.classList.add('is-pdf');
@@ -1141,17 +1174,24 @@
     const isPdf = Boolean(attachment.uri && (attachment.mime === 'application/pdf' || /\.pdf$/i.test(attachment.name)));
     const isSvg = /\.svg$/i.test(attachment.name) || attachment.mime === 'image/svg+xml';
     const isImage = attachment.uri && (attachment.mime?.startsWith('image/') || isSvg);
+    // Text, tables, Word, Excel, audio and video get a tile and a bounded preview (attachment-docs.js).
+    const docKind = !isImage && !isPdf ? window.attachmentDocs?.kind(attachment) : null;
+    // Only still, drawable images can be marked up, and only before they are sent.
+    const canMark = Boolean(onRemove && isImage && !isSvg && attachment.mime !== 'image/gif' && attachment.path && window.attachmentMarkup);
     const label = document.createElement('span');
     const name = document.createElement('span'); name.className = 'attachment-name'; name.textContent = shownName(attachment.name);
     const meta = document.createElement('span'); meta.className = 'attachment-meta';
     const withPx = (dims) => (dims ? `${dims} px` : '');
-    meta.textContent = isImage ? withPx(attachment.dims) : formatSize(attachment.size);
+    const imageMeta = () => `${withPx(attachment.dims)}${attachment.markup ? `${attachment.dims ? ' · ' : ''}marked up` : ''}`;
+    meta.textContent = isImage ? imageMeta() : formatSize(attachment.size);
     label.append(name, meta);
+    if (attachment.markup) chip.classList.add('is-marked');
     let remove = null;
     const syncChip = () => {
       const clean = shownName(attachment.name);
       name.textContent = clean;
-      if (isImage) meta.textContent = withPx(attachment.dims);
+      if (isImage) meta.textContent = imageMeta();
+      if (docKind) { chip.title = `Preview ${clean}`; chip.setAttribute('aria-label', chip.title); }
       if (isImage || isPdf) {
         chip.title = isPdf ? `Open ${clean} in editor` : `Preview ${clean}`;
         chip.setAttribute('aria-label', chip.title);
@@ -1175,14 +1215,26 @@
           meta.textContent = `${result.pages} ${result.pages === 1 ? 'page' : 'pages'} · ${formatSize(attachment.size)}`;
         }).catch(() => { meta.textContent = `${formatSize(attachment.size)} · Preview unavailable`; });
       } else image.src = attachment.uri;
-      if (!isPdf && !attachment.dims) image.addEventListener('load', () => { attachment.dims = `${image.naturalWidth}×${image.naturalHeight}`; meta.textContent = withPx(attachment.dims); }, { once: true });
+      if (!isPdf && !attachment.dims) image.addEventListener('load', () => { attachment.dims = `${image.naturalWidth}×${image.naturalHeight}`; meta.textContent = imageMeta(); }, { once: true });
       chip.appendChild(image);
       chip.classList.add('is-previewable');
       chip.title = `Preview ${shownName(attachment.name)}`;
       chip.tabIndex = 0;
       chip.setAttribute('aria-label', chip.title);
       if (isPdf) { chip.title = `Open ${shownName(attachment.name)} in editor`; chip.setAttribute('aria-label', chip.title); }
-      const preview = () => isPdf ? vscode.postMessage({ type: 'openFile', path: attachment.path }) : openLightbox(attachment.uri, `${shownName(attachment.name)}  ${withPx(attachment.dims)}`.trim(), false, attachment, syncChip);
+      const preview = () => isPdf ? vscode.postMessage({ type: 'openFile', path: attachment.path }) : openLightbox(attachment.uri, `${shownName(attachment.name)}  ${withPx(attachment.dims)}`.trim(), false, attachment, syncChip, { markup: canMark ? () => openMarkup(attachment) : null });
+      chip.addEventListener('click', preview);
+      chip.addEventListener('keydown', event => { if (event.target === chip && (event.key === 'Enter' || event.key === ' ')) { event.preventDefault(); preview(); } });
+    } else if (docKind) {
+      const tile = window.attachmentDocs.thumbnail(attachment, formatSize);
+      chip.append(tile.element);
+      void tile.ready.then((text) => { if (text && chip.isConnected !== false) meta.textContent = text; });
+      chip.classList.add('is-previewable'); chip.tabIndex = 0;
+      chip.title = `Preview ${shownName(attachment.name)}`; chip.setAttribute('aria-label', chip.title);
+      const preview = () => {
+        const caption = shownName(attachment.name);
+        openLightbox(attachment.uri, caption, false, attachment, syncChip, { viewer: window.attachmentDocs.viewer(attachment, caption, formatSize) });
+      };
       chip.addEventListener('click', preview);
       chip.addEventListener('keydown', event => { if (event.target === chip && (event.key === 'Enter' || event.key === ' ')) { event.preventDefault(); preview(); } });
     }
@@ -1191,7 +1243,7 @@
       chip.addEventListener('contextmenu', (event) => {
         event.preventDefault();
         event.stopPropagation();
-        openImageContextMenu(event.clientX, event.clientY, attachment, chip.querySelector('img'), () => renameAttachmentInline(name, attachment, syncChip));
+        openImageContextMenu(event.clientX, event.clientY, attachment, chip.querySelector('img'), () => renameAttachmentInline(name, attachment, syncChip), canMark ? () => openMarkup(attachment) : null);
       });
     }
     if (onRemove) {
@@ -5019,6 +5071,7 @@
       };
       if (session.state) action('stop', 'Stop', () => vscode.postMessage({ type: 'stopChat', id: session.id }));
       action('rename', 'Rename', () => editTitle(titleEl, session.title || session.preview || '', (title) => vscode.postMessage({ type: 'renameChat', id: session.id, title })));
+      action('rename', 'Choose work category', () => vscode.postMessage({ type: 'setChatCategory', id: session.id }));
       action('fork', 'Fork into a new chat', () => { vscode.postMessage({ type: 'forkChat', id: session.id }); closeModal(historyModal.el); });
       action('delete', 'Delete', () => { card.classList.add('is-leaving'); vscode.postMessage({ type: 'deleteChat', id: session.id }); }, 'is-danger');
       head.append(actions);
@@ -5072,6 +5125,16 @@
             if (img && message.attachment?.uri) img.src = message.attachment.uri;
             chip._syncChip?.();
           }
+        }
+        break;
+      }
+      case 'attachmentMarkedUp': {
+        // The marked copy (or, with no marks left, the original) takes the old file's place in the composer.
+        const at = attachments.findIndex((item) => item.path === message.from);
+        if (at >= 0) { attachments[at] = message.attachment; renderAttachments(); }
+        else if (message.chatId && message.chatId !== currentChatId) {
+          const draft = chatDrafts.get(message.chatId), index = draft?.files.findIndex((item) => item.path === message.from) ?? -1;
+          if (index >= 0) draft.files[index] = message.attachment;
         }
         break;
       }
