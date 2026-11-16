@@ -427,7 +427,7 @@ body.has-rail > .fs-modal { right: 85px; }
 }
 .model-card {
   --agent: var(--text-secondary);
-  --usage-low: color-mix(in srgb, var(--agent) 85%, white);
+  --usage-low: color-mix(in srgb, var(--agent) 85%, light-dark(black, white)); /* the stronger tint: lighter on dark, darker on light */
   display: flex;
   flex-direction: column;
   align-items: center;
