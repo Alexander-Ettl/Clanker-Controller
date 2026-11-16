@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="docs/images/hero.svg" alt="Clanker Controller: one chat for Claude Code, Codex and Gemini, built on flat-rate subscriptions" width="100%">
+  <img src="docs/images/hero.svg" alt="Clanker Controller: one chat for all your AI harnesses, built on flat-rate subscriptions" width="100%">
 </p>
 
 **Clanker Controller** is an IDE extension that puts your coding agents in one chat window. Claude Code, Codex, Antigravity (Gemini) and GitHub Copilot sit side by side. You pick a model per message. It drives the official CLIs you already have installed, so you keep your sign-ins, your plans and your setup. You give nothing up.
