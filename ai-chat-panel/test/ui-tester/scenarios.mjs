@@ -365,15 +365,21 @@ export const scenarios = [
     if (boxes[2].x + boxes[2].width > pill.x + pill.width) throw Error('The Argon group must stay inside the pill');
     const values = await page.locator('.model-card-gemini .ring-row-pct').allTextContents();
     if (values.join(',') !== '80%,65%,18%,42%,100%') throw Error('Antigravity quota values mixed between pools');
-    // The circle itself defaults to Argon's week alone; the choice in Settings swaps the pool, and a missing Argon falls back to Gemini's.
+    // The circle defaults to the split: one arc per pool (Gemini, Argon), each with its own number under the ring. The choice in
+    // Settings swaps in one pool; a missing Argon leaves one arc (split) or falls back to Gemini's rings (Argon alone).
     const card = page.locator('.model-card-gemini');
-    const ring = async value => { await page.evaluate(value => window.dispatchEvent(new MessageEvent('message', { data: { type: 'antigravityRing', value } })), value); return [await card.evaluate(el => el.classList.contains('ring-single')), await card.locator('.model-card-5h').textContent()]; };
-    assert.deepEqual([await card.evaluate(el => el.classList.contains('ring-single')), await card.locator('.model-card-5h').textContent()], [true, '100%']);
-    assert.deepEqual(await ring('gemini'), [false, '80%']);
-    assert.deepEqual(await ring('claude-gpt'), [false, '18%']);
-    assert.deepEqual(await ring('argon'), [true, '100%']);
+    const state = async () => [await card.evaluate(el => el.classList.contains('is-split')), await card.evaluate(el => el.classList.contains('ring-single')), await card.locator('.model-card-5h').textContent(), await card.locator('.split-pct').allTextContents()];
+    const ring = async value => { await page.evaluate(value => window.dispatchEvent(new MessageEvent('message', { data: { type: 'antigravityRing', value } })), value); return state(); };
+    assert.deepEqual(await state(), [true, false, '65%', ['65', '100']]);
+    assert.deepEqual(await ring('gemini'), [false, false, '80%', ['65', '100']]);
+    assert.deepEqual(await ring('claude-gpt'), [false, false, '18%', ['65', '100']]);
+    assert.deepEqual(await ring('argon'), [false, true, '100%', ['65', '100']]);
+    assert.deepEqual(await ring('split'), [true, false, '65%', ['65', '100']]);
     await send(false);
-    assert.deepEqual([await card.evaluate(el => el.classList.contains('ring-single')), await card.locator('.model-card-5h').textContent()], [false, '80%']);
+    assert.deepEqual(await state(), [true, false, '65%', ['65']]);
+    await ring('argon');
+    assert.deepEqual(await state(), [false, false, '80%', ['65']]);
+    await ring('split');
     await send(true);
   } },
   { id: 'loops-sidebar', sidebar: true, height: 1400, focus: '#loopsModal .fs-modal-sheet', setup: loopsState('running') },
