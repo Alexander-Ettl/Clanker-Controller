@@ -230,6 +230,11 @@
           <button class="cs-switch" data-role="autoUpdateClis" role="switch" aria-checked="true" aria-label="Automatically update idle CLIs" type="button"></button>
         </div>
         <div class="cs-row">
+          <span class="cs-icon">${ICON.note}</span>
+          <div class="cs-info"><span class="cs-title">Work-context icons</span><span class="cs-desc">Classify prompts with the configured free routing service and show category icons beside chats.</span></div>
+          <button class="cs-switch" data-role="workContextIcons" role="switch" aria-checked="false" aria-label="Work-context icons" type="button"></button>
+        </div>
+        <div class="cs-row">
           <span class="cs-icon">${ICON.clock}</span>
           <div class="cs-info"><span class="cs-title">Start usage windows early</span><span class="cs-desc" data-role="sessionWarmupDesc">Every 5 hours, sends "respond with 1" to the cheapest model of each connected CLI in the background, so a 5-hour window is nearly always already under way when you start. Subscription sign-ins only: a CLI billed per token through an API key is skipped.</span></div>
           <button class="cs-switch" data-role="sessionWarmup" role="switch" aria-checked="true" aria-label="Start usage windows early" type="button"></button>
@@ -1355,6 +1360,7 @@
       $('statusBar').setAttribute('aria-checked', String(Boolean(services.statusBar)));
       $('autoContinueOnLimit').setAttribute('aria-checked', String(services.autoContinueOnLimit !== false));
       $('autoUpdateClis').setAttribute('aria-checked', String(services.autoUpdateClis !== false));
+      $('workContextIcons').setAttribute('aria-checked', String(services.workContextIcons === true));
       renderWarmup(services.sessionWarmup);
       renderCloudWarmup(services.cloudWarmup);
       renderLoops(services.compliance);
@@ -1416,6 +1422,11 @@
       const enabled = $('autoUpdateClis').getAttribute('aria-checked') !== 'true';
       $('autoUpdateClis').setAttribute('aria-checked', String(enabled));
       vscode.postMessage({ type: 'setAutoUpdateClis', enabled });
+    });
+    $('workContextIcons').addEventListener('click', () => {
+      const enabled = $('workContextIcons').getAttribute('aria-checked') !== 'true';
+      $('workContextIcons').setAttribute('aria-checked', String(enabled));
+      vscode.postMessage({ type: 'setWorkContextIcons', enabled });
     });
     $('sessionWarmup').addEventListener('click', () => {
       const enabled = $('sessionWarmup').getAttribute('aria-checked') !== 'true';

@@ -11,7 +11,8 @@ const fs = require('node:fs');
 const path = require('node:path');
 
 const GRACE_MS = 14 * 24 * 60 * 60 * 1000;
-const FINISHED = new Set(['done', 'cancelled']); // failed and interrupted tasks can be rescheduled, so they keep their files
+const SIDECAR = require('./markup.js').SUFFIX;
+const FINISHED =new Set(['done', 'cancelled']); // failed and interrupted tasks can be rescheduled, so they keep their files
 
 /**
  * Attachment files that no chat or task mentions and that are older than the grace period.
@@ -48,7 +49,13 @@ function sweepStorage(sessionDir, { now = Date.now(), graceMs = GRACE_MS } = {})
         const stat = fs.statSync(path.join(attachmentsDir, entry.name));
         return { name: entry.name, mtimeMs: stat.mtimeMs, size: stat.size };
       });
-      for (const file of selectOrphans(files, haystack, now, graceMs)) {
+      // A marked-up image keeps its original: the sidecar names it, and the sidecar lives as long as the flattened copy.
+      let kept = haystack;
+      for (const file of files) {
+        if (!file.name.endsWith(SIDECAR) || !haystack.includes(file.name.slice(0, -SIDECAR.length))) continue;
+        kept += `\n${file.name}\n${readText(path.join(attachmentsDir, file.name))}`;
+      }
+      for (const file of selectOrphans(files, kept, now, graceMs)) {
         try { fs.unlinkSync(path.join(attachmentsDir, file.name)); removed.attachments++; removed.bytes += file.size; } catch { /* in use or already gone */ }
       }
     }

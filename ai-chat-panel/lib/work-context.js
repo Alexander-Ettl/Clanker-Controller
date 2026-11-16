@@ -153,6 +153,7 @@ class WorkContextClassifier {
    * the request goes out at once, without waiting for the answer. Returns immediately and never delays a turn.
    */
   consider(run, { project = '', aliases = [], initial = false } = {}) {
+    if (run.chat.workContext?.manual) return;
     initial = initial && !readStored(run.chat.workContext);
     if (!this.enabled() || !isSubstantive(latestRequest(run.chat.messages || [], initial)?.text)) return;
     const state = this.chats.get(run.chat.id) || { busy: false, dirty: false, doneRevision: -1 };
@@ -184,7 +185,7 @@ class WorkContextClassifier {
       const guard = { cap: LIMITS.sharedNeurons, lease: (reserve) => this.ledger.lease(reserve, LIMITS.featureNeurons) };
       const choice = readChoice(await this.router.callTier('cloudflare', payload, false, guard));
       const chat = run.chat;
-      if (chat.id !== id || !this.isLive(run)) return;
+      if (chat.id !== id || !this.isLive(run) || chat.workContext?.manual) return;
       if (revisionOf(chat) !== revision) return; // a newer prompt was sent meanwhile: this answer is about the old one, the new prompt asks for itself
       if (choice) state.doneRevision = revision;
       const next = decide(readStored(chat.workContext)?.categoryId, choice);
