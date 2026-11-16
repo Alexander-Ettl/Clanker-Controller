@@ -9,3 +9,6 @@ Start with `README.md`. For remaining work, read the root `TODO.md`; it is the s
 Checks from this root: `npm.cmd run check`, `npm.cmd test`, `npm.cmd run verify:models`. `npm.cmd run verify:bridge` also needs the compiled Visor extension; set `VISOR_DIR` if it isn't at `../Visor`. Scope verification to the change and don't send test prompts to real CLIs.
 
 Keep extension IDs, command IDs and settings IDs stable across folder moves. The installed Antigravity extensions are junctions to `ai-chat-panel/` and `antigravity-usage-statusbar/`; reload the IDE after changes to extension-host code.
+
+
+Never put SDKs, caches, dependencies or build output (`node_modules`, `dist`, `.gradle`, `.tools`, venvs) inside this repo or any other synced Nextcloud/OneDrive folder; use `C:\Dev` and point env vars there. Full rule: `ClaudeConfig\CLAUDE.md`.
