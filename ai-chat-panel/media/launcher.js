@@ -195,13 +195,42 @@
   const ringCircles = (r) => `<circle class="ring-track" cx="18" cy="18" r="${r}"/><circle class="ring-fill" cx="18" cy="18" r="${r}" pathLength="100"/>`;
   const pctOf = (window) => (typeof window?.remaining === 'number' ? Math.max(0, Math.min(100, Math.round(window.remaining))) : null);
 
+  // Split mode: the Gemini circle is cut into one arc per quota pool, each with its own percentage and reset underneath.
+  // To add a pool (say the Claude and GPT models), add its id here and a getter in `splitPools`; the arcs, gaps and labels
+  // follow, up to four. A pool with no quota (no Argon on this plan) simply has no arc.
+  const SPLIT_POOLS = ['gemini', 'argon'];
+  const SEGMENT_SLOTS = window.ringSegments.MAX_SEGMENTS;
+  // Per arc: the outer ring (track, fill) and the inner one. A pool with one window uses only the first pair, drawn thick.
+  const segmentMarkup = () => Array.from({ length: SEGMENT_SLOTS }, () => '<path class="seg-track"/><path class="seg-fill" pathLength="100"/><path class="seg-track"/><path class="seg-fill" pathLength="100"/>').join('');
+  // A pool's windows, the 5h first and the week second; one that has only a week has just that. The first is the pool's
+  // headline: its percentage and reset sit under the arc, the week is the inner ring and the hover card.
+  function splitPools(quota, { fiveHour, weekly, argonWeek }) {
+    const week7d = (win) => win && { windowMinutes: 10080, ...win };
+    const pools = {
+      gemini: { label: 'Gemini', windows: [quota, quota?.secondary] },
+      argon: { label: 'Argon', windows: [week7d(argonWeek)] },
+      'claude-gpt': { label: 'Claude/GPT', windows: [fiveHour, week7d(weekly)] },
+    };
+    return SPLIT_POOLS.map((id) => { const windows = pools[id].windows.filter(Boolean); return { id, label: pools[id].label, windows, win: windows[0] }; });
+  }
+  const windowName = (win) => (win?.windowMinutes === 10080 ? '7d' : '5h');
+  const windowSummary = (win) => `${windowName(win)} ${pctOf(win) === null ? 'no live quota' : `${pctOf(win)}% left`}${win?.resetsAt ? `, ${resetsIn(win.resetsAt)}` : ''}`;
+  // The reset as tightly as it reads ("45m", "1h50m", "2d4h"): two of these sit side by side under a 47px ring.
+  function resetTight(resetsAt) {
+    if (!resetsAt) return '';
+    const minutes = Math.round((resetsAt * 1000 - Date.now()) / 60000);
+    if (!(minutes > 0)) return 'now';
+    const d = Math.floor(minutes / 1440), h = Math.floor((minutes % 1440) / 60), m = minutes % 60;
+    return d ? `${d}d${h ? `${h}h` : ''}` : h ? `${h}h${m ? `${m}m` : ''}` : `${m}m`;
+  }
+
   function modelCard(agent, quota, extras, connection) {
     const card = document.createElement('div');
     card.className = `model-card model-card-${agent}`;
     card.dataset.agent = agent;
     // Hovering the ring grows .ring-pill leftward out of it: both windows as bars with the exact % and reset (launcher.css).
     const pillRow = (label) => `<span class="ring-row"><span class="ring-row-name">${label}</span><i class="ring-bar"><b></b></i><span class="ring-row-pct"></span><span class="ring-row-eta"></span></span>`;
-    card.innerHTML = `<span class="ring" tabindex="0" title=""><span class="ring-pill" aria-hidden="true"><span class="ring-burn"><b class="ring-burn-val"></b><span class="ring-burn-label"></span></span><span class="ring-rows">${pillRow('5h')}${pillRow('7d')}</span><span class="ring-fault"><span class="ring-fault-text"><span class="ring-fault-head"><b class="ring-fault-title"></b><i class="ring-fault-code"></i></span><span class="ring-fault-detail"></span></span><button class="ring-fault-btn" type="button"></button></span></span><svg viewBox="0 0 36 36" aria-hidden="true">${ringCircles(15)}${ringCircles(10)}</svg><span class="ring-logo">${ICONS[agent] || ''}</span></span><b class="model-card-5h"></b><span class="model-card-7d"></span><span class="model-card-reset"></span>`;
+    card.innerHTML = `<span class="ring" tabindex="0" title=""><span class="ring-pill" aria-hidden="true"><span class="ring-burn"><b class="ring-burn-val"></b><span class="ring-burn-label"></span></span><span class="ring-rows">${pillRow('5h')}${pillRow('7d')}</span><span class="ring-fault"><span class="ring-fault-text"><span class="ring-fault-head"><b class="ring-fault-title"></b><i class="ring-fault-code"></i></span><span class="ring-fault-detail"></span></span><button class="ring-fault-btn" type="button"></button></span></span><svg viewBox="0 0 36 36" aria-hidden="true">${ringCircles(15)}${ringCircles(10)}<g class="ring-split">${agent === 'gemini' ? segmentMarkup() : ''}</g></svg><span class="ring-logo">${ICONS[agent] || ''}</span></span><b class="model-card-5h"></b><span class="model-card-7d"></span><span class="model-card-reset"></span><span class="model-card-split"></span>`;
     if (agent === 'gemini') {
       card.querySelector('.ring-rows').insertAdjacentHTML('afterbegin', '<span class="ring-group-name">Gemini Models</span>');
       card.querySelector('.ring-rows').insertAdjacentHTML('afterend', `<span class="ring-rows ring-rows-claude-gpt"><span class="ring-group-name">Claude and GPT models</span>${pillRow('5h')}${pillRow('7d')}</span><span class="ring-rows ring-rows-argon"><span class="ring-group-name">Gemini 4 Argon</span>${pillRow('7d')}</span>`);
@@ -210,15 +239,61 @@
     return updateModelCard(card, quota, extras, connection);
   }
 
-  // Which Antigravity pool the Gemini circle draws: 'argon' (default), 'gemini' or 'claude-gpt' (aiChatPanel.antigravityRing).
-  let ringSource = window.ANTIGRAVITY_RING || 'argon';
+  // Draws the arcs (reusing the same nodes, so a change sweeps) and the label under each: its percentage, and when it resets.
+  function drawSegments(card, segments) {
+    const { RINGS, layout, arcPath } = window.ringSegments;
+    const arcs = [...card.querySelectorAll('.ring-split path')];
+    for (let slot = 0; slot < SEGMENT_SLOTS; slot++) {
+      const pool = segments[slot];
+      // Two windows: 5h outside, week inside. One window: a single thick arc. None (no live quota): two empty tracks.
+      const windows = !pool ? [] : pool.windows.length ? pool.windows : [null, null];
+      const specs = windows.length === 1 ? [RINGS.thick] : [RINGS.outer, RINGS.inner];
+      for (let i = 0; i < 2; i++) {
+        const [track, fill] = [arcs[slot * 4 + i * 2], arcs[slot * 4 + i * 2 + 1]];
+        const used = i < windows.length;
+        track.style.display = fill.style.display = used ? '' : 'none';
+        if (!used) continue;
+        const spec = specs[i];
+        const d = arcPath(spec.radius, ...layout(segments.length, spec.radius, spec.trim)[slot]);
+        if (track.getAttribute('d') !== d) { track.setAttribute('d', d); fill.setAttribute('d', d); }
+        track.classList.toggle('is-thick', spec === RINGS.thick);
+        fill.classList.toggle('is-thick', spec === RINGS.thick);
+        const pct = pctOf(windows[i]);
+        fill.style.setProperty('--pct', pct ?? 0);
+        fill.style.visibility = pct > 0 ? 'visible' : 'hidden';
+        fill.classList.toggle('is-low', pct !== null && pct <= 20);
+      }
+    }
+    const labels = card.querySelector('.model-card-split');
+    labels.classList.toggle('is-crowded', segments.length > 2); // three or four labels drop the % sign to fit the rail
+    if ([...labels.children].map((el) => el.dataset.pool).join() !== segments.map((pool) => pool.id).join()) {
+      labels.replaceChildren(...segments.map((pool) => {
+        const col = document.createElement('span');
+        col.className = 'split-col';
+        col.dataset.pool = pool.id;
+        col.innerHTML = '<b class="split-pct"></b><span class="split-eta"></span>';
+        return col;
+      }));
+    }
+    segments.forEach((pool, i) => {
+      const col = labels.children[i];
+      const pct = pctOf(pool.win);
+      col.classList.toggle('is-low', pct !== null && pct <= 20);
+      col.querySelector('.split-pct').textContent = pct === null ? '—' : String(pct);
+      col.querySelector('.split-eta').textContent = resetTight(pool.win?.resetsAt);
+      col.title = `${pool.label}: ${pool.windows.length ? pool.windows.map(windowSummary).join('; ') : 'no live quota'}`;
+    });
+  }
+
+  // What the Gemini circle draws: 'split' (default, one arc per pool), or one pool: 'argon', 'gemini' or 'claude-gpt' (aiChatPanel.antigravityRing).
+  let ringSource = window.ANTIGRAVITY_RING || 'split';
 
   function updateModelCard(card, quota, extras, connection) {
     const gemini = card.dataset.agent === 'gemini';
     // The circle is the quota's two windows (5h outside, week inside). Antigravity has three pools, so Settings picks which one
     // the circle draws; a pool with only a weekly window is one circle, as wide as the outer ring.
     let first = quota, second = quota?.secondary, single = false;
-    let fiveHour, weekly, argonWeek;
+    let fiveHour, weekly, argonWeek, segments = null;
     if (gemini) {
       // A weekly-only pool (the language server sometimes reports just that bucket) shows no 5h row.
       const weeklyOnly = (pool) => pool?.windowMinutes === 10080;
@@ -228,7 +303,15 @@
       argonWeek = weeklyOnly(argon) ? argon : argon?.secondary;
       const week7d = (win) => win && { windowMinutes: 10080, ...win };
       // Ultra shares Argon with the Gemini pool, so the language server may not list it: then the circle falls back to Gemini's.
-      if (ringSource === 'argon' && argonWeek) { first = week7d(argonWeek); second = null; single = true; }
+      if (ringSource === 'split') {
+        // Arcs for the pools that have a quota (the first always stays, so an empty ring still draws). The least-left one drives
+        // the burn rate and the headline numbers.
+        const pools = splitPools(quota, { fiveHour, weekly, argonWeek });
+        segments = pools.filter((pool) => pool.win);
+        if (!segments.length) segments = pools.slice(0, 1);
+        first = window.ringSegments.binding(...segments.flatMap((pool) => pool.windows)) || quota;
+        second = null;
+      } else if (ringSource === 'argon' && argonWeek) { first = week7d(argonWeek); second = null; single = true; }
       else if (ringSource === 'claude-gpt' && (fiveHour || weekly)) {
         if (fiveHour) { first = fiveHour; second = weekly; } else { first = week7d(weekly); second = null; single = true; }
       }
@@ -247,6 +330,8 @@
       fill.style.visibility = pct > 0 ? 'visible' : 'hidden';
       fill.classList.toggle('is-low', pct !== null && pct <= 20);
     });
+    card.classList.toggle('is-split', Boolean(segments));
+    if (segments) drawSegments(card, segments);
     const windows = [[pctOf(quota), quota], [pctOf(quota?.secondary), quota?.secondary]];
     if (gemini) {
       windows.push([pctOf(fiveHour), fiveHour], [pctOf(weekly), weekly], [pctOf(argonWeek), argonWeek]);
@@ -278,7 +363,9 @@
     burnLabel.querySelector('.ring-burn-val').textContent = spent ? 'Usage is spent' : !pace ? '–' : pace.resetsFirst ? 'Lasts' : window.burnRate.duration(pace.minutesLeft);
     burnLabel.classList.toggle('is-spent', Boolean(spent));
     burnLabel.classList.toggle('is-low', spent || pace?.resetsFirst === false);
-    card.title = `${names[agent] || agent}: ${five === null ? 'no live quota' : `${five}% of the ${single ? 'week' : '5h window'} left`}${week === null ? '' : `, ${week}% of the week`}${first?.resetsAt ? `, ${resetsIn(first.resetsAt)}` : ''}`;
+    card.title = segments
+      ? `${names[agent] || agent}: ${segments.map((pool) => `${pool.label} ${pool.windows.length ? pool.windows.map(windowSummary).join(', ') : 'no live quota'}`).join(' · ')}`
+      : `${names[agent] || agent}: ${five === null ? 'no live quota' : `${five}% of the ${single ? 'week' : '5h window'} left`}${week === null ? '' : `, ${week}% of the week`}${first?.resetsAt ? `, ${resetsIn(first.resetsAt)}` : ''}`;
     card.title += spent ? `\n${burn}` : `\n${burn}\nAverage since this quota window started; includes idle time.`;
     if (agent === 'gemini') {
       const describe = ([pct, win], label) => `${label}: ${pct === null ? 'no live quota' : `${pct}% left`}${win?.resetsAt ? `, ${resetsIn(win.resetsAt)}` : ''}`;
@@ -294,7 +381,7 @@
     const pill = card.querySelector('.ring-pill');
     if (fault) {
       pill.removeAttribute('aria-hidden'); // its button must be reachable
-      card.querySelectorAll('.ring-fill').forEach((fill) => { fill.style.setProperty('--pct', 100); fill.style.visibility = 'visible'; fill.classList.remove('is-low'); });
+      card.querySelectorAll('.ring-fill, .seg-fill').forEach((fill) => { fill.style.setProperty('--pct', 100); fill.style.visibility = 'visible'; fill.classList.remove('is-low'); });
       card.querySelector('.model-card-5h').textContent = 'Not available';
       card.querySelector('.model-card-reset').textContent = '';
       card.querySelector('.ring-fault-title').textContent = fault.title;

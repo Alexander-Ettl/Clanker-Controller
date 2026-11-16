@@ -213,6 +213,7 @@
           <span class="cs-icon">${ICON.chart}</span>
           <div class="cs-info"><span class="cs-title">Antigravity usage circle</span><span class="cs-desc">What the Gemini circle in the launcher draws. Hovering it still lists every group.</span></div>
           <div class="ring-source-picker pill-track" role="radiogroup" aria-label="Antigravity usage circle">
+            <button class="ring-source-pill" data-ring="split" type="button" title="Two half circles: Gemini models and Gemini 4 Argon">Split</button>
             <button class="ring-source-pill" data-ring="argon" type="button" title="Gemini 4 Argon, 7-day window">Argon 7d</button>
             <button class="ring-source-pill" data-ring="gemini" type="button" title="Gemini models, 5h and 7d">Gemini</button>
             <button class="ring-source-pill" data-ring="claude-gpt" type="button" title="Claude and GPT models, 5h and 7d">Claude</button>
@@ -1359,7 +1360,7 @@
       renderLoops(services.compliance);
       const currentFormat = services.timeFormat || '24h';
       for (const pill of formatPills) pill.classList.toggle('active', pill.dataset.format === currentFormat);
-      for (const pill of ringPills) pill.classList.toggle('active', pill.dataset.ring === (services.antigravityRing || 'argon'));
+      for (const pill of ringPills) pill.classList.toggle('active', pill.dataset.ring === (services.antigravityRing || 'split'));
       for (const pill of permissionPills) pill.classList.toggle('active', pill.dataset.mode === currentPermMode);
       renderPermissionSupport(currentPermMode);
 

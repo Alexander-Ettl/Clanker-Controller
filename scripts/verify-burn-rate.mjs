@@ -15,14 +15,14 @@ try {
     <div id="historyList"></div><button id="settingsBtn"></button><button id="popOutBtn"></button>
     <button id="updatesBtn"></button></aside>`);
   await page.evaluate(() => { window.acquireVsCodeApi = () => ({ postMessage() {} }); });
-  for (const name of ['burn-rate.js', 'launcher.js']) await page.addScriptTag({ content: await read(name) });
+  for (const name of ['burn-rate.js', 'ring-segments.js', 'launcher.js']) await page.addScriptTag({ content: await read(name) });
   await page.evaluate(() => window.dispatchEvent(new MessageEvent('message', { data: {
     type: 'quotas', quotas: { claude: { remaining: 92, windowMinutes: 300,
       resetsAt: (Date.now() + 290 * 60000) / 1000 } },
   } })));
   const ring = page.locator('.model-card-claude .ring');
   const burn = ring.locator('.ring-burn');
-  assert.match(await burn.textContent(), /1h 55m left/);
+  assert.match(await burn.textContent(), /1h 55m\s*of Usage remaining/);
   assert.match(await ring.getAttribute('aria-label'), /includes idle time/);
   for (const width of [360, 280]) {
     await page.setViewportSize({ width, height: 600 });
