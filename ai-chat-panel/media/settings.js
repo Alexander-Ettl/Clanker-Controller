@@ -811,7 +811,7 @@
     }
 
     let lastFleet = null; // until the first fleet message the provider cards would all read "Missing"
-    let status = { versions: {}, updating: {}, notes: {}, fetched: [], favorites: [], catalog: [], prompts: {}, modelsBusy: false };
+    let status = { versions: {}, updating: {}, notes: {}, fetched: [], modelErrors: {}, favorites: [], catalog: [], prompts: {}, modelsBusy: false };
     let modelsRequested = false;
     let connections = null;
     function showTab(name) {
@@ -1080,7 +1080,8 @@
       const visible = all.filter((entry) => (company === 'all' || entry.agent === company)
         && `${entry.label} ${entry.model} ${entry.effort || ''}`.toLowerCase().includes(query));
       const list = $('modelList');
-      const signature = JSON.stringify(visible);
+      const errors = status.modelErrors || {};
+      const signature = JSON.stringify([visible, errors, company]);
       $('modelCount').textContent = `${visible.length} of ${all.length} models`;
       $('refreshModels').disabled = status.modelsBusy;
       $('availableDesc').textContent = status.modelsBusy ? 'Asking the installed CLIs…' : all.length ? 'Favorite a model to add it to the chat\'s model picker.' : 'No model list yet. Refresh to ask the CLIs.';
@@ -1089,6 +1090,13 @@
         const scrollTop = list.scrollTop;
         list.replaceChildren(...PROVIDERS.flatMap((agent) => {
           const entries = visible.filter((entry) => entry.agent === agent);
+          if (errors[agent] && (company === 'all' || company === agent)) {
+            const note = document.createElement('p');
+            note.className = 'cs-note is-error';
+            note.setAttribute('role', 'alert');
+            note.textContent = errors[agent];
+            return [providerHead(agent, 0), note];
+          }
           if (!entries.length) return [];
           return [providerHead(agent, entries.length), ...entries.map((entry) => {
             const row = document.createElement('div');
@@ -1118,7 +1126,7 @@
             return row;
           })];
         }));
-        if (!visible.length) {
+        if (!visible.length && !list.querySelector('.cs-note.is-error')) {
           const empty = document.createElement('p');
           empty.className = 'cs-note';
           empty.textContent = all.length ? 'No models match your search and company filter.' : 'Refresh to discover available models.';

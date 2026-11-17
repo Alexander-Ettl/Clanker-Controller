@@ -7,38 +7,55 @@
 
 const { launchFailure } = require('./shared.js');
 
-const DEFAULT_COPILOT_MODELS = [
-  { id: 'copilot-claude-sonnet-4-5', agent: 'copilot', model: 'claude-sonnet-4.5', effort: null, label: 'Copilot · Claude Sonnet 4.5', isDefault: true },
-  { id: 'copilot-claude-opus-4-6', agent: 'copilot', model: 'claude-opus-4.6', effort: null, label: 'Copilot · Claude Opus 4.6' },
-  { id: 'copilot-gpt-5', agent: 'copilot', model: 'gpt-5', effort: null, label: 'Copilot · GPT-5' },
-  { id: 'copilot-gpt-5-mini', agent: 'copilot', model: 'gpt-5-mini', effort: null, label: 'Copilot · GPT-5 Mini' },
-  { id: 'copilot-gemini-2-5-pro', agent: 'copilot', model: 'gemini-2.5-pro', effort: null, label: 'Copilot · Gemini 2.5 Pro' },
-];
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
 
-function parseModels(text) {
-  try {
-    const parsed = JSON.parse(text);
-    const list = Array.isArray(parsed) ? parsed : Array.isArray(parsed?.models) ? parsed.models : [];
-    const entries = list
-      .map((item, idx) => {
-        const model = typeof item === 'string' ? item : item?.id || item?.model || item?.name;
-        if (!model) return null;
-        const title = (typeof item === 'object' && (item.label || item.displayName || item.name)) || model;
-        return {
-          id: `copilot-${String(model).replace(/[^a-z0-9.-]+/gi, '-')}`,
-          agent: 'copilot',
-          model: String(model),
-          effort: null,
-          label: /^Copilot\b/i.test(title) ? String(title) : `Copilot · ${title}`,
-          isDefault: Boolean(item?.isDefault || item?.is_default || idx === 0),
-        };
-      })
-      .filter(Boolean);
-    if (entries.length) return entries;
-  } catch {
-    // Fall back to curated defaults when output is not JSON.
+const entry = (model, title, isDefault = false) => ({
+  id: `copilot-${String(model).replace(/[^a-z0-9.-]+/gi, '-')}`,
+  agent: 'copilot',
+  model: String(model),
+  effort: null,
+  label: /^Copilot\b/i.test(title) ? String(title) : `Copilot · ${title}`,
+  isDefault: Boolean(isDefault),
+});
+
+// The CLI has no `models` command. Its ACP server (`copilot --acp`) answers `session/new` with the models this account may
+// use, the same list as `/model` and VS Code's Copilot picker. The requests are piped in at once; the CLI exits when stdin
+// closes. No prompt is sent, so nothing is billed.
+const ACP_PROBE = [
+  { jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: 1, clientCapabilities: {} } },
+  { jsonrpc: '2.0', id: 2, method: 'session/new', params: { cwd: os.tmpdir(), mcpServers: [] } },
+].map((message) => JSON.stringify(message)).join('\n') + '\n';
+
+/** `session/new`'s reply from the ACP output: { models: entries | null, sessionId, error }. Disabled models are left out. */
+function parseAcpModels(stdout) {
+  for (const line of String(stdout || '').split(/\r?\n/)) {
+    let message;
+    try { message = JSON.parse(line); } catch { continue; }
+    if (message?.id === 2 && message.error) return { models: null, sessionId: null, error: String(message.error.message || 'session/new failed') };
+    if (message?.id !== 2 || !message.result) continue;
+    const { availableModels = [], currentModelId } = message.result.models || {};
+    const seen = new Set();
+    const models = availableModels
+      .filter((item) => item?.modelId && item._meta?.copilotEnablement !== 'disabled' && !seen.has(item.modelId) && seen.add(item.modelId))
+      .map((item) => entry(item.modelId, item.name || item.modelId, item.modelId === currentModelId));
+    return { models: models.length ? models : null, sessionId: message.result.sessionId || null, error: models.length ? null : 'the CLI reported no enabled models for this account' };
   }
-  return DEFAULT_COPILOT_MODELS.map((entry) => ({ ...entry }));
+  return { models: null, sessionId: null, error: null };
+}
+
+/** The probe's session holds nothing (no events.jsonl) and is not listed, but would stay on disk: remove just that folder. */
+function removeProbeSession(sessionId, env = process.env, home = os.homedir()) {
+  if (!/^[0-9a-f-]{36}$/i.test(sessionId || '')) return;
+  const dir = path.join(env.COPILOT_HOME || path.join(home, '.copilot'), 'session-state', sessionId);
+  try {
+    if (fs.existsSync(path.join(dir, 'events.jsonl'))) return;
+    if (!/client_name: github\/acp/.test(fs.readFileSync(path.join(dir, 'workspace.yaml'), 'utf8'))) return;
+    fs.rmSync(dir, { recursive: true, force: true });
+  } catch {
+    // Leaving an empty session behind is harmless.
+  }
 }
 
 module.exports = {
@@ -77,15 +94,16 @@ module.exports = {
   },
   install: 'npm.cmd install -g @github/copilot@latest; if ($LASTEXITCODE -eq 0) { & "$env:APPDATA\\npm\\copilot.cmd" login }',
 
+  // Only the account's own list counts: no built-in or hard-coded fallback. A failure throws, and Settings shows the reason.
   discoverModels: async ({ file, runCli }) => {
     if (!file) return null;
-    try {
-      const result = await runCli(file, ['models', '--json'], 15000);
-      if (result?.ok && result.stdout) return parseModels(result.stdout);
-    } catch {
-      // Fall back to default Copilot models when `models --json` is unsupported.
-    }
-    return DEFAULT_COPILOT_MODELS.map((entry) => ({ ...entry }));
+    const result = await runCli(file, ['--acp'], 30000, undefined, ACP_PROBE);
+    const { models, sessionId, error } = parseAcpModels(result?.stdout);
+    removeProbeSession(sessionId);
+    if (models) return models;
+    const detail = error || String(result?.stderr || '').split(/\r?\n/).map((line) => line.trim()).filter(Boolean).at(-1)
+      || (result?.ok ? 'the CLI did not answer the model request' : `the CLI exited with code ${result?.code ?? 'unknown'}`);
+    throw new Error(`Could not discover Copilot models: ${detail}`);
   },
 
   commandFor({ command, fullPrompt, model, resume, permissionMode, cwd }) {
@@ -108,6 +126,6 @@ module.exports = {
     return undefined;
   },
 
-  parseModels,
-  DEFAULT_COPILOT_MODELS,
+  parseAcpModels,
+  removeProbeSession,
 };
