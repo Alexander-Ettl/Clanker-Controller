@@ -166,3 +166,19 @@ test('CLI hub refresh updates cached names, preserves favorites and survives a p
   assert.equal(restored.fetched.length, 2, 'restart loads dynamic cache before discovery');
   assert.equal(MODEL_CATALOG[0].effort, 'medium');
 });
+
+test('CLI hub reports a discovery error and drops that provider\'s cached list instead of showing stale models', async () => {
+  const memory = (initial) => { let value = initial; return { get: () => value, set: (next) => { value = next; } }; };
+  const copilot = [{ id: 'copilot-old', agent: 'copilot', model: 'old', effort: null, label: 'Copilot · Old' }];
+  const codex = parseCodexModels(JSON.stringify({ models: [{ slug: 'gpt-9-sol', display_name: 'GPT-9-Sol', visibility: 'list', supported_reasoning_levels: [{ effort: 'medium' }] }] }));
+  let discovered = { codex, copilot: { error: 'Could not discover Copilot models: not authenticated' } };
+  const hub = new CliHub({ store: memory([]), cacheStore: memory([...codex, ...copilot]), promptStore: memory({}), broadcast() {}, discover: async () => discovered });
+  await hub.refreshModels();
+  assert.deepEqual(hub.snapshot().modelErrors, { copilot: 'Could not discover Copilot models: not authenticated' });
+  assert.equal(hub.fetched.some((entry) => entry.agent === 'copilot'), false);
+  assert.equal(hub.fetched.length, codex.length);
+  discovered = { codex, copilot };
+  await hub.refreshModels();
+  assert.deepEqual(hub.snapshot().modelErrors, {}, 'a later success clears the error');
+  assert.equal(hub.fetched.some((entry) => entry.id === 'copilot-old'), true);
+});

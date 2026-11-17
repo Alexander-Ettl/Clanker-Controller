@@ -169,7 +169,7 @@ class ChatStore {
       }
       return { file, locate: model.locate, turnOf: model.turnOf };
     } catch (error) {
-      console.error('[clanker] Could not write chat transcript:', error.message);
+      require('./log.js').error('chat store', 'Could not write chat transcript:', error);
       return null;
     }
   }
@@ -214,7 +214,7 @@ class ChatStore {
           this.outputs.release(clean); this.summaries.delete(file);
         }
       })().catch(error => {
-        console.error('[clanker] Could not checkpoint chat:', error.message);
+        require('./log.js').error('chat store', 'Could not checkpoint chat:', error);
         // Keep failed work flushable at shutdown or the next explicit save.
         write.error = error;
       }).finally(() => { if (!write.error && this.writes.get(chat.id) === write) this.writes.delete(chat.id); });
