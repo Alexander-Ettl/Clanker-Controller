@@ -7,6 +7,7 @@ const os = require('node:os');
 const path = require('node:path');
 const { pathToFileURL } = require('node:url');
 const { TerminalSessionManager } = require('./lib/pty-session.js');
+const log = require('./lib/log.js'); // the Logs popup and the "Clanker Controller" output channel
 const { readQuotas, onDidChangeQuotas, recordClaudeUsage, claudeUsageAge } = require('./lib/quota-bridge.js');
 const { probeClaudeUsage } = require('./lib/claude-usage.js');
 
@@ -1115,7 +1116,7 @@ class ChatRun {
     return this.startTurn({ ...next, steer: true }, { queued: next })
       .then((started) => { if (started === false) setImmediate(() => this.drain()); })
       .catch((error) => {
-        console.error('[ai-chat-panel] queued turn failed to start:', error);
+        log.error('queue', 'A queued turn failed to start:', error);
         this.post({ type: /out of usage/i.test(error.message) ? 'queueUsageWarning' : 'notice', chatId: this.chat.id, id: next.id, agent: modelOption(next.modelId)?.agent || this.activeAssistantMessage?.agent, text: 'Could not start the queued task: ' + error.message + ' It is still in the queue.' });
       })
       .finally(() => { this.deps.chatWindowManager.release(this); this.deps.notifyHistory(); });
@@ -1449,6 +1450,9 @@ class ChatRun {
  * the old run without stopping it, so several agents can work at once in one
  * window or across many (P13-J).
  */
+/** Webview messages sent too often (each keystroke, each scroll) to be worth a debug line each. */
+const QUIET_MESSAGES = new Set(['composerActivity', 'saveDraft', 'saveScroll', 'requestQuotas', 'requestFleet', 'requestApiValue', 'windowActive']);
+
 class ChatWindowHost {
   constructor({ panel, extensionUri, run, deps }) {
     this.panel = panel;
@@ -1476,7 +1480,8 @@ class ChatWindowHost {
       enableScripts: true,
       localResourceRoots: [vscode.Uri.joinPath(extensionUri, 'media'), vscode.Uri.file(deps.sessionDir)],
     };
-    panel.webview.onDidReceiveMessage((message) => this.handleMessage(message));
+    this.logsOpen = false; // whether this window's Logs popup is showing, and so wants each new entry
+    panel.webview.onDidReceiveMessage((message) => this.receive(message));
     panel.webview.html = this.renderHtml(panel.webview, run);
     panel.onDidDispose(() => {
       this.investigationBridge.dispose();
@@ -1503,6 +1508,40 @@ class ChatWindowHost {
   async pushRoutingMode() {
     const routing = this.deps.routing;
     if (routing) this.panel.webview.postMessage({ type: 'routingMode', ...await routing.mode() });
+  }
+
+  /**
+   * Every message from the webview comes through here, so a handler that throws (a button "doing nothing") ends up in
+   * the log with the message that caused it instead of disappearing as an unhandled rejection.
+   */
+  receive(message) {
+    const type = typeof message?.type === 'string' ? message.type : '(no type)';
+    if (this.handleLogMessage(message)) return;
+    if (!QUIET_MESSAGES.has(type)) log.debug('message', `← ${type}${message?.chatId ? ` (chat ${String(message.chatId).slice(0, 8)})` : ''}`);
+    let pending;
+    try { pending = this.handleMessage(message); }
+    catch (error) { log.error('message', `Handling "${type}" failed:`, error); return; }
+    if (pending && typeof pending.then === 'function') pending.then(undefined, error => log.error('message', `Handling "${type}" failed:`, error));
+  }
+  /** The Logs popup's own messages, and the errors media/error-report.js sends. */
+  handleLogMessage(message) {
+    switch (message?.type) {
+      case 'clientLog': log.fromWebview(message); return true;
+      case 'logsSubscribe': this.logsOpen = true; void this.panel.webview.postMessage({ type: 'logEntries', entries: log.entries() }); return true;
+      case 'logsUnsubscribe': this.logsOpen = false; return true;
+      case 'openLogs': void this.panel.webview.postMessage({ type: 'openLogs' }); return true;
+      case 'clearLogs': log.clear(); return true;
+      case 'showLogOutput': log.channel()?.show(true); return true;
+      case 'copyText': if (typeof message.text === 'string') void vscode.env.clipboard.writeText(message.text); return true;
+      case 'askAboutLogEntry': {
+        const entry = log.entries().find(item => item.id === message.id);
+        if (!entry) return true;
+        const text = `Something went wrong in Clanker Controller. Find the cause and fix it. This is the log entry:\n\n\`\`\`\n${log.format([entry])}\n\`\`\``;
+        void this.panel.webview.postMessage({ type: 'prefillPrompt', text, closeLogs: true });
+        return true;
+      }
+      default: return false;
+    }
   }
 
   async handleMessage(message) {
@@ -2684,6 +2723,8 @@ class ChatWindowHost {
   renderHtml(webview, run = this.run) {
     const initialQueueLoading = this.pendingQueueCount(run);
     const scriptUri = webview.asWebviewUri(vscode.Uri.joinPath(this.extensionUri, 'media', 'main.js'));
+    const errorReportUri = webview.asWebviewUri(vscode.Uri.joinPath(this.extensionUri, 'media', 'error-report.js'));
+    const logViewerUri = webview.asWebviewUri(vscode.Uri.joinPath(this.extensionUri, 'media', 'log-viewer.js'));
     const attachmentPreviewUri = webview.asWebviewUri(vscode.Uri.joinPath(this.extensionUri, 'media', 'attachment-preview.js'));
     const attachmentDocsStyleUri = webview.asWebviewUri(vscode.Uri.joinPath(this.extensionUri, 'media', 'attachment-docs.css'));
     const glassUiStyleUri = webview.asWebviewUri(vscode.Uri.joinPath(this.extensionUri, 'media', 'glass-ui.css'));
@@ -2780,6 +2821,7 @@ ${rail ? railMarkup(CHAT_BUTTONS) : `<div class="topbar"><div class="topbar-acti
     </div>
   </div>
 
+  <script nonce="${nonce}" src="${errorReportUri}"></script>
   <script nonce="${nonce}">window.CLANKER_MARK = ${JSON.stringify(webview.asWebviewUri(vscode.Uri.joinPath(this.extensionUri, 'media', 'clanker-dark.svg')).toString())}; window.MODEL_CATALOG = ${JSON.stringify(MODEL_CATALOG)}; window.AVAILABLE_MODELS = ${JSON.stringify(AVAILABLE_MODELS.filter((entry) => this.deps.cliAccounts?.isEnabled(entry.agent) !== false))}; window.TIME_PREFS = ${timePrefs()}; window.ANTIGRAVITY_RING = ${JSON.stringify(antigravityRing())}; window.SCHEDULE_MODE = ${JSON.stringify(this.deps.getScheduleMode?.() || 'reset')}; window.VOICE_SILENCE_MS = ${Math.max(0, Number(vscode.workspace.getConfiguration('aiChatPanel').get('voiceAutoStopSeconds', 0)) || 0) * 1000}; window.INITIAL_QUEUE_LOADING = ${JSON.stringify(initialQueueLoading)};</script>
   <script nonce="${nonce}">window.PROVIDERS = ${JSON.stringify(providers.displayList()).replace(/</g, '\\u003c')};</script>
   <script defer nonce="${nonce}" src="${themePaletteUri}"></script>
@@ -2805,6 +2847,7 @@ ${rail ? railMarkup(CHAT_BUTTONS) : `<div class="topbar"><div class="topbar-acti
 <script defer nonce="${nonce}" src="${attachmentPreviewUri}"></script>
 <script defer nonce="${nonce}" src="${attachmentDocsUri}"></script>
 <script defer nonce="${nonce}" src="${attachmentMarkupUri}"></script>
+<script defer nonce="${nonce}" src="${logViewerUri}"></script>
 <script defer nonce="${nonce}" src="${scriptUri}"></script>
   ${rail ? `<script nonce="${nonce}">window.CONTEXT_ASSETS = ${(contextAssetsJson ||= JSON.stringify(contextAssets(path.join(__dirname, 'media')))).replace(/</g, '\\u003c')};</script>` : ''}
   ${rail ? `<script defer nonce="${nonce}" src="${railScriptUri}"></script>` : ''}
@@ -3689,6 +3732,7 @@ function railMarkup(buttons) {
 }
 
 function activate(context) {
+  installLog(context, () => chatWindowManager); // first, so everything after it can log
   refreshBinaries();
   const AGENTS = agentList();
   const sessionManager = new TerminalSessionManager(vscode, AGENTS);
@@ -3963,7 +4007,7 @@ function activate(context) {
       try {
         await context.secrets.store(CHAT_KEY, newChatId);
       } catch (err) {
-        console.error('[ai-chat-panel] failed to persist new telegram chat ID:', err);
+        log.error('telegram', 'Could not store the new Telegram chat ID:', err);
       }
     };
     bindTelegramControls(next, { manager: chatWindowManager, watchdog, queue: schedulerQueue, readQuotas, models: MODEL_CATALOG, resolveTarget: injectTarget, notifyQueue: notifySchedulerQueue });
@@ -4038,7 +4082,7 @@ function activate(context) {
     const ownerId = await context.secrets.get(OWNER_KEY);
     if (token && chatId) await startTelegram(token, chatId, '', ownerId);
   })().catch((error) => vscode.window.showWarningMessage(`Telegram could not reconnect: ${error.message}. Use Configure to check the connection.`));
-  void chatWindowManager.pruneEmptyChats().catch(error => console.error('[clanker] Could not clean up empty chats:', error.message));
+  void chatWindowManager.pruneEmptyChats().catch(error => log.error('chats', 'Could not clean up empty chats:', error));
   watchdog.start();
 
   context.subscriptions.push(
@@ -4356,6 +4400,45 @@ function activate(context) {
   }
 
   context.subscriptions.push({ dispose: () => sessionManager.dispose() }, { dispose: () => chatWindowManager.dispose() }, { dispose: () => watchdog.stop() }, { dispose: () => { void telegram?.stop(); } }, tunnel, tunnelStatus);
+}
+
+/**
+ * The log (lib/log.js) goes to a "Clanker Controller" output channel as well as the Logs popup. Every error or warning
+ * this extension shows as a notification is logged too, with the stack of the code that raised it.
+ */
+function installLog(context, manager) {
+  try {
+    const channel = vscode.window.createOutputChannel('Clanker Controller', { log: true });
+    log.attachChannel(channel);
+    context.subscriptions.push(channel, { dispose: () => log.attachChannel(null) });
+  } catch (error) { console.warn('[clanker] No log output channel:', error.message); }
+  for (const [name, level] of [['showErrorMessage', 'error'], ['showWarningMessage', 'warn']]) {
+    const original = vscode.window[name];
+    if (typeof original !== 'function') continue;
+    try {
+      vscode.window[name] = function (message, ...rest) {
+        const raisedAt = new Error('raised').stack?.split('\n').slice(2, 8).join('\n') || '';
+        log.add({ level, source: 'notification', message: typeof message === 'string' ? message : String(message), stack: raisedAt });
+        return original.call(this, message, ...rest);
+      };
+    } catch { /* a frozen API object: notifications stay unlogged */ }
+  }
+  context.subscriptions.push(
+    vscode.commands.registerCommand('aiChatPanel.showLogs', () => {
+      const host = manager()?.getOrCreateActive();
+      if (!host) { log.channel()?.show(true); return; }
+      host.panel.reveal?.(undefined, false);
+      void host.panel.webview.postMessage({ type: 'openLogs' });
+    }),
+    vscode.commands.registerCommand('aiChatPanel.showLogOutput', () => log.channel()?.show(true)),
+  );
+  const unsubscribe = log.onEntry(entry => {
+    for (const host of manager()?.hosts || []) {
+      if (host.logsOpen) void host.panel.webview.postMessage(entry ? { type: 'logEntry', entry } : { type: 'logCleared' });
+    }
+  });
+  context.subscriptions.push({ dispose: unsubscribe });
+  log.info('extension', `Clanker Controller activated (${vscode.env.appName} ${vscode.version}, ${process.platform})`);
 }
 
 function deactivate() {}
