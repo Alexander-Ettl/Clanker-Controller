@@ -4,7 +4,6 @@ const { EventEmitter } = require('node:events');
 const { spawn, execFile, execFileSync } = require('node:child_process');
 const crypto = require('node:crypto');
 const fs = require('node:fs');
-const os = require('node:os');
 const path = require('node:path');
 const { locate, resolveShim, headlessEnv } = require('./binary-locator.js');
 const { CodexAppServer } = require('./codex-app-server.js');
@@ -33,21 +32,6 @@ const agyLimit = (text) => {
   const hit = AGY_LIMIT.exec(String(text || ''))?.[0].trim().slice(0, 300);
   return hit ? (/^RESOURCE_EXHAUSTED/i.test(hit) ? hit : `RESOURCE_EXHAUSTED: ${hit}`) : null;
 };
-/** agy writes the failure to its own log even when its stream says nothing: the newest log touched since the turn began. */
-function agyLogLimit(dir, since) {
-  try {
-    const logs = fs.readdirSync(dir).filter((name) => /^cli-.*\.log$/.test(name)).map((name) => ({ file: path.join(dir, name), at: fs.statSync(path.join(dir, name)).mtimeMs }))
-      .filter((log) => log.at >= since - 1000).sort((a, b) => b.at - a.at);
-    for (const { file } of logs) {
-      const size = fs.statSync(file).size, fd = fs.openSync(file, 'r');
-      const tail = Buffer.alloc(Math.min(size, 65536));
-      try { fs.readSync(fd, tail, 0, tail.length, size - tail.length); } finally { fs.closeSync(fd); }
-      const hit = tail.toString('utf8').split(/\r?\n/).reverse().find((line) => /errorreport\.go.*RESOURCE_EXHAUSTED/.test(line));
-      if (hit) return agyLimit(hit);
-    }
-  } catch { /* no log to read: the stream's own words stand */ }
-  return null;
-}
 const CODEX_TRANSIENT = /selected model is at capacity|workspace routing discovery failed/i;
 const CODEX_CONTINUE = 'Continue the unfinished task in this thread after a temporary service failure. First inspect saved work and completed tool results. Preserve completed changes and continue only the remaining steps; do not repeat completed actions or restart the task.';
 
@@ -423,11 +407,11 @@ function vendorEvent(raw, agent) {
     // A resumed conversation can answer only here, with no streamed text_delta steps.
     const response = at(r.response);
     const error = at(r.error);
-    const limit = agyLimit(error);
+    const limit = r.status === 'ERROR' ? agyLimit(error) : null;
     if (r.status === 'ERROR' && !response) return { type: 'delta', text: `Gemini error: ${limit || error || 'turn failed'}`, model: agent, agent };
     // Headless agy can't prompt; anything it wasn't allowed to do is reported here.
     const denied = (r.denied_actions || []).map((d) => at(d.display_name) || at(d.action)).filter(Boolean);
-    return denied.length ? { type: 'notice', text: `Gemini wasn't allowed to: ${denied.join(', ')}. Headless mode can't ask, so these were skipped.`, agent, then: 'turn_complete', response } : { type: 'turn_complete', agent, response, ...(limit ? { limit } : {}) };
+    return denied.length ? { type: 'notice', text: `Gemini wasn't allowed to: ${denied.join(', ')}. Headless mode can't ask, so these were skipped.`, agent, then: 'turn_complete', response } : { type: 'turn_complete', agent, response, ...(limit ? { limit, ...(r.status === 'ERROR' ? { limitError: true } : {}) } : {}) };
   }
   return undefined;
 }
@@ -481,10 +465,9 @@ class StreamEngine extends EventEmitter {
    * question cards to be answered. The scheduler's unattended engine keeps
    * it off (auto mode, never blocks on a click).
    */
-  constructor({ cwd, chatId = null, models = {}, interactive = false, permissionMode = null, codexServerFactory = (options) => new CodexAppServer(options), agyQuestionReader = readQuestion, agyLogDir = path.join(os.homedir(), '.gemini', 'antigravity-cli', 'log') } = {}) {
+  constructor({ cwd, chatId = null, models = {}, interactive = false, permissionMode = null, codexServerFactory = (options) => new CodexAppServer(options), agyQuestionReader = readQuestion } = {}) {
     super();
-    this.agyLogDir = agyLogDir;
-    this.agyLimit = null; // the quota failure agy reported on stderr or in its log this turn
+    this.agyLimit = null; // the quota failure this process reported on stderr
     this.limitShown = false; // ... and whether the reply already says so
     this.cwd = cwd || process.cwd();
     this.bridgeAgents = new (require('./bridge-agents').BridgeAgents)(chatId, event => this.emit('event', event));
@@ -564,7 +547,9 @@ class StreamEngine extends EventEmitter {
       // -p reads the prompt from stdin; stream-json output needs --verbose.
       // A bare "claude" model setting means "the account default".
       const permMode = this.effectivePermissionMode('claude', choice.permissionMode);
-      const modelArgs = [...(model && model !== 'claude' ? ['--model', model] : []), ...(effort ? ['--effort', effort] : []), ...(resume ? ['--resume', resume] : [])];
+      // --name is what `claude --resume` shows for the session; without it a headless session is listed by its first prompt.
+      const name = String(this.sessionName || '').replace(/[\r\n"%^&|<>]+/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 120);
+      const modelArgs = [...(model && model !== 'claude' ? ['--model', model] : []), ...(effort ? ['--effort', effort] : []), ...(resume ? ['--resume', resume] : []), ...(name ? ['--name', name] : [])];
       if (permMode === 'fullAccess') {
         if (this.interactive) {
           return {
@@ -634,7 +619,6 @@ class StreamEngine extends EventEmitter {
     this.sawOutput = false;
     this.agyLimit = null;
     this.limitShown = false;
-    this.agyTurnAt = Date.now();
     this.codexTurnId = null;
     if (!recovering) this.codexTurnBase = null; // preserve the thread baseline across recovery attempts
     this.codexError = '';
@@ -984,6 +968,8 @@ class StreamEngine extends EventEmitter {
     const isCmd = process.platform === 'win32' && /\.cmd$/i.test(spec.command);
     const shim = isCmd ? resolveShim(spec.command) : null;
     const useShell = isCmd && !shim;
+    // A shell would split the name at its spaces: only the prompt travels safely there (over stdin).
+    if (useShell) { const at = spec.args.indexOf('--name'); if (at >= 0) spec.args.splice(at, 2); }
     const isCompacting = Boolean(compact || autoCompact);
     const child = spawn(shim ? shim.command : useShell ? `"${spec.command}"` : spec.command, shim ? [...shim.args, ...spec.args] : spec.args, {
       cwd: this.cwd,
@@ -1129,7 +1115,6 @@ class StreamEngine extends EventEmitter {
     this.sawOutput = false;
     this.agyLimit = null;
     this.limitShown = false;
-    this.agyTurnAt = Date.now();
     this.resumeRetry = null;
     this.fallback = null;
     if (this.child) this.child.turnCompleted = false; // the live or kept-open process this turn runs in
@@ -1163,7 +1148,7 @@ class StreamEngine extends EventEmitter {
       }
     }
 
-    if (agent === 'gemini' && !this.agyLimit) this.agyLimit = agyLimit(line);
+    if (agent === 'gemini' && !this.agyLimit && /^(?:E\d{4}\s[^\r\n]*errorreport\.go:\d+\]|RESOURCE_EXHAUSTED\b|Individual quota reached\b)/.test(line.trim())) this.agyLimit = agyLimit(line);
 
     // 2. Isolate diagnostics: Stderr chatter NEVER emits a 'delta' event.
     // Route to diagnostic event for internal extension/terminal telemetry.
@@ -1279,7 +1264,8 @@ class StreamEngine extends EventEmitter {
       }
     }
     if (event.type === 'turn_complete' && agent === 'gemini' && !this.child?.turnCompleted) {
-      const limit = event.limit || this.agyLimit || (this.limitShown || !this.agyTurnAt ? null : agyLogLimit(this.agyLogDir, this.agyTurnAt));
+      // Shared log files can belong to another chat/model; only this process can report its quota failure.
+      const limit = event.limit || this.agyLimit;
       if (limit && !this.limitShown) {
         this.emit('event', { type: 'delta', text: `${this.hadText ? '\n\n' : ''}Gemini error: ${limit}`, model: agent, agent });
         this.hadText = true;
@@ -1288,6 +1274,7 @@ class StreamEngine extends EventEmitter {
       }
     }
     delete event.limit;
+    delete event.limitError;
     if (event.type === 'turn_complete' && event.error) {
       const errorText = event.error;
       delete event.error;

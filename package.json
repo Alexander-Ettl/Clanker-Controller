@@ -7,6 +7,7 @@
   "scripts": {
     "install:extension": "node scripts/install-extension.mjs",
     "check": "node ai-chat-panel/test/check.js",
+    "typecheck": "node scripts/typecheck.mjs",
     "test": "node --test ai-chat-panel/test/*.test.js antigravity-usage-statusbar/test/usage.test.js",
     "render": "node ai-chat-panel/test/render.mjs",
     "verify:models": "node scripts/verify-model-provider-identity.mjs",

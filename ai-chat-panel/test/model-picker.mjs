@@ -83,6 +83,13 @@ try {
   await page.evaluate(()=>window.postMessage({type:'prefillPrompt',routingConfig:true,text:'Adjust my routing preferences'},'*'));
   assert.equal(await page.locator('#settingsModal').isVisible(),false);
   assert.equal(await page.locator('#promptInput').inputValue(),'Adjust my routing preferences');
+  const orchestrator = { id: 'gemini-pro-orchestrator-g1-pro', agent: 'gemini', model: 'gemini-pro-orchestrator-g1-pro', label: 'Orchestrator (Argon)', shortLabel: 'Orchestrator', brand: 'antigravityArgon' };
+  await page.evaluate((entry) => window.postMessage({ type: 'modelCatalog', catalog: [entry], available: [entry] }, '*'), orchestrator);
+  await open();
+  await choice(orchestrator.id).click();
+  assert.equal(await page.locator('.model-picker-label').innerText(), 'Orchestrator (Argon)');
+  await page.setViewportSize({ width: 480, height: 720 });
+  assert.equal(await page.locator('.model-picker-label').innerText(), 'Orchestrator', 'narrow composer hides (Argon) and keeps Orchestrator');
   assert.deepEqual(errors, []);
   console.log('Model picker: Auto, manual selection and legacy mode compatibility passed.');
 } finally {

@@ -31,14 +31,14 @@ function chatHtml(sidebar) {
 }
 
 /** A page showing the chat window. `problems` collects page errors, console errors and failed requests as they happen. */
-export async function openChat(browser, { width, height, sidebar = false, scale = 1 }) {
+export async function openChat(browser, { width, height, sidebar = false, scale = 1, queueLoading }) {
   const page = await browser.newPage({ viewport: { width, height }, deviceScaleFactor: scale });
   const problems = [];
   page.on('pageerror', error => problems.push({ kind: 'page-error', detail: error.message.slice(0, 300) }));
   page.on('console', message => { if (message.type() === 'error') problems.push({ kind: 'console-error', detail: message.text().slice(0, 300) }); });
   await page.route(`${origin}/**`, route => {
     const pathname = new URL(route.request().url()).pathname;
-    if (pathname === '/') return route.fulfill({ contentType: 'text/html', body: chatHtml(sidebar) });
+    if (pathname === '/') return route.fulfill({ contentType: 'text/html', body: queueLoading === undefined ? chatHtml(sidebar) : chatHtml(sidebar).replace(/window\.INITIAL_QUEUE_LOADING = [^;]*;/, `window.INITIAL_QUEUE_LOADING = ${JSON.stringify(queueLoading)};`) });
     const file = path.resolve(media, '.' + pathname);
     if (!file.startsWith(media + path.sep) || !fs.existsSync(file)) { problems.push({ kind: 'request-failed', detail: `404 ${pathname}` }); return route.fulfill({ status: 404 }); }
     return route.fulfill({ contentType: TYPES[path.extname(file)] || 'application/octet-stream', body: fs.readFileSync(file) });

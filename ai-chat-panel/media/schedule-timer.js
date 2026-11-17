@@ -69,7 +69,12 @@
     const bud = el('div', 'timer-bud');
     bud.hidden = true;
     const pill = el('div', 'timer-pill');
+    const head = el('div', 'timer-head');
     const title = el('div', 'timer-title');
+    const offBtn = btn('timer-off', 'Off', 'Turn off scheduling');
+    offBtn.title = 'Remove schedule';
+    offBtn.addEventListener('click', () => { clear(); onChange(null); });
+    head.append(title, offBtn);
     const body = el('div', 'timer-body');
 
     // Timer: every delay is a button. A row of plain choices needs no drag and no hint that it can be dragged: you see
@@ -106,7 +111,7 @@
     const foot = el('div', 'timer-foot');
     foot.append(note, slot);
     body.append(chips, windowsView, calendar);
-    pill.append(title, body, foot);
+    pill.append(head, body, foot);
     bud.append(pill);
     composer.append(bud);
 
@@ -155,6 +160,7 @@
       reserveLabel();
       pill.dataset.mode = mode || 'off';
       title.textContent = TITLES[mode] || '';
+      offBtn.hidden = mode === null;
       chips.hidden = mode !== 'timer';
       windowsView.hidden = mode !== 'reset';
       calendar.hidden = mode !== 'calendar';
@@ -177,7 +183,7 @@
         windowsView.replaceChildren(...list.map((w) => {
           const row = btn('timer-window', '<span class="timer-window-dot"></span><span class="timer-window-name"></span><i class="timer-bar"><b></b></i><span class="timer-window-pct"></span><span class="timer-window-eta"></span>');
           row.dataset.key = w.key;
-          row.addEventListener('click', () => { resetKey = w.key; renderWindows(); onChange(); });
+          row.addEventListener('click', () => { resetKey = w.key; renderWindows(); onChange(mode); });
           return row;
         }));
       }
@@ -197,7 +203,7 @@
       note.textContent = chosen?.resetsAt ? `Sends ${dayOffset(new Date(chosen.resetsAt * 1000)) === 0 ? 'at' : `${dayName(new Date(chosen.resetsAt * 1000))} at`} ${clock(new Date(chosen.resetsAt * 1000))}` : 'Sends when the limit resets';
     }
 
-    function commit() { render(); place(); onChange(); }
+    function commit() { render(); place(); onChange(mode); }
 
     // ---- timer buttons
     function setStep(nextIndex) {
@@ -326,12 +332,45 @@
     button.addEventListener('keydown', (event) => { if (event.key === 'ArrowUp' && mode === 'timer') { event.preventDefault(); show(); chipButtons[index].focus(); } });
     bud.addEventListener('keydown', (event) => { if (event.key === 'Escape') { event.stopPropagation(); hide(); button.focus(); } });
 
+    /** Back to off, and forget the chosen moment (the bar keeps its step). */
+    function clear() {
+      mode = null;
+      sel = null;
+      at = null;
+      stopTicker();
+      render();
+      open = false;
+      bud.hidden = true;
+      button.classList.remove('is-timer-open');
+    }
+
     render();
     return {
       get mode() { return mode; },
       get resetWindow() { return resetKey; },
       advance,
       select,
+      /** Hydrates the picker from an existing scheduled task so editing displays and lets the user remove/adjust it. */
+      load(schedule, now = Date.now()) {
+        if (schedule?.dispatchTrigger === 'quota-reset') {
+          resetKey = schedule.resetWindow === '7d' ? '7d' : '5h';
+          sel = null;
+          at = null;
+          select('reset');
+          return true;
+        }
+        const atMs = Date.parse(schedule?.dispatchTime || '');
+        if (schedule?.dispatchTrigger === 'fixed-time' && Number.isFinite(atMs) && atMs > now) {
+          const start = new Date(atMs);
+          at = atMs;
+          sel = { day: startOfDay(start), h: start.getHours(), m: start.getMinutes() };
+          viewMonth = new Date(sel.day.getFullYear(), sel.day.getMonth(), 1);
+          select('calendar');
+          return true;
+        }
+        clear();
+        return false;
+      },
       /** The mode the next click from "off" starts with (the one the last scheduled prompt used). */
       setPreferred(nextMode) { if (MODES.includes(nextMode)) base = nextMode; },
       /** The button's label for what is chosen: "1 hour", "Fri 21:30", the countdown to the reset. Empty when nothing shows. */
@@ -357,16 +396,7 @@
         return null;
       },
       /** Back to off, and forget the chosen moment (the bar keeps its step). */
-      clear() {
-        mode = null;
-        sel = null;
-        at = null;
-        stopTicker();
-        render();
-        open = false;
-        bud.hidden = true;
-        button.classList.remove('is-timer-open');
-      },
+      clear,
     };
   };
 })();

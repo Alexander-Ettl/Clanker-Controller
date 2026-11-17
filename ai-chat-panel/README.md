@@ -256,6 +256,12 @@ way `router.mjs` loads it), or a Groq key saved through Chat Settings. When Groq
 (80% of any limit by default, `groq_spill`) or answers 429, cleanup, titles and Auto go to GPT OSS 120B on
 Cloudflare Workers AI instead, using the Cloudflare connection under Settings → Routing (or `CLOUDFLARE_ACCOUNT_ID` and
 `CLOUDFLARE_API_TOKEN`). Dictation cleanup and titles share the router's budget checks and counters.
+Chat names (Settings → General → Chat names, `aiChatPanel.chatNames`): by default a chat takes the title its agent wrote itself,
+read from `~/.gemini/antigravity-cli/annotations/<conversation id>.pbtxt` when its first Antigravity turn ends (`lib/agent-titles.js`).
+Claude Code (headless `-p`) and Codex (app-server) write no title for the chats Clanker runs, so Groq names those at once, and Groq
+also names an Antigravity chat that has no title file yet. Set it to `groq` to always use Groq.
+Completion sound (Settings → General → Completion sound, `aiChatPanel.completionSound`, on by default): turns off the chime
+played when a reply finishes. The Windows toast shown while the IDE is in the background is unaffected.
 Cloudflare [does not train on prompts or share them with other customers](https://developers.cloudflare.com/workers-ai/platform/data-usage/).
 Whisper transcription stays on Groq.
 

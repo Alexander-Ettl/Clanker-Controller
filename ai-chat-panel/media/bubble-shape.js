@@ -20,7 +20,9 @@
   const RIM = '#2b2d32';
   const themeColors = (el) => {
     const style = getComputedStyle(el);
-    return { fill: style.getPropertyValue('--user-bubble').trim() || FILL, rim: style.getPropertyValue('--charcoal-rim').trim() || RIM };
+    return { fill: style.getPropertyValue('--user-bubble').trim() || FILL,
+      rim: style.getPropertyValue('--user-bubble-rim').trim() || style.getPropertyValue('--charcoal-rim').trim() || RIM,
+      sheen: parseFloat(style.getPropertyValue('--user-bubble-sheen')) || 0.045 };
   };
 
   /** The outline of a bubble of w x h, tail included, as an SVG path in pixels. The tail is TAIL tall unless given (the rail's tiles use 6). */
@@ -83,9 +85,9 @@
   }
 
   /** Fill plus a 1px rim inside the edge, for the bubble and (optionally) the dock's pill, as one contour. */
-  function groupImage(W, H, bubble, dock, { fill: FILL_COLOR = FILL, rim: RIM_COLOR = RIM } = {}) {
+  function groupImage(W, H, bubble, dock, { fill: FILL_COLOR = FILL, rim: RIM_COLOR = RIM, sheen = 0.045 } = {}) {
     const a = `<path d="${bubblePath(bubble.w, bubble.h)}" transform="translate(${bubble.x} ${bubble.y})"`;
-    let defs = '<linearGradient id="g" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#fff" stop-opacity=".045"/><stop offset=".4" stop-color="#fff" stop-opacity="0"/></linearGradient>';
+    let defs = `<linearGradient id="g" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#fff" stop-opacity="${sheen}"/><stop offset=".4" stop-color="#fff" stop-opacity="0"/></linearGradient>`;
     let body = `${a} fill="${FILL_COLOR}"/>${a} fill="url(#g)"/>`;
     let clip = `${a}/>`;
     const stroke = `fill="none" stroke="${RIM_COLOR}" stroke-width="2" stroke-linejoin="round"`;
@@ -132,19 +134,18 @@
   }
 
   /** A Manage Chats card is a bubble on its own: same outline, its colours from the card's --card-fill and --card-rim. */
-  function paintCard(card) {
+  function measureCard(card) {
     if (!card.offsetWidth) return;
     const style = getComputedStyle(card);
     const image = groupImage(card.offsetWidth, card.offsetHeight, { x: 0, y: 0, w: card.offsetWidth, h: card.offsetHeight }, null, {
       fill: style.getPropertyValue('--card-fill').trim() || FILL,
       rim: style.getPropertyValue('--card-rim').trim() || RIM,
     });
-    card.style.backgroundImage = `url("data:image/svg+xml,${encodeURIComponent(image)}")`;
-    card.classList.add('has-shape');
+    return { group: card, card: `url("data:image/svg+xml,${encodeURIComponent(image)}")` };
   }
 
-  function paint(group) {
-    if (group.classList.contains('history-card')) { paintCard(group); return; }
+  function measure(group) {
+    if (group.classList.contains('history-card')) return measureCard(group);
     const bubble = group.querySelector('.msg-user');
     if (!bubble || !bubble.offsetWidth) return;
     const dockEl = group.querySelector('.msg-actions');
@@ -152,9 +153,17 @@
     const colors = themeColors(group);
     const image = (dock) => `url("data:image/svg+xml,${encodeURIComponent(groupImage(group.offsetWidth, group.offsetHeight, bounds, dock, colors))}")`;
     // CSS selects both the contour and the controls from one state.
-    group.style.setProperty('--bubble-image', image(null));
-    group.style.setProperty('--bubble-dock-image', image(dockEl && { x: dockEl.offsetLeft, y: dockEl.offsetTop, w: dockEl.offsetWidth, h: dockEl.offsetHeight }));
-    group.classList.add('has-shape');
+    return { group, bubble: image(null), dock: image(dockEl && { x: dockEl.offsetLeft, y: dockEl.offsetTop, w: dockEl.offsetWidth, h: dockEl.offsetHeight }) };
+  }
+
+  function paintAll(groups) {
+    // Read every box before writing any surface, avoiding a style/layout flush per history card.
+    const surfaces = [...groups].map(measure).filter(Boolean);
+    for (const { group, card, bubble, dock } of surfaces) {
+      if (card) group.style.backgroundImage = card;
+      else { group.style.setProperty('--bubble-image', bubble); group.style.setProperty('--bubble-dock-image', dock); }
+      group.classList.add('has-shape');
+    }
   }
 
   let pointer = null;
@@ -170,7 +179,7 @@
 
   const sizes = new ResizeObserver((entries) => {
     const groups = new Set(entries.map(entry => entry.target.closest('.msg-group-user') || entry.target));
-    for (const group of groups) paint(group);
+    paintAll(groups);
     syncHover();
   });
   const watch = (root) => {
@@ -202,13 +211,16 @@
   transcript.addEventListener('scroll', syncHover, { passive: true });
   window.addEventListener('resize', syncHover, { passive: true });
   watch(transcript);
-  // The shapes are images with their colours baked in: repaint them all when the IDE switches between light and dark.
+  // Images bake in their colours: the palette adapter also signals switches between two themes of the same kind.
   const themeOf = () => [...document.body.classList].filter((name) => name.startsWith('vscode-')).join(' ');
   let theme = themeOf();
+  window.addEventListener('clanker-theme-changed', () => {
+    paintAll(document.querySelectorAll('.msg-group-user, .history-card.has-shape'));
+  });
   new MutationObserver(() => {
     if (themeOf() === theme) return;
     theme = themeOf();
-    for (const group of document.querySelectorAll('.msg-group-user, .history-card.has-shape')) paint(group);
+    paintAll(document.querySelectorAll('.msg-group-user, .history-card.has-shape'));
   }).observe(document.body, { attributes: true, attributeFilter: ['class'] });
   new MutationObserver((records) => records.forEach((record) => record.addedNodes.forEach(watch))).observe(transcript, { childList: true, subtree: true });
 })();

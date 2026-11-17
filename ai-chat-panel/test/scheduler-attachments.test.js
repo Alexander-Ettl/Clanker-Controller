@@ -90,6 +90,35 @@ test('changing providers clears only the old provider reset wait and keeps editi
   assert.equal((await queue.getQueue()).find(item => item.id === calendar.id).dispatchTime, deadline);
 });
 
+test('switching Antigravity models drops the old reset wait while text-only edits keep it', async t => {
+  const { models, seedModels } = require('./model-fixture');
+  const { setModelCatalog, setFavoriteModels } = require('../lib/model-catalog');
+  const { parseAgyModels } = require('../lib/cli-tools');
+  const extra = [...models, ...parseAgyModels('claude-sonnet-5-5-high\tClaude Sonnet 5.5 (High)\ngemini-pro-orchestrator-g1-pro\tOrchestrator')];
+  setModelCatalog(extra); setFavoriteModels(extra);
+  t.after(seedModels);
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'sched-agy-switch-'));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const queue = new SchedulerQueue({ workspaceDir: root, sessionDir: path.join(root, 'session') });
+  const deadline = new Date(Date.now() + 3600000).toISOString();
+  const task = await queue.enqueue({ model: 'gemini', modelId: 'gemini:claude-sonnet-5-5-high', prompt: 'continue', dispatchTrigger: 'quota-reset', notBefore: deadline });
+  await queue.saveDraft(task.id, { text: 'continue please', modelId: 'gemini:claude-sonnet-5-5-high' }, [], false);
+  assert.equal((await queue.getQueue())[0].notBefore, deadline, 'same Antigravity model keeps reset');
+  await queue.saveDraft(task.id, { text: 'continue please', modelId: 'gemini-pro-orchestrator-g1-pro' }, [], false);
+  const saved = (await queue.getQueue())[0];
+  const { isDue } = require('../lib/scheduler-queue');
+  assert.equal(saved.model, 'gemini');
+  assert.equal(saved.modelId, 'gemini-pro-orchestrator-g1-pro');
+  assert.equal(saved.dispatchTrigger, 'fixed-time');
+  assert.equal(saved.notBefore, undefined);
+  assert.equal(isDue(saved, Date.now()), true);
+  const stuck = await queue.enqueue({ model: 'gemini', modelId: 'gemini-pro-orchestrator-g1-pro', prompt: 'stuck', dispatchTrigger: 'quota-reset', notBefore: deadline });
+  await queue.saveDraft(stuck.id, { text: 'stuck', modelId: 'gemini-pro-orchestrator-g1-pro' }, [], false, { clearReset: true });
+  const cleared = (await queue.getQueue()).find(item => item.id === stuck.id);
+  assert.equal(cleared.dispatchTrigger, 'fixed-time');
+  assert.equal(cleared.notBefore, undefined);
+});
+
 test('scheduled edits preserve their identity, schedule and pictures without merging', async t => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'sched-edit-'));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
@@ -132,4 +161,45 @@ test('a scheduled prompt whose image sits in the queue\'s own folder survives a 
   const tasks = await queue.getQueue();
   const status = Object.fromEntries(tasks.map((t) => [t.id, t.status]));
   assert.deepEqual(status, { kept: 'pending', gone: 'attachment-missing', outside: 'attachment-missing' });
+});
+
+test('saveDraft applies edited schedule mode and timestamps when finished', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'sched-reschedule-'));
+  const queue = new SchedulerQueue({ workspaceDir: root, sessionDir: path.join(root, 'session') });
+  const initialTime = new Date(Date.now() + 7200000).toISOString();
+  const nextTime = new Date(Date.now() + 3600000).toISOString();
+  const task = await queue.enqueue({ model: 'claude', prompt: 'Later', dispatchTrigger: 'fixed-time', dispatchTime: initialTime });
+  await queue.saveDraft(task.id, { text: 'Sooner' }, [], true, { schedule: { dispatchTrigger: 'fixed-time', dispatchTime: nextTime } });
+  let saved = (await queue.getQueue())[0];
+  assert.equal(saved.dispatchTime, initialTime, 'in-progress typing does not mutate the schedule early');
+  await queue.saveDraft(task.id, { text: 'Sooner' }, [], false, { schedule: { dispatchTrigger: 'fixed-time', dispatchTime: nextTime } });
+  saved = (await queue.getQueue())[0];
+  assert.equal(saved.dispatchTrigger, 'fixed-time');
+  assert.equal(saved.dispatchTime, nextTime);
+  await queue.saveDraft(task.id, { text: 'On weekly reset' }, [], false, { schedule: { dispatchTrigger: 'quota-reset', resetWindow: '7d', notBefore: nextTime } });
+  saved = (await queue.getQueue())[0];
+  assert.equal(saved.dispatchTrigger, 'quota-reset');
+  assert.equal(saved.resetWindow, '7d');
+  assert.equal(saved.notBefore, nextTime);
+  assert.equal(saved.dispatchTime, undefined);
+});
+
+test('a file the OS briefly refuses (EPERM) neither blocks loading nor loses the queue', async t => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'sched-eperm-'));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const options = { workspaceDir: root, sessionDir: path.join(root, 'session') };
+  const seed = new SchedulerQueue(options);
+  const task = await seed.enqueue({ model: 'claude', chatId: 'chat', dispatchTrigger: 'quota-reset', prompt: 'Survive', notBefore: '2099-01-01T00:00:00.000Z' });
+  const refuse = (name, times) => {
+    const original = fs.promises[name];
+    let left = times;
+    fs.promises[name] = async (...args) => { if (left-- > 0) throw Object.assign(new Error('EPERM: operation not permitted'), { code: 'EPERM' }); return original(...args); };
+    t.after(() => { fs.promises[name] = original; });
+  };
+  refuse('readFile', 2);
+  assert.deepEqual((await new SchedulerQueue(options).getQueue()).map(item => item.id), [task.id], 'a read refused twice is retried');
+  refuse('rename', 99); // never lets go: the in-place write is the last resort
+  await seed.reorder([task.id]);
+  assert.equal(JSON.parse(fs.readFileSync(path.join(options.sessionDir, 'scheduler-queue.json'), 'utf8'))[0].prompt, 'Survive');
+  assert.deepEqual(fs.readdirSync(options.sessionDir).filter(name => name.endsWith('.tmp')), [], 'no stray temporary file is left behind');
 });

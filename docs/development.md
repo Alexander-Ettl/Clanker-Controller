@@ -4,7 +4,7 @@ Developer guide for this repository. The product overview is the [root README](.
 
 ## Start here
 
-For **“What's left to do on this project?”**, read [TODO.md](../TODO.md). It is the single list of open work, with stable task IDs, next actions and completion criteria. Report interrupted work first, then ready tasks, then deferred ideas and items needing investigation. Reading the backlog doesn't authorize implementation of every item.
+For **â€œWhat's left to do on this project?â€**, read [TODO.md](../TODO.md). It is the single list of open work, with stable task IDs, next actions and completion criteria. Report interrupted work first, then ready tasks, then deferred ideas and items needing investigation. Reading the backlog doesn't authorize implementation of every item.
 
 Read [AGENTS.md](../AGENTS.md) before editing. Use the [documentation index](README.md) to find current behavior, proposals and historical material. Old specs and their unchecked lists are context; they aren't another backlog. Check the working tree before resuming a task, since recent changes may already cover part of it.
 
@@ -36,11 +36,31 @@ Visor is optional. The bridge smoke check discovers `../Visor` or `VISOR_DIR`. C
 
 Open chat editor tabs and pop-outs use Antigravity's native layout restoration. Leave them open when closing the IDE to reopen them in their saved locations with the same conversations and drafts. Each restored webview requests its conversation after its message listener is ready, including when several windows reopen together. Closing an individual chat tab removes it from that layout; its history remains in Manage Chats. Window placement depends on the IDE restoring its previous session.
 
+Onboarding has two screens: **Step 1, connect your CLIs**, then **Step 2, choose favorite models**. The second screen hosts the same Available models list as Settings, with search, CLI filters, refresh and favorite hearts. Back returns to connections; Start chatting finishes setup. Favorite changes use the existing Settings save path and appear in both places.
+
+## IDE palette
+
+Glass depth has separate tokens for controls, panels, menus, popovers, modals, the composer and content bubbles. Light mode brightens raised surfaces within the IDE palette, replaces broad shadows with small contact shadows, and removes the resting shadow from message bubbles. Dark-mode token values retain their existing geometry and opacity. Neutral cast shadows are disabled in high contrast. The `glass-depth-*` browser scenarios cover the rail, transcript, composer, model menu and Settings at 900/420/320px.
+
+Liquid glass (`media/liquid-glass.js`): Chromium can run an SVG filter as a `backdrop-filter`, so each surface in `KINDS` gets one `<filter>` per size: an `feImage` displacement map (red = x, green = y, inward along the rounded-rectangle normal, strongest at the rim) fed to three `feDisplacementMap`s at slightly different scales for the colour split. The script sets `--lg-bd` on the element and adds `body.lg-on`; `style.css` reads it with the plain blur as fallback. Add a surface by adding a selector to `KINDS` and, if it needs the clear fill, to the `body.lg-on` rule. A surface inside another backdrop root (the goo-filtered composer, anything under `.fs-modal`'s blur) can't refract: its backdrop is empty. `buildMap` is pure and covered by `test/liquid-glass.test.js`. Review it in the `glass-depth-*` scenarios.
+
+The dock is glass as well (`island()` in the same file): `.island-glass` is a fixed layer behind `.compose-row`, masked by the goo silhouette that `islandMask` draws from the shapes' rectangles (pure, tested), lit by `islandLight`, with a refracted bezel ring built from the same lens tiles. It redraws while anything in the dock animates and settles ~160ms after. Keep its backdrop blur at or under ~10px (Chromium leaves text crisp near the viewport edge with more). The glass is child layers, not pseudo-elements: `.ig-frost` (the blur, masked by the silhouette minus the ring), `.ig-tint`, `.ig-light`, and, once settled, `.ig-rim` strips (`rimBoxes`) that bend the backdrop along each shape's edge. Keep it that way: a backdrop filter reruns whenever anything inside its box changes, so one filter over the whole dock made every keystroke in the composer cost 60 to 100 ms; the middle of the pill must stay outside every strip (`liquid-glass.test.js` checks it). The rim strip is opaque inside the ring and the frost on top is soft (`1 - a`), which gives the original `(1 - a) * frost + a * bent`; two soft layers would weigh the bend `a^2`. Masks and the lighting image are set inline, never through custom properties (an inherited property holding a multi-kilobyte image is re-resolved by every descendant on every style recalc), and never list a pseudo-element such as `::before` inside `:is()` (the browser drops the whole rule, which is how the dock's tint and lighting once vanished without an error). See `docs/dynamic-island-composer-spec.md`.
+
+This follows Apple's guidance to reduce shadow opacity over plain light backgrounds and keep content quieter than floating controls ([Meet Liquid Glass](https://developer.apple.com/videos/play/wwdc2025/219/), [Materials](https://developer.apple.com/design/human-interface-guidelines/materials)). These CSS materials do not implement native refraction or dynamically sample scrolling content underneath them.
+
+Clanker follows the IDE's actual palette through webview `--vscode-*` variables. `media/theme-palette.js` maps host backgrounds, foregrounds, buttons, links, borders and status colours onto the existing glass tokens; missing optional colours are derived from the host background and foreground. Hosts without a usable background retain the built-in light/dark palettes in `media/style.css`.
+
+Keep provider branding, project artwork, white glass highlights and dark-icon backings independent of the palette. The adapter checks text/button contrast and uses opaque surfaces in high-contrast themes. It watches host colour changes and emits `clanker-theme-changed` so SVG-painted bubbles repaint even when switching between two dark or two light themes. It does not reload the webview or replace drafts.
+
+Verify with `node --test ai-chat-panel/test/theme-palette.test.js ai-chat-panel/test/theme.test.js` and the `ide-palette-*` UI scenarios. Browser fixtures cover coloured light/dark palettes, high contrast, same-kind live switches and missing-host fallbacks; actual IDE host integration still needs a reload and a live check. Keep reports and baselines outside synced folders.
+
 ## Usage windows and CLI maintenance
 
 If Claude returns a Cloudflare-branded HTTP 403 authentication failure, Clanker pauses the affected chat queue and keeps the failed request first (or queues Continue if work was already performed). Further Claude sends are blocked until you explicitly allow a retry. Check the provider status page before retrying, then resume the paused queue manually. A successful local sign-in check alone cannot confirm that the provider has recovered.
 
 Open chats linked to Codex check their native thread every two seconds for messages continued in ChatGPT. New prompts, reply text and supported tool records update automatically, including growing replies, while preserving the composer draft. Clanker waits while the external turn is active; stop that turn in ChatGPT. Sync requires the same locally accessible Codex thread and a running IDE. It pauses while Clanker runs its own turn. Deleted or forked threads, attachments and provider-specific UI may not mirror completely.
+
+Pasting or dropping files creates local preview chips immediately. Image resizing/encoding and the asynchronous host save run afterward, correlated by request ID. Enter waits for pending saves before sending or queueing; the composer text is read-only during that wait to preserve the submitted draft. Save failures cancel the send and retain the text. Switching chats cancels the waiting send, and late attachments return to their originating draft. Pending preview paths are excluded from persisted drafts. Regression: `node ai-chat-panel/test/paste-attachments.mjs` (fake host, no model calls).
 
 Codex permits only one writer per thread. ChatGPT may retain that ownership after its answer finishes. If Clanker reports it is waiting for the chat to be released, close the conversation in ChatGPT, or quit ChatGPT if it stays locked. Clanker keeps the pending prompt and retries every five seconds; Stop cancels it. Reading shared history does not grant simultaneous write access.
 
@@ -48,7 +68,7 @@ When a task hits its usage limit, Clanker automatically schedules Continue for t
 
 Claude prompts waiting for the same reset share a deadline: reset readings up to one minute apart use the later time, including when restoring an older saved queue. Calendar schedules and separate usage windows keep their own times.
 
-Drag the left handle to reorder scheduled prompts in the composer dock, including while another reply runs. Future prompts show a clock; ready prompts show a grip. Their saved order survives a reload. Scheduled prompts and ordinary queued turns each keep their own ordering group.
+Drag the left handle to reorder queued and scheduled prompts in one composer list, including while another reply runs. Prompts send strictly from top to bottom. A scheduled row at the top holds everything below it until its time and usage requirements are met; another available model does not skip past it. The next row starts after the current turn finishes. The saved mixed order survives reload and applies to both dispatch paths. “Continue” can be dragged like any other prompt. Explicit Send/Steer Now remains a manual action.
 
 Scheduled rows show attached images/files with the same thumbnail and count badge as queued turns. Hover the badge for filenames; narrow windows reduce it to a compact count.
 

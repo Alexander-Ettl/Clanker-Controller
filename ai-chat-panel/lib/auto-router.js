@@ -1,8 +1,8 @@
 'use strict';
 
-const { MODEL_CATALOG } = require('./model-catalog.js');
+const { MODEL_CATALOG, quotaFor: catalogQuotaFor } = require('./model-catalog.js');
 const EFFORTS = ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'];
-const quotaFor = (model, quotas) => quotas[model.brand] || quotas[model.agent];
+const quotaFor = (model, quotas) => catalogQuotaFor(quotas, model);
 function lowQuota(entry) {
   return [entry, entry?.secondary].some(window => typeof window?.remaining === 'number' && window.remaining < 15);
 }
