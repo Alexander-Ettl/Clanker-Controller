@@ -25,8 +25,6 @@
    never changes the clock's width, and the pill grown from it stays one size. Centred, so a short label sits evenly. */
 .schedule-toggle.has-time .schedule-time { display: inline-block; min-width: var(--time-w, 0); text-align: center; }
 .schedule-probe { position: absolute; visibility: hidden; pointer-events: none; white-space: nowrap; font: 600 11.5px var(--font-text); font-variant-numeric: tabular-nums; }
-/* Sent and waiting: the countdown, not the armed glow. */
-.schedule-toggle.has-time:not(.is-scheduled) { color: var(--fg-cyan); }
 /* Open: the clock sits on top of the pill, as its foot. */
 .schedule-toggle.is-timer-open { position: relative; z-index: 7; }
 
@@ -58,12 +56,25 @@
   font: 500 12px var(--font-text);
   font-variant-numeric: tabular-nums;
   transform-origin: 100% 100%;
-  animation: island-bud 0.5s cubic-bezier(0.34, 1.36, 0.64, 1) both;
+  animation: island-bud 0.32s cubic-bezier(0.34, 1.36, 0.64, 1) both;
 }
 .timer-pill.is-leaving { animation: island-bud-out 0.28s cubic-bezier(0.5, 0, 0.75, 0) both; }
 
-.timer-title, .timer-body { padding-right: 6px; } /* 4px of the pill's own + 6px = the 10px of the left side */
+.timer-head, .timer-body { padding-right: 6px; } /* 4px of the pill's own + 6px = the 10px of the left side */
+.timer-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
 .timer-title { font-weight: 600; font-size: 12.5px; white-space: nowrap; }
+.timer-off {
+  height: 22px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: 999px;
+  background: rgb(var(--ink) / 0.07);
+  color: var(--text-secondary);
+  font: 500 11px var(--font-text);
+  cursor: pointer;
+  transition: background 0.15s var(--eo-ease), color 0.15s var(--eo-ease);
+}
+.timer-off:hover { background: rgb(var(--ink) / 0.14); color: var(--text-primary); }
 .timer-body { display: flex; flex-direction: column; }
 
 /* Round quiet buttons inside the pill. */

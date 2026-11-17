@@ -49,7 +49,7 @@ test('history summaries avoid transcript reads and refresh after external edits,
   const file = store.fileFor(chat.id);
   const read = fs.readFileSync;
   let reads = 0;
-  t.mock.method(fs, 'readFileSync', (...args) => { reads++; return read(...args); });
+  t.mock.method(fs, 'readFileSync', (...args) => { if (!String(args[0]).endsWith('chat-summaries.json')) reads++; return read(...args); }); // the summary index is a cache of this very listing
   assert.equal(store.list()[0].title, 'First prompt');
   assert.equal(store.list(() => 'p1')[0].touchedProjectIds[0], 'p1');
   assert.equal(store.list(() => 'p2')[0].touchedProjectIds[0], 'p2', 'registry changes must not be cached');

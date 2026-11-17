@@ -51,7 +51,7 @@ try {
   await page.waitForFunction(() => document.querySelector('.cs-setup-mark img').naturalWidth > 0);
   assert.equal(await setup.locator('.cs-provider').count(), 4);
   assert.equal(await setup.locator('[data-agent="copilot"] .cs-title').innerText(), 'GitHub Copilot');
-  assert.equal(await setup.getByRole('button', { name: 'Start chatting', exact: true }).isDisabled(), true);
+  assert.equal(await setup.getByRole('button', { name: 'Next: favorite models', exact: true }).isDisabled(), true);
   await setup.getByRole('button', { name: 'Set up all', exact: true }).click();
   assert.equal(await page.evaluate(() => window.sent.some(message => message.type === 'connectAllClis')), true);
   await setup.locator('[data-agent="codex"]').getByRole('button', { name: 'Sign in / Sign up' }).click();
@@ -59,8 +59,14 @@ try {
   if (process.argv[2]) await page.screenshot({ path: path.join(process.argv[2], 'cli-welcome.png') });
   const connected = { ...initial, providers: { ...initial.providers, codex: { enabled: true, installed: true, auth: 'connected' } } };
   await send(connected);
-  assert.equal(await setup.getByRole('button', { name: 'Start chatting', exact: true }).isEnabled(), true);
+  assert.equal(await setup.getByRole('button', { name: 'Next: favorite models', exact: true }).isEnabled(), true);
   assert.match(await setup.locator('[data-role="setupProgress"]').innerText(), /1 of 4 CLIs ready/);
+  await setup.getByRole('button', { name: 'Next: favorite models', exact: true }).click();
+  assert.equal(await setup.locator('[data-role="setupModels"]').isVisible(), true);
+  assert.equal(await page.evaluate(() => window.sent.some(message => message.type === 'completeCliSetup')), false, 'Step 1 does not finish onboarding');
+  await setup.getByRole('button', { name: 'Back', exact: true }).click();
+  assert.equal(await setup.locator('[data-role="setupProviders"]').isVisible(), true);
+  await setup.getByRole('button', { name: 'Next: favorite models', exact: true }).click();
   await setup.getByRole('button', { name: 'Start chatting', exact: true }).click();
   assert.equal(await page.evaluate(() => window.sent.some(message => message.type === 'completeCliSetup')), true);
   await send({ ...connected, setupNeeded: false });

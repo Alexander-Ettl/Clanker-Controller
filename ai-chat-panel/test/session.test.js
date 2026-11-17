@@ -1434,6 +1434,11 @@ test('chat memory: each CLI resumes its own session by id, and a missing session
   assert.ok(!engine.commandFor('codex', 'hi', [], { resume: 'x-1' }).args.includes('--sandbox'), 'exec resume takes no --sandbox');
   assert.deepEqual(engine.commandFor('gemini', 'hi', [], { resume: 'g-1' }).args.slice(-2), ['--conversation', 'g-1']);
   assert.ok(!engine.commandFor('claude', 'hi', []).args.includes('--resume'), 'no id, no resume');
+  assert.ok(!engine.commandFor('claude', 'hi', []).args.includes('--name'), 'no name, no --name');
+  engine.sessionName = '🤖 Visor · Fix "the" hide & show\nbutton';
+  const named = engine.commandFor('claude', 'hi', [], { resume: 'c-1' }).args;
+  assert.deepEqual(named.slice(named.indexOf('--name')), ['--name', '🤖 Visor · Fix the hide show button'], 'the chat name is what `claude --resume` lists, with shell characters removed');
+  assert.ok(!engine.commandFor('codex', 'hi', []).args.includes('--name'), 'only Claude takes --name');
 
   assert.deepEqual(normalizeEvent({ type: 'system', subtype: 'init', session_id: 'c-1' }, 'claude'), { type: 'session', sessionId: 'c-1', agent: 'claude' });
   assert.deepEqual(normalizeEvent({ type: 'thread.started', thread_id: 'x-1' }, 'codex'), { type: 'session', sessionId: 'x-1', agent: 'codex' });

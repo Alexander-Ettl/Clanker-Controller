@@ -1,0 +1,21 @@
+{
+  "//": "Type-check pilot (TS-01). No build output: JavaScript stays the runtime. Only files that start with // @ts-check are checked. Run: npm.cmd run typecheck (TypeScript lives in C:/Dev/tools/ts, outside the synced folder).",
+  "compilerOptions": {
+    "allowJs": true,
+    "checkJs": false,
+    "noEmit": true,
+    "strict": true,
+    "target": "ES2023",
+    "lib": ["ES2023"],
+    "module": "commonjs",
+    "moduleResolution": "node10",
+    "skipLibCheck": true,
+    "typeRoots": ["C:/Dev/tools/ts/node_modules/@types"],
+    "types": ["node"],
+    "maxNodeModuleJsDepth": 0
+  },
+  "files": [
+    "ai-chat-panel/lib/chat-store.js",
+    "ai-chat-panel/lib/tool-output-store.js"
+  ]
+}

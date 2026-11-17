@@ -3,6 +3,25 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const { CodexThreadTitles, codexThreadTitle } = require('../lib/codex-thread-titles');
 
+test('saved title repair stays outside activation and yields between chats', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const reads = [], calls = [];
+  const sync = new CodexThreadTitles({ server: { async request(method, params) { calls.push({ method, ...params }); }, dispose() {} } });
+  sync.repairSaved({
+    list: () => [{ id: 'a', models: ['codex'] }, { id: 'skip', models: ['claude'] }, { id: 'b', models: ['codex'] }, { id: 'c', models: ['codex'] }],
+    load: id => { reads.push(id); return { projectId: 'p', title: id, sessions: { codex: { id } } }; },
+  }, { get: () => ({ name: 'Project' }) });
+  assert.deepEqual(reads, []);
+  t.mock.timers.tick(3000); await sync.queue;
+  assert.deepEqual(reads, ['a']);
+  t.mock.timers.tick(10); await sync.queue;
+  assert.deepEqual(reads, ['a', 'b']);
+  assert.ok(calls.every(call => call.method === 'thread/name/set'));
+  sync.dispose();
+  t.mock.timers.tick(10000);
+  assert.deepEqual(reads, ['a', 'b'], 'disposal cancels remaining repair');
+});
+
 test('Codex names use the Clanker marker, project and chat title, never the handoff', () => {
   assert.equal(codexThreadTitle({ title: 'Customer edit mode', taskState: { latestRequest: 'PRIVATE HANDOFF' } }, { name: 'Visor' }), '🤖 Visor · Customer edit mode');
   assert.equal(codexThreadTitle({ messages: [{ role: 'user', text: 'Fix login' }] }, { name: 'Project\nName' }), '🤖 Project Name · Fix login');

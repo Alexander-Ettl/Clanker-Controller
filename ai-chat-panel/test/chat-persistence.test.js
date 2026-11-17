@@ -144,3 +144,122 @@ test('async checkpoints recheck cross-window ownership at commit time', async t 
   assert.equal(store.load(chat.id).messages[0].text, 'Other IDE');
   store.cancelCheckpoint(chat.id); // do not flush across the other owner's snapshot
 });
+
+// Waits until the throttled checkpoint has run and its write has finished.
+async function written(store, id) {
+  for (let i = 0; i < 200 && (store.checkpoints.has(id) || store.writes.has(id)); i++) await delay(10);
+  assert.equal(store.checkpoints.has(id) || store.writes.has(id), false, 'the checkpoint finished');
+}
+
+function longChat(store, settled = 300) {
+  const chat = store.save({ ...store.create(), title: 'Long' });
+  chat.messages = [];
+  for (let i = 0; i < settled; i++) {
+    chat.messages.push({ role: 'user', text: `Question ${i}` }, { role: 'assistant', text: `Answer ${i}`, agent: 'codex', at: '2026-01-01T00:00:00Z' });
+    chat.messages.push({ role: 'tool', event: { name: 'Read', file: `f${i}.js`, output: i % 50 === 0 ? output(i) : 'ok' }, done: true });
+  }
+  chat.messages.push({ role: 'user', text: 'Now' }, { role: 'assistant', text: '', agent: 'codex', inProgress: true, hostPid: process.pid });
+  return chat;
+}
+
+test('a checkpoint that reuses the settled history writes exactly what a full save would', async t => {
+  const store = fixture(t), chat = longChat(store);
+  const settled = chat.messages.length - 2;
+  store.checkpoint(chat, { settled });
+  await written(store, chat.id);
+  const cached = store.heads.get(chat.id);
+  assert.ok(cached && cached.count === settled, 'the settled history was serialised once');
+  chat.messages.at(-1).text = 'streaming…';
+  store.checkpoint(chat, { settled });
+  await written(store, chat.id);
+  assert.equal(store.heads.get(chat.id), cached, 'the next checkpoint reuses it');
+  const viaCheckpoint = JSON.parse(fs.readFileSync(store.fileFor(chat.id), 'utf8'));
+  delete viaCheckpoint.updatedAt;
+  store.save(chat);
+  const viaSave = JSON.parse(fs.readFileSync(store.fileFor(chat.id), 'utf8'));
+  delete viaSave.updatedAt;
+  assert.deepEqual(viaCheckpoint, viaSave);
+  assert.equal(store.load(chat.id).messages[2].event.output, output(0), 'big tool output still resolves');
+});
+
+test('a full save drops the reused history, so a changed settled message is never written stale', async t => {
+  const store = fixture(t), chat = longChat(store, 20);
+  const settled = chat.messages.length - 2;
+  store.checkpoint(chat, { settled });
+  await written(store, chat.id);
+  assert.ok(store.heads.get(chat.id));
+  chat.messages[0].text = 'Edited question';
+  store.save(chat);
+  assert.equal(store.heads.get(chat.id), undefined);
+  store.checkpoint(chat, { settled });
+  await written(store, chat.id);
+  assert.equal(JSON.parse(fs.readFileSync(store.fileFor(chat.id), 'utf8')).messages[0].text, 'Edited question');
+});
+
+test('trusted checkpoints skip re-reading the file and refresh the backup only now and then', async t => {
+  const store = fixture(t), chat = longChat(store, 20);
+  const settled = chat.messages.length - 2;
+  store.checkpoint(chat, { settled });
+  await written(store, chat.id);
+  const file = store.fileFor(chat.id);
+  const backupBefore = fs.statSync(file + '.bak').mtimeMs;
+  const reads = [];
+  const read = fs.readFileSync;
+  t.mock.method(fs, 'readFileSync', (target, ...rest) => { reads.push(String(target)); return read(target, ...rest); });
+  chat.messages.at(-1).text = 'more';
+  store.checkpoint(chat, { settled });
+  await written(store, chat.id);
+  assert.deepEqual(reads.filter(name => name === file), [], 'the existing snapshot was not parsed again');
+  assert.equal(fs.statSync(file + '.bak').mtimeMs, backupBefore, 'a fresh backup is left alone');
+  assert.equal(JSON.parse(read(file, 'utf8')).messages.at(-1).text, 'more');
+});
+
+test('an idle chat saves a changed draft without serialising its messages again', async t => {
+  const store = fixture(t), chat = longChat(store, 20);
+  chat.messages.pop(); chat.messages.pop();
+  const settled = chat.messages.length;
+  store.checkpoint(chat, { settled });
+  await written(store, chat.id);
+  const head = store.heads.get(chat.id);
+  chat.draft = 'half-typed thought';
+  store.checkpoint(chat, { settled });
+  await written(store, chat.id);
+  assert.equal(store.heads.get(chat.id), head);
+  const disk = JSON.parse(fs.readFileSync(store.fileFor(chat.id), 'utf8'));
+  assert.equal(disk.draft, 'half-typed thought');
+  assert.equal(disk.messages.length, settled);
+});
+
+test('the summary index lets a restarted store list chats without parsing them, and notices changes', async t => {
+  const store = fixture(t);
+  const a = store.save({ ...store.create(), title: 'First', messages: [{ role: 'user', text: 'hello', at: '2026-01-01T00:00:00Z' }] });
+  const b = store.save({ ...store.create(), title: 'Second', messages: [{ role: 'user', text: 'world', at: '2026-01-02T00:00:00Z' }] });
+  assert.equal(store.list().length, 2);
+  await store.writeIndex();
+  assert.ok(fs.existsSync(store.indexFile), 'the index is a cache beside the chats folder, never inside it');
+  const root = path.dirname(store.dir);
+
+  const parsed = [];
+  const read = fs.readFileSync;
+  t.mock.method(fs, 'readFileSync', (target, ...rest) => { if (String(target).endsWith('.json')) parsed.push(path.basename(String(target))); return read(target, ...rest); });
+  const restarted = new ChatStore(root);
+  const titles = restarted.list().map(entry => entry.title).sort();
+  assert.deepEqual(titles, ['First', 'Second']);
+  assert.deepEqual(parsed.filter(name => name !== 'chat-summaries.json'), [], 'no snapshot was parsed');
+
+  parsed.length = 0;
+  const changed = restarted.load(a.id); changed.title = 'First, renamed'; restarted.save(changed);
+  const again = new ChatStore(root);
+  assert.deepEqual(again.list().map(entry => entry.title).sort(), ['First, renamed', 'Second']);
+  assert.ok(parsed.some(name => name.includes(a.id)), 'the changed chat was read again');
+  assert.ok(!parsed.some(name => name.includes(b.id)), 'the untouched chat was not');
+});
+
+test('a damaged or outdated summary index is ignored', async t => {
+  const store = fixture(t);
+  store.save({ ...store.create(), title: 'Only', messages: [{ role: 'user', text: 'x', at: '2026-01-01T00:00:00Z' }] });
+  fs.writeFileSync(store.indexFile, '{ not json');
+  assert.equal(new ChatStore(path.dirname(store.dir)).list()[0].title, 'Only');
+  fs.writeFileSync(store.indexFile, JSON.stringify({ v: 999, entries: { 'x.json': { stamp: 's', summary: { id: 'x' }, files: [] } } }));
+  assert.equal(new ChatStore(path.dirname(store.dir)).list().length, 1);
+});

@@ -63,6 +63,10 @@ body.has-rail > .fs-modal { right: 85px; }
   background: var(--eo-border);
   pointer-events: none;
 }
+body.vscode-light:not(.vscode-high-contrast-light) .rail::before {
+  background: rgb(var(--ink) / 0.24);
+  box-shadow: 1px 0 0 rgb(var(--sheen) / 0.45);
+}
 
 /* Project: one glass pill holding a squircle tile per project, built like the Recent pill below it (same tile size, rim,
    and concentric corner: outer radius = tile radius + padding + border). The chat's own project has the white rim; a
@@ -115,7 +119,8 @@ body.has-rail > .fs-modal { right: 85px; }
 .project-mark svg { width: 16px; height: 16px; }
 /* A favicon replaces the initials once it has loaded. */
 .project-icon { display: block; width: 24px; height: 24px; object-fit: contain; border-radius: 6px; pointer-events: none; user-select: none; }
-.project-icon.is-dark { box-sizing: border-box; padding: 3px; background: rgb(var(--ink) / 0.9); }
+/* Dark artwork needs a light backing in every IDE theme. */
+.project-icon.is-dark { box-sizing: border-box; padding: 3px; background: rgb(var(--sheen) / 0.9); }
 .is-add .project-tile { --rim: rgb(var(--ink) / 0.1); }
 .is-add .project-tile::before { background: rgb(var(--ink) / 0.03); }
 .is-add .project-mark { color: var(--text-secondary); }
@@ -172,9 +177,8 @@ body.has-rail > .fs-modal { right: 85px; }
 .project-gallery-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 16px; padding-top: 16px; border-top: 1px solid var(--eo-border); }
 .project-gallery-actions .cs-btn:not(.is-quiet) { padding-left: 11px; }
 @media (prefers-reduced-motion: reduce) { .project-gallery-open, .project-gallery-pin, .project-gallery-more { transition: none; } .project-gallery-open:hover, .project-gallery-pin:hover:not(:disabled) { transform: none; } }
-/* Hover: the tile's left edge is pulled out over the chat into a card with the project's name beside its icon, the way a
-   chat in the Recent list grows into its preview (launcher.js redraws the squircle at every width the transition passes,
-   main.js sets --peek-w from the name). The icon stays at the right end; closing runs the motion backwards. */
+/* Hover reveals the project's full-size squircle leftward, like Recent. main.js sets --peek-w from its name;
+   clipping moves instead of width, so the SVG path stays fixed. The icon stays at the right end. */
 .rail:has(.project-item:is(:hover, .is-editing)) { z-index: 55; } /* over the chat and its panels (.fs-modal is 50) while open */
 .project-item:is(:hover, .is-editing) { z-index: 5; }
 .project-item:hover .project-live { opacity: 0; animation: none; } /* the card covers its corner; the × takes it */
@@ -184,27 +188,50 @@ body.has-rail > .fs-modal { right: 85px; }
   top: 0;
   right: 0;
   z-index: 2;
-  width: 40px;
+  width: var(--peek-w, 160px);
   height: 40px;
+  clip-path: inset(-24px -24px -24px calc(100% - 40px) round 20px);
   color: var(--text-primary);
   cursor: pointer;
   opacity: 0;
   pointer-events: none;
-  transition: width 0.45s var(--eo-ease), opacity 0.15s var(--eo-ease) 0.3s;
+  transition: clip-path 0.24s var(--eo-ease), opacity 0.12s var(--eo-ease);
 }
-/* It springs out: the width overshoots a little and settles, and it glows in the project's own hue. Only the width springs; the
-   card itself is never scaled and its shadow never animates, so the icon at the right end stays on the same pixels while the
-   card grows (a scale pivoting on the right edge slid the icon left and back, and a transitioning blur re-rasterised the card
-   at every frame). */
+/* Reveal without scaling the content or interpolating the shadow blur. */
 .project-item:is(:hover, .is-editing) .project-peek {
   width: var(--peek-w, 160px);
   opacity: 1;
   pointer-events: auto;
   filter: drop-shadow(0 8px 16px rgb(0 0 0 / calc(0.45 * var(--shadow-k)))) drop-shadow(0 0 10px hsl(var(--hue, 220) 80% 62% / 0.28));
-  transition: width 0.55s cubic-bezier(0.34, 1.5, 0.5, 1), opacity 0.1s var(--eo-ease);
+  clip-path: inset(-24px round 20px);
+  transition: clip-path 0.24s var(--eo-ease), opacity 0.1s var(--eo-ease);
 }
 .project-peek-shape { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; pointer-events: none; }
 .project-peek-fill { fill: var(--charcoal); } /* the charcoal of the Recent previews */
+
+/* One translucent surface for sidebar cards; alpha affects the material, never their text/icons. */
+body.lg-on:not(.vscode-high-contrast, .vscode-high-contrast-light) .rail {
+  --rail-hover-fill: color-mix(in srgb, var(--charcoal) 86%, transparent);
+}
+body.lg-on:not(.vscode-high-contrast, .vscode-high-contrast-light) .rail :is(.ring-pill, .upd-pill, .sched-pill)::before {
+  background: linear-gradient(160deg, rgb(var(--sheen) / 0.06), transparent 55%), var(--rail-hover-fill);
+}
+body.lg-on:not(.vscode-high-contrast, .vscode-high-contrast-light) .rail :is(.project-peek-fill, .history-peek-fill) { fill: var(--rail-hover-fill); }
+/* A shared-page backdrop sits above chat/modal content and below the rail's labels.
+   Keep the material light enough to see the lens bending the layer underneath. */
+.rail-glass { position: fixed; z-index: 54; pointer-events: none; }
+.rail-glass[hidden] { display: none; }
+body.lg-on:not(.vscode-high-contrast, .vscode-high-contrast-light) .rail-glass {
+  backdrop-filter: var(--lg-bd, blur(3px) saturate(115%));
+  -webkit-backdrop-filter: var(--lg-bd, blur(3px) saturate(115%));
+}
+body.lg-on:not(.vscode-high-contrast, .vscode-high-contrast-light) .rail .is-glass-hover { --rail-hover-fill: color-mix(in srgb, var(--charcoal) 85%, transparent); } /* the lens still bends the edge; lower and the page text ghosts through the labels */
+/* The expanded capsule owns the source button's glass too: no second lens or internal circular rim. */
+body.lg-on:not(.vscode-high-contrast, .vscode-high-contrast-light) .rail .round-btn:has(> .is-glass-hover) {
+  backdrop-filter: none; -webkit-backdrop-filter: none;
+  background: transparent; border-color: transparent; box-shadow: none;
+}
+body.lg-on:not(.vscode-high-contrast, .vscode-high-contrast-light) .rail .ring:has(> .is-glass-hover)::after { opacity: 0; }
 .project-peek-rim { fill: none; stroke: var(--rim); stroke-width: 2; stroke-linejoin: round; } /* the outer half is clipped away: a 1px rim */
 .project-peek-text {
   position: absolute;
@@ -223,7 +250,7 @@ body.has-rail > .fs-modal { right: 85px; }
   transition: opacity 0.1s var(--eo-ease), translate 0.1s var(--eo-ease);
 }
 .project-peek-text span { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
-.project-item:is(:hover, .is-editing) :is(.project-peek-text, .project-edit) { opacity: 1; translate: 0 0; transition: opacity 0.25s var(--eo-ease) 0.15s, translate 0.5s cubic-bezier(0.34, 1.4, 0.5, 1) 0.1s, background 0.15s var(--eo-ease), color 0.15s var(--eo-ease); }
+.project-item:is(:hover, .is-editing) :is(.project-peek-text, .project-edit) { opacity: 1; translate: 0 0; transition: opacity 0.14s var(--eo-ease) 0.04s, translate 0.24s cubic-bezier(0.34, 1.4, 0.5, 1) 0.1s, background 0.15s var(--eo-ease), color 0.15s var(--eo-ease); }
 .project-peek-mark { position: absolute; top: 0; right: 0; width: 40px; height: 40px; display: grid; place-items: center; transition: scale 0.4s cubic-bezier(0.22, 1, 0.36, 1); }
 .project-item:is(:hover, .is-editing) .project-peek-mark { scale: 1.1; }
 .project-edit {
@@ -348,7 +375,7 @@ body.has-rail > .fs-modal { right: 85px; }
   text-align: left;
   cursor: default;
   pointer-events: none;
-  transition: width .6s cubic-bezier(.32, .72, 0, 1), height .6s cubic-bezier(.32, .72, 0, 1);
+  transition: width .24s cubic-bezier(.32, .72, 0, 1), height .24s cubic-bezier(.32, .72, 0, 1);
 }
 .upd-pill::before {
   content: '';
@@ -390,7 +417,7 @@ body.has-rail > .fs-modal { right: 85px; }
   pointer-events: auto;
 }
 .round-btn-update:is(.is-updating, .is-done, .is-failed):is(:hover, :focus-visible, .is-peek) .upd-pill::before { opacity: 1; }
-.round-btn-update:is(.is-updating, .is-done, .is-failed):is(:hover, :focus-visible, .is-peek) :is(.upd-status, .upd-rows) { opacity: 1; transition: opacity .25s var(--eo-ease) .2s; }
+.round-btn-update:is(.is-updating, .is-done, .is-failed):is(:hover, :focus-visible, .is-peek) :is(.upd-status, .upd-rows) { opacity: 1; transition: opacity .14s var(--eo-ease) .04s; }
 .round-btn-update.is-collapsing .upd-pill {
   width: calc(100% + 2px) !important;
   height: calc(100% + 2px) !important;
@@ -489,6 +516,47 @@ body.has-rail > .fs-modal { right: 85px; }
 }
 .ring-logo .agent-logo { width: 33%; height: 33%; }
 
+/* Liquid glass (body.lg-on, see style.css): the ring becomes gel glass in a clear lens. The arcs are one SVG filter
+   (#ring-tube, launcher.js): a translucent body of the agent's colour, a soft highlight on the lit shoulder and a denser far
+   edge. No halo, no dark shading: light mode gets pastel gel, dark mode a calm tint. The lens is a faint fill and a lit rim
+   (static gradients and shadows, no blur, no animation), so it costs nothing while idle; the filter only repaints a 47px
+   square while an arc sweeps (0.7s) or the numbers change. High contrast and reduced transparency keep the flat ring. */
+body.lg-on:not(.vscode-high-contrast, .vscode-high-contrast-light) .ring { isolation: isolate; }
+body.lg-on:not(.vscode-high-contrast, .vscode-high-contrast-light) .ring::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  border-radius: 50%;
+  pointer-events: none;
+  background:
+    radial-gradient(circle at 50% 50%, color-mix(in srgb, var(--agent) 9%, transparent), transparent 70%),
+    radial-gradient(110% 90% at 28% 12%, rgb(var(--sheen) / 0.3), rgb(var(--sheen) / 0.05) 58%, transparent 78%);
+  box-shadow:
+    inset 1px 1.5px 1px -0.5px rgb(var(--sheen) / 0.55),
+    inset -1px -1.5px 1px -0.5px rgb(var(--sheen) / 0.16),
+    inset 0 0 0 1px rgb(var(--ink) / 0.045),
+    0 3px 8px -3px rgb(0 0 0 / calc(0.14 * var(--shadow-k)));
+}
+body.lg-on:not(.vscode-high-contrast, .vscode-high-contrast-light) .ring > svg { overflow: visible; filter: url(#ring-tube); }
+body.lg-on:not(.vscode-high-contrast, .vscode-high-contrast-light) .ring-logo { filter: drop-shadow(0 1px 1px rgb(0 0 0 / calc(0.16 * var(--shadow-k)))); }
+body.lg-on:not(.vscode-high-contrast, .vscode-high-contrast-light) .model-card:not(.is-faulty) :is(.ring-track, .seg-track) { stroke: rgb(var(--ink) / 0.055); }
+/* Light: pastel gel, the agent's colour lifted toward white so the arc is airy instead of heavy. */
+body.lg-on.vscode-light:not(.vscode-high-contrast, .vscode-high-contrast-light) .model-card:not(.is-faulty) :is(.ring-fill, .seg-fill) { stroke: color-mix(in srgb, var(--agent) 66%, white); }
+body.lg-on.vscode-light:not(.vscode-high-contrast, .vscode-high-contrast-light) .model-card:not(.is-faulty) :is(.ring-fill, .seg-fill).is-low { stroke: color-mix(in srgb, var(--agent) 90%, white); }
+body.lg-on.vscode-light:not(.vscode-high-contrast, .vscode-high-contrast-light) .ring::after { box-shadow:
+    inset 1px 1.5px 1px -0.5px rgb(255 255 255 / 0.85),
+    inset -1px -1.5px 1px -0.5px rgb(255 255 255 / 0.4),
+    inset 0 0 0 1px rgb(var(--ink) / 0.05),
+    0 3px 8px -3px rgb(0 0 0 / calc(0.1 * var(--shadow-k))); }
+/* Dark: a quiet tint, a touch under full strength so the arc sits in the glass instead of burning on it. */
+body.lg-on:not(.vscode-light, .vscode-high-contrast, .vscode-high-contrast-light) .model-card:not(.is-faulty) .ring-fill:not(.is-low), body.lg-on:not(.vscode-light, .vscode-high-contrast, .vscode-high-contrast-light) .model-card:not(.is-faulty) .seg-fill:not(.is-low) { stroke: color-mix(in srgb, var(--agent) 68%, #8e8e93); }
+body.lg-on:not(.vscode-light, .vscode-high-contrast, .vscode-high-contrast-light) .ring > svg { opacity: 0.88; }
+body.lg-on:not(.vscode-light, .vscode-high-contrast, .vscode-high-contrast-light) .ring::after { opacity: 0.5; }
+body.lg-on:not(.vscode-light, .vscode-high-contrast, .vscode-high-contrast-light) .model-card-claude:not(.is-faulty) .ring-fill:not(.is-low) {
+  stroke: color-mix(in srgb, var(--agent) 90%, white);
+}
+
 /* Hover: the ring's circle grows leftward into a pill over the chat, out of the ring itself (one element, so it stays
    fused), the mark stays put at its right end. It's absolute, so the rail never stretches. Inside: the 5h and the week
    as bars, each with its exact % and time to reset. Un-hover runs the same motion backwards. */
@@ -503,10 +571,13 @@ body.has-rail > .fs-modal { right: 85px; }
   border-radius: 999px;
   display: flex;
   align-items: center;
+  justify-content: flex-end; /* contents hang off the circle end, so while the pill is short they overflow leftward, never past the circle */
   gap: 8px;
   padding: 0 44px 0 6px; /* inset badge on the left, provider mark clear on the right */
   pointer-events: none;
-  transition: width 0.6s cubic-bezier(0.32, 0.72, 0, 1); /* eases in, so the circle is still visible while it starts to stretch */
+  /* The left edge clips the overflowing contents while the pill grows; the other sides stay open for the shadow. It opens once grown. */
+  clip-path: inset(-60px -60px -60px 0);
+  transition: width 0.24s cubic-bezier(0.32, 0.72, 0, 1), clip-path 0.15s ease 0.2s; /* eases in, so the circle is still visible while it starts to stretch */
 }
 .ring-pill::before {
   content: '';
@@ -592,7 +663,7 @@ body.has-rail > .fs-modal { right: 85px; }
   align-items: center;
   gap: 10px;
   padding: 8px 44px 8px 14px;
-  transition: width 0.6s cubic-bezier(0.32, 0.72, 0, 1), height 0.6s cubic-bezier(0.32, 0.72, 0, 1);
+  transition: width 0.24s cubic-bezier(0.32, 0.72, 0, 1), height 0.24s cubic-bezier(0.32, 0.72, 0, 1), clip-path 0.15s ease 0.2s;
 }
 .model-card-gemini .ring-burn { height: 48px; width: 130px; padding: 0 8px; }
 .model-card-gemini .ring-rows { gap: 4px; font-size: 9px; }
@@ -622,8 +693,10 @@ body.has-rail > .fs-modal { right: 85px; }
 
 .model-cards:not(.is-loading) .ring:is(:hover, :focus-visible) > svg { opacity: 0; }
 .model-cards:not(.is-loading) .ring:is(:hover, :focus-visible) .ring-pill { width: min(356px, calc(100vw - 32px)); pointer-events: auto; }
+.model-cards:not(.is-loading) .ring:is(:hover, :focus-visible) .ring-pill { clip-path: inset(-60px); }
 .model-cards:not(.is-loading) .ring:is(:hover, :focus-visible) .ring-pill::before { opacity: 1; }
-.model-cards:not(.is-loading) .ring:is(:hover, :focus-visible) :is(.ring-row, .ring-burn, .ring-group-name) { opacity: 1; transition: opacity 0.25s var(--eo-ease) 0.2s; }
+/* The contents fade in once the pill is mostly open, so they appear grown out of the circle rather than beside it. */
+.model-cards:not(.is-loading) .ring:is(:hover, :focus-visible) :is(.ring-row, .ring-burn, .ring-group-name) { opacity: 1; transition: opacity 0.14s var(--eo-ease) 0.1s; }
 .model-cards:not(.is-loading) .ring:is(:hover, :focus-visible) .ring-bar b { width: calc(var(--pct, 0) * 1%); transition: width 0.7s var(--eo-ease) 0.2s; }
 .is-loading .ring-pill { display: none; }
 
@@ -647,12 +720,12 @@ body.has-rail > .fs-modal { right: 85px; }
   transition: opacity 0.1s var(--eo-ease);
 }
 .model-card.is-faulty :is(.ring-burn, .ring-rows, .ring-group-name) { display: none; }
-.model-card.is-faulty .ring-pill { top: 50%; bottom: auto; height: 100%; transform: translateY(-50%); padding: 8px 44px 8px 16px; transition: width 0.6s cubic-bezier(0.32, 0.72, 0, 1), height 0.6s cubic-bezier(0.32, 0.72, 0, 1); }
+.model-card.is-faulty .ring-pill { top: 50%; bottom: auto; height: 100%; transform: translateY(-50%); padding: 8px 44px 8px 16px; transition: width 0.24s cubic-bezier(0.32, 0.72, 0, 1), height 0.24s cubic-bezier(0.32, 0.72, 0, 1), clip-path 0.15s ease 0.2s; }
 .model-card.is-faulty .ring-pill::before { border-color: color-mix(in srgb, var(--fault) 45%, var(--eo-border)); box-shadow: 0 8px 32px rgb(0 0 0 / calc(0.35 * var(--shadow-k))), 0 0 22px -6px color-mix(in srgb, var(--fault) 55%, transparent), inset 0 1px 0 rgb(var(--sheen) / 0.06); }
 .model-cards:not(.is-loading) .model-card.is-faulty .ring:is(:hover, :focus-visible, :focus-within) .ring-pill { width: min(380px, calc(100vw - 32px)); height: 92px; pointer-events: auto; }
 .model-cards:not(.is-loading) .model-card.is-faulty .ring:is(:hover, :focus-visible, :focus-within) .ring-pill::before { opacity: 1; }
 .model-cards:not(.is-loading) .model-card.is-faulty .ring:is(:hover, :focus-visible, :focus-within) > svg { opacity: 0; }
-.model-cards:not(.is-loading) .model-card.is-faulty .ring:is(:hover, :focus-visible, :focus-within) .ring-fault { opacity: 1; transition: opacity 0.25s var(--eo-ease) 0.2s; }
+.model-cards:not(.is-loading) .model-card.is-faulty .ring:is(:hover, :focus-visible, :focus-within) .ring-fault { opacity: 1; transition: opacity 0.14s var(--eo-ease) 0.1s; }
 .rail:has(.model-card.is-faulty .ring:focus-within) { z-index: 55; }
 .ring-fault-text { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
 .ring-fault-head { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 6px; }
@@ -705,11 +778,10 @@ body.has-rail > .fs-modal { right: 85px; }
 .model-card-reset:empty { display: none; }
 
 /* Skeleton while the first quotas load: motion.dev's skeleton-shimmer (a 200%-wide 6%/12% white gradient sliding
-   across, 1.5s ease-in-out; the keyframes are in style.css). The two rings and the % label become shimmering
-   shapes; the provider mark stays. */
+   across, 1.5s ease-in-out; the keyframes are in style.css). The two rings become shimmering shapes; the provider mark
+   stays, and nothing is drawn where the numbers will go. */
 .is-loading .ring > svg { visibility: hidden; }
-.is-loading .ring::before,
-.is-loading .model-card-5h {
+.is-loading .ring::before {
   background: linear-gradient(90deg, rgb(var(--ink) / 0.06) 25%, rgb(var(--ink) / 0.12) 50%, rgb(var(--ink) / 0.06) 75%) 0 0 / 200% 100%;
   animation: skeleton-shimmer 1.5s ease-in-out infinite;
 }
@@ -721,12 +793,12 @@ body.has-rail > .fs-modal { right: 85px; }
   -webkit-mask: radial-gradient(circle closest-side, transparent 47%, #000 47.6% 63.6%, transparent 64.2% 74.4%, #000 75% 91.2%, transparent 91.8%);
   mask: radial-gradient(circle closest-side, transparent 47%, #000 47.6% 63.6%, transparent 64.2% 74.4%, #000 75% 91.2%, transparent 91.8%);
 }
-.is-loading .model-card-5h { width: 28px; height: 12px; border-radius: 6px; color: transparent; }
+.is-loading .model-card-5h { visibility: hidden; } /* no placeholder under the rings; it keeps its height so the rail does not jump when the numbers arrive */
 .is-loading .model-card-reset { display: none; }
 
 @media (prefers-reduced-motion: reduce) {
   .ring-fill, .seg-fill, .ring-pill, .ring-pill::before, .ring-row, .ring-burn, .ring-group-name, .ring-bar b, .ring > svg { transition: none !important; }
-  .is-loading .ring::before, .is-loading .model-card-5h { animation: none; }
+  .is-loading .ring::before { animation: none; }
 }
 
 /* Recent: one glass pill holding a bubble tile per chat, just the provider's mark. Concentric corners: outer radius =
@@ -755,8 +827,9 @@ body.has-rail > .fs-modal { right: 85px; }
 /* Match the loaded project and recent tiles, using the chat/usage shimmer. */
 .rail-skeleton { pointer-events: none; }
 .rail-skeleton-tile { width: 40px; height: 40px; border-radius: 9px; clip-path: url(#squircle); }
-.rail-skeleton .history-row.skeleton { height: 46px; border-radius: 0; cursor: default; }
+.rail-skeleton .history-row.skeleton { height: 46px; border-radius: 0; background: var(--skeleton-bg); cursor: default; }
 .rail-skeleton .history-row::before { content: none; }
+.rail-skeleton-mark { width: 26px; height: 26px; border-radius: 8px; }
 .rail-skeleton-time { width: 24px; height: 9px; margin-top: 3px; }
 
 /* A chat: its tile with the time under it. The label is wider than the 40px tile, so it overhangs into the pill's
@@ -860,9 +933,10 @@ body.has-rail > .fs-modal { right: 85px; }
   border-radius: 50%;
   background: var(--charcoal);
   box-shadow: 0 0 0 1px color-mix(in srgb, var(--agent) 38%, rgb(var(--ink) / 0.1)), 0 2px 5px rgb(0 0 0 / calc(0.4 * var(--shadow-k)));
-  color: light-dark(#1a1a1a, #fff);
+  color: var(--text-primary);
   pointer-events: none;
-  transition: transform 0.25s var(--eo-ease), box-shadow 0.25s var(--eo-ease), opacity 0.15s var(--eo-ease) 0.45s, visibility 0s 0.45s;
+  /* Un-hover: back at once and fading in, as the preview (which fades out over 0.12s) lets go of it, so the two cross-fade with no bare moment. */
+  transition: transform 0.25s var(--eo-ease), box-shadow 0.25s var(--eo-ease), opacity 0.12s var(--eo-ease);
 }
 .history-context svg { width: 12px; height: 12px; display: block; }
 .history-item:has(.is-selected) .history-context { box-shadow: 0 0 0 1px rgb(var(--ink) / 0.7), 0 2px 5px rgb(0 0 0 / calc(0.4 * var(--shadow-k))); }
@@ -870,7 +944,8 @@ body.has-rail > .fs-modal { right: 85px; }
   transform: scale(0.85);
   opacity: 0;
   visibility: hidden;
-  transition-delay: 0s;
+  /* Hover: stays until the preview (opacity 0.1s) is opaque over it, then fades out under it and is dropped. */
+  transition: transform 0.25s var(--eo-ease), box-shadow 0.25s var(--eo-ease), opacity 0.1s var(--eo-ease) 0.06s, visibility 0s 0.16s;
 }
 
 .history-lead { position: relative; z-index: 2; display: flex; }
@@ -902,20 +977,22 @@ body.has-rail > .fs-modal { right: 85px; }
   top: 0;
   right: 0;
   z-index: 2; /* over the tile, under the running orb */
-  width: 40px;
+  width: min(356px, calc(100vw - 32px));
+  clip-path: inset(-24px -24px -24px calc(100% - 40px) round 20px);
   height: 46px;
   color: var(--text-primary);
   cursor: pointer;
   opacity: 0;
   pointer-events: none;
-  transition: width 0.6s cubic-bezier(0.32, 0.72, 0, 1), opacity 0.15s var(--eo-ease) 0.45s, filter 0.25s var(--eo-ease);
+  transition: clip-path 0.24s var(--eo-ease), opacity 0.12s var(--eo-ease);
 }
 .history-item:is(:hover, :focus-within) .history-peek {
   width: min(356px, calc(100vw - 32px));
   opacity: 1;
   pointer-events: auto;
-  filter: drop-shadow(0 8px 24px rgb(0 0 0 / calc(0.35 * var(--shadow-k))));
-  transition: width 0.6s cubic-bezier(0.32, 0.72, 0, 1), opacity 0.1s var(--eo-ease), filter 0.25s var(--eo-ease);
+  filter: drop-shadow(var(--shadow-popover));
+  clip-path: inset(-24px round 20px);
+  transition: clip-path 0.24s var(--eo-ease), opacity 0.1s var(--eo-ease);
 }
 .history-peek-shape { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; pointer-events: none; }
 .history-peek-fill { fill: var(--charcoal); } /* the charcoal of the message bubbles and the Manage Chats cards */
@@ -936,7 +1013,7 @@ body.has-rail > .fs-modal { right: 85px; }
   overflow: hidden;
   opacity: 0;
 }
-.history-item:is(:hover, :focus-within) .history-peek-text { opacity: 1; transition: opacity 0.25s var(--eo-ease) 0.2s; }
+.history-item:is(:hover, :focus-within) .history-peek-text { opacity: 1; transition: opacity 0.14s var(--eo-ease) 0.04s; }
 .history-peek-head { display: flex; align-items: center; gap: 8px; min-width: 0; }
 .history-peek-title { flex: 0 1 auto; min-width: 0; font: 600 13px/1.3 var(--font-text); letter-spacing: -0.01em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 /* The category spelled out, so recognition never rests on the icon's shape or colour alone. */
@@ -950,7 +1027,7 @@ body.has-rail > .fs-modal { right: 85px; }
   color: var(--text-secondary);
 }
 .history-peek-context[hidden] { display: none; }
-.history-peek-context svg { width: 12px; height: 12px; display: block; color: light-dark(#1a1a1a, #fff); }
+.history-peek-context svg { width: 12px; height: 12px; display: block; color: var(--text-primary); }
 .history-peek-meta { display: flex; align-items: baseline; gap: 6px; font: 400 11.5px/1.3 var(--font-text); white-space: nowrap; }
 .history-peek-icons { flex: none; align-self: center; display: inline-flex; margin-right: -1px; }
 .history-peek-icons:empty { display: none; }
@@ -1030,7 +1107,7 @@ body.has-rail > .fs-modal { right: 85px; }
 }
 .api-value-figure:is(:hover, :focus-visible) .api-value-card { clip-path: inset(0 0 0 0 round 22px); opacity: 1; pointer-events: auto; }
 .api-value-card > * { opacity: 0; transition: opacity 0.1s var(--eo-ease); }
-.api-value-figure:is(:hover, :focus-visible) .api-value-card > * { opacity: 1; transition: opacity 0.25s var(--eo-ease) 0.2s; }
+.api-value-figure:is(:hover, :focus-visible) .api-value-card > * { opacity: 1; transition: opacity 0.14s var(--eo-ease) 0.04s; }
 
 .api-value-card-head { display: flex; justify-content: space-between; align-items: baseline; }
 .api-value-card-head span { font: 600 9.5px var(--font-text); text-transform: uppercase; letter-spacing: 0.08em; color: var(--text-tertiary); }

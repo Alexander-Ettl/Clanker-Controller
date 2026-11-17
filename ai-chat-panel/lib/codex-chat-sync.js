@@ -2,6 +2,37 @@
 
 const { CodexAppServer } = require('./codex-app-server');
 const { taskState } = require('./chat-handoff');
+const { createHash } = require('node:crypto');
+
+const inputHash = text => createHash('sha256').update(String(text).trim()).digest('hex');
+const LEGACY_RESET = /^(?:The model was selected manually\. )?Earlier Auto-mode role restrictions no longer apply\. Follow the user's current request\.\s*\n\nPROJECT: [^\r\n]+\r?\n\r?\n/;
+
+// The hash alone is not enough: the same prompt ("continue") run again in the Codex app is a different turn. A Codex turn
+// starts moments after the local message it came from, so the two must also be close in time.
+const SAME_TURN_MS = 10 * 60 * 1000;
+function localUserFor(chat, text, at) {
+  const hash = inputHash(text);
+  return chat.messages.find(message => message.role === 'user' && !message.codexItemId && message.agent === 'codex' &&
+    ((message.codexInputHashes?.includes(hash) && (!message.at || !(Math.abs(at - Date.parse(message.at)) >= SAME_TURN_MS))) || (LEGACY_RESET.test(text) && message.text?.trim() &&
+      text.endsWith(`\n\n${message.text.trim()}`) && Math.abs(at - Date.parse(message.at)) < 120000)));
+}
+
+// Only repair known Clanker wrappers on imported records; never strip a user's ordinary PROJECT heading.
+function repairImportedPrompts(chat) {
+  let changed = false;
+  for (const message of chat.messages) {
+    if (message.role !== 'user' || !message.codexItemId) continue;
+    if (!LEGACY_RESET.test(message.text || '') && !message.text?.startsWith('PROJECT: ')) continue;
+    const original = localUserFor(chat, message.text || '', Date.parse(message.at));
+    if (!original && !LEGACY_RESET.test(message.text || '')) continue;
+    const text = original?.text ?? message.text.replace(LEGACY_RESET, '');
+    // A full handoff cannot be separated from user text without the original local record.
+    if ((!original && /^(TASK STATE:|CHAT CONTEXT)/.test(text)) || message.text === text) continue;
+    message.text = text;
+    changed = true;
+  }
+  return changed;
+}
 
 const textOf = item => item.type === 'userMessage' ? (item.content || []).filter(part => part.type === 'text').map(part => part.text).join('\n').trim() : item.text || '';
 const iso = seconds => Number.isFinite(seconds) ? new Date(seconds * 1000).toISOString() : null;
@@ -12,17 +43,22 @@ function anchorTurn(chat, turns) {
   const user = chat.messages.findLast(message => message.role === 'user' && message.agent === 'codex');
   if (!user) return null;
   return [...turns].reverse().find(turn => turn.items.some(item => item.type === 'userMessage' &&
-    textOf(item).endsWith(user.text.trim()) && Math.abs(turn.startedAt * 1000 - Date.parse(user.at)) < 120000))?.id || null;
+    (user.codexInputHashes?.includes(inputHash(textOf(item))) || textOf(item).endsWith(user.text.trim())) &&
+    Math.abs(turn.startedAt * 1000 - Date.parse(user.at)) < 120000))?.id || null;
 }
 
 function mergeTurns(chat, turns, anchor) {
   const threadId = chat.sessions.codex.id;
   const anchorIndex = turns.findIndex(turn => turn.id === anchor);
   if (anchorIndex < 0) return { changed: false, active: false };
-  let changed = false, active = false;
+  let changed = repairImportedPrompts(chat), active = false;
   const before = chat.messages.length;
   for (const turn of turns.slice(anchorIndex + 1)) {
     active = turn.status === 'inProgress';
+    const nativeUser = turn.items.find(item => item.type === 'userMessage');
+    const localUser = nativeUser && localUserFor(chat, textOf(nativeUser), turn.startedAt * 1000);
+    // Clanker already owns this turn's display records, including attachments and model labels.
+    if (localUser) continue;
     const records = [];
     for (const item of turn.items || []) {
       if (['commandExecution', 'mcpToolCall', 'webSearch', 'fileChange'].includes(item.type)) {
@@ -38,10 +74,12 @@ function mergeTurns(chat, turns, anchor) {
       if (!['userMessage', 'agentMessage'].includes(item.type)) continue;
       const text = textOf(item);
       if (!text) continue;
-      records.push({ role: item.type === 'userMessage' ? 'user' : 'assistant', text, agent: 'codex',
+      const record = { role: item.type === 'userMessage' ? 'user' : 'assistant', text, agent: 'codex',
         ...(item.type === 'agentMessage' ? { modelLabel: 'ChatGPT / Codex', interrupted: turn.status === 'interrupted' } : {}),
         at: Number.isFinite(item.startedAtMs) ? new Date(item.startedAtMs).toISOString() : iso(turn.startedAt),
-        codexThreadId: threadId, codexTurnId: turn.id, codexItemId: item.id });
+        codexThreadId: threadId, codexTurnId: turn.id, codexItemId: item.id };
+      repairImportedPrompts({ messages: [record] });
+      records.push(record);
     }
     for (const record of records) {
       const existing = chat.messages.find(message => message.codexThreadId === threadId && message.codexItemId === record.codexItemId);
@@ -75,6 +113,12 @@ class CodexChatSync {
   }
   async read(run) {
     const chat = run.chat, threadId = chat.sessions.codex.id;
+    if (repairImportedPrompts(chat)) {
+      chat.taskState = taskState(chat.messages);
+      run.save();
+      run.deps.notifyHistory();
+      for (const host of run.hosts) host.replay({ synced: true });
+    }
     this.server ||= new CodexAppServer({ cwd: this.cwd });
     let turns = [], cursor = null, anchor = null;
     do {
@@ -95,4 +139,4 @@ class CodexChatSync {
   dispose() { this.disposed = true; clearInterval(this.timer); this.server?.dispose(); }
 }
 
-module.exports = { CodexChatSync, mergeTurns, anchorTurn };
+module.exports = { CodexChatSync, mergeTurns, anchorTurn, inputHash, repairImportedPrompts };

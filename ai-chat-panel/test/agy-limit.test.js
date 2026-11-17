@@ -42,19 +42,36 @@ test('agy: with no error in the stream, the quota failure on stderr still reache
   assert.equal(events.at(-1).type, 'turn_complete');
 });
 
-test("agy: a silent stream is read from agy's own log, and only once", () => {
+test('agy: another process log cannot turn a successful reply into a quota failure', () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agy-log-'));
   try {
     fs.writeFileSync(path.join(dir, 'cli-20261023_113637.log'), `I1023 11:41:44 http_helpers.go:349] URL: x\nE1023 11:42:27.158432 7812 errorreport.go:224] agent executor error: generating and executing: ${QUOTA}\nE1023 11:42:27.168647 7812 errorreport.go:224] generating and executing: ${QUOTA}\n`);
     const engine = new StreamEngine({ agyLogDir: dir });
     const { reply } = turn(engine, [{ event: 'result', result: { status: 'SUCCESS', response: 'partial' } }]);
-    assert.equal(reply, `\n\nGemini error: ${QUOTA}`);
-    assert.equal(reply.split('RESOURCE_EXHAUSTED').length, 2);
-    const clean = new StreamEngine({ agyLogDir: fs.mkdtempSync(path.join(os.tmpdir(), 'agy-log-empty-')) });
-    assert.equal(turn(clean, [{ event: 'result', result: { status: 'SUCCESS', response: 'done' } }]).reply, '', 'a turn that went fine says nothing');
+    assert.equal(reply, '');
     fs.utimesSync(path.join(dir, 'cli-20261023_113637.log'), new Date(Date.now() - 3600e3), new Date(Date.now() - 3600e3));
     assert.equal(turn(new StreamEngine({ agyLogDir: dir }), [{ event: 'result', result: { status: 'SUCCESS', response: 'done' } }]).reply, '', 'an older process\'s log is not this turn');
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('agy: successful result-only and empty replies ignore historical quota errors', () => {
+  for (const response of ['Verified cleanly.', '']) {
+    const engine = new StreamEngine();
+    const events = [];
+    engine.on('event', event => events.push(event));
+    engine.consumeLine(JSON.stringify({ event: 'result', result: { status: 'SUCCESS', response, error: QUOTA } }), 'gemini');
+    assert.equal(events.filter(e => e.type === 'delta').map(e => e.text).join(''), response);
+    assert.equal(events.at(-1).type, 'turn_complete');
+  }
+});
+
+test('agy: diagnostic quotes of a previous quota error cannot poison the current turn', () => {
+  const engine = new StreamEngine();
+  const events = [];
+  engine.on('event', event => events.push(event));
+  engine.consumeStderrLine(`debug: previous result.error: ${QUOTA}`, 'gemini');
+  engine.consumeLine(JSON.stringify({ event: 'result', result: { status: 'SUCCESS', response: 'Done.' } }), 'gemini');
+  assert.equal(events.filter(e => e.type === 'delta').map(e => e.text).join(''), 'Done.');
 });
 
 test('a limit notice that names its reset decides by itself whether it is still in force', () => {
@@ -65,4 +82,14 @@ test('a limit notice that names its reset decides by itself whether it is still 
   assert.equal(limitActive(`Gemini error: ${QUOTA}`, new Date().toISOString()), true);
   assert.equal(limitActive(`Gemini error: ${QUOTA}`, sent), false, 'the reset has passed since: no button on an old notice');
   assert.equal(limitActive('Quota exhausted'), null);
+});
+
+test('agy: a historical result.error on a succeeded resumed turn does not emit a fake quota error', () => {
+  const engine = new StreamEngine({ agyLogDir: path.join(os.tmpdir(), 'no-such-agy-log-dir') });
+  const { reply, types } = turn(engine, [
+    { event: 'step_update', step_update: { step_type: 'agent_response', state: 'ACTIVE', step_index: 1, text_delta: 'Verified cleanly.' } },
+    { event: 'result', result: { status: 'SUCCESS', response: 'Verified cleanly.', error: `generating and executing: ${QUOTA}` } },
+  ]);
+  assert.equal(reply, 'Verified cleanly.');
+  assert.equal(types.at(-1), 'turn_complete');
 });

@@ -44,15 +44,16 @@ const { execFile, spawn } = require('node:child_process');
 const { StreamEngine } = require('./lib/stream-engine.js');
 const { locate, refresh: refreshBinaries, resolveShim, terminalCommand } = require('./lib/binary-locator.js');
 const { ChatStore, markActive, ACTIVE_WINDOW_MS, deriveFallbackTitle, recoverInterruptedChat, ownedByAnotherHost } = require('./lib/chat-store.js');
-const { CodexThreadTitles } = require('./lib/codex-thread-titles.js');
-const { CodexChatSync } = require('./lib/codex-chat-sync.js');
+const { CodexThreadTitles, codexThreadTitle } = require('./lib/codex-thread-titles.js');
+const { readAgentTitle, hasAgentTitles } = require('./lib/agent-titles.js');
+const { CodexChatSync, inputHash, repairImportedPrompts } = require('./lib/codex-chat-sync.js');
 const { historyPage } = require('./lib/chat-history.js');
 const { route, routeBest } = require('./lib/auto-router.js');
 const { runtime: routingRuntime, projectStack } = require('./lib/routing-runtime.js');
 const { contextAssets } = require('./lib/work-context.js');
 let contextAssetsJson = null; // the rail's category list and icons, read once from media/context-icons
 const { windowOf, GROQ_MODEL } = require('./lib/routing.js');
-const { MODEL_CATALOG, AVAILABLE_MODELS, defaultModel, modelOption, resolveModel } = require('./lib/model-catalog.js');
+const { MODEL_CATALOG, AVAILABLE_MODELS, defaultModel, modelOption, resolveModel, quotaFor } = require('./lib/model-catalog.js');
 const { CliHub, providerBusy } = require('./lib/cli-tools.js');
 const { CliAccounts } = require('./lib/cli-accounts.js');
 const { promptFor, permissionFor, appendInstructions } = require('./media/model-prompts.js');
@@ -62,7 +63,7 @@ const { accessFailure } = require('./lib/provider-access.js');
 const { AuthGate } = require('./lib/auth-gate.js');
 const clankerAgent = require('./lib/clanker-agent.js');
 const { showAuthPrompt } = require('./lib/auth-prompt.js');
-const { SchedulerQueue, ACTIVE_STATUSES, isDue, resetObserved, waitsForContinue } = require('./lib/scheduler-queue.js');
+const { SchedulerQueue, ACTIVE_STATUSES, isDue, resetObserved, firstPrompt } = require('./lib/scheduler-queue.js');
 const { keepAwake } = require('./lib/keep-awake');
 const { SessionWarmup } = require('./lib/session-warmup');
 const { CloudWarmup } = require('./lib/cloud-warmup');
@@ -70,6 +71,7 @@ const { subscriptionBilled } = require('./lib/billing-mode');
 const { installInvestigations } = require('./lib/investigation-commands.js');
 const { createInvestigationBridge, investigationOptions } = require('./lib/investigation-bridge.js');
 const { ProjectRegistry, projectFiles, describe: describeProject, findIcon } = require('./lib/projects.js');
+const { resolveFileRef } = require('./lib/file-links.js');
 const { TelegramBridge, DOCK_KEYBOARD, escapeHtml, markdownToTelegramHtml } = require('./lib/telegram-bridge.js');
 const { configureTelegram: setupTelegram, TOKEN_KEY, CHAT_KEY, OWNER_KEY } = require('./lib/telegram-setup.js');
 const { forwardRequest, bindTelegramControls } = require('./lib/telegram-control.js');
@@ -84,6 +86,7 @@ const { SlashCommandCatalog } = require('./lib/slash-commands.js');
 // while Claude Code and Codex auto-compact natively (both on by default).
 const CONTEXT_LIMITS = { claude: 1000000, codex: 1000000, gemini: 1048576 };
 const AUTO_COMPACT_RATIO = 0.90;
+const DELTA_BATCH_MS = 33; // reply text reaches the window at most about every second frame, see ChatRun.postEvent
 const SUBAGENT_LOG_LIMIT = 3000; // subagent events kept per chat for the agents viewer
 const { notifyReply, textAfterLastTool } = require('./lib/notify.js');
 const { sweepStorage } = require('./lib/storage-gc.js');
@@ -98,6 +101,13 @@ const ANTIGRAVITY_RINGS = ['split', 'argon', 'gemini', 'claude-gpt'];
 const antigravityRing = () => {
   const value = vscode.workspace.getConfiguration('aiChatPanel').get('antigravityRing', 'split');
   return ANTIGRAVITY_RINGS.includes(value) ? value : 'split';
+};
+// Who names a new chat (Settings > General): 'agent' (default) uses the title the agent wrote itself where it writes one
+// (lib/agent-titles.js) and Groq elsewhere; 'groq' always asks Groq.
+const CHAT_NAME_SOURCES = ['agent', 'groq'];
+const chatNameSource = () => {
+  const value = vscode.workspace.getConfiguration('aiChatPanel').get('chatNames', 'agent');
+  return CHAT_NAME_SOURCES.includes(value) ? value : 'agent';
 };
 const timePrefs = () => JSON.stringify({ locale: vscode.env.language || 'en', timeFormat: vscode.workspace.getConfiguration('aiChatPanel').get('timeFormat', '24h') });
 
@@ -117,17 +127,19 @@ function recordToolEnd(chat, event) {
   step.event = { ...step.event, ...(Number.isFinite(durationMs) ? { durationMs } : {}), output: String(event.output || '').slice(0, RECORDED_OUTPUT_CHARS), diff: event.diff || step.event.diff, ...(Number.isInteger(event.exitCode) ? { exitCode: event.exitCode } : {}) };
 }
 
-function quotaAvailable(quotas, model) {
-  const quota = quotas?.[model];
-  return model === 'gemini' && typeof quota?.remaining !== 'number'
+function quotaAvailable(quotas, modelOrTask) {
+  const agent = typeof modelOrTask === 'string' ? modelOrTask : modelOrTask?.model;
+  const quota = typeof modelOrTask === 'string' ? quotas?.[agent] : quotaFor(quotas, modelOrTask?.modelId, agent);
+  return agent === 'gemini' && typeof quota?.remaining !== 'number'
     ? true // no live Antigravity number: never block it
     : typeof quota?.remaining === 'number' && quota.remaining > WATCHDOG_THRESHOLD_PCT;
 }
 
 class SchedulerWatchdog {
-  constructor({ queue, workspaceDir, getModels, getPermissionMode, getModelPrompts, getModelSettings, telegram, onQueueChange, chatStore, onHistoryChange, notify, resumeInChat, isChatBusy, isAgentEnabled, projects, authGate }) {
+  constructor({ queue, workspaceDir, getModels, getPermissionMode, getModelPrompts, getModelSettings, telegram, onQueueChange, chatStore, onHistoryChange, notify, resumeInChat, isChatBusy, getQueueState, isAgentEnabled, projects, authGate }) {
     this.projects = projects; this.authGate = authGate || null;
     this.isChatBusy = isChatBusy || (() => false);
+    this.getQueueState = getQueueState || (id => chatStore?.load(id)?.turnQueue || {});
     this.isAgentEnabled = isAgentEnabled || (() => true);
     this.notify = notify || null;
     this.getModelSettings = getModelSettings;
@@ -161,14 +173,16 @@ class SchedulerWatchdog {
       // the "continue" (or any earlier prompt) before it is given the next one. A headless run holds the watchdog until it ends.
       for (let guard = 0; guard < 50; guard++) {
         const queue = await this.queue.getQueue();
+        const states = new Map(); // a chat without an open run is read from disk: once per chat, not once per due task
+        const stateOf = (chatId) => { if (!states.has(chatId)) states.set(chatId, this.getQueueState(chatId)); return states.get(chatId); };
         const due = queue.filter((task) => task.status === 'pending' && this.isAgentEnabled(task.model) && isDue(task, Date.now()) && this.projectAvailable(task) &&
-          !waitsForContinue(task, queue) && !(task.chatId && this.isChatBusy(task.chatId)));
+          (!task.chatId || firstPrompt(stateOf(task.chatId), queue.filter(item => item.chatId === task.chatId))?.id === task.id) && !(task.chatId && this.isChatBusy(task.chatId, task)));
         if (!due.length) return;
         // The first due task may wait on an exhausted model; it must not hold back tasks for models that still have quota.
         const quotas = await readQuotas();
         // Signed out (or otherwise unusable) models keep their prompts pending: the gate tells you and sends them once it works again.
         let next = null;
-        for (const task of due) if (quotaAvailable(quotas, task.model) && !(await this.authGate?.check(task.model))) { next = task; break; }
+        for (const task of due) if (quotaAvailable(quotas, task) && !(await this.authGate?.check(task.model))) { next = task; break; }
         if (!next) return;
         await this.dispatch(next);
         if (this.activeTaskId) return;
@@ -182,7 +196,7 @@ class SchedulerWatchdog {
     if (!waiting.length) return;
     if (waiting.some((task) => task.model === 'claude')) await refreshClaudeUsage(this.workspaceDir, WAITING_PROBE_AFTER_MS);
     const quotas = await readQuotas();
-    const released = waiting.filter((task) => resetObserved(task, quotas?.[task.model]));
+    const released = waiting.filter((task) => resetObserved(task, quotaFor(quotas, task.modelId, task.model)));
     if (!released.length) return;
     const now = new Date().toISOString(); // a time in the past reads as "ready" everywhere, not as the new window's countdown
     for (const task of released) await this.queue.update(task.id, (item) => { if (item.status === 'pending') item.notBefore = now; });
@@ -473,6 +487,11 @@ const noteVoiceUse = (text, projectId) => { try { voiceDictionary.recordUse(voic
  * closes. At most one ChatWindowHost watches it at a time; the
  * ChatWindowManager keeps it alive while it runs or is on screen.
  */
+/** A saved strip order: unique "turn:<id>" / "scheduled:<id>" keys, capped. */
+function cleanQueueOrder(order) {
+  return [...new Set(Array.isArray(order) ? order.filter((key) => typeof key === 'string' && /^(turn|scheduled):\S+$/.test(key)) : [])].slice(0, 200);
+}
+
 function safeAttachmentPaths(deps, paths) {
   const root = path.resolve(deps.attachmentsDir) + path.sep;
   return (Array.isArray(paths) ? paths : []).filter((file) => { const resolved = path.resolve(file); return resolved.startsWith(root) && fs.existsSync(resolved); });
@@ -485,6 +504,8 @@ const ATTACHMENT_TYPES = {
   '.mp3': 'audio/mpeg', '.wav': 'audio/wav', '.ogg': 'audio/ogg', '.oga': 'audio/ogg', '.opus': 'audio/ogg', '.m4a': 'audio/mp4', '.aac': 'audio/aac', '.flac': 'audio/flac',
   '.docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', '.xlsx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
 };
+
+const PREVIEW_MAX_BYTES = 25 * 1048576;
 
 function cleanAttachmentName(name) {
   return path.basename(String(name || '')).replace(/^(?:[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}[_-]|\d{10,}_)+/i, '') || 'image.png';
@@ -573,7 +594,7 @@ async function planTurn(run, message, deps) {
   if (!slashAgent && (message.promptPrefix || message.promptSuffix || modelPrompt)) promptText = [message.promptPrefix, appendInstructions(promptText, { modelPrompt, verify: message.promptSuffix })].filter(Boolean).join('\n\n');
   // Memory across turns and agents: the agent resumes its own session in this
   // chat (it remembers its turns), and is briefed on the turns it missed while
-  // other agents answered. Clear old Auto role boundaries in resumed sessions.
+  // other agents answered.
   // Without a session id (new/reset session or transcript-based compaction),
   // even this agent's own replies must be replayed: the fresh CLI has no memory.
   // A failed native resume likewise receives freshPrompt with the full briefing.
@@ -593,8 +614,7 @@ async function planTurn(run, message, deps) {
       buildHandoff(missed, dispatch.agent, { structured: true, transcript: missed.length ? transcriptFile() : null }),
     ].filter(Boolean).join('\n\n');
   };
-  const manualReset = session?.id ? `${requested !== 'auto' ? 'The model was selected manually. ' : ''}Earlier Auto-mode role restrictions no longer apply. Follow the user's current request.` : '';
-  const compose = (handoff, fresh) => [manualReset, fresh ? dispatch.directive : '', dispatch.contract, handoff, promptText].filter(Boolean).join('\n\n');
+  const compose = (handoff, fresh) => [fresh ? dispatch.directive : '', dispatch.contract, handoff, promptText].filter(Boolean).join('\n\n');
   const prompt = codexCommand ? codexCommand.prompt : slashAgent ? promptText : session?.id ? compose(briefing(session.seen || 0), false) : compose(briefing(0), true);
   const freshPrompt = codexCommand || slashAgent ? null : session?.id ? compose(briefing(0), true) : null;
   return {
@@ -612,7 +632,9 @@ async function planTurn(run, message, deps) {
 
 class ChatRun {
   constructor(chat, deps) {
-    if (recoverInterruptedChat(chat)) chat = deps.chatStore.save(chat);
+    const repaired = repairImportedPrompts(chat);
+    if (repaired) chat.taskState = taskState(chat.messages);
+    if (recoverInterruptedChat(chat) || repaired) chat = deps.chatStore.save(chat);
     // Codex's number is kept as recorded: its app-server reports each request's real context
     // size (thread/tokenUsage/updated: last.totalTokens). It used to be replaced on every load by
     // an estimate of the handoff briefing, which leaves out Codex's own turns, so a mostly-Codex
@@ -622,12 +644,16 @@ class ChatRun {
     // Every window showing this chat (the sidebar's and any editor tabs). The run is the one source of truth;
     // a window only draws it, so they all stay in step. The last one is the window used most recently.
     this.hosts = new Set();
+    this.pendingDelta = null; // reply text waiting to be sent, see postEvent()
+    this.deltaTimer = null;
+    this.lastDeltaAt = 0;
     this.activeAssistantMessage = null;
     this.turnAgent = null;
     this.turn = null; // the running turn's routing message, replayed when a window attaches
     this.pending = new Map(); // unanswered approval/question cards, replayed the same way
     this.queue = Array.isArray(chat.turnQueue?.turns) ? chat.turnQueue.turns.map((turn) => ({ ...turn, queued: true, editing: false, scheduling: false })) : [];
     this.queuePaused = chat.turnQueue?.paused === true;
+    this.queueOrder = cleanQueueOrder(chat.turnQueue?.order);
     this.authHold = null; // { agent, resend }: the queue waits for this CLI to be signed in (lib/auth-gate.js); `resend` is the turn that hit the sign-in error
     this.starting = false; // a queued message is being planned; its turn hasn't begun yet
     this.planning = 0;
@@ -654,22 +680,60 @@ class ChatRun {
   /** The window to run a queued turn in: the one used most recently. */
   get host() { return [...this.hosts].at(-1) || null; }
   /** Sends to every window showing this chat (`except`: the one that already knows). */
-  post(message, { except } = {}) { for (const host of this.hosts) if (host !== except) host.panel.webview.postMessage(message); }
+  post(message, { except } = {}) {
+    if (this.pendingDelta && message !== this.pendingDelta) this.flushDelta(); // nothing overtakes text that is waiting to go out
+    for (const host of this.hosts) if (host !== except) host.panel.webview.postMessage(message);
+  }
+  /**
+   * Reply text goes to the windows in batches: the page draws once per frame anyway, and every message is a trip through the
+   * IDE's process boundary. The first chunk after a pause leaves at once; chunks that follow within DELTA_BATCH_MS join one message.
+   * Anything else sent in between, a window attaching or replaying, flushes the batch first, so order and content never change.
+   */
+  postEvent(event) {
+    const batchable = event.type === 'delta' && typeof event.text === 'string' && !event.block && !event.fallback;
+    if (!batchable) { this.post(event); return; }
+    const pending = this.pendingDelta;
+    if (pending && Object.keys(event).every((key) => key === 'text' || pending[key] === event[key]) && Object.keys(pending).length === Object.keys(event).length) { pending.text += event.text; return; }
+    this.flushDelta();
+    if (Date.now() - this.lastDeltaAt >= DELTA_BATCH_MS) { this.lastDeltaAt = Date.now(); this.post(event); return; }
+    this.pendingDelta = { ...event };
+    this.deltaTimer = setTimeout(() => this.flushDelta(), DELTA_BATCH_MS);
+    this.deltaTimer.unref?.();
+  }
+  flushDelta() {
+    clearTimeout(this.deltaTimer);
+    this.deltaTimer = null;
+    const pending = this.pendingDelta;
+    if (!pending) return;
+    this.pendingDelta = null;
+    this.lastDeltaAt = Date.now();
+    this.post(pending);
+  }
   retitle() {
     for (const host of this.hosts) host.panel.title = titleFor(this.chat);
     void this.deps.codexThreadTitles?.sync(this.chat, this.deps.projects?.get(this.chat.projectId));
   }
   /** Marks `host` as the window in use (it moves to the end of the set). */
-  focus(host) { this.hosts.delete(host); this.hosts.add(host); }
+  focus(host) { this.flushDelta(); this.hosts.delete(host); this.hosts.add(host); }
   /** A turn one window started: the others repaint with your message and the empty reply, then follow the stream. */
   syncWindows(origin) { for (const host of this.hosts) if (host !== origin) host.replay(); }
   save() {
     this.chat = this.deps.chatStore.save(this.chat);
     this.retitle();
   }
+  /** The messages before the running turn's user message cannot change until it ends (an idle chat's never do); the store keeps their serialised form between checkpoints. */
+  settledCount() {
+    if (!this.activeAssistantMessage) return this.turn ? 0 : this.chat.messages.length;
+    const at = this.chat.messages.lastIndexOf(this.activeAssistantMessage);
+    return at > 0 ? at - 1 : 0;
+  }
 
   /** Pushes the user message and the empty reply it streams into, then starts the agent. */
   begin({ agent, user, reply, routing, run }) {
+    if (agent === 'codex' && !run.codexCommand) {
+      const { attachmentPrompt } = require('./lib/attachments');
+      user.codexInputHashes = [run.prompt, run.freshPrompt].filter(Boolean).map(prompt => inputHash(attachmentPrompt(prompt, run.attachments)));
+    }
     this.turnAgent = agent;
     this.turnModel = run.model || null; // what this turn's tokens are priced as
     let contextEstimate = null;
@@ -709,6 +773,8 @@ class ChatRun {
     this.streamEngine.models = this.deps.getModels();
     this.streamEngine.permissionMode = this.deps.getPermissionMode?.() || 'fullAccess';
     this.streamEngine.turnBases = null; // set again by start(), unless the turn goes to a process that is already running
+    // The name `claude --resume` lists the session under in a terminal (Codex gets the same name over thread/name/set).
+    this.streamEngine.sessionName = codexThreadTitle(this.chat, this.deps.projects?.get(this.chat.projectId));
     this.streamEngine.start(run);
     if (!reply.compact) this.deps.routing?.router.recordDestination?.(agent);
     // What "Undo turn" goes back to: the repos as this turn found them.
@@ -757,8 +823,10 @@ class ChatRun {
     this.workContextService()?.consider(this, { initial, project: this.chat.projectId || this.deps.workspaceDir, aliases: [this.deps.workspaceDir, this.deps.projects?.get(this.chat.projectId)?.name] });
   }
 
-  async autoGenerateTitle(promptText) {
+  /** Antigravity writes its own name partway through the first turn: that name is taken when the turn ends (adoptAgentTitle), not asked of Groq. */
+  async autoGenerateTitle(promptText, { fallback = false } = {}) {
     if (this.titlePending) return;
+    if (!fallback && chatNameSource() === 'agent' && hasAgentTitles(this.turnAgent)) return;
     this.titlePending = true;
     try {
       promptText = this.chat.messages.find((m) => m.role === 'user' && m.text?.trim())?.text || promptText;
@@ -776,6 +844,28 @@ class ChatRun {
     } finally {
       this.titlePending = false;
     }
+  }
+
+  /** A turn with an agent that names chats itself just ended: use its name, or Groq's when it wrote none (it can take a moment to appear). */
+  async adoptAgentTitle(agent) {
+    if (this.chat.title || this.chat.customTitle || this.titlePending || chatNameSource() !== 'agent' || !hasAgentTitles(agent)) return;
+    const sessionId = this.chat.sessions?.[agent]?.id;
+    let title = '';
+    this.titlePending = true;
+    try {
+      for (let attempt = 0; attempt < 2 && !title; attempt++) {
+        if (attempt) await new Promise((resolve) => setTimeout(resolve, this.deps.agentTitleRetryMs ?? 2000));
+        title = await readAgentTitle(agent, sessionId);
+      }
+      if (title && !this.chat.title && !this.chat.customTitle) {
+        this.chat.title = title;
+        this.save();
+        this.deps.notifyHistory();
+      }
+    } finally {
+      this.titlePending = false;
+    }
+    if (!title) await this.autoGenerateTitle(this.chat.messages.find((m) => m.role === 'user' && m.text?.trim())?.text || '', { fallback: true });
   }
 
   /**
@@ -833,7 +923,14 @@ class ChatRun {
   }
 
   /** The extension owns the queue; closing or switching a webview never stops it. */
-  queueState() { return { turns: this.queue.filter((next) => next.queued), paused: this.queuePaused }; }
+  queueState() { return { turns: this.queue.filter((next) => next.queued), paused: this.queuePaused, ...(this.queueOrder.length ? { order: this.queueOrder } : {}) }; }
+  /** The strip shows queued turns and scheduled prompts as one list; this is the order the user dragged it into ("turn:<id>" / "scheduled:<id>"). */
+  setQueueOrder(order) {
+    this.queueOrder = cleanQueueOrder(order);
+    this.startVersion++;
+    this.queueChanged();
+    void this.drain();
+  }
   queueChanged() {
     this.syncAwake();
     this.chat.turnQueue = this.queueState();
@@ -874,7 +971,8 @@ class ChatRun {
   editQueuedTurn(message) {
     const turn = this.queue.find(next => next.queued && next.id === message.turn?.id);
     if (!turn) return;
-    Object.assign(turn, { text: String(message.turn.text || ''), modelId: message.turn.modelId, attachments: safeAttachmentPaths(this.deps, message.turn.attachments), editing: message.editing === true });
+    Object.assign(turn, { text: String(message.turn.text || ''), modelId: message.turn.modelId, attachments: safeAttachmentPaths(this.deps, message.turn.attachments), editing: message.editing === true,
+      clientEditId: typeof message.turn.clientEditId === 'string' ? message.turn.clientEditId : undefined });
     this.queueChanged();
     if (!turn.editing) void this.drain();
   }
@@ -882,7 +980,6 @@ class ChatRun {
     const turns = this.queue.filter((next) => next.queued);
     const ordered = [...new Set(Array.isArray(ids) ? ids : [])].map((id) => turns.find((next) => next.id === id)).filter(Boolean);
     ordered.push(...turns.filter((next) => !ordered.includes(next)));
-    ordered.sort((a, b) => Number(/^\s*continue\s*[.!]?\s*$/i.test(b.text)) - Number(/^\s*continue\s*[.!]?\s*$/i.test(a.text)));
     this.queue = this.queue.map((next) => next.queued ? ordered.shift() : next);
     this.queueChanged();
   }
@@ -905,7 +1002,7 @@ class ChatRun {
     if (!scheduler || (!turns.length && !continueTask && !unrun)) return;
     this.queue = this.queue.filter((next) => !turns.includes(next)); // out of the queue at once, so nothing starts behind the limit
     this.queueChanged();
-    const quota = (await readQuotas())?.[agent];
+    const quota = quotaFor(await readQuotas(), modelId, agent);
     const resetsAt = /weekly/i.test(noticeText) ? quota?.secondary?.resetsAt : quota?.resetsAt;
     // agy names its own reset ("Resets in 4h43m1s"); the rail's Gemini pool is not the one Claude and GPT run on through agy.
     const named = resetsInMs(noticeText);
@@ -926,13 +1023,21 @@ class ChatRun {
     }
     const failed = [];
     for (const turn of turns) {
-      try { front.push((await schedule(turn)).id); rescheduled++; } catch { failed.push(turn); }
+      try {
+        const task = await schedule(turn);
+        front.push(task.id);
+        this.queueOrder = this.queueOrder.map(key => key === `turn:${turn.id}` ? `scheduled:${task.id}` : key);
+        rescheduled++;
+      } catch { failed.push(turn); }
     }
     if (front.length > 1) {
       const mine =(await scheduler.getQueue()).filter((item) => item.status === 'pending' && item.chatId === this.chat.id && !front.includes(item.id));
       await scheduler.reorder([...front, ...mine.map((item) => item.id)]);
     }
-    if (failed.length) { this.queue.unshift(...failed); this.queueChanged(); } // could not be scheduled: they stay queued
+    if (failed.length) this.queue.unshift(...failed); // could not be scheduled: they stay queued
+    // The strip ranks by queueOrder and puts unranked prompts last: "continue" and the others must be ranked at the very top.
+    if (front.length) this.queueOrder = [...front.map(id => `scheduled:${id}`), ...this.queueOrder.filter(key => !front.includes(key.slice(key.indexOf(':') + 1)))];
+    this.queueChanged();
     this.deps.notifySchedulerQueue?.();
     if (rescheduled) this.post({ type: 'notice', text: `${rescheduled} prompt${rescheduled === 1 ? '' : 's'} will send when usage resets, one after the other.` });
   }
@@ -946,9 +1051,7 @@ class ChatRun {
       void this.drain();
       return;
     }
-    // What you queued yourself goes before anything the scheduler sent in, whichever arrived first.
-    const firstScheduled = message.scheduled ? -1 : this.queue.findIndex((next) => next.scheduled && !/^\s*continue\s*[.!]?\s*$/i.test(next.text));
-    if (firstScheduled >= 0) this.queue.splice(firstScheduled, 0, message); else this.queue.push(message);
+    this.queue.push(message);
     this.queueChanged();
     void this.drain();
   }
@@ -956,7 +1059,9 @@ class ChatRun {
   pendingUsageReset(modelId) {
     const agent = modelOption(modelId)?.agent;
     if (!agent) return null;
-    return this.deps.schedulerQueue?.tasks?.find(task => task.status === 'pending' && task.chatId === this.chat.id && task.model === agent && task.dispatchTrigger === 'quota-reset' && Date.parse(task.notBefore) > Date.now()) || null;
+    return this.deps.schedulerQueue?.tasks?.find(task => task.status === 'pending' && task.chatId === this.chat.id && task.model === agent
+      && (agent !== 'gemini' || !task.modelId || !modelId || task.modelId === modelId)
+      && task.dispatchTrigger === 'quota-reset' && Date.parse(task.notBefore) > Date.now()) || null;
   }
 
   /**
@@ -992,7 +1097,16 @@ class ChatRun {
 
   drain() {
     if (this.turn || this.starting || this.externalCodexTurn || this.waitingQuestion || this.queuePaused || this.authHold || !this.queue.length) return;
-    const next = this.queue[0];
+    const scheduler = this.deps.schedulerQueue;
+    // Scheduled prompts only order the queue. A scheduler file that cannot be read must not hold back what you queued yourself.
+    if (scheduler && !scheduler.loaded && !this.schedulerUnreadable) {
+      return scheduler.load().catch((error) => { this.schedulerUnreadable = true; console.error('[ai-chat-panel] scheduler queue unavailable, draining without it:', error.message); }).then(() => this.drain());
+    }
+    const tasks = scheduler?.loaded ? scheduler.tasks : [];
+    const next = this.queue[0].queued ? firstPrompt(this.queueState(), tasks.filter(task => task.chatId === this.chat.id)) : this.queue[0];
+    if (!this.queue.includes(next)) return; // the top scheduled prompt holds the rows beneath it
+    this.queue.splice(this.queue.indexOf(next), 1);
+    this.queue.unshift(next);
     if (next.editing || next.scheduling || !next.text.trim()) return;
     const waiting = !next.scheduled && this.pendingUsageReset(next.modelId);
     if (waiting) {
@@ -1166,6 +1280,7 @@ class ChatRun {
     if (event.type === 'turn_complete' && this.turnAgent && this.chat.sessions?.[this.turnAgent]) {
       if (this.turnAgent === 'codex' && event.codexTurnId) this.chat.codexSync = { threadId: this.chat.sessions.codex.id, turnId: event.codexTurnId };
       this.chat.sessions[this.turnAgent].seen = this.chat.messages.length;
+      void this.adoptAgentTitle(this.turnAgent).catch(() => {}); // a missing name is not an error: the chat keeps its first-words name
       this.turnAgent = null;
     }
     // agy gave only the turn's new tokens: the conversation is that much longer than before.
@@ -1298,11 +1413,13 @@ class ChatRun {
       this.turn = null;
       this.pending.clear();
     }
-    // Session IDs and tool boundaries must survive immediately; text and context
-    // are checkpointed during the turn even when no window is showing it.
-    if (event.type === 'session' || event.type === 'tool_start' || event.type === 'tool_end') this.save();
-    else if (event.type === 'delta' || event.type === 'usage') this.deps.chatStore.checkpoint(this.chat);
-    this.post(autoCompact ? { ...event, compacting: true } : event);
+    // Session IDs and tool boundaries are saved within moments, text and context during the turn even when no window shows it.
+    // All go through the throttled, off-thread checkpoint: a full synchronous save of a long chat (stringify, fsync, parse of
+    // the old file) used to stall the whole extension host at every tool call.
+    const delay = event.type === 'session' ? 0 : event.type === 'tool_start' || event.type === 'tool_end' ? 50 : undefined;
+    if (delay !== undefined || event.type === 'delta' || event.type === 'usage') this.deps.chatStore.checkpoint(this.chat, { settled: this.settledCount(), delay });
+    if (event.type === 'session') this.retitle();
+    this.postEvent(autoCompact ? { ...event, compacting: true } : event);
     if (undoCount) this.post({ type: 'undoOffer', count: undoCount });
     if (compacted) this.post({ type: 'usage', agent: compacted.agent, contextTokens: compacted.tokens, estimated: true });
     else if (contextEstimate) this.post({ type: 'usage', agent: contextEstimate.agent, contextTokens: contextEstimate.tokens, estimated: true });
@@ -1360,7 +1477,7 @@ class ChatWindowHost {
       localResourceRoots: [vscode.Uri.joinPath(extensionUri, 'media'), vscode.Uri.file(deps.sessionDir)],
     };
     panel.webview.onDidReceiveMessage((message) => this.handleMessage(message));
-    panel.webview.html = this.renderHtml(panel.webview);
+    panel.webview.html = this.renderHtml(panel.webview, run);
     panel.onDidDispose(() => {
       this.investigationBridge.dispose();
       this.releaseQueueEdits();
@@ -1420,7 +1537,7 @@ class ChatWindowHost {
           if (files.length) this.chat.draftAttachments = files; else delete this.chat.draftAttachments;
         }
         delete this.chat.hasTypedMessage;
-        this.deps.chatStore.checkpoint(this.chat);
+        this.deps.chatStore.checkpoint(this.chat, { settled: this.run.settledCount() });
         break;
       }
       case 'stop': this.run.stop(); break;
@@ -1478,7 +1595,7 @@ class ChatWindowHost {
         break;
       }
       case 'pickAttachments': await this.pickAttachments(message); break;
-      case 'attachmentData': this.saveAttachment(message); break;
+      case 'attachmentData': await this.saveAttachment(message); break;
       case 'removeAttachment': this.removeAttachment(message.path); break;
       case 'renameAttachment': this.renameAttachment(message.path, message.name); break;
       case 'saveMarkup': this.saveMarkup(message); break;
@@ -1487,7 +1604,8 @@ class ChatWindowHost {
       case 'queueTurn': {
         const run = this.deps.chatWindowManager.runFor(message.chatId);
         const turn = message.turn;
-        if (run && turn?.id && typeof turn.text === 'string' && turn.text.trim()) run.enqueue({ id: String(turn.id), text: turn.text, modelId: turn.modelId, attachments: safeAttachmentPaths(this.deps, turn.attachments), verify: Boolean(turn.verify), pipeline: Boolean(turn.pipeline), queued: true });
+        if (run && turn?.id && typeof turn.text === 'string' && turn.text.trim()) run.enqueue({ id: String(turn.id), text: turn.text, modelId: turn.modelId, attachments: safeAttachmentPaths(this.deps, turn.attachments), verify: Boolean(turn.verify), pipeline: Boolean(turn.pipeline), queued: true,
+          clientEditId: typeof turn.clientEditId === 'string' ? turn.clientEditId : undefined });
         break;
       }
       case 'pauseTurnQueue': this.deps.chatWindowManager.runFor(message.chatId)?.pauseQueue(message.paused); break;
@@ -1504,13 +1622,29 @@ class ChatWindowHost {
         try {
           const task = (await this.deps.schedulerQueue.getQueue()).find(item => item.id === message.taskId);
           const scope = this.deps.projects && task ? this.deps.projects.context(task.projectId || this.deps.chatStore.load(task.chatId)?.projectId) : this.deps;
-          await this.deps.schedulerQueue.saveDraft(message.taskId, message.turn, safeAttachmentPaths(scope, message.turn?.attachments), message.editing);
+          let turn = message.turn;
+          if (!message.editing && turn?.modelId === 'auto') {
+            try {
+              const routed = route(String(turn.text || task?.prompt || ''), await readQuotas(), 'auto', this.deps.cliAccounts?.enabledAgents());
+              if (routed?.modelId) turn = { ...turn, modelId: routed.modelId };
+            } catch { /* keep the task's current model if Auto has no usable favorite */ }
+          }
+          let schedule = !message.editing && message.schedule && ['fixed-time', 'quota-reset'].includes(message.schedule.dispatchTrigger) ? { ...message.schedule } : null;
+          if (schedule?.dispatchTrigger === 'quota-reset') {
+            const targetModelId = turn?.modelId && turn.modelId !== 'auto' ? turn.modelId : task?.modelId;
+            const targetModel = modelOption(targetModelId)?.agent || task?.model;
+            const targetRun = (task?.chatId && this.deps.chatWindowManager?.runFor(task.chatId)) || this.run;
+            const notBefore = targetModel ? await this.quotaResetNotBefore({ model: targetModel, modelId: targetModelId, resetWindow: schedule.resetWindow }, targetRun) : null;
+            if (notBefore) schedule.notBefore = notBefore;
+          }
+          await this.deps.schedulerQueue.saveDraft(message.taskId, turn, safeAttachmentPaths(scope, turn?.attachments), message.editing, { clearReset: message.clearReset === true, ...(schedule ? { schedule } : {}) });
           if (!message.editing) this.scheduledEdits?.delete(message.taskId);
           this.deps.notifySchedulerQueue?.(!message.editing);
         } catch (error) { this.panel.webview.postMessage({ type: 'scheduleTaskFailed', error: error.message }); }
         break;
       }
       case 'reorderQueuedTurns': this.deps.chatWindowManager.runFor(message.chatId)?.reorderQueuedTurns(message.ids); break;
+      case 'setQueueOrder': this.deps.chatWindowManager.runFor(message.chatId)?.setQueueOrder(message.order); break;
       case 'importTurnQueue': {
         const run = this.deps.chatWindowManager.runFor(message.chatId);
         // Import the old webview-only queue once. Old versions never persisted an intentional pause.
@@ -1535,6 +1669,8 @@ class ChatWindowHost {
         break;
       }
       case 'openFile': await this.openFile(message.path, message.line); break;
+      case 'previewFile': await this.previewFile(message.path, message.requestId); break;
+      case 'copyFilePath': await this.copyFileRef(message.path, message.mode); break;
       case 'openUrl': if (/^(https?:|mailto:)/i.test(String(message.url || ''))) void vscode.env.openExternal(vscode.Uri.parse(message.url)); break;
       case 'queryFiles': await this.postWorkspaceFiles(); break;
       case 'querySlashCommands': {
@@ -1649,13 +1785,8 @@ class ChatWindowHost {
       // "When the usage resets" waits for that moment even while there is quota left; without this a prompt scheduled with
       // 3 hours to go was sent within seconds, because the watchdog only asked whether usage was available.
       if (task?.dispatchTrigger === 'quota-reset') {
-        const quota = (await readQuotas())?.[task.model];
-        const resetsAt = task.resetWindow === '7d' ? quota?.secondary?.resetsAt : quota?.resetsAt; // the week's reset, or the 5-hour window's
-        const lastReply = run.chat.messages.findLast(item => item.role === 'assistant');
-        const named = lastReply && isLimitNotice(lastReply.text) ? resetsInMs(lastReply.text) : null; // the limit notice's own reset time wins
-        const namedAt = named === null ? 0 : (Date.parse(lastReply.at) || Date.now()) + named;
-        if (namedAt > Date.now()) task = { ...task, notBefore: new Date(namedAt).toISOString() };
-        else if (typeof resetsAt === 'number' && resetsAt * 1000 > Date.now()) task = { ...task, notBefore: new Date(resetsAt * 1000).toISOString() };
+        const notBefore = await this.quotaResetNotBefore(task, run);
+        if (notBefore) task = { ...task, notBefore };
       }
       const saved = await this.deps.schedulerQueue.enqueue(task, safeAttachmentPaths(scope, attachments));
       if (continuing) {
@@ -1671,13 +1802,26 @@ class ChatWindowHost {
     }
   }
 
+  /** Resolves the reset deadline ISO string for a quota-reset task from the latest limit notice or live quota. */
+  async quotaResetNotBefore(task, run = this.run) {
+    const quota = quotaFor(await readQuotas(), task.modelId, task.model);
+    const resetsAt = task.resetWindow === '7d' ? quota?.secondary?.resetsAt : quota?.resetsAt; // the week's reset, or the 5-hour window's
+    const lastReply = run?.chat?.messages?.findLast(item => item.role === 'assistant');
+    const sameSource = lastReply && lastReply.agent === task.model && (task.model !== 'gemini' || !lastReply.modelLabel || !task.modelId || modelOption(task.modelId)?.label === lastReply.modelLabel);
+    const named = sameSource && isLimitNotice(lastReply.text) ? resetsInMs(lastReply.text) : null; // the limit notice's own reset time wins
+    const namedAt = named === null ? 0 : (Date.parse(lastReply.at) || Date.now()) + named;
+    if (namedAt > Date.now()) return new Date(namedAt).toISOString();
+    if (typeof resetsAt === 'number' && resetsAt * 1000 > Date.now()) return new Date(resetsAt * 1000).toISOString();
+    return null;
+  }
+
   /** P17-Z: a pending task leaves the queue for this window, back into the composer or straight out through the auto-router. */
   async takeScheduledTask(taskId, sendNow, chooseModel = false) {
     const task = (await this.deps.schedulerQueue.getQueue()).find((item) => item.id === taskId && item.status === 'pending');
     if (!task) return;
     if (sendNow && task.dispatchTrigger === 'quota-reset') {
-      const quotas = await readQuotas();
-      if (Date.parse(task.notBefore) > Date.now() || quotas?.[task.model]?.remaining === 0 || quotas?.[task.model]?.secondary?.remaining === 0) {
+      const quota = quotaFor(await readQuotas(), task.modelId, task.model);
+      if (Date.parse(task.notBefore) > Date.now() || quota?.remaining === 0 || quota?.secondary?.remaining === 0) {
         this.panel.webview.postMessage({ type: 'notice', text: 'This prompt is waiting for its usage reset. It remains scheduled.' });
         return;
       }
@@ -1713,7 +1857,13 @@ class ChatWindowHost {
     this.panel.reveal(undefined, false);
     // Sent now, it keeps the provider it was scheduled for; Auto would reroute it by quota (e.g. to Gemini).
     const modelId = task.modelId || defaultModel(task.model)?.id || 'auto';
-    this.panel.webview.postMessage({ type: 'restoreScheduledDraft', taskId: task.id, text: task.prompt, files, sendNow: Boolean(sendNow), modelId, chooseModel });
+    const schedule = {
+      dispatchTrigger: task.dispatchTrigger,
+      ...(task.dispatchTime ? { dispatchTime: task.dispatchTime } : {}),
+      ...(task.resetWindow ? { resetWindow: task.resetWindow } : {}),
+      ...(task.notBefore ? { notBefore: task.notBefore } : {}),
+    };
+    this.panel.webview.postMessage({ type: 'restoreScheduledDraft', taskId: task.id, text: task.prompt, files, sendNow: Boolean(sendNow), modelId, chooseModel, schedule });
   }
 
   get chat() { return this.run.chat; }
@@ -1850,7 +2000,7 @@ class ChatWindowHost {
   projectPins() {
     const projects = this.deps.projects?.list() || [];
     const saved = this.deps.projectPinStore?.get();
-    return (Array.isArray(saved) ? saved : projects.filter(project => project.id !== this.chat.projectId).slice(0, 2).map(project => project.id))
+    return (Array.isArray(saved) ? saved : [])
       .filter((id, index, ids) => projects.some(project => project.id === id) && ids.indexOf(id) === index).slice(0, 2);
   }
   async pinProject(id, pinned) {
@@ -1911,6 +2061,7 @@ class ChatWindowHost {
   /** Paints this window with the run it shows: the saved thread, the turn in progress with its partial reply, any card waiting on you. */
   replay({ synced = false } = {}) {
     const run = this.run;
+    run.flushDelta(); // the replay below already holds this text; the windows that showed the chat before it need it first
     this.panel.title = titleFor(run.chat);
     // The picker follows the chat: the model it last ran on (older chats: the last reply's model label).
     const lastReply = [...run.chat.messages].reverse().find((entry) => entry.role === 'assistant' && entry.modelLabel);
@@ -1956,7 +2107,10 @@ class ChatWindowHost {
   restoreChat(id) {
     // Tell the window first, so it paints a skeleton while the chat loads from disk and is sent over.
     const switching = id !== this.chat.id;
-    if (switching) this.panel.webview.postMessage({ type: 'chatLoading' });
+    if (switching) {
+      const queueCount = this.pendingQueueCount(id);
+      this.panel.webview.postMessage({ type: 'chatLoading', ...(queueCount !== 0 ? { queueCount } : {}) });
+    }
     const run = this.deps.chatWindowManager.runFor(id);
     if (run && run !== this.run) this.attach(run);
     else if (switching) this.panel.webview.postMessage({ type: 'chatLoaded', chat: this.webviewChat(this.chat), running: this.run.turn }); // chat gone: put the current one back
@@ -2062,10 +2216,16 @@ class ChatWindowHost {
   }
 
   postHistory() { this.panel.webview.postMessage({ type: 'history', sessions: this.deps.chatWindowManager.listChats() }); }
-  async pushSchedulerQueue() {
+  async pushSchedulerQueue(attempt = 0) {
     const scheduler = this.deps.schedulerQueue;
     if (!scheduler) return;
-    const queue = (await scheduler.getQueue()).map(task => ({ ...task, files: (task.attachments || []).flatMap(attachment => {
+    let tasks;
+    try { tasks = await scheduler.getQueue(); } catch {
+      // An unreadable queue file must not leave the panel on its loading skeleton for good: try again shortly.
+      if (attempt < 5) setTimeout(() => this.pushSchedulerQueue(attempt + 1).catch(() => {}), 2000 * (attempt + 1)); // a closed panel just throws
+      return;
+    }
+    const queue = tasks.map(task => ({ ...task, files: (task.attachments || []).flatMap(attachment => {
       const paths = safeAttachmentPaths({ ...this.deps, attachmentsDir: scheduler.stagingDir }, [attachment.absolutePath || path.resolve(this.deps.workspaceDir, attachment.relativePath || '')]);
       return paths.length ? paths.map(file => this.attachmentMetadata(file, attachment.mimeType)) : [{ name: attachment.name, mime: attachment.mimeType }];
     }) }));
@@ -2085,7 +2245,7 @@ class ChatWindowHost {
   webviewFiles(paths) { return this.safeAttachmentPaths(paths).map((file) => this.attachmentMetadata(file)); }
   postTurnQueue(run = this.run) {
     const state = run.queueState();
-    this.panel.webview.postMessage({ type: 'turnQueue', chatId: run.chat.id, paused: state.paused, turns: state.turns.map((turn) => ({ ...turn, files: this.webviewFiles(turn.attachments) })) });
+    this.panel.webview.postMessage({ type: 'turnQueue', chatId: run.chat.id, paused: state.paused, order: state.order || [], turns: state.turns.map((turn) => ({ ...turn, files: this.webviewFiles(turn.attachments) })) });
   }
   /** P17-Q: the @-mention list. The webview filters it locally, so one query per composer session. */
   async postWorkspaceFiles() {
@@ -2115,11 +2275,19 @@ class ChatWindowHost {
   /** File links: PDFs use the editor's registered viewer, HTML opens in the browser, source opens at the line. */
   async openFile(file, line) {
     if (typeof file !== 'string' || !file) return;
-    let target = file.replace(/^file:\/\/\/?/i, '');
-    try { target = decodeURIComponent(target); } catch { /* keep as written */ }
-    if (/^\/[a-z]:/i.test(target)) target = target.slice(1);
-    const uri = vscode.Uri.file(path.isAbsolute(target) ? target : path.join(this.deps.workspaceDir, target));
-    if (!fs.existsSync(uri.fsPath)) { vscode.window.showWarningMessage(`File not found: ${file}`); return; }
+    // Relative references resolve against this chat's project, searching its folders when the root alone misses.
+    const resolved = await resolveFileRef(file, this.deps.workspaceDir);
+    if (!resolved) {
+      const project = this.deps.projects?.get(this.chat?.projectId)?.name;
+      vscode.window.showWarningMessage(`File not found${project ? ` in ${project}` : ''}: ${file}`);
+      return;
+    }
+    const uri = vscode.Uri.file(resolved);
+    // Markdown reads best formatted: the Office Viewer's markdown editor. A line reference wants the text editor.
+    if (/\.(md|markdown)$/i.test(uri.fsPath) && !line && vscode.extensions.getExtension('cweijan.vscode-office')) {
+      try { await vscode.commands.executeCommand('vscode.openWith', uri, 'cweijan.markdownViewer', vscode.ViewColumn.One); return; }
+      catch { /* fall through to the text editor */ }
+    }
     if (/\.pdf$/i.test(uri.fsPath)) {
       try {
         await vscode.commands.executeCommand('vscode.open', uri, vscode.ViewColumn.One);
@@ -2137,11 +2305,59 @@ class ChatWindowHost {
       await vscode.commands.executeCommand('vscode.open', uri, vscode.ViewColumn.One); // images and other binaries
     }
   }
+  /** A picture a tool card names (the agent viewed or wrote it): the file as a data URI for the preview. Images only, capped. */
+  async previewFile(file, requestId) {
+    const reply = (data) => this.panel?.webview.postMessage({ type: 'filePreview', requestId, path: file, ...data });
+    try {
+      const resolved = typeof file === 'string' && file ? await resolveFileRef(file, this.deps.workspaceDir) : null;
+      if (!resolved) return reply({ error: 'File not found' });
+      const ext = path.extname(resolved).toLowerCase();
+      const mime = ext === '.ico' ? 'image/x-icon' : ATTACHMENT_TYPES[ext];
+      if (!mime?.startsWith('image/')) return reply({ error: 'Not a picture' });
+      const stat = await fs.promises.stat(resolved);
+      if (stat.size > PREVIEW_MAX_BYTES) return reply({ error: `Too large to preview (${Math.round(stat.size / 1048576)} MB)`, path: resolved });
+      const bytes = await fs.promises.readFile(resolved);
+      reply({ uri: `data:${mime};base64,${bytes.toString('base64')}`, name: path.basename(resolved), size: stat.size, path: resolved });
+    } catch (error) { reply({ error: error.message || 'Could not read the file' }); }
+  }
+  /** Right-click on a file badge: its full path as text, or the file itself so Explorer can paste it (Windows). */
+  async copyFileRef(file, mode) {
+    if (typeof file !== 'string' || !file) return;
+    const resolved = await resolveFileRef(file, this.deps.workspaceDir);
+    const notify = (text, error = false) => this.panel?.webview.postMessage({ type: 'toast', text, error });
+    if (!resolved) { notify(`File not found: ${file}`, true); return; }
+    try {
+      if (mode === 'file') {
+        if (process.platform !== 'win32') throw new Error('Copying the file itself is only supported on Windows.');
+        await new Promise((resolve, reject) => {
+          execFile('powershell.exe', ['-NoProfile', '-NonInteractive', '-STA', '-Command', 'Set-Clipboard -LiteralPath $env:CLANKER_CLIP_FILE'], { env: { ...process.env, CLANKER_CLIP_FILE: resolved }, windowsHide: true, timeout: 8000 }, (error) => error ? reject(error) : resolve());
+        });
+        notify(`Copied file ${path.basename(resolved)}.`);
+      } else {
+        await vscode.env.clipboard.writeText(resolved);
+        notify('Copied path.');
+      }
+    } catch (error) { notify(`Could not copy: ${error.message}`, true); }
+  }
+  scheduledPendingCount(chatId) {
+    const scheduler = this.deps?.schedulerQueue;
+    if (!scheduler || (!Array.isArray(scheduler.tasks) && scheduler.loaded !== false)) return 0;
+    if (scheduler.loaded === false) return null;
+    return scheduler.tasks.filter((task) => task.status === 'pending' && task.chatId === chatId).length;
+  }
+  pendingQueueCount(chatOrId) {
+    const chatId = typeof chatOrId === 'string' ? chatOrId : chatOrId?.chat?.id;
+    const run = typeof chatOrId === 'string' ? this.deps?.chatWindowManager?.runs.get(chatId) : chatOrId;
+    const turns = run?.queue?.length || 0;
+    const scheduled = chatId ? this.scheduledPendingCount(chatId) : (this.deps?.schedulerQueue?.loaded === false ? null : 0);
+    return scheduled === null ? null : turns + scheduled;
+  }
   /** P17-K: stored user messages keep attachment paths; the webview needs names and URIs for their pills. */
   webviewChat(chat) {
     const apiCostUsd = chatCost(chat,this.deps.getCostMeter?.()?.live?.prices);
     const page = historyPage(chat.messages);
-    return { ...chat, ...(chat.draftAttachments?.length ? { draftFiles: this.webviewFiles(chat.draftAttachments) } : {}), ...(apiCostUsd > 0 ? { apiCostUsd } : {}), ...page, messages: this.webviewMessages(page.messages) };
+    const scheduledPending = this.scheduledPendingCount(chat.id);
+    return { ...chat, ...(chat.draftAttachments?.length ? { draftFiles: this.webviewFiles(chat.draftAttachments) } : {}), ...(apiCostUsd > 0 ? { apiCostUsd } : {}), ...(scheduledPending !== 0 ? { scheduledPending } : {}), ...page, messages: this.webviewMessages(page.messages) };
   }
   webviewMessages(messages) {
     return messages.map((m) => {
@@ -2150,16 +2366,17 @@ class ChatWindowHost {
       return visible.role === 'user' && visible.attachments?.length ? { ...visible, files: this.webviewFiles(visible.attachments) } : visible;
     });
   }
-  saveAttachment({ name, mime, data, chatId } = {}) {
-    if (typeof data !== 'string' || data.length > 28 * 1024 * 1024) return;
+  async saveAttachment({ name, mime, data, chatId, requestId } = {}) {
+    const failed = error => this.panel.webview.postMessage({ type: 'attachmentFailed', chatId, requestId, error });
+    if (typeof data !== 'string' || data.length > 28 * 1024 * 1024) { failed('Attachment is too large or invalid.'); return; }
     const run = chatId ? this.deps.chatWindowManager.runFor(chatId) : this.run;
-    if (!run) return;
+    if (!run) { failed('The attachment’s chat is no longer available.'); return; }
     const filename = path.basename(String(name || 'attachment.bin')).replace(/[^a-zA-Z0-9._-]/g, '_');
     const file = path.join(run.deps.attachmentsDir, `${attachmentStamp()}_${filename}`);
     try {
-      fs.writeFileSync(file, Buffer.from(data.replace(/^data:[^,]+,/, ''), 'base64'));
-      this.panel.webview.postMessage({ type: 'attachmentSaved', chatId: run.chat.id, attachment: this.attachmentMetadata(file, mime) });
-    } catch (error) { vscode.window.showErrorMessage(`Clanker Controller:could not save attachment (${error.message}).`); }
+      await fs.promises.writeFile(file, Buffer.from(data.replace(/^data:[^,]+,/, ''), 'base64'));
+      this.panel.webview.postMessage({ type: 'attachmentSaved', chatId: run.chat.id, requestId, attachment: this.attachmentMetadata(file, mime) });
+    } catch (error) { failed(`Could not save attachment (${error.message}).`); }
   }
   async pickAttachments({ chatId } = {}) {
     const run = chatId ? this.deps.chatWindowManager.runFor(chatId) : this.run;
@@ -2464,10 +2681,12 @@ class ChatWindowHost {
     }
   }
 
-  renderHtml(webview) {
+  renderHtml(webview, run = this.run) {
+    const initialQueueLoading = this.pendingQueueCount(run);
     const scriptUri = webview.asWebviewUri(vscode.Uri.joinPath(this.extensionUri, 'media', 'main.js'));
     const attachmentPreviewUri = webview.asWebviewUri(vscode.Uri.joinPath(this.extensionUri, 'media', 'attachment-preview.js'));
     const attachmentDocsStyleUri = webview.asWebviewUri(vscode.Uri.joinPath(this.extensionUri, 'media', 'attachment-docs.css'));
+    const glassUiStyleUri = webview.asWebviewUri(vscode.Uri.joinPath(this.extensionUri, 'media', 'glass-ui.css'));
     const attachmentDocsUri = webview.asWebviewUri(vscode.Uri.joinPath(this.extensionUri, 'media', 'attachment-docs.js'));
     const attachmentMarkupUri = webview.asWebviewUri(vscode.Uri.joinPath(this.extensionUri, 'media', 'attachment-markup.js'));
     const mascotUri =webview.asWebviewUri(vscode.Uri.joinPath(this.extensionUri, 'media', 'clanker-mascot.js'));
@@ -2479,6 +2698,10 @@ class ChatWindowHost {
     const loopsUri = webview.asWebviewUri(vscode.Uri.joinPath(this.extensionUri, 'media', 'investigations.js'));
     const timerStyleUri = webview.asWebviewUri(vscode.Uri.joinPath(this.extensionUri, 'media', 'schedule-timer.css'));
     const bubbleUri = webview.asWebviewUri(vscode.Uri.joinPath(this.extensionUri, 'media', 'bubble-shape.js'));
+    const themePaletteUri = webview.asWebviewUri(vscode.Uri.joinPath(this.extensionUri, 'media', 'theme-palette.js'));
+    const liquidGlassUri = webview.asWebviewUri(vscode.Uri.joinPath(this.extensionUri, 'media', 'liquid-glass.js'));
+    const copyTargetsUri = webview.asWebviewUri(vscode.Uri.joinPath(this.extensionUri, 'media', 'copy-targets.js'));
+    const toolTargetsUri = webview.asWebviewUri(vscode.Uri.joinPath(this.extensionUri, 'media', 'tool-targets.js'));
     const chatTimeUri = webview.asWebviewUri(vscode.Uri.joinPath(this.extensionUri, 'media', 'chat-time.js'));
     const burnRateUri = webview.asWebviewUri(vscode.Uri.joinPath(this.extensionUri, 'media', 'burn-rate.js'));
     const ringSegmentsUri = webview.asWebviewUri(vscode.Uri.joinPath(this.extensionUri, 'media', 'ring-segments.js'));
@@ -2498,21 +2721,23 @@ class ChatWindowHost {
     const railScriptUri = webview.asWebviewUri(vscode.Uri.joinPath(this.extensionUri, 'media', 'launcher.js'));
 
     return `<!DOCTYPE html>
-<html lang="en">
+<html lang="en" data-ui-loading>
 <head>
 <meta charset="UTF-8">
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${webview.cspSource} 'unsafe-inline'; script-src ${webview.cspSource} 'nonce-${nonce}' 'wasm-unsafe-eval'; worker-src ${webview.cspSource} blob:; connect-src ${webview.cspSource} data: blob:; font-src ${webview.cspSource} blob:; img-src ${webview.cspSource} data: blob:; media-src ${webview.cspSource} data: blob:;">
+<style>html[data-ui-loading] { background: var(--vscode-editor-background, #111216); } html[data-ui-loading] body { opacity: 0; pointer-events: none; } .startup-error { padding: 16px; font: 13px var(--vscode-font-family, sans-serif); color: var(--vscode-editor-foreground, #ddd); }</style>
 <link rel="stylesheet" href="${katexCssUri}">
 <link rel="stylesheet" href="${styleUri}">
 <link rel="stylesheet" href="${settingsStyleUri}">
 <link rel="stylesheet" href="${loopsStyleUri}">
 <link rel="stylesheet" href="${timerStyleUri}">
 <link rel="stylesheet" href="${attachmentDocsStyleUri}">
+<link rel="stylesheet" href="${glassUiStyleUri}">
 <style>${providers.accentCss()}</style>
 ${rail ? `<link rel="stylesheet" href="${railStyleUri}">` : ''}
 <title>Clanker Controller</title>
 </head>
-<body${rail ? ' class="has-rail"' : ''}>
+<body inert${rail ? ' class="has-rail"' : ''}>
 ${rail ? railMarkup(CHAT_BUTTONS) : `<div class="topbar"><div class="topbar-actions"><div hidden>${CHAT_BUTTONS.queue}${CHAT_BUTTONS.loops}</div>${CHAT_BUTTONS.history}${CHAT_BUTTONS.newChat}</div></div>`}
 
   <div class="transcript" id="transcript" aria-live="polite">
@@ -2555,31 +2780,50 @@ ${rail ? railMarkup(CHAT_BUTTONS) : `<div class="topbar"><div class="topbar-acti
     </div>
   </div>
 
-  <script nonce="${nonce}">window.CLANKER_MARK = ${JSON.stringify(webview.asWebviewUri(vscode.Uri.joinPath(this.extensionUri, 'media', 'clanker-dark.svg')).toString())}; window.MODEL_CATALOG = ${JSON.stringify(MODEL_CATALOG)}; window.AVAILABLE_MODELS = ${JSON.stringify(AVAILABLE_MODELS.filter((entry) => this.deps.cliAccounts?.isEnabled(entry.agent) !== false))}; window.TIME_PREFS = ${timePrefs()}; window.ANTIGRAVITY_RING = ${JSON.stringify(antigravityRing())}; window.SCHEDULE_MODE = ${JSON.stringify(this.deps.getScheduleMode?.() || 'reset')}; window.VOICE_SILENCE_MS = ${Math.max(0, Number(vscode.workspace.getConfiguration('aiChatPanel').get('voiceAutoStopSeconds', 0)) || 0) * 1000};</script>
+  <script nonce="${nonce}">window.CLANKER_MARK = ${JSON.stringify(webview.asWebviewUri(vscode.Uri.joinPath(this.extensionUri, 'media', 'clanker-dark.svg')).toString())}; window.MODEL_CATALOG = ${JSON.stringify(MODEL_CATALOG)}; window.AVAILABLE_MODELS = ${JSON.stringify(AVAILABLE_MODELS.filter((entry) => this.deps.cliAccounts?.isEnabled(entry.agent) !== false))}; window.TIME_PREFS = ${timePrefs()}; window.ANTIGRAVITY_RING = ${JSON.stringify(antigravityRing())}; window.SCHEDULE_MODE = ${JSON.stringify(this.deps.getScheduleMode?.() || 'reset')}; window.VOICE_SILENCE_MS = ${Math.max(0, Number(vscode.workspace.getConfiguration('aiChatPanel').get('voiceAutoStopSeconds', 0)) || 0) * 1000}; window.INITIAL_QUEUE_LOADING = ${JSON.stringify(initialQueueLoading)};</script>
   <script nonce="${nonce}">window.PROVIDERS = ${JSON.stringify(providers.displayList()).replace(/</g, '\\u003c')};</script>
-  <script nonce="${nonce}" src="${iconsUri}"></script>
-  <script nonce="${nonce}" src="${katexUri}"></script>
-  <script nonce="${nonce}" src="${modelPromptsUri}"></script>
-  <script nonce="${nonce}" src="${voiceHotkeyUri}"></script>
-  <script nonce="${nonce}" src="${loopsUri}"></script>
-  <script nonce="${nonce}" src="${settingsUri}"></script>
-  <script nonce="${nonce}" src="${timerUri}"></script>
+  <script defer nonce="${nonce}" src="${themePaletteUri}"></script>
+  <script defer nonce="${nonce}" src="${liquidGlassUri}"></script>
+  <script defer nonce="${nonce}" src="${copyTargetsUri}"></script>
+  <script defer nonce="${nonce}" src="${toolTargetsUri}"></script>
+  <script defer nonce="${nonce}" src="${iconsUri}"></script>
+  <script defer nonce="${nonce}" src="${katexUri}"></script>
+  <script defer nonce="${nonce}" src="${modelPromptsUri}"></script>
+  <script defer nonce="${nonce}" src="${voiceHotkeyUri}"></script>
+  <script defer nonce="${nonce}" src="${loopsUri}"></script>
+  <script defer nonce="${nonce}" src="${settingsUri}"></script>
+  <script defer nonce="${nonce}" src="${timerUri}"></script>
   ${rail ? `<script nonce="${nonce}">{ const api = acquireVsCodeApi(); window.acquireVsCodeApi = () => api; } /* a webview may acquire the API once; the chat and the rail share it */</script>` : ''}
-  <script nonce="${nonce}" src="${chatTimeUri}"></script>
-  <script nonce="${nonce}" src="${burnRateUri}"></script>
-  <script nonce="${nonce}" src="${ringSegmentsUri}"></script>
-  <script nonce="${nonce}" src="${apiValueUri}"></script>
-  <script nonce="${nonce}" src="${limitNoticeUri}"></script>
-  <script nonce="${nonce}" src="${dropZoneUri}"></script>
-  <script nonce="${nonce}" src="${bubbleUri}"></script>
-  <script nonce="${nonce}" src="${mascotUri}"></script>
-<script nonce="${nonce}" src="${attachmentPreviewUri}"></script>
-<script nonce="${nonce}" src="${attachmentDocsUri}"></script>
-<script nonce="${nonce}" src="${attachmentMarkupUri}"></script>
-<script nonce="${nonce}" src="${scriptUri}"></script>
+  <script defer nonce="${nonce}" src="${chatTimeUri}"></script>
+  <script defer nonce="${nonce}" src="${burnRateUri}"></script>
+  <script defer nonce="${nonce}" src="${ringSegmentsUri}"></script>
+  <script defer nonce="${nonce}" src="${apiValueUri}"></script>
+  <script defer nonce="${nonce}" src="${limitNoticeUri}"></script>
+  <script defer nonce="${nonce}" src="${dropZoneUri}"></script>
+  <script defer nonce="${nonce}" src="${bubbleUri}"></script>
+  <script defer nonce="${nonce}" src="${mascotUri}"></script>
+<script defer nonce="${nonce}" src="${attachmentPreviewUri}"></script>
+<script defer nonce="${nonce}" src="${attachmentDocsUri}"></script>
+<script defer nonce="${nonce}" src="${attachmentMarkupUri}"></script>
+<script defer nonce="${nonce}" src="${scriptUri}"></script>
   ${rail ? `<script nonce="${nonce}">window.CONTEXT_ASSETS = ${(contextAssetsJson ||= JSON.stringify(contextAssets(path.join(__dirname, 'media')))).replace(/</g, '\\u003c')};</script>` : ''}
-  ${rail ? `<script nonce="${nonce}" src="${railScriptUri}"></script>` : ''}
+  ${rail ? `<script defer nonce="${nonce}" src="${railScriptUri}"></script>` : ''}
   <script nonce="${nonce}">window.SHIKI_URI = ${JSON.stringify(shikiUri.toString())};</script>
+  <script nonce="${nonce}">
+    document.addEventListener('DOMContentLoaded', () => {
+      const reveal = () => {
+        document.body.inert = false;
+        document.documentElement.removeAttribute('data-ui-loading');
+        document.dispatchEvent(new Event('clanker-ui-ready'));
+      };
+      if (!window.CLANKER_UI_INITIALIZED || getComputedStyle(document.documentElement).getPropertyValue('--clanker-style-ready').trim() !== '1' || ![...document.querySelectorAll('link[rel="stylesheet"]')].every(link => link.sheet)) {
+        document.body.replaceChildren(Object.assign(document.createElement('p'), { className: 'startup-error', textContent: 'Clanker could not finish loading. Reload the window to try again.' }));
+        reveal();
+        return;
+      }
+      requestAnimationFrame(() => requestAnimationFrame(reveal));
+    }, { once: true });
+  </script>
 </body>
 </html>`;
   }
@@ -2925,9 +3169,9 @@ class ChatWindowManager {
   }
 
   /** Also holds scheduled work while an unanswered deferred question is saved in an unloaded chat. */
-  isChatBusy(chatId) {
+  isChatBusy(chatId, scheduled = null) {
     const run = this.runs.get(chatId);
-    return Boolean(run ? (run.turn || run.starting || run.waitingQuestion || run.queue.length) : this.deps.chatStore.load(chatId)?.messages.some(entry => entry.event?.deferred && entry.event.type === 'question_required' && !entry.event.settled));
+    return Boolean(run ? (run.turn || run.starting || run.externalCodexTurn || run.waitingQuestion || run.queuePaused || run.authHold || (!scheduled && run.queue.length)) : this.deps.chatStore.load(chatId)?.messages.some(entry => entry.event?.deferred && entry.event.type === 'question_required' && !entry.event.settled));
   }
 
   /** A scheduled task bound to a chat (limit-reset "continue"): queued into that chat, false if the chat is gone. */
@@ -2942,6 +3186,7 @@ class ChatWindowManager {
       return target;
     });
     // The scheduler releases its card after handoff; the chat queue must show and persist it until it starts.
+    if (!run.queueOrder.some(key => key.slice(key.indexOf(':') + 1) === task.id)) run.queueOrder.unshift(`scheduled:${task.id}`);
     run.enqueue({ id: task.id, text: task.prompt, modelId: task.modelId || chatModelFor(run.chat, task.model)?.id || 'auto', attachments, scheduled: true, queued: true });
     this.deps.notifyHistory();
     return true;
@@ -3235,8 +3480,10 @@ class LauncherViewProvider {
       case 'cloudWarmup': void this.deps.cloudWarmup?.handle(message); break;
       case 'setAutoContinueOnLimit': if (typeof message.enabled === 'boolean') void vscode.workspace.getConfiguration('aiChatPanel').update('autoContinueOnLimit', message.enabled, vscode.ConfigurationTarget.Global); break;
       case 'setAutoUpdateClis': if (typeof message.enabled === 'boolean') void vscode.workspace.getConfiguration('aiChatPanel').update('autoUpdateClis', message.enabled, vscode.ConfigurationTarget.Global); break;
+      case 'setCompletionSound': if (typeof message.enabled === 'boolean') void vscode.workspace.getConfiguration('aiChatPanel').update('completionSound', message.enabled, vscode.ConfigurationTarget.Global); break;
       case 'setWorkContextIcons': if (typeof message.enabled === 'boolean') void vscode.workspace.getConfiguration('aiChatPanel').update('workContextIcons', message.enabled, vscode.ConfigurationTarget.Global); break;
       case 'setCompliance': if (COMPLIANCE_SETTINGS[message.key]) void vscode.workspace.getConfiguration('aiChatPanel').update(COMPLIANCE_SETTINGS[message.key], Boolean(message.value), vscode.ConfigurationTarget.Global); break;
+      case 'setChatNames': if (CHAT_NAME_SOURCES.includes(message.value)) void vscode.workspace.getConfiguration('aiChatPanel').update('chatNames', message.value, vscode.ConfigurationTarget.Global); break;
       case 'setAntigravityRing': if (ANTIGRAVITY_RINGS.includes(message.value)) void vscode.workspace.getConfiguration('aiChatPanel').update('antigravityRing', message.value, vscode.ConfigurationTarget.Global); break;
       case 'setTimeFormat': {
         if (message.format) {
@@ -3325,6 +3572,7 @@ class LauncherViewProvider {
       statusBar: vscode.workspace.getConfiguration('aiChatPanel').get('showStatusBar', false),
       autoContinueOnLimit: vscode.workspace.getConfiguration('aiChatPanel').get('autoContinueOnLimit', true),
       autoUpdateClis: vscode.workspace.getConfiguration('aiChatPanel').get('autoUpdateClis', true),
+      completionSound: vscode.workspace.getConfiguration('aiChatPanel').get('completionSound', true),
       workContextIcons: vscode.workspace.getConfiguration('aiChatPanel').get('workContextIcons', false),
       sessionWarmup: this.deps.getSessionWarmup?.(),
       cloudWarmup: this.deps.cloudWarmup?.snapshot(),
@@ -3501,10 +3749,7 @@ function activate(context) {
   const codexChatSync = new CodexChatSync({ cwd: workspaceDir, runs: () => chatWindowManager?.runs.values() || [] });
   context.subscriptions.push(codexChatSync);
   // Repair old prompt-derived names without resuming threads or sending model prompts.
-  for (const entry of chatStore.list().filter(chat => chat.models.includes('codex'))) {
-    const chat = chatStore.load(entry.id);
-    if (chat) void codexThreadTitles.sync(chat, projects.get(chat.projectId));
-  }
+  codexThreadTitles.repairSaved(chatStore, projects);
   const slashCommands = new SlashCommandCatalog({ codexCommands, workspaceDir, cacheFile: path.join(SESSION_DIR, 'slash-commands.json') });
 
   function getModels() {
@@ -3534,6 +3779,7 @@ function activate(context) {
   function notifySchedulerQueue(dispatch = false) {
     void launcher?.pushSchedulerQueue();
     for (const host of chatWindowManager?.hosts || []) void host.pushSchedulerQueue();
+    setImmediate(() => { for (const run of chatWindowManager?.runs.values() || []) void run.drain(); });
     if (dispatch === true) void watchdog.tick();
   }
 
@@ -3631,13 +3877,14 @@ function activate(context) {
   // Chime when a reply finishes and nothing you queued is left to run; a Windows toast as well when the IDE is not the
   // focused window. `chime: false` (scheduled tasks) leaves the toast, which is silent, and drops the sound.
   function notify(agent, text, chatTitle, { chime = true } = {}) {
+    chime = chime && vscode.workspace.getConfiguration('aiChatPanel').get('completionSound', true) !== false;
     notifyReply({ appName: vscode.env.appName, chime, toast: vscode.window.state.focused ? null : { agent, text, chatTitle } });
   }
   function notifyHistory() {
     launcher?.postHistory();
     for (const host of chatWindowManager?.hosts || []) host.postHistory();
   }
-  const watchdog = new SchedulerWatchdog({ queue: schedulerQueue, projects, workspaceDir, getModels, getPermissionMode, getModelPrompts: () => cliHub.prompts, getModelSettings: () => cliHub.modelSettings, telegram: null, onQueueChange: notifySchedulerQueue, chatStore, onHistoryChange: notifyHistory, notify, isAgentEnabled: (agent) => cliAccounts.isEnabled(agent), resumeInChat: (task) => chatWindowManager?.resumeChat(task), isChatBusy: (chatId) => chatWindowManager?.isChatBusy(chatId), authGate });
+  const watchdog = new SchedulerWatchdog({ queue: schedulerQueue, projects, workspaceDir, getModels, getPermissionMode, getModelPrompts: () => cliHub.prompts, getModelSettings: () => cliHub.modelSettings, telegram: null, onQueueChange: notifySchedulerQueue, chatStore, onHistoryChange: notifyHistory, notify, isAgentEnabled: (agent) => cliAccounts.isEnabled(agent), resumeInChat: (task) => chatWindowManager?.resumeChat(task), isChatBusy: (chatId, task) => chatWindowManager?.isChatBusy(chatId, task), getQueueState: id => chatWindowManager?.runs.get(id)?.queueState() || chatStore.load(id)?.turnQueue || {}, authGate });
   const warmupConfig = () => vscode.workspace.getConfiguration('aiChatPanel');
   const warmupChanged = () => { void launcher?.pushFleet(); for (const host of chatWindowManager?.hosts || []) void host.settingsPane?.pushFleet(); };
   const cloudWarmup = new CloudWarmup({ context, vscode, models: () => AVAILABLE_MODELS, locate: agent => locate(agent).path || '',
@@ -3828,6 +4075,7 @@ function activate(context) {
     },
     timeFormat: vscode.workspace.getConfiguration('aiChatPanel').get('timeFormat', '24h'),
     antigravityRing: antigravityRing(),
+    chatNames: chatNameSource(),
     permissionMode: getPermissionMode(),
   });
   // CLI versions, the update icon and the starred models (Settings > Models) share one hub; every chat window hears it.

@@ -35,11 +35,20 @@ class SchedulerQueue {
     this.draftFiles = new Map();
   }
 
+  /** Windows can refuse a read (EPERM/EBUSY) while an indexer or sync client holds the file; that passes in moments. */
+  async readFile() {
+    for (let attempt = 0; ; attempt++) {
+      try { return await fs.readFile(this.filePath, 'utf8'); } catch (error) {
+        if (attempt >= 4 || !['EPERM', 'EBUSY', 'EACCES'].includes(error.code)) throw error;
+        await new Promise(resolve => setTimeout(resolve, 50 * (attempt + 1)));
+      }
+    }
+  }
   async load() {
     if (this.loaded) return;
     await fs.mkdir(this.sessionDir, { recursive: true });
     try {
-      const parsed = JSON.parse(await fs.readFile(this.filePath, 'utf8'));
+      const parsed = JSON.parse(await this.readFile());
       this.tasks = Array.isArray(parsed) ? parsed : [];
     } catch (error) {
       if (error.code !== 'ENOENT') throw new Error(`Could not read scheduler queue: ${error.message}`);
@@ -74,7 +83,8 @@ class SchedulerQueue {
       }
     }
     if (alignClaudeResets(this.tasks)) changed = true;
-    if (changed) await this.persist();
+    // A failed housekeeping write must not leave the queue unusable: the tasks are already loaded in memory.
+    if (changed) await this.persist().catch(() => {});
     this.syncAwake();
   }
 
@@ -150,12 +160,6 @@ class SchedulerQueue {
       if (moving.length < 2) return false;
       const slots = this.tasks.map((task, index) => (moving.includes(task) ? index : -1)).filter((index) => index >= 0);
       slots.forEach((slot, i) => { this.tasks[slot] = moving[i]; });
-      // A continuation finishes the interrupted work before later prompts in that chat.
-      for (const task of this.tasks.filter(item => item.status === 'pending' && isContinue(item))) {
-        const first = this.tasks.findIndex(item => item.chatId === task.chatId && item.status === 'pending');
-        const index = this.tasks.indexOf(task);
-        if (first < index) { this.tasks.splice(index, 1); this.tasks.splice(first, 0, task); }
-      }
       await this.persist();
       return true;
     });
@@ -165,7 +169,7 @@ class SchedulerQueue {
     await this.load();
     if (!MODELS.has(model)) return null;
     const now = Date.now();
-    const task = this.tasks.find((item) => item.status === 'pending' && item.model === model && isDue(item, now) && !waitsForContinue(item, this.tasks));
+    const task = this.tasks.find((item) => item.status === 'pending' && item.model === model && isDue(item, now) && (!item.chatId || firstPrompt({}, this.tasks.filter(other => other.chatId === item.chatId))?.id === item.id));
     return task ? copyTask(task) : null;
   }
 
@@ -258,7 +262,7 @@ class SchedulerQueue {
       return true;
     });
   }
-  async saveDraft(id, turn, files, editing) {
+  async saveDraft(id, turn, files, editing, { clearReset = false, schedule = null } = {}) {
     return this.update(id, async task => {
       if (task.status !== 'pending') return;
       // Stage into a fresh folder before replacing the original attachment list.
@@ -268,11 +272,14 @@ class SchedulerQueue {
       this.draftFiles.set(id, signature);
       task.prompt = String(turn?.text || '');
       task.attachments = attachments;
+      const previousModelId = task.modelId;
       if (turn?.modelId && turn.modelId !== 'auto') task.modelId = String(turn.modelId);
       const model = require('./model-catalog').modelOption(task.modelId)?.agent;
       if (MODELS.has(model)) {
-        if (model !== task.model && task.dispatchTrigger === 'quota-reset') {
-          // A reset deadline belongs to the exhausted provider, not the prompt.
+        const modelChanged = Boolean(previousModelId && task.modelId !== previousModelId);
+        // Antigravity models span separate quota pools and individual model caps, so switching to another Antigravity model drops the old reset wait too.
+        if (!schedule && task.dispatchTrigger === 'quota-reset' && (clearReset || model !== task.model || (model === 'gemini' && modelChanged))) {
+          // A reset deadline belongs to the exhausted provider (or Antigravity model), not the prompt.
           task.dispatchTrigger = 'fixed-time';
           task.dispatchTime = new Date().toISOString();
           delete task.notBefore;
@@ -280,6 +287,18 @@ class SchedulerQueue {
           delete task.retryAfter;
         }
         task.model = model;
+      }
+      if (!editing && schedule) {
+        if (schedule.dispatchTrigger === 'fixed-time' && Number.isFinite(Date.parse(schedule.dispatchTime || ''))) {
+          task.dispatchTrigger = 'fixed-time';
+          task.dispatchTime = new Date(schedule.dispatchTime).toISOString();
+          delete task.resetWindow; delete task.notBefore; delete task.retryAfter;
+        } else if (schedule.dispatchTrigger === 'quota-reset') {
+          task.dispatchTrigger = 'quota-reset';
+          if (schedule.resetWindow === '7d') task.resetWindow = '7d'; else delete task.resetWindow;
+          if (Number.isFinite(Date.parse(schedule.notBefore || ''))) task.notBefore = new Date(schedule.notBefore).toISOString(); else delete task.notBefore;
+          delete task.dispatchTime; delete task.retryAfter;
+        }
       }
       task.editing = editing === true;
     });
@@ -296,7 +315,15 @@ class SchedulerQueue {
     await fs.mkdir(this.sessionDir, { recursive: true });
     const temporary = `${this.filePath}.${process.pid}.${Date.now()}.tmp`;
     await fs.writeFile(temporary, JSON.stringify(this.tasks, null, 2), 'utf8');
-    await fs.rename(temporary, this.filePath);
+    // Windows refuses the rename (EPERM/EBUSY) while an indexer, antivirus or sync client holds the target: retry, then write in place.
+    for (let attempt = 0; ; attempt++) {
+      try { await fs.rename(temporary, this.filePath); break; } catch (error) {
+        if (!['EPERM', 'EBUSY', 'EACCES'].includes(error.code)) { await fs.rm(temporary, { force: true }).catch(() => {}); throw error; }
+        if (attempt < 4) { await new Promise(resolve => setTimeout(resolve, 50 * (attempt + 1))); continue; }
+        try { await fs.writeFile(this.filePath, JSON.stringify(this.tasks, null, 2), 'utf8'); } finally { await fs.rm(temporary, { force: true }).catch(() => {}); }
+        break;
+      }
+    }
     this.syncAwake();
   }
 
@@ -333,10 +360,6 @@ function alignClaudeResets(tasks) {
 }
 function copyTask(task) { return { ...task, attachments: task.attachments.map((attachment) => ({ ...attachment })) }; }
 function isContinue(task) { return Boolean(task?.chatId) && /^\s*continue\s*[.!]?\s*$/i.test(task.prompt); }
-/** Later prompts of a chat must not reach the model before that chat's "continue" has finished the interrupted work. */
-function waitsForContinue(task, tasks) {
-  return !isContinue(task) && tasks.some(other => other.chatId === task.chatId && ACTIVE.has(other.status) && isContinue(other));
-}
 function isDue(task, now) {
   if (task.editing || !String(task.prompt || '').trim()) return false;
   if (task.notBefore && Date.parse(task.notBefore) > now) return false;
@@ -362,4 +385,11 @@ function mimeFor(name) {
   return ({ '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.webp': 'image/webp', '.gif': 'image/gif', '.svg': 'image/svg+xml', '.pdf': 'application/pdf', '.json': 'application/json', '.md': 'text/markdown', '.txt': 'text/plain' })[ext] || 'application/octet-stream';
 }
 
-module.exports = { SchedulerQueue, isDue, resetObserved, waitsForContinue, MAX_QUEUE_SIZE, MAX_ATTACHMENT_BYTES, ACTIVE_STATUSES: [...ACTIVE] };
+// Same stable ordering as the mixed strip: saved ranks, then scheduled prompts, then queued turns.
+function firstPrompt(state = {}, tasks = []) {
+  const rank = new Map((state.order || []).map((key, i) => [key.slice(key.indexOf(':') + 1), i]));
+  return [...tasks.filter(task => task.status === 'pending'), ...(state.turns || [])]
+    .sort((a, b) => (rank.get(a.id) ?? 1e9) - (rank.get(b.id) ?? 1e9))[0];
+}
+
+module.exports = { SchedulerQueue, isDue, resetObserved, firstPrompt, MAX_QUEUE_SIZE, MAX_ATTACHMENT_BYTES, ACTIVE_STATUSES: [...ACTIVE] };

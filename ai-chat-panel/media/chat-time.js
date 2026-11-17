@@ -10,6 +10,18 @@
   const startOfDay = (date) => new Date(date.getFullYear(), date.getMonth(), date.getDate()).getTime();
   const plural = (n, unit) => `${n} ${unit}${n === 1 ? '' : 's'} ago`;
   const MONTH = { month: 'short' };
+  const formatters = new Map();
+  function formatDate(date, locale, options) {
+    if (Number.isNaN(date.getTime())) return 'Invalid Date';
+    const key = JSON.stringify([locale, options]);
+    let formatter = formatters.get(key);
+    if (!formatter) {
+      formatter = new Intl.DateTimeFormat(locale, options);
+      if (formatters.size >= 32) formatters.delete(formatters.keys().next().value);
+      formatters.set(key, formatter);
+    }
+    return formatter.format(date);
+  }
 
   /** Whole calendar days between `at` and `now`: 0 today, 1 yesterday. */
   function daysAgo(at, now) {
@@ -29,13 +41,13 @@
     if (minutes < 60) return compact ? `${minutes} min ago` : plural(minutes, 'minute');
     if (minutes < RELATIVE_HOURS * 60) return compact ? `${Math.floor(minutes / 60)} hr ago` : plural(Math.floor(minutes / 60), 'hour');
     const date = new Date(at);
-    const clock = date.toLocaleTimeString(locale, { hour: '2-digit', minute: '2-digit', ...(hourCycle ? { hourCycle } : {}) });
+    const clock = formatDate(date, locale, { hour: '2-digit', minute: '2-digit', ...(hourCycle ? { hourCycle } : {}) });
     const days = daysAgo(at, now);
     if (days <= 0) return clock;
     if (days === 1) return compact ? 'Yesterday' : `Yesterday, ${clock}`;
-    if (compact) return date.toLocaleDateString(locale, now - at >= 365 * DAY ? { ...MONTH, year: 'numeric' } : { ...MONTH, day: 'numeric' });
-    if (now - at >= 365 * DAY) return date.toLocaleDateString(locale, { month: 'short', day: 'numeric', year: 'numeric' });
-    return `${date.toLocaleDateString(locale, { month: 'short', day: 'numeric' })}, ${clock}`;
+    if (compact) return formatDate(date, locale, now - at >= 365 * DAY ? { ...MONTH, year: 'numeric' } : { ...MONTH, day: 'numeric' });
+    if (now - at >= 365 * DAY) return formatDate(date, locale, { month: 'short', day: 'numeric', year: 'numeric' });
+    return `${formatDate(date, locale, { month: 'short', day: 'numeric' })}, ${clock}`;
   }
 
   /** The stamp on a message: the clock time today, "Yesterday, 15:30", then "Sep 29, 18:56" ("Sep 29, 2025, 18:56" from another year). */
@@ -43,12 +55,12 @@
     const at = new Date(when).getTime();
     if (Number.isNaN(at)) return '';
     const date = new Date(at);
-    const clock = date.toLocaleTimeString(locale, { hour: '2-digit', minute: '2-digit', ...(hourCycle ? { hourCycle } : {}) });
+    const clock = formatDate(date, locale, { hour: '2-digit', minute: '2-digit', ...(hourCycle ? { hourCycle } : {}) });
     const days = daysAgo(at, now);
     if (days <= 0) return clock;
     if (days === 1) return `Yesterday, ${clock}`;
     const sameYear = date.getFullYear() === new Date(now).getFullYear();
-    return `${date.toLocaleDateString(locale, sameYear ? { month: 'short', day: 'numeric' } : { month: 'short', day: 'numeric', year: 'numeric' })}, ${clock}`;
+    return `${formatDate(date, locale, sameYear ? { month: 'short', day: 'numeric' } : { month: 'short', day: 'numeric', year: 'numeric' })}, ${clock}`;
   }
 
   /** The heading of the day group a chat falls under: Today, Yesterday, Last 7 days, Last 30 days, then by month. */
@@ -62,10 +74,10 @@
     if (days < 30) return 'Last 30 days';
     const date = new Date(at);
     const sameYear = date.getFullYear() === new Date(now).getFullYear();
-    return date.toLocaleDateString(locale, sameYear ? { month: 'long' } : { month: 'long', year: 'numeric' });
+    return formatDate(date, locale, sameYear ? { month: 'long' } : { month: 'long', year: 'numeric' });
   }
 
-  const api = { chatTime, chatDayGroup, messageTime };
+  const api = { chatTime, chatDayGroup, messageTime, formatDate };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   else root.chatTime = api;
 })(typeof window !== 'undefined' ? window : globalThis);

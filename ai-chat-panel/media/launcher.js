@@ -13,6 +13,22 @@
   // The iOS app-icon shape for the chat tiles: a superellipse (|x|^5 + |y|^5 = 1), whose curvature flows into the
   // straight edges instead of jumping the way a circular corner radius does. CSS `border-radius` cannot draw it, so it
   // is a clip path in bounding-box units (any element can use clip-path: url(#squircle)).
+  // The usage rings are gel glass (.ring > svg in launcher.css points its filter here). One filter on the whole ring, no extra
+  // nodes, and no neon: the arc stays a translucent body of its own colour; a soft highlight runs along the lit (top left)
+  // shoulder, and a thin denser edge on the far side gives it thickness, the way a drop of gel holds light. Nothing darkens
+  // and nothing glows, so it reads the same on a light and a dark rail. The light comes from (1,-1) in the ring's own frame
+  // (the ring svg is rotated -90deg on screen): azimuth 315 and the offset below.
+  const RING_TUBE = `<filter id="ring-tube" x="-20%" y="-20%" width="140%" height="140%" color-interpolation-filters="sRGB">
+    <feGaussianBlur in="SourceAlpha" stdDeviation="0.9" result="h"/>
+    <feSpecularLighting in="h" surfaceScale="2.2" specularConstant="0.5" specularExponent="26" lighting-color="#fff" result="s"><feDistantLight azimuth="315" elevation="55"/></feSpecularLighting>
+    <feComposite in="s" in2="SourceAlpha" operator="in" result="spec"/>
+    <feOffset in="SourceAlpha" dx="0.55" dy="-0.55" result="lit"/>
+    <feComposite in="SourceAlpha" in2="lit" operator="out" result="edge"/>
+    <feGaussianBlur in="edge" stdDeviation="0.25" result="edge2"/>
+    <feComposite in="SourceGraphic" in2="edge2" operator="in" result="rim"/>
+    <feColorMatrix in="SourceGraphic" type="matrix" values="1 0 0 0 0  0 1 0 0 0  0 0 1 0 0  0 0 0 0.82 0" result="body"/>
+    <feMerge><feMergeNode in="body"/><feMergeNode in="rim"/><feMergeNode in="spec"/></feMerge>
+  </filter>`;
   (function defineSquircle(n = 5, steps = 120) {
     const points = [];
     for (let i = 0; i < steps; i++) {
@@ -51,7 +67,7 @@
     const absolute = (x, y) => `${x.toFixed(2)} ${y.toFixed(2)}`;
     const fillMask = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 40 46"><mask id="m"><path d="${bubblePath(absolute)}" fill="#fff" stroke="#000" stroke-width="2" stroke-linejoin="round"/></mask><rect width="40" height="46" mask="url(#m)"/></svg>`;
     document.documentElement.style.setProperty('--bubble-fill-mask', `url("data:image/svg+xml,${encodeURIComponent(fillMask)}")`);
-    document.body.insertAdjacentHTML('afterbegin', `<svg width="0" height="0" style="position:absolute" aria-hidden="true"><defs><clipPath id="squircle" clipPathUnits="objectBoundingBox"><path d="M${points.join('L')}Z"/></clipPath><clipPath id="bubble" clipPathUnits="objectBoundingBox"><path d="${bubblePath(fractions)}"/></clipPath></defs></svg>`);
+    document.body.insertAdjacentHTML('afterbegin', `<svg width="0" height="0" style="position:absolute" aria-hidden="true"><defs><clipPath id="squircle" clipPathUnits="objectBoundingBox"><path d="M${points.join('L')}Z"/></clipPath><clipPath id="bubble" clipPathUnits="objectBoundingBox"><path d="${bubblePath(fractions)}"/></clipPath>${RING_TUBE}</defs></svg>`);
   })();
 
   // The rail lives in the chat's own webview. New chat, Manage chats and the Scheduled timer pill are the chat's own
@@ -455,7 +471,12 @@
     if (session.projectId) {
       const project = window.railProjectMark?.(session.projectId);
       if (project) { project.classList.add('is-tile'); return project; }
-      if (!window.railProjectsReady?.()) return document.createElement('span');
+      if (!window.railProjectsReady?.()) {
+        const mark = document.createElement('span');
+        mark.className = 'rail-skeleton-mark skeleton';
+        mark.setAttribute('aria-hidden', 'true');
+        return mark;
+      }
     }
     if (agent) { const logo = modelMark(agent); logo.removeAttribute('title'); return logo; }
     const slot = document.createElement('span');
