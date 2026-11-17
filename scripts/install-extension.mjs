@@ -42,7 +42,7 @@ function collect() {
   const own = walk(src).map((rel) => ({ rel, abs: path.join(src, rel) }));
   const sharedDir = path.join(root, 'voice-router', 'lib');
   const shared = walk(sharedDir).map((rel) => ({ rel: `voice-router/lib/${rel}`, abs: path.join(sharedDir, rel) }));
-  return [...own, ...shared];
+  return [...own, ...shared, { rel: 'LICENSE', abs: path.join(root, 'LICENSE') }];
 }
 
 function walk(dir, rel = '') {
