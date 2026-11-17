@@ -12,7 +12,7 @@ $parent = Get-Process -Id ${process.pid} -ErrorAction SilentlyContinue
 try { while ($parent -and -not $parent.HasExited) { Start-Sleep -Seconds 5; $parent.Refresh() } }
 finally { [void][Clanker.Power]::SetThreadExecutionState([uint32]2147483648) }`;
 
-function keepAwake({ platform = process.platform, spawnImpl = spawn, onChange = () => {}, onError = error => console.warn(`[keep-awake] ${error.message}`), retryMs = 5000, readyMs = 15000 } = {}) {
+function keepAwake({ platform = process.platform, spawnImpl = spawn, onChange = () => {}, onError = error => require('./log.js').warn('keep awake', error), retryMs = 5000, readyMs = 15000 } = {}) {
   if (platform !== 'win32') return null;
   let child, active = false, released = false, retry, timeout;
   const launch = () => {
