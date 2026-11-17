@@ -80,17 +80,18 @@ class CliAccounts {
   }
   snapshot() {
     return { type: 'cliConnections', setupNeeded: !this.completed, checking: this.checking,
-      providers: Object.fromEntries(providers.ids().map(agent => [agent, { enabled: this.enabled.has(agent), unavailable: this.unavailable[agent] || null, installed: Boolean(this.find(agent).path), auth: this.auth[agent] || 'unknown', settingUp: this.terminals.has(agent) || this.signingIn.has(agent), note: this.notes[agent] || '', fault: this.fault(agent) }])) };
+      providers: Object.fromEntries(providers.ids().map(agent => [agent, { enabled: this.enabled.has(agent), unavailable: this.unavailable[agent] || null, installed: Boolean(this.find(agent).path) && this.auth[agent] !== 'missing', auth: this.auth[agent] || 'unknown', settingUp: this.terminals.has(agent) || this.signingIn.has(agent), note: this.notes[agent] || '', fault: this.fault(agent) }])) };
   }
   push() { this.broadcast(this.snapshot()); }
   async save() { await this.store.set({ enabled: this.connectedAgents(), unavailable: this.unavailable, completed: this.completed }); this.onChange?.(); this.push(); }
   async complete() { this.completed = true; await this.save(); }
-  async connect(agent) {
+  // `force`: open the setup terminal even if the status check says signed in (an ended sign-in the check cannot see).
+  async connect(agent, { force = false } = {}) {
     if (!providers.has(agent)) return;
     this.enabled.add(agent);
     delete this.unavailable[agent]; // signing in again is how an account gets fixed; the next failed turn would flag it anew
     await this.save();
-    if (['connected', 'ready'].includes(this.auth[agent])) return;
+    if (!force && ['connected', 'ready'].includes(this.auth[agent])) return;
     const previous = this.terminals.get(agent);
     if (previous && this.vscode.window.terminals.includes(previous)) { previous.show(true); return; }
     // A damaged install cannot sign in: the CLI dies before it asks anything. Show why, and run the install line to repair it.
@@ -119,7 +120,7 @@ class CliAccounts {
   }
   async connectAll() {
     for (const agent of providers.ids()) {
-      if (providers.get(agent)?.optional && !this.find(agent).path) continue;
+      if (providers.get(agent)?.optional && (!this.find(agent).path || this.auth[agent] === 'missing')) continue;
       await this.connect(agent);
     }
   }
@@ -207,6 +208,8 @@ class CliAccounts {
     if (!fault) return { ok: true };
     if (fault.action === 'restoreCli') { await this.restore(agent); return { ok: !this.fault(agent) }; }
     if (fault.action !== 'fixCli') { await this.connect(agent); return { ok: false }; }
+    // A sign-in that asks questions (device code, where to store the token) runs in the setup terminal; closing it checks again.
+    if (providers.get(agent).terminalLogin) { await this.connect(agent, { force: true }); return { ok: false }; }
     this.signingIn.add(agent); this.push();
     let result;
     try { result = await this.signIn(agent); } finally { this.signingIn.delete(agent); }
@@ -221,7 +224,13 @@ class CliAccounts {
     await this.onChecked?.();
   }
   terminalClosed(terminal) {
-    for (const [agent, current] of this.terminals) if (current === terminal) { this.terminals.delete(agent); void this.check(); }
+    for (const [agent, current] of this.terminals) {
+      if (current !== terminal) continue;
+      this.terminals.delete(agent);
+      // Copilot's status check (`--version`) cannot see a signed-out account, so the terminal sign-in finishing is what ends "expired".
+      if (providers.get(agent)?.terminalLogin) delete this.expired[agent];
+      void this.check();
+    }
   }
   dispose() {
     this.disposed = true;

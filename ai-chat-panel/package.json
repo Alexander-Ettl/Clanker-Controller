@@ -67,6 +67,14 @@
                 "title": "Clanker Controller: Show Investigation Results"
             },
             {
+                "command": "aiChatPanel.showLogs",
+                "title": "Clanker Controller: Show Logs"
+            },
+            {
+                "command": "aiChatPanel.showLogOutput",
+                "title": "Clanker Controller: Show Log in Output Panel"
+            },
+            {
                 "command": "aiChatPanel.chooseProject",
                 "title": "Clanker Controller: Choose Project"
             },

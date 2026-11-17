@@ -79,7 +79,7 @@ function probeClaudeUsage(cwd) {
       if (!result) return resolve(null);
       if ((result.num_turns || 0) > 0 || (result.total_cost_usd || 0) > 0) {
         disabled = true; // /usage went to the model on this CLI version: never probe again
-        console.warn('[ai-chat-panel] "/usage" cost a model turn on this Claude Code version; usage probing is off.');
+        require('./log.js').warn('claude usage', '"/usage" cost a model turn on this Claude Code version; usage probing is off.');
         return resolve(null);
       }
       resolve(parseUsageText(result.result));

@@ -10,7 +10,7 @@ function codexThreadTitle(chat, project) {
 
 // One metadata-only connection for all chats, including saved threads that aren't open in a panel.
 class CodexThreadTitles {
-  constructor({ cwd, server = null, onError = error => console.warn(`[Clanker thread title] ${error.message}`) } = {}) {
+  constructor({ cwd, server = null, onError = error => require('./log.js').warn('codex thread title', error) } = {}) {
     this.cwd = cwd;
     this.server = server;
     this.onError = onError;
