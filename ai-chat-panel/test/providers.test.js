@@ -72,9 +72,21 @@ test('copilot descriptor builds commands and normalizes events', async () => {
   const engine = new StreamEngine({ cwd: 'C:/Repo', models: { copilot: 'claude-sonnet-4.5' } });
   try {
     const spec = engine.commandFor('copilot', 'Fix tests', [], { model: 'gpt-5', resume: 'sess-1', permissionMode: 'fullAccess' });
-    assert.deepEqual(spec.args, ['-p', 'Fix tests', '--model', 'gpt-5', '--resume', 'sess-1', '--allow-all-tools', '--add-dir', 'C:/Repo']);
-    assert.deepEqual(normalizeEvent({ type: 'init', session_id: 'sess-1' }, 'copilot'), { type: 'session', sessionId: 'sess-1', agent: 'copilot' });
-    assert.deepEqual(normalizeEvent({ type: 'delta', text: 'Hello from Copilot' }, 'copilot'), { type: 'delta', text: 'Hello from Copilot', model: 'copilot', agent: 'copilot' });
+    assert.deepEqual(spec.args, ['-p', 'Fix tests', '--output-format', 'json', '--stream', 'off', '--model', 'gpt-5', '--resume', 'sess-1', '--allow-all-tools', '--add-dir', 'C:/Repo']);
+    // `copilot -p --output-format json` session events (SDK shapes).
+    const event = (type, data) => normalizeEvent({ type, data, id: 'e', timestamp: '2026-11-17T00:00:00Z' }, 'copilot');
+    assert.deepEqual(event('session.start', { sessionId: 'sess-1' }), { type: 'session', sessionId: 'sess-1', agent: 'copilot' });
+    assert.deepEqual(event('assistant.message', { messageId: 'm1', content: 'Line one.\n\n- item', toolRequests: [] }), { type: 'delta', text: 'Line one.\n\n- item', block: true, model: 'copilot', agent: 'copilot' });
+    assert.equal(event('assistant.message', { messageId: 'm2', content: '', toolRequests: [{}] }), null);
+    assert.deepEqual(event('tool.execution_start', { toolCallId: 't1', toolName: 'bash', arguments: { command: 'npm test', description: 'Run tests' } }),
+      { type: 'tool_start', toolId: 't1', agent: 'copilot', name: 'bash', command: 'npm test', file: '', diff: '' });
+    assert.deepEqual(event('tool.execution_start', { toolCallId: 't2', toolName: 'edit', arguments: { path: 'a.js', old_str: 'x = 1', new_str: 'x = 2' } }),
+      { type: 'tool_start', toolId: 't2', agent: 'copilot', name: 'edit', command: 'a.js', file: 'a.js', diff: '-x = 1\n+x = 2' });
+    assert.equal(event('tool.execution_start', { toolCallId: 't3', toolName: 'report_intent', arguments: { intent: 'Testing' } }), null);
+    assert.deepEqual(event('tool.execution_complete', { toolCallId: 't1', success: false, error: { message: 'denied' } }), { type: 'tool_end', toolId: 't1', output: 'denied', error: true, diff: '', agent: 'copilot' });
+    assert.equal(event('assistant.message', { content: 'subagent reply', parentToolCallId: 't9' }), null);
+    assert.equal(event('assistant.turn_start', { turnId: '0' }), null);
+    assert.deepEqual(normalizeEvent({ type: 'result', sessionId: 'sess-1', exitCode: 0 }, 'copilot'), { type: 'turn_complete', agent: 'copilot' });
   } finally {
     engine.dispose();
   }
