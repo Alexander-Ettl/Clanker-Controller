@@ -1,9 +1,8 @@
 'use strict';
 
 // GitHub Copilot CLI provider (`@github/copilot`).
-// Foundation descriptor for running non-interactive turns (`copilot -p`),
-// checking sign-in, and discovering models. Fine-tune flags or stream event
-// mappings in `commandFor` and `normalizeEvent` below.
+// Runs non-interactive turns (`copilot -p --output-format json`), checks sign-in,
+// and discovers models. Event mapping: `normalizeEvent` below.
 
 const { launchFailure } = require('./shared.js');
 
@@ -19,6 +18,55 @@ const entry = (model, title, isDefault = false) => ({
   label: /^Copilot\b/i.test(title) ? String(title) : `Copilot · ${title}`,
   isDefault: Boolean(isDefault),
 });
+
+const text = (value) => (typeof value === 'string' ? value : '');
+// Tools that only report progress to the CLI's own UI.
+const HIDDEN_TOOLS = new Set(['report_intent']);
+
+/** The panel's card for a tool call: Copilot's edit/create become an edit with a diff, the rest keep their names. */
+function toolStart(data) {
+  // Lazy: the stream engine loads the providers.
+  const { toolTarget, editDiff } = require('../stream-engine.js');
+  const input = data.arguments && typeof data.arguments === 'object' ? data.arguments : {};
+  const name = text(data.toolName) || 'tool';
+  const file = text(input.path) || text(input.file_path);
+  const base = { type: 'tool_start', toolId: text(data.toolCallId), agent: 'copilot' };
+  if (name === 'edit' || name === 'create') {
+    return { ...base, name: 'edit', command: file, file, diff: editDiff({ old_string: name === 'edit' ? input.old_str : '', new_string: name === 'edit' ? input.new_str : input.file_text }) };
+  }
+  const command = text(input.command) || toolTarget(input) || file || text(data.toolTitle);
+  return { ...base, name, command, file, diff: '' };
+}
+
+/** One event of `copilot -p --output-format json`; null for a known event with nothing to show. */
+function normalizeEvent(raw) {
+  if (!raw || typeof raw !== 'object') return undefined;
+  const data = raw.data && typeof raw.data === 'object' ? raw.data : {};
+  // A subagent's own steps stay inside its task card.
+  if (data.parentToolCallId) return null;
+  switch (raw.type) {
+    case 'session.start':
+      return data.sessionId ? { type: 'session', sessionId: text(data.sessionId), agent: 'copilot' } : null;
+    case 'assistant.message':
+      return text(data.content).trim() ? { type: 'delta', text: data.content, block: true, model: 'copilot', agent: 'copilot' } : null;
+    case 'assistant.reasoning':
+      return text(data.content).trim() ? { type: 'thought', text: data.content, agent: 'copilot' } : null;
+    case 'tool.execution_start':
+      return HIDDEN_TOOLS.has(data.toolName) ? null : toolStart(data);
+    case 'tool.execution_complete': {
+      const output = data.success === false ? text(data.error?.message) || text(data.result?.content) : text(data.result?.content);
+      return { type: 'tool_end', toolId: text(data.toolCallId), output, error: data.success === false, diff: '', agent: 'copilot' };
+    }
+    case 'session.error':
+      return { type: 'delta', text: `Copilot error: ${text(data.message) || 'request failed'}`, block: true, model: 'copilot', agent: 'copilot' };
+    case 'session.warning':
+      return text(data.message) ? { type: 'notice', text: data.message, agent: 'copilot' } : null;
+    case 'result':
+      return { type: 'turn_complete', agent: 'copilot' };
+    default:
+      return null;
+  }
+}
 
 // The CLI has no `models` command. Its ACP server (`copilot --acp`) answers `session/new` with the models this account may
 // use, the same list as `/model` and VS Code's Copilot picker. The requests are piped in at once; the CLI exits when stdin
@@ -106,8 +154,10 @@ module.exports = {
     throw new Error(`Could not discover Copilot models: ${detail}`);
   },
 
+  // JSONL session events (`--output-format json`) instead of the text log, whose tool lines and replies are one stream.
+  // Streaming off: each reply arrives once, as a whole `assistant.message`.
   commandFor({ command, fullPrompt, model, resume, permissionMode, cwd }) {
-    const args = ['-p', fullPrompt];
+    const args = ['-p', fullPrompt, '--output-format', 'json', '--stream', 'off'];
     if (model && model !== 'copilot') args.push('--model', model);
     if (resume) args.push('--resume', resume);
     if (permissionMode === 'fullAccess' || permissionMode === 'auto') args.push('--allow-all-tools');
@@ -115,17 +165,7 @@ module.exports = {
     return { command, args, input: '' };
   },
 
-  normalizeEvent(raw) {
-    if (!raw || typeof raw !== 'object') return undefined;
-    if (typeof raw.session_id === 'string' && (raw.type === 'init' || raw.event === 'init' || raw.type === 'session')) {
-      return { type: 'session', sessionId: raw.session_id, agent: 'copilot' };
-    }
-    if (raw.type === 'delta' && typeof raw.text === 'string') {
-      return { type: 'delta', text: raw.text, model: 'copilot', agent: 'copilot' };
-    }
-    return undefined;
-  },
-
+  normalizeEvent,
   parseAcpModels,
   removeProbeSession,
 };

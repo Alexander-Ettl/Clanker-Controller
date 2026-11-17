@@ -1644,4 +1644,4 @@ function killTree(child, execFileImpl = execFile) {
   } else child.kill();
 }
 
-module.exports = { StreamEngine, normalizeEvent, killTree, contextTokensOf, contextGrowthOf, toolTarget, geminiToolTarget };
+module.exports = { StreamEngine, normalizeEvent, killTree, contextTokensOf, contextGrowthOf, toolTarget, geminiToolTarget, editDiff };
