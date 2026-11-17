@@ -5,6 +5,7 @@
     "version": "0.1.0",
     "publisher": "local",
     "private": true,
+    "license": "MPL-2.0",
     "engines": {
         "vscode": "^1.85.0"
     },
