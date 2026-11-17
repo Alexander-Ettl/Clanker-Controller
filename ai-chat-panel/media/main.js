@@ -265,7 +265,7 @@
     const others = [...document.querySelectorAll('.fs-modal:not([hidden])')].filter((el) => el !== modal.el);
     if (!others.length) lastFocus = document.activeElement; // the first popup remembers where focus was; a switch keeps that
     others.forEach((el) => {
-      if (['historyModal', 'projectsModal', 'agentsModal'].includes(el.id)) closeModal(el);
+      if (['historyModal', 'projectsModal', 'agentsModal', 'logsModal'].includes(el.id)) closeModal(el);
       else el.hidden = true;
     });
     document.getElementById('loopsBtn')?.setAttribute('aria-expanded', String(modal.el.id === 'loopsModal'));
@@ -291,6 +291,7 @@
     if (el.id === 'loopsModal') document.getElementById('loopsBtn')?.setAttribute('aria-expanded', 'false');
     if (el.id === 'projectsModal') document.getElementById('allProjectsBtn')?.setAttribute('aria-expanded', 'false');
     if (el.id === 'cliSetupModal') vscode.postMessage({ type: 'completeCliSetup' });
+    if (el.id === 'logsModal') logViewer?.hide();
     if (lastFocus && document.contains(lastFocus)) lastFocus.focus();
     else if (el.id === 'projectsModal') document.getElementById('allProjectsBtn')?.focus();
   }
@@ -649,6 +650,10 @@
   // Chat Settings: a popup like Manage Chats, opened from the launcher's gear. Its page is settings.js.
   const settingsModal = createModal('settingsModal', 'Chat Settings');
   const cliSetupModal = createModal('cliSetupModal', 'Welcome to Clanker');
+  // Logs: what went wrong (lib/log.js). Opened from Settings > General, or the "Show Logs" command. Its page is log-viewer.js.
+  const logsModal = createModal('logsModal', 'Logs');
+  var logViewer = window.initLogViewer ? window.initLogViewer({ vscode, modal: logsModal }) : null;
+  function openLogs(level) { if (!logViewer) return; openModal(logsModal); logViewer.show(level); }
   const chatSettings = window.initChatSettings({
     vscode,
     body: settingsModal.body,
@@ -657,6 +662,7 @@
       openModal(cliSetupModal);
       vscode.postMessage({ type: 'requestCliConnections' });
     },
+    onOpenLogs: () => openLogs(),
   });
   vscode.postMessage({ type: 'requestApiValue' });
   const loopsModal = createModal('loopsModal', 'Loops');
@@ -5104,7 +5110,9 @@
     if (message.type === 'chatLoading' || message.type === 'chatLoaded') {
       document.querySelectorAll('.fs-modal:not([hidden])').forEach(closeModal);
     }
+    if (logViewer?.handle(message)) return;
     switch (message.type) {
+      case 'openLogs': if (logsModal.el.hidden) openLogs(message.level); break;
       case 'attachmentSaved': {
         if (message.chatId && message.chatId !== currentChatId) {
           const draft = chatDrafts.get(message.chatId) || { text: '', files: [], mentions: [] };
@@ -5344,6 +5352,7 @@
       }
       case 'prefillPrompt': {
         if (message.routingConfig || message.closeSettings) closeModal(settingsModal.el);
+        if (message.closeLogs) closeModal(logsModal.el);
         if (editingQueue) finishQueueEdit();
         promptInput.value = message.text || '';
         if (Array.isArray(message.files)) { attachments = message.files; renderAttachments(); }

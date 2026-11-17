@@ -254,3 +254,34 @@ test('an added CLI that fails its status check carries the exit code and a one-c
   await f.accounts.remove('codex');
   assert.equal(f.accounts.snapshot().providers.codex.fault, null, 'a removed CLI shows no ring at all');
 });
+test('VS Code\'s copilot shim without the real CLI is "not installed", and sign-in runs in a terminal', async () => {
+  const copilot = require('../lib/providers/copilot');
+  const shim = { ok: false, code: 127, stdout: '', stderr: 'GitHub Copilot CLI was not found. Run copilot in a terminal to install it, or see https://docs.github.com' };
+  assert.equal(copilot.authStatus.interpret(shim), 'missing');
+  assert.equal(copilot.authStatus.interpret({ ok: true, code: 0, stdout: '1.0.3\n' }), 'ready');
+  const terminals = []; let reply = shim;
+  const accounts = new CliAccounts({
+    languageServer: async () => null, store: { get: () => ({ enabled: ['copilot'], completed: true }), set: async () => {} }, cwd: '/work',
+    vscode: { window: { terminals, createTerminal(options) { const t = { options, show() {}, dispose() {} }; terminals.push(t); return t; } } },
+    find: () => ({ path: '/usr/bin/copilot' }), reset() {}, broadcast() {}, run: async () => reply, spec: (agent, file) => ({ shellPath: file, shellArgs: ['login'] }),
+  });
+  await accounts.check();
+  const fault = accounts.fault('copilot');
+  assert.equal(fault.kind, 'missing');
+  assert.equal(fault.code, null, 'the shim\'s 127 is not shown as a sign-in error code');
+  assert.equal(accounts.snapshot().providers.copilot.installed, false);
+  await accounts.fix('copilot');
+  assert.deepEqual(terminals.map(t => t.options.shellArgs), [['login']], 'the shim is run in a terminal, where it offers to install');
+
+  // Installed but signed out (seen by a failed turn): the button opens `copilot login` in a terminal, never a hidden run.
+  terminals.length = 0; accounts.terminals.clear(); reply = { ok: true, code: 0, stdout: '1.0.3' };
+  await accounts.check();
+  accounts.markSignedOut('copilot', 'not logged in');
+  assert.equal(accounts.fault('copilot').action, 'fixCli');
+  const result = await accounts.fix('copilot');
+  assert.equal(result.ok, false);
+  assert.equal(terminals.length, 1, 'opens a terminal even though --version says ready');
+  accounts.terminalClosed(terminals[0]);
+  await accounts.pendingCheck;
+  assert.equal(accounts.fault('copilot'), null, 'closing the sign-in terminal ends the expired state');
+});
