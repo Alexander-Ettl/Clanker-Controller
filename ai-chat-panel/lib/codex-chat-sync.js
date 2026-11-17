@@ -60,7 +60,7 @@ function mergeTurns(chat, turns, anchor) {
 }
 
 class CodexChatSync {
-  constructor({ cwd, runs = () => [], server = null, onError = error => console.warn(`[Clanker chat sync] ${error.message}`), intervalMs = 2000 } = {}) {
+  constructor({ cwd, runs = () => [], server = null, onError = error => require('./log.js').warn('codex chat sync', error), intervalMs = 2000 } = {}) {
     this.cwd = cwd; this.runs = runs; this.server = server; this.onError = onError;
     this.pending = new Map();
     this.timer = setInterval(() => { for (const run of this.runs()) if (run.hosts.size || run.externalCodexTurn && run.queue.length) void this.sync(run); }, intervalMs);
