@@ -216,6 +216,7 @@
 .cs-provider .cs-progress { padding: 0 12px 11px 55px; }
 .cs-provider-note { margin: 0; padding: 0 12px 10px 55px; font: 400 11.5px/1.4 var(--font-text); color: var(--text-secondary); }
 .cs-provider-note.is-error { color: var(--fg-red-soft); }
+.cs-model-list .cs-note.is-error { padding: 2px 8px 8px; color: var(--fg-red-soft); }
 .cs-api .cs-icon { color: light-dark(#ad3800, #ffb08a); background: rgba(255, 176, 138, 0.1); }
 .cs-api .cs-actions, .cs-api .cs-status, .cs-api .cs-usage { padding-left: 55px; padding-right: 12px; }
 .cs-api-usage { border-top: 1px solid rgb(var(--ink) / 0.06); }
