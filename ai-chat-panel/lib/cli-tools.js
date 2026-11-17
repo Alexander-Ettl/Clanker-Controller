@@ -139,7 +139,10 @@ async function updateCli(agent, onLine) {
   return { ok, message: lines.at(-1) || (ok ? 'Updated' : 'Update failed') };
 }
 
-/** Each enabled provider's models, from its own discovery; null for an unavailable one: a failed refresh keeps its last good cache. */
+/**
+ * Each enabled provider's models, from its own discovery; null for an unavailable one: a failed refresh keeps its last
+ * good cache. A discovery that throws gives `{ error }`: Settings shows the reason and that provider's list is emptied.
+ */
 async function fetchModels(enabled = providers.ids()) {
   const entries = await Promise.all(providers.all().map(async (provider) => {
     const file = enabled.includes(provider.id) ? locate(provider.id).path : null;
@@ -147,7 +150,10 @@ async function fetchModels(enabled = providers.ids()) {
     try {
       const found = await provider.discoverModels({ file, runCli });
       return [provider.id, found ? normalizeModels(found) : null];
-    } catch { return [provider.id, null]; }
+    } catch (error) {
+      require('./log.js').error('model discovery', `${provider.name || provider.id}:`, error);
+      return [provider.id, { error: error?.message || String(error) }];
+    }
   }));
   return Object.fromEntries(entries);
 }
@@ -181,6 +187,7 @@ class CliHub {
     this.durations = {}; // agent -> how long its last update took, the next progress bar's pace
     this.notes = {}; // the last update's outcome per agent
     this.modelsBusy = false;
+    this.modelErrors = {}; // agent -> why its last model discovery failed
     const savedFavorites = this.store.get();
     const migratedFavorites = normalizeModels(savedFavorites);
     for (const entry of savedFavorites) {
@@ -201,7 +208,7 @@ class CliHub {
 
   snapshot() {
     const favorites = this.store.get().map((entry) => entry.id);
-    return { type: 'cliStatus', versions: this.versions, checking: this.checking, updating: this.updating, notes: this.notes, catalog: [...MODEL_CATALOG], prompts: this.prompts, modelSettings: this.modelSettings, fetched: this.available(), favorites, modelsBusy: this.modelsBusy, updates: providers.ids().filter((agent) => this.versions[agent]?.outdated) };
+    return { type: 'cliStatus', versions: this.versions, checking: this.checking, updating: this.updating, notes: this.notes, catalog: [...MODEL_CATALOG], prompts: this.prompts, modelSettings: this.modelSettings, fetched: this.available(), modelErrors: this.modelErrors, favorites, modelsBusy: this.modelsBusy, updates: providers.ids().filter((agent) => this.versions[agent]?.outdated) };
   }
 
   push() {
@@ -322,7 +329,10 @@ class CliHub {
     try {
       const discovered = await this.discover(this.accounts?.enabledAgents() || providers.ids());
       const previous = this.fetched;
-      this.fetched = normalizeModels(providers.ids().flatMap((agent) => discovered[agent] ?? previous.filter((entry) => entry.agent === agent)));
+      const failed = (agent) => typeof discovered[agent]?.error === 'string';
+      this.modelErrors = Object.fromEntries(providers.ids().filter(failed).map((agent) => [agent, discovered[agent].error]));
+      this.fetched = normalizeModels(providers.ids().flatMap((agent) => (failed(agent) ? []
+        : discovered[agent] ?? previous.filter((entry) => entry.agent === agent))));
       this.cacheStore?.set(this.fetched);
       // First discovery for a provider starts with its reported default. Every
       // heart remains editable; existing favorites retain their exact effort.
