@@ -91,7 +91,7 @@ function installInvestigations({ vscode, context, storageDir, projects, availabl
 
   function attach(manager) {
     holder.manager = manager; holder.api = api;
-    manager.on('managerError', error => console.warn(`[investigations] ${error.message}`));
+    manager.on('managerError', error => require('./log.js').warn('loops', error));
     manager.startPolling(); context.subscriptions.push(manager);
     onReady(holder);
   }
@@ -101,7 +101,7 @@ function installInvestigations({ vscode, context, storageDir, projects, availabl
     try { attach(create()); }
     catch (error) {
       if (/Another investigation manager/.test(error.message) && Date.now() - started < RETRY_FOR_MS && !holder.stopped) { holder.retry = setTimeout(connect, RETRY_MS); return; }
-      console.warn(`[investigations] ${error.message}`);
+      require('./log.js').warn('loops', error);
     }
   };
   context.subscriptions.push({ dispose() { holder.stopped = true; clearTimeout(holder.retry); } });

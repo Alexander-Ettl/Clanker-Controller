@@ -477,12 +477,13 @@
       <div class="cs-footer">
         <button class="cs-btn" data-role="pingClis" type="button">${ICON.refresh}<span>Check CLIs</span></button>
         <button class="cs-btn is-quiet" data-role="openSetupGuide" type="button">${ICON.book}<span>Setup guide</span></button>
+        <button class="cs-btn is-quiet" data-role="openLogs" type="button" title="Errors and messages from Clanker Controller, for when something does not work">${ICON.note}<span>Logs</span></button>
         <button class="cs-btn is-quiet" data-role="modelSettings" type="button">${ICON.sliders}<span>Advanced settings</span></button>
         <button class="cs-btn is-quiet" data-role="resetCache" type="button" title="Forget resolved CLI paths and look them up again">${ICON.reset}<span>Reset CLI cache</span></button>
       </div>
     </div>`;
 
-  window.initChatSettings = function initChatSettings({ vscode, body, onOpenSetupGuide }) {
+  window.initChatSettings = function initChatSettings({ vscode, body, onOpenSetupGuide, onOpenLogs }) {
     body.classList.add('cs');
     body.innerHTML = MARKUP;
     // ---------- Routing: a free model picks the CLI model for each message ----------
@@ -1375,6 +1376,10 @@
     }
 
     $('pingClis').addEventListener('click', () => { $('pingClis').disabled = true; pingLabel.textContent = 'Checking…'; vscode.postMessage({ type: 'pingClis' }); });
+    $('openLogs').addEventListener('click', () => {
+      if (onOpenLogs) onOpenLogs();
+      else vscode.postMessage({ type: 'openLogs' });
+    });
     $('openSetupGuide').addEventListener('click', () => {
       if (onOpenSetupGuide) onOpenSetupGuide();
       else vscode.postMessage({ type: 'openSetupGuide' });
