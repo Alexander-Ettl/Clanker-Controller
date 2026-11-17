@@ -17,6 +17,26 @@ const loopsState = state => async page => {
 };
 const MODAL = '.fs-modal:not([hidden]) .fs-modal-sheet';
 
+const IDE_PALETTES = {
+  dark: { kind: 'vscode-dark', background: '#172437', panel: '#213149', foreground: '#e4edf7', accent: '#8acbff' },
+  light: { kind: 'vscode-light', background: '#fff4df', panel: '#fffaf0', foreground: '#382d24', accent: '#854020' },
+  'contrast-dark': { kind: 'vscode-high-contrast', background: '#000000', panel: '#101010', foreground: '#ffffff', accent: '#ffff00' },
+  'contrast-light': { kind: 'vscode-high-contrast-light', background: '#ffffff', panel: '#f5f5f5', foreground: '#000000', accent: '#0000aa' },
+};
+async function applyIdePalette(page, theme) {
+  await page.evaluate(theme => {
+    document.body.classList.remove('vscode-light', 'vscode-dark', 'vscode-high-contrast', 'vscode-high-contrast-light');
+    document.body.classList.add(theme.kind);
+    const colours = { 'editor.background': theme.background, 'editor.foreground': theme.foreground,
+      'editorWidget.background': theme.panel, 'sideBar.background': theme.panel,
+      'textLink.foreground': theme.accent, 'focusBorder': theme.accent,
+      'button.background': theme.accent, 'button.foreground': theme.background };
+    for (const [key, value] of Object.entries(colours)) document.documentElement.style.setProperty(`--vscode-${key.replaceAll('.', '-')}`, value);
+    document.documentElement.style.setProperty('--vscode-contrastBorder', theme.kind.includes('contrast') ? theme.accent : '');
+  }, theme);
+  await page.waitForFunction(() => document.body.style.getPropertyValue('--chat-bg').startsWith('rgb('));
+}
+
 // Two real PDF pages exercise the renderer and navigation without external files or model calls.
 function samplePdf() {
   const stream = title => `BT /F1 24 Tf 30 220 Td (${title}) Tj ET\n0.35 0.5 0.85 rg 30 80 140 80 re f`;
@@ -60,6 +80,164 @@ const unavailable = async page => {
 };
 
 export const scenarios = [
+  // The rail's usage circles in both themes: one ring pair (Claude), one (Codex) and the split Antigravity circle with its two arcs.
+  ...['light', 'dark'].map(theme => ({ id: `usage-rings-${theme}`, sidebar: true, height: 700, focus: '.model-cards', setup: async page => {
+    await applyIdePalette(page, theme === 'light' ? { ...IDE_PALETTES.light, background: '#e6e7ee', panel: '#d9dbe5', foreground: '#38405e', accent: '#365cb0' } : IDE_PALETTES.dark);
+    await page.evaluate(() => {
+      const now = Date.now() / 1000, win = (remaining, reset, minutes = 300) => ({ remaining, used: 100 - remaining, windowMinutes: minutes, resetsAt: now + reset });
+      const post = data => window.dispatchEvent(new MessageEvent('message', { data }));
+      post({ type: 'quotas', quotas: { claude: { ...win(0, 8300), secondary: win(55, 400000, 10080) }, codex: { ...win(64, 2700), secondary: win(72, 300000, 10080) },
+        gemini: { ...win(100, 1860), secondary: win(100, 300000, 10080) }, antigravityArgon: win(1, 360000, 10080) } });
+    });
+    await page.waitForTimeout(900);
+  } })),
+  ...['light', 'dark', 'menu', 'settings'].map(state => ({ id: `glass-depth-${state}`, sidebar: true, height: 1050,
+    focus: state === 'menu' ? '.model-menu-stage' : state === 'settings' ? MODAL : undefined,
+    scope: state === 'menu' ? '#modelMenu' : state === 'settings' ? MODAL : undefined, setup: async page => {
+    const light = state !== 'dark';
+    await applyIdePalette(page, light ? { ...IDE_PALETTES.light, background: '#e6e7ee', panel: '#d9dbe5', foreground: '#38405e', accent: '#365cb0' } : IDE_PALETTES.dark);
+    await page.evaluate(() => {
+      const post = data => window.dispatchEvent(new MessageEvent('message', { data }));
+      post({ type: 'chatLoaded', chat: { id: 'glass-depth', modelId: 'gpt-6.1-sol-medium', messages: [
+        { role: 'user', text: 'Make light-mode glass feel lighter, with quieter shadows.' },
+        { role: 'assistant', agent: 'codex', text: 'The transcript stays calm and readable. Floating controls use subtle elevation, while menus remain distinct.\n\n**Keep the theme’s colours**, the rounded shapes and the existing motion.' },
+      ] } });
+      const project = { id: 'glass-project', name: 'Clanker Controller', root: 'C:/projects/clanker', iconUri: 'http://127.0.0.1/clanker.svg' };
+      post({ type: 'project', projects: [project], project });
+      post({ type: 'history', sessions: [{ id: 'glass-depth', selected: true, projectId: project.id, title: 'Light-mode glass', models: ['codex'], updatedAt: new Date().toISOString() }] });
+    });
+    if (state === 'settings') await openSettings('general')(page);
+    if (state === 'menu') await page.locator('#modelPill').click();
+    const material = await page.locator('body').evaluate(el => {
+      const s = getComputedStyle(el); return { bubble: s.getPropertyValue('--shadow-bubble').trim(), raised: s.getPropertyValue('--panel-raised').trim(),
+        composer: getComputedStyle(document.querySelector('.compose-row')).filter };
+    });
+    if (light) {
+      assert.equal(material.bubble, '0 0 0 transparent');
+      assert.match(material.composer, /3px 10px/);
+      assert.ok(material.raised.split(' ').map(Number).every((v, i) => v >= [217, 219, 229][i]));
+    } else assert.match(material.composer, /10px 26px/);
+  } })),
+  ...['dark', 'light', 'empty', 'busy'].map(state => ({ id: `onboarding-models-${state}`, focus: '#cliSetupModal .fs-modal-sheet', setup: async page => {
+    if (state === 'light') await applyIdePalette(page, IDE_PALETTES.light);
+    const post = data => page.evaluate(data => window.dispatchEvent(new MessageEvent('message', { data })), data);
+    const models = [{ id: 'setup-codex', agent: 'codex', model: 'gpt-6.1-sol', effort: 'medium', label: 'GPT 6.1 Sol Medium' },
+      { id: 'setup-claude', agent: 'claude', model: 'claude-sonnet', label: 'Claude Sonnet' }];
+    const snapshot = { type: 'cliStatus', versions: {}, updating: {}, notes: {}, fetched: state === 'empty' ? [] : models,
+      favorites: [], catalog: [], prompts: {}, modelsBusy: state === 'busy' };
+    await post(snapshot);
+    await page.evaluate(() => { window.setupModelList = document.querySelector('#settingsModal [data-role="modelList"]'); });
+    await post({ type: 'cliConnections', setupNeeded: true, checking: false, providers: { codex: { enabled: true, installed: true, auth: 'connected' } } });
+    const setup = page.locator('#cliSetupModal');
+    await setup.getByRole('button', { name: 'Next: favorite models', exact: true }).click();
+    assert.equal(await page.evaluate(() => window.setupModelList === document.querySelector('#cliSetupModal [data-role="modelList"]')), true, 'onboarding uses the Settings list itself');
+    assert.equal(await page.evaluate(() => window.sent.some(m => m.type === 'completeCliSetup')), false);
+    if (state === 'busy') {
+      assert.equal(await setup.getByRole('button', { name: 'Refresh', exact: true }).isDisabled(), true);
+      assert.match(await setup.locator('[data-role="availableDesc"]').innerText(), /Asking/);
+    } else if (state === 'empty') {
+      assert.match(await setup.locator('[data-role="modelList"]').innerText(), /Refresh to discover/);
+    } else {
+      const search = setup.getByRole('searchbox', { name: 'Search available models' });
+      await search.fill('Sol');
+      assert.equal(await setup.locator('.cs-model-row').count(), 1);
+      await search.fill('');
+      await setup.getByRole('button', { name: 'Codex', exact: true }).click();
+      assert.equal(await setup.locator('.cs-model-row').count(), 1);
+      const heart = setup.getByRole('button', { name: 'Favorite GPT 6.1 Sol Medium', exact: true });
+      await heart.click();
+      assert.deepEqual(await page.evaluate(() => window.sent.filter(m => m.type === 'toggleFavoriteModel').at(-1)), { type: 'toggleFavoriteModel', id: 'setup-codex' });
+      await post({ ...snapshot, favorites: ['setup-codex'] });
+      assert.equal(await heart.getAttribute('aria-pressed'), 'true');
+      await setup.getByRole('button', { name: 'Refresh', exact: true }).click();
+      assert.equal(await page.evaluate(() => window.sent.at(-1).type), 'refreshModels');
+      await post({ ...snapshot, favorites: ['setup-codex'], modelsBusy: true });
+      assert.equal(await setup.getByRole('button', { name: 'Refresh', exact: true }).isDisabled(), true);
+      await post({ ...snapshot, favorites: ['setup-codex'] });
+      await setup.getByRole('button', { name: 'Back', exact: true }).click();
+      await setup.getByRole('button', { name: 'Next: favorite models', exact: true }).click();
+      assert.equal(await heart.getAttribute('aria-pressed'), 'true');
+      await setup.getByRole('button', { name: 'Start chatting', exact: true }).click();
+      await setup.waitFor({ state: 'hidden' });
+      await post({ type: 'openSettings', tab: 'general' });
+      assert.equal(await page.evaluate(() => window.setupModelList === document.querySelector('#settingsModal [data-role="modelList"]')), true);
+      assert.equal(await page.locator('#settingsModal .cs-heart[data-model-id="setup-codex"]').getAttribute('aria-pressed'), 'true');
+      await page.locator('#settingsModal .cs-btn[data-role="openSetupGuide"]').click();
+      await setup.getByRole('button', { name: 'Next: favorite models', exact: true }).click();
+      await setup.locator('.cs-company[data-company="all"]').click();
+    }
+  } })),
+  ...Object.entries(IDE_PALETTES).map(([id, theme]) => ({ id: `ide-palette-${id}`, focus: '#transcript', setup: async page => {
+    await applyIdePalette(page, theme);
+    await page.evaluate(() => {
+      const post = data => window.dispatchEvent(new MessageEvent('message', { data }));
+      post({ type: 'chatLoaded', chat: { id: 'palette-review', modelId: 'gpt-6.1-sol-medium', messages: [
+        { role: 'user', text: 'Make the chat follow my editor theme.' },
+        { role: 'assistant', agent: 'codex', text: 'The palette follows your IDE. **Glass and motion stay familiar.**\n\n[Theme settings](https://example.com) retain your selected colours.' },
+      ] } });
+    });
+    const { parse, contrast } = createRequire(import.meta.url)('../../media/theme-palette');
+    const expected = `rgb(${parse(theme.background).slice(0, 3).join(', ')})`;
+    assert.equal(await page.locator('body').evaluate(el => getComputedStyle(el).backgroundColor), expected);
+    assert.match(await page.locator('#transcript').innerText(), /Glass and motion stay familiar/);
+    assert.equal(await page.locator('.msg a').first().evaluate(el => getComputedStyle(el).color), `rgb(${parse(theme.accent).slice(0, 3).join(', ')})`);
+    const tokens = await page.locator('body').evaluate(el => {
+      const s = getComputedStyle(el); return ['--charcoal', '--text-primary', '--claude-color', '--eo-surface'].map(key => s.getPropertyValue(key).trim());
+    });
+    assert.ok(contrast(parse(tokens[0]), parse(tokens[1])) >= 4.5);
+    assert.equal(tokens[2], '#f97316');
+    if (id.includes('contrast')) assert.match(tokens[3], /^rgb\(/);
+    await page.waitForFunction(panel => {
+      const shape = document.querySelector('.msg-group-user')?.style.getPropertyValue('--bubble-image');
+      return shape && decodeURIComponent(shape).includes(panel);
+    }, tokens[0]);
+  } })),
+  { id: 'ide-palette-live', focus: '#transcript', setup: async page => {
+    const scenario = scenarios.find(s => s.id === 'ide-palette-dark');
+    await scenario.setup(page);
+    await page.locator('#promptInput').fill('Keep my draft through a theme switch');
+    const before = await page.locator('.msg-group-user').evaluate(el => el.style.getPropertyValue('--bubble-image'));
+    await applyIdePalette(page, { ...IDE_PALETTES.dark, background: '#12291b', panel: '#21452e' });
+    await page.waitForFunction(before => document.querySelector('.msg-group-user').style.getPropertyValue('--bubble-image') !== before, before);
+    assert.equal(await page.locator('#promptInput').inputValue(), 'Keep my draft through a theme switch');
+    // The host can replace body.style wholesale; our derived colours must recover even if its variables did not change.
+    await page.evaluate(() => document.body.removeAttribute('style'));
+    await page.waitForFunction(() => document.body.style.getPropertyValue('--chat-bg') === 'rgb(18, 41, 27)');
+    await page.evaluate(() => document.documentElement.removeAttribute('style'));
+    await page.waitForFunction(() => document.body.style.getPropertyValue('--chat-bg') === '');
+    assert.equal(await page.locator('body').evaluate(el => getComputedStyle(el).backgroundColor), 'rgb(17, 18, 22)');
+    await applyIdePalette(page, { ...IDE_PALETTES.dark, background: '#12291b', panel: '#21452e' });
+  } },
+  { id: 'ide-palette-settings', focus: MODAL, setup: async page => {
+    await applyIdePalette(page, IDE_PALETTES.light);
+    await openSettings('general')(page);
+  } },
+  ...['rail', 'settings'].map(location => ({ id: `project-icon-contrast-${location}`, sidebar: true, focus: location === 'rail' ? '.rail' : '.cs-project-icons', scope: location === 'rail' ? '.project-pill' : '.cs-project-tile', setup: async page => {
+    const project = { id: 'dark-mark', name: 'Clanker Controller', root: 'C:/projects/clanker', iconUri: 'http://127.0.0.1/clanker.svg' };
+    await page.evaluate(project => {
+      const post = data => window.dispatchEvent(new MessageEvent('message', { data }));
+      post({ type: 'project', projects: [project], project });
+      post({ type: 'history', sessions: [{ id: 'dark-mark-chat', projectId: project.id, title: 'Icon contrast', updatedAt: new Date().toISOString(), models: ['codex'] }] });
+    }, project);
+    let selector = '.project-icon.is-dark';
+    if (location === 'settings') {
+      await openSettings('general')(page);
+      await page.evaluate(project => window.dispatchEvent(new MessageEvent('message', { data: { type: 'projectIcons', projects: [project] } })), project);
+      await page.locator('.cs-project-icons summary').click();
+      selector = '.cs-project-tile img.is-dark';
+      await page.locator('.cs-project-icons').evaluate(el => el.scrollIntoView({ block: 'center' }));
+    }
+    await page.locator(selector).first().waitFor();
+    for (const theme of ['vscode-dark', 'vscode-high-contrast-light', 'vscode-light']) {
+      await page.evaluate(theme => {
+        document.body.classList.remove('vscode-dark', 'vscode-light', 'vscode-high-contrast-light');
+        document.body.classList.add(theme);
+      }, theme);
+      const colours = await page.locator(selector).evaluateAll(images => images.map(image => getComputedStyle(image).backgroundColor));
+      assert.ok(colours.length > 0);
+      assert.ok(colours.every(colour => colour === 'rgba(255, 255, 255, 0.9)'), `${theme}: dark favicons keep their light backing`);
+    }
+  } })),
   { id: 'attachment-documents', focus: '.image-lightbox-frame', setup: async page => {
     await page.evaluate(() => {
       const files = [['sample.txt', '<script>unsafe()</script>\nReadable text'], ['sample.csv', 'Name,Value\n"a,b",42']].map(([name, text]) => ({ name, path: name, size: text.length, uri: `data:text/plain;base64,${btoa(text)}` }));
@@ -80,6 +258,36 @@ export const scenarios = [
     });
     assert.equal(office, 'Word preview');
   } },
+  { id: 'attachment-paste-pending', focus: '.compose-row', scope: '.attachment-strip', setup: async page => {
+    await page.locator('textarea').first().fill('Review this pasted screenshot');
+    const immediate = await page.evaluate(async () => {
+      const canvas = document.createElement('canvas'); canvas.width = 640; canvas.height = 400;
+      const ctx = canvas.getContext('2d'); ctx.fillStyle = '#cbddea'; ctx.fillRect(0, 0, 640, 400);
+      ctx.fillStyle = '#466080'; ctx.fillRect(100, 100, 440, 200);
+      const blob = await new Promise(resolve => canvas.toBlob(resolve));
+      const clipboardData = new DataTransfer(); clipboardData.items.add(new File([blob], 'screenshot.png', { type: 'image/png' }));
+      document.querySelector('textarea').dispatchEvent(new ClipboardEvent('paste', { clipboardData, bubbles: true }));
+      return !!document.querySelector('.attachment-chip.is-attaching img[src^="blob:"]');
+    });
+    assert.ok(immediate, 'preview is inserted before image preparation finishes');
+    await page.waitForTimeout(700);
+  } },
+  ...['light', 'dark'].map(theme => ({ id: `glass-schedule-${theme}`, scope: '.timer-pill', setup: async page => {
+    await page.evaluate(theme => {
+      document.body.classList.toggle('vscode-light', theme === 'light');
+      document.body.classList.toggle('vscode-dark', theme === 'dark');
+      window.dispatchEvent(new MessageEvent('message', { data: { type: 'chatLoaded', chat: { id: 'glass-timer', messages: [{ role: 'user', text: 'Keep the message and its action dock fused in the glass material.' }, { role: 'assistant', agent: 'codex', text: 'The scheduling picker uses the same quiet glass edges.' }] } } }));
+    }, theme);
+    await page.locator('#scheduleBtn').click();
+    await page.locator('#scheduleBtn').click();
+    await page.locator('#scheduleBtn').hover();
+    await page.locator('.timer-pill').waitFor({ state: 'visible' });
+    await page.waitForTimeout(700);
+    const material = await page.locator('.timer-pill').evaluate(el => ({ background: getComputedStyle(el).backgroundImage, shadow: getComputedStyle(el).boxShadow }));
+    assert.match(material.background, /linear-gradient/);
+    assert.match(material.shadow, /inset/);
+    assert.equal(await page.locator('.timer-chip[aria-checked="true"]').count(), 1, 'the selected timer remains visible');
+  } })),
   { id: 'attachment-markup', focus: '.markup-editor', setup: async page => {
     await page.evaluate(() => {
       const canvas = document.createElement('canvas'); canvas.width = 640; canvas.height = 400;
@@ -87,7 +295,7 @@ export const scenarios = [
       ctx.fillStyle = '#466080'; ctx.fillRect(100, 100, 440, 200);
       window.dispatchEvent(new MessageEvent('message', { data: { type: 'attachmentSaved', attachment: { name: 'sample.png', path: 'sample.png', mime: 'image/png', size: 1000, uri: canvas.toDataURL() } } }));
     });
-    await page.locator('.attachment-strip .attachment-chip').first().click();
+    await page.locator('.attachment-strip .attachment-chip img').first().click();
     await page.getByRole('button', { name: 'Mark up image', exact: true }).click();
     await page.locator('.markup-editor.is-open').waitFor();
     const canvas = await page.locator('.markup-editor canvas').boundingBox();
@@ -120,6 +328,35 @@ export const scenarios = [
     assert.match(await badge.textContent(), /2 photos/);
     await page.waitForTimeout(450);
   } },
+  { id: 'queue-edit-tail', height: 1100, focus: '.msg-group-user', scope: '.msg-user', setup: async page => {
+    const post = data => page.evaluate(data => window.dispatchEvent(new MessageEvent('message', { data })), data);
+    await post({ type: 'chatLoaded', chat: { id: 'edit-tail', messages: [] }, running: { agentId: 'claude', startedAt: Date.now() } });
+    const input = page.locator('#promptInput');
+    let text = 'A long prompt about glass panels and their layers. '.repeat(22) + 'UNIQUE_END_OF_PROMPT';
+    await input.fill(text); await input.press('Enter');
+    const initial = await page.evaluate(() => window.sent.findLast(m => m.type === 'queueTurn').turn);
+    const edit = () => page.locator(`[data-id="${initial.id}"]`).getByRole('button', { name: 'Move back into the composer' }).click();
+    let previous = initial;
+    for (let i = 0; i < 3; i++) {
+      await edit();
+      assert.equal(await input.inputValue(), text, 'reopening immediately keeps the complete suffix');
+      text += ` FINAL_EDIT_${i}`;
+      await input.fill(text); await input.press('Enter');
+      const latest = await page.evaluate(() => window.sent.findLast(m => m.type === 'editQueuedTurn'));
+      await post({ type: 'turnQueue', chatId: 'edit-tail', paused: false, turns: [{ ...previous, queued: true, editing: false }] });
+      assert.equal(await page.locator(`[data-id="${initial.id}"] .turn-queue-text`).textContent(), text, 'a delayed shorter snapshot cannot replace the saved edit');
+      previous = latest.turn;
+    }
+    await post({ type: 'turnQueue', chatId: 'edit-tail', paused: true, turns: [{ ...previous, queued: true, editing: false }] });
+    await edit(); assert.equal(await input.inputValue(), text);
+    await input.press('Enter');
+    await post({ type: 'chatLoaded', chat: { id: 'sent-tail', messages: [{ role: 'user', text }] } });
+    await page.locator('.msg-clamp-toggle').click();
+    await page.waitForTimeout(500);
+    const body = page.locator('.msg-user-text');
+    assert.equal(await body.textContent(), text);
+    assert.ok(await body.evaluate(el => el.scrollHeight <= el.clientHeight + 1), 'expanded text is not clipped');
+  } },
   { id: 'ready-scheduled-drag', height: 1100, focus: '.compose-row', setup: async page => {
     const post = data => page.evaluate(data => window.dispatchEvent(new MessageEvent('message', { data })), data);
     const now = await page.evaluate(() => Date.now());
@@ -133,9 +370,11 @@ export const scenarios = [
     await post({ type: 'quotas', quotas: { claude: { remaining: 80 } } });
     await post({ type: 'schedulerQueue', queue: tasks });
     assert.equal(await page.locator('.turn-queue-clock').count(), 3);
+    assert.equal(await page.locator('.turn-queue-item .turn-queue-grip svg').count(), 3, 'scheduled rows keep their drag handles');
+    assert.equal(await page.locator('.turn-queue-when > :first-child').first().evaluate(el => el.classList.contains('turn-queue-clock')), true, 'the clock sits before the time'); 
     await page.clock.fastForward(2000);
-    assert.equal(await page.locator('.turn-queue-clock').count(), 1, 'elapsed tasks exchange the clock for the grip');
-    await page.waitForTimeout(650);
+    assert.equal(await page.locator('.turn-queue-clock').count(), 1, 'elapsed tasks drop the clock; every row keeps its grip');
+    await page.waitForFunction(() => !document.querySelector('.turn-queue-item.is-entering') && document.querySelector('.turn-queue-strip').getAnimations().every(a => a.playState !== 'running'));
     const first = page.locator('[data-task-id="ready-one"] .turn-queue-grip');
     const target = page.locator('[data-task-id="ready-two"]');
     const from = await first.boundingBox(), to = await target.boundingBox();
@@ -149,6 +388,98 @@ export const scenarios = [
     assert.deepEqual(await page.locator('.turn-queue-item').evaluateAll(rows => rows.map(row => row.dataset.taskId)), ['ready-two', 'ready-one', 'future']);
     assert.equal(await page.locator('[data-task-id="future"] .turn-queue-clock').count(), 1);
     await page.waitForTimeout(450);
+  } },
+  { id: 'queue-mixed-drag', height: 1100, focus: '.compose-row', setup: async page => {
+    const post = data => page.evaluate(data => window.dispatchEvent(new MessageEvent('message', { data })), data);
+    const now = await page.evaluate(() => Date.now());
+    const base = { chatId: 'mixed-drag', model: 'claude', modelId: 'claude-sonnet-5-5-high', status: 'pending', attachments: [] };
+    const tasks = [
+      { ...base, id: 'due', prompt: 'Due scheduled prompt', dispatchTrigger: 'fixed-time', dispatchTime: new Date(now - 1000).toISOString() },
+      { ...base, id: 'later', prompt: 'Scheduled for later', dispatchTrigger: 'fixed-time', dispatchTime: new Date(now + 600000).toISOString() },
+    ];
+    const turns = [{ id: 'q1', text: 'First queued prompt', modelId: base.modelId, attachments: [] }, { id: 'q2', text: 'Second queued prompt that is long enough to wrap onto a second line in the narrow strip', modelId: base.modelId, attachments: [] }];
+    await post({ type: 'chatLoaded', chat: { id: base.chatId, modelId: base.modelId, messages: [{ role: 'user', text: 'Current task' }], turnQueue: { turns, paused: false } }, running: { agentId: 'claude', startedAt: now } });
+    await post({ type: 'quotas', quotas: { claude: { remaining: 80 } } });
+    await post({ type: 'schedulerQueue', queue: tasks });
+    const keys = () => page.locator('.turn-queue-item').evaluateAll(rows => rows.map(row => row.dataset.queueKey));
+    assert.deepEqual(await keys(), ['scheduled:due', 'scheduled:later', 'turn:q1', 'turn:q2']);
+    assert.doesNotMatch(await page.locator('.turn-queue-strip').innerText(), /ready/i, 'there is no "ready" state');
+    assert.match(await page.locator('.turn-queue-head > span').innerText(), /^3 queued .* 1 scheduled$/, 'the due prompt counts as queued');
+    await page.waitForFunction(() => !document.querySelector('.turn-queue-item.is-entering') && document.querySelector('.turn-queue-strip').getAnimations().every(a => a.playState !== 'running'));
+    // a queued turn dragged above both scheduled prompts
+    const grip = page.locator('[data-queue-key="turn:q2"] .turn-queue-grip');
+    const from = await grip.boundingBox(), top = await page.locator('[data-queue-key="scheduled:due"]').boundingBox();
+    await page.mouse.move(from.x + from.width / 2, from.y + from.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(from.x + from.width / 2, top.y + 4, { steps: 8 });
+    await page.mouse.up();
+    assert.deepEqual(await keys(), ['turn:q2', 'scheduled:due', 'scheduled:later', 'turn:q1']);
+    const sent = await page.evaluate(() => window.sent.findLast(message => message.type === 'setQueueOrder'));
+    assert.deepEqual(sent.order, ['turn:q2', 'scheduled:due', 'scheduled:later', 'turn:q1']);
+    assert.deepEqual(await page.evaluate(() => window.sent.findLast(message => message.type === 'reorderQueuedTurns').ids), ['q2', 'q1']);
+    // The queued-only reorder echoes before the mixed-order save: its old rank must not flash back.
+    await post({ type: 'turnQueue', chatId: base.chatId, paused: false, order: [], turns: [turns[1], turns[0]] });
+    assert.deepEqual(await keys(), sent.order, 'an intermediate old order must not undo the visible drop');
+    await page.waitForTimeout(100);
+    assert.deepEqual(await keys(), sent.order, 'the optimistic order remains stable while acknowledgement is delayed');
+    // the host echoes the order back: a snapshot must not undo it
+    await post({ type: 'turnQueue', chatId: base.chatId, paused: false, order: sent.order, turns: [turns[1], turns[0]] });
+    assert.deepEqual(await keys(), ['turn:q2', 'scheduled:due', 'scheduled:later', 'turn:q1']);
+    // and a scheduled prompt dragged below the last queued one
+    await page.waitForTimeout(450); // the dropped row is still gliding into its slot
+    const g2 = page.locator('[data-queue-key="scheduled:later"] .turn-queue-grip');
+    const f2 = await g2.boundingBox(), bottom = await page.locator('[data-queue-key="turn:q1"]').boundingBox();
+    await page.mouse.move(f2.x + f2.width / 2, f2.y + f2.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(f2.x + f2.width / 2, bottom.y + bottom.height - 4, { steps: 8 });
+    await page.mouse.up();
+    assert.deepEqual(await keys(), ['turn:q2', 'scheduled:due', 'turn:q1', 'scheduled:later']);
+    const nextOrder = await page.evaluate(() => window.sent.findLast(message => message.type === 'setQueueOrder').order);
+    await post({ type: 'turnQueue', chatId: base.chatId, paused: false, order: sent.order, turns: [turns[1], turns[0]] });
+    assert.deepEqual(await keys(), nextOrder, 'a late acknowledgement of the first drag cannot undo the second drag');
+    await post({ type: 'turnQueue', chatId: base.chatId, paused: false, order: nextOrder, turns: [turns[1], turns[0]] });
+    await post({ type: 'turnQueue', chatId: base.chatId, paused: false, order: sent.order, turns: [turns[1], turns[0]] });
+    assert.deepEqual(await keys(), sent.order, 'after acknowledgement, later host reorders are accepted');
+    await post({ type: 'turnQueue', chatId: base.chatId, paused: false, order: nextOrder, turns: [turns[1], turns[0]] });
+    await page.waitForTimeout(450);
+  } },
+  { id: 'schedule-pill-chats', sidebar: true, height: 900, focus: '#queueBtn .sched-pill', setup: async page => {
+    const post = data => page.evaluate(data => window.dispatchEvent(new MessageEvent('message', { data })), data);
+    const now = await page.evaluate(() => Date.now());
+    const at = minutes => new Date(now + minutes * 60000).toISOString();
+    const task = (id, chatId, minutes) => ({ id, chatId, model: 'claude', modelId: 'claude-sonnet-5-5-high', status: 'pending', attachments: [], prompt: id, dispatchTrigger: 'fixed-time', dispatchTime: at(minutes) });
+    await post({ type: 'project', projects: [{ id: 'p1', name: 'Clanker Controller' }, { id: 'p2', name: 'Visor Customer Edit Mode' }], project: { id: 'p1', name: 'Clanker Controller' }, chatId: 'c1' });
+    await post({ type: 'history', sessions: [{ id: 'c1', title: 'Add login check', projectId: 'p1', models: ['gemini'], updatedAt: at(0) }, { id: 'c2', title: 'Customer edit mode', projectId: 'p2', models: ['claude'], updatedAt: at(0) }, { id: 'c3', title: 'No project here', models: ['codex'], updatedAt: at(0) }] });
+    await post({ type: 'chatLoaded', chat: { id: 'c1', modelId: 'claude-sonnet-5-5-high', messages: [{ role: 'user', text: 'Hello' }] } });
+    // One chat still gets a preview rather than only the generic Queue tooltip.
+    await post({ type: 'schedulerQueue', queue: [task('a1', 'c1', 60), task('a2', 'c1', 70)] });
+    const pill = page.locator('#queueBtn');
+    await pill.hover();
+    assert.equal(await pill.evaluate(el => el.classList.contains('is-sched-open')), true, 'one chat opens its preview');
+    assert.equal(await page.locator('.sched-pill-row').count(), 1);
+    assert.equal(await page.locator('#queueBtn .round-btn-tip').isVisible(), false);
+    const firstRow = await page.locator('.sched-pill-row').elementHandle();
+    await page.mouse.move(5, 5);
+    await page.waitForFunction(() => !document.querySelector('#queueBtn').classList.contains('is-sched-open'));
+    await pill.hover();
+    assert.equal(await firstRow.evaluate(el => el === document.querySelector('.sched-pill-row')), true, 'reopening reuses the preview rows');
+    // several chats: hovering grows the pill into one card, a child of the pill, with a row per chat
+    await post({ type: 'schedulerQueue', queue: [task('a1', 'c1', 60), task('a2', 'c1', 70), task('b1', 'c2', 65), task('c1t', 'c3', 80)] });
+    await page.mouse.move(5, 5);
+    await pill.hover();
+    await page.waitForFunction(() => document.querySelector('#queueBtn .sched-pill').getBoundingClientRect().width > 250);
+    assert.equal(await page.locator('#queueBtn > .sched-pill .sched-pill-row').count(), 3);
+    assert.deepEqual(await page.locator('.sched-pill-row').evaluateAll(rows => rows.map(row => !!row.querySelector('.history-project-icon'))), [true, true, false], 'the project icon, or the agent logo without a project');
+    assert.equal(await page.locator('.sched-pill-agent svg').count(), 1);
+    const box = await pill.boundingBox(), card = await page.locator('.sched-pill').boundingBox();
+    assert.ok(Math.abs(card.x + card.width - (box.x + box.width)) <= 2 && card.y <= box.y + 1, 'the card shares the pill\'s top right corner');
+    await page.locator('.sched-pill-row').nth(1).click();
+    assert.deepEqual(await page.evaluate(() => window.sent.findLast(message => message.type === 'restoreChat').id), 'c2');
+    await page.mouse.move(5, 5);
+    await page.waitForFunction(() => !document.querySelector('#queueBtn').classList.contains('is-sched-open'));
+    await pill.hover();
+    await page.waitForFunction(() => document.querySelector('#queueBtn .sched-pill').getBoundingClientRect().width > 250);
+    await page.waitForTimeout(700);
   } },
   { id: 'queue-reset-aligned', focus: '.compose-row', setup: async page => {
     const fs = await import('node:fs/promises'), os = await import('node:os'), path = await import('node:path');
@@ -179,11 +510,20 @@ export const scenarios = [
     const chat = { id: 'external-sync', modelId: 'gpt-6.1-sol-medium', messages: [{ role: 'user', text: 'Original task' }, { role: 'assistant', agent: 'codex', text: 'Original answer' }] };
     await post({ type: 'chatLoaded', chat });
     await page.locator('#promptInput').fill('My unsent draft');
-    const update = { type: 'chatSynced', chat: { ...chat, messages: [...chat.messages, { role: 'user', text: 'Continued in ChatGPT' }, { role: 'assistant', agent: 'codex', text: 'The latest answer from ChatGPT.' }] } };
+    const { mergeTurns } = createRequire(import.meta.url)('../../lib/codex-chat-sync');
+    const synced = { ...chat, sessions: { codex: { id: 'native-thread' } }, messages: [...chat.messages] };
+    const wrapped = "The model was selected manually. Earlier Auto-mode role restrictions no longer apply. Follow the user's current request.\n\nPROJECT: Wittmann Website\n\nContinued in ChatGPT";
+    mergeTurns(synced, [{ id: 'anchor', status: 'completed', items: [] }, { id: 'remote', status: 'completed', startedAt: 100, items: [
+      { id: 'user-item', type: 'userMessage', content: [{ type: 'text', text: wrapped }] },
+      { id: 'reply-item', type: 'agentMessage', text: 'The latest answer from ChatGPT.' },
+    ] }], 'anchor');
+    const update = { type: 'chatSynced', chat: synced };
     await post(update);
     assert.equal(await page.locator('#promptInput').inputValue(), 'My unsent draft');
     assert.equal(await page.locator('.msg-user').count(), 2);
     assert.match(await page.locator('#transcript').innerText(), /latest answer from ChatGPT/);
+    assert.doesNotMatch(await page.locator('#transcript').innerText(), /Earlier Auto-mode|PROJECT: Wittmann/);
+    assert.equal(await page.locator('.msg-user').last().innerText(), 'Continued in ChatGPT');
     await post(update);
     assert.equal(await page.locator('.msg-user').count(), 2, 'repeated snapshots do not duplicate messages');
     await post({ ...update, chat: { ...update.chat, id: 'a-different-chat' } });
@@ -212,17 +552,21 @@ export const scenarios = [
     assert.equal(await page.locator('.msg-user').count(), 1, 'replayed confirmations are idempotent after chat restoration');
   } },
   { id: 'provider-countdown', focus: '.compose-row', setup: async page => {
-    await page.evaluate(() => {
-      const post = data => window.dispatchEvent(new MessageEvent('message', { data }));
-      post({ type: 'chatLoaded', chat: { id: 'countdown-chat', modelId: 'claude-sonnet-5-5-high', messages: [] } });
-      post({ type: 'quotas', quotas: { claude: { remaining: 80 }, codex: { remaining: 80 } } });
-      post({ type: 'schedulerQueue', queue: [{ id: 'claude-wait', chatId: 'countdown-chat', model: 'claude', prompt: 'continue', status: 'pending', dispatchTrigger: 'quota-reset', notBefore: new Date(Date.now() + 1800000).toISOString(), attachments: [] }] });
-    });
+    const post = data => page.evaluate(msg => window.dispatchEvent(new MessageEvent('message', { data: msg })), data);
+    await post({ type: 'chatLoaded', chat: { id: 'countdown-chat', modelId: 'claude-sonnet-5-5-high', messages: [] } });
+    // Model still has usage and current draft is not scheduled: already-sent timers stay out of the composer clock.
+    await post({ type: 'quotas', quotas: { claude: { remaining: 80, resetsAt: Date.now() / 1000 + 1800 }, codex: { remaining: 80 } } });
+    await post({ type: 'schedulerQueue', queue: [{ id: 'claude-wait', chatId: 'countdown-chat', model: 'claude', prompt: 'continue', status: 'pending', dispatchTrigger: 'fixed-time', dispatchTime: new Date(Date.now() + 7200000).toISOString(), attachments: [] }] });
+    assert.equal(await page.locator('.schedule-time').innerText(), '', 'already-sent scheduled timer does not duplicate in the composer while Claude has usage');
+    assert.equal(await page.locator('.composer.is-scheduled').count(), 0);
+    // Out of usage on Claude auto-arms scheduling; switching to Codex (with usage) clears the composer countdown.
+    await page.evaluate(() => window.dispatchEvent(new MessageEvent('message', { data: { type: 'quotas', quotas: { claude: { remaining: 0, resetsAt: Date.now() / 1000 + 1800 }, codex: { remaining: 80 } } } })));
     await page.waitForFunction(() => document.querySelector('.schedule-time').textContent !== '');
     await page.locator('#modelPill').click();
     await page.locator('.model-option[data-agent="codex"]').first().click();
-    assert.equal(await page.locator('.schedule-time').innerText(), '', 'GPT does not inherit the Claude countdown');
-    assert.match(await page.locator('.turn-queue-when').innerText(), /at reset/, 'the Claude queue row keeps its reset');
+    assert.equal(await page.locator('.schedule-time').innerText(), '', 'GPT does not inherit the Claude reset countdown');
+    assert.equal(await page.locator('.composer.is-scheduled').count(), 0);
+    assert.match(await page.locator('.turn-queue-when').innerText(), /\d/, 'the Claude queue row keeps its scheduled time');
   } },
   ...['waiting', 'changed'].map(state => ({ id: `provider-switch-${state}`, focus: '.compose-row', setup: async page => {
     await page.evaluate(() => {
@@ -244,6 +588,70 @@ export const scenarios = [
       assert.equal(await page.locator('#sendBtn').isEnabled(), true);
     }
   } })),
+  { id: 'provider-switch-agy', focus: '.compose-row', setup: async page => {
+    await page.evaluate(() => {
+      const post = data => window.dispatchEvent(new MessageEvent('message', { data }));
+      const sonnet = 'gemini:claude-sonnet-5-5-high';
+      const orchestrator = 'gemini-pro-orchestrator-g1-pro';
+      post({ type: 'modelCatalog', catalog: [
+        { id: sonnet, agent: 'gemini', model: 'claude-sonnet-5-5-high', label: 'Claude Sonnet 5.5 High', shortLabel: 'Sonnet', company: 'Anthropic' },
+        { id: orchestrator, agent: 'gemini', model: orchestrator, label: 'Orchestrator', shortLabel: 'Orchestrator', company: 'Google' },
+      ], available: [
+        { id: sonnet, agent: 'gemini', model: 'claude-sonnet-5-5-high', label: 'Claude Sonnet 5.5 High', shortLabel: 'Sonnet', company: 'Anthropic' },
+        { id: orchestrator, agent: 'gemini', model: orchestrator, label: 'Orchestrator', shortLabel: 'Orchestrator', company: 'Google' },
+      ] });
+      post({ type: 'chatLoaded', chat: { id: 'agy-switch-chat', modelId: sonnet, messages: [
+        { role: 'user', text: 'Run checks' },
+        { role: 'assistant', agent: 'gemini', modelLabel: 'Claude Sonnet 5.5 High', text: 'Gemini error: RESOURCE_EXHAUSTED: Individual quota reached. Resets in 4h40m5s.' },
+      ] } });
+      post({ type: 'quotas', quotas: { gemini: { remaining: 80, resetsAt: Date.now() / 1000 + 18000 }, antigravityClaudeGpt: { remaining: 0, resetsAt: Date.now() / 1000 + 16805 } } });
+      post({ type: 'schedulerQueue', queue: [{ id: 'agy-task', chatId: 'agy-switch-chat', model: 'gemini', modelId: sonnet, prompt: 'continue', status: 'pending', dispatchTrigger: 'quota-reset', notBefore: new Date(Date.now() + 16805000).toISOString(), attachments: [] }] });
+    });
+    assert.equal(await page.locator('[data-task-id="agy-task"] .is-primary').isDisabled(), true, 'Send Now is disabled while waiting for Sonnet reset');
+    await page.getByRole('button', { name: 'Change model', exact: true }).click();
+    await page.evaluate(() => window.dispatchEvent(new MessageEvent('message', { data: { type: 'restoreScheduledDraft', taskId: 'agy-task', text: 'continue', modelId: 'gemini:claude-sonnet-5-5-high', chooseModel: true, files: [] } })));
+    await page.locator('.model-option[data-model-id="gemini-pro-orchestrator-g1-pro"]').click();
+    assert.equal(await page.locator('.schedule-time').innerText(), '', 'old Antigravity model reset disappears on switching to Orchestrator');
+    assert.equal(await page.locator('.composer.is-scheduled').count(), 0, 'composer disarms when target model has quota');
+    await page.locator('#sendBtn').click();
+    assert.equal(await page.evaluate(() => window.sent.findLast(m => m.type === 'saveScheduledDraft')?.clearReset), true, 'confirming a model with quota clears the old reset wait');
+    await page.evaluate(() => window.dispatchEvent(new MessageEvent('message', { data: { type: 'schedulerQueue', queue: [{ id: 'agy-task', chatId: 'agy-switch-chat', model: 'gemini', modelId: 'gemini-pro-orchestrator-g1-pro', prompt: 'continue', status: 'pending', dispatchTrigger: 'fixed-time', dispatchTime: new Date(Date.now() - 1000).toISOString(), attachments: [] }] } })));
+    assert.equal(await page.locator('[data-task-id="agy-task"] .is-primary').isEnabled(), true, 'Send Now is enabled once retargeted to Orchestrator');
+  } },
+  { id: 'edit-scheduled-unschedule', focus: '.compose-row', setup: async page => {
+    const dispatchTime = new Date(Date.now() + 7200000).toISOString();
+    await page.evaluate((when) => {
+      const post = data => window.dispatchEvent(new MessageEvent('message', { data }));
+      post({ type: 'chatLoaded', chat: { id: 'unschedule-edit-chat', modelId: 'gpt-6.1-sol-high', messages: [{ role: 'user', text: 'Working' }] } });
+      post({ type: 'routing', agentId: 'codex' });
+      post({ type: 'quotas', quotas: { codex: { remaining: 75, resetsAt: Date.now() / 1000 + 3600 } } });
+      post({ type: 'schedulerQueue', queue: [{ id: 'sched-later', chatId: 'unschedule-edit-chat', model: 'codex', modelId: 'gpt-6.1-sol-high', prompt: 'Run after removing schedule', status: 'pending', dispatchTrigger: 'fixed-time', dispatchTime: when, attachments: [] }] });
+    }, dispatchTime);
+    await page.getByRole('button', { name: 'Move back into the composer', exact: true }).click();
+    await page.evaluate((when) => window.dispatchEvent(new MessageEvent('message', { data: {
+      type: 'restoreScheduledDraft', taskId: 'sched-later', text: 'Run after removing schedule', modelId: 'gpt-6.1-sol-high', files: [],
+      schedule: { dispatchTrigger: 'fixed-time', dispatchTime: when },
+    } })), dispatchTime);
+    assert.equal(await page.locator('.composer.is-scheduled').count(), 1, 'editing shows the prompt is scheduled');
+    assert.equal(await page.locator('#scheduleBtn').getAttribute('data-mode'), 'calendar');
+    assert.notEqual(await page.locator('.schedule-time').innerText(), '');
+    // Hovering opens the calendar pill with a one-click Off button, and clicking the clock also cycles back to off.
+    await page.locator('#scheduleBtn').hover();
+    await page.locator('.timer-off').click();
+    assert.equal(await page.locator('#scheduleBtn').getAttribute('data-mode'), 'off');
+    assert.equal(await page.locator('.composer.is-scheduled').count(), 0);
+    await page.locator('#scheduleBtn').click();
+    assert.equal(await page.locator('#scheduleBtn').getAttribute('data-mode'), 'reset');
+    for (let i = 0; i < 3; i++) await page.locator('#scheduleBtn').click();
+    assert.equal(await page.locator('#scheduleBtn').getAttribute('data-mode'), 'off');
+    assert.equal(await page.locator('.composer.is-scheduled').count(), 0, 'turning scheduling off clears the highlight');
+    assert.equal(await page.locator('.schedule-time').innerText(), '');
+    assert.equal(await page.locator('#sendBtn').getAttribute('data-mode'), 'queue', 'busy chat switches button to Queue once unscheduled');
+    await page.locator('#sendBtn').click();
+    assert.equal(await page.evaluate(() => window.sent.findLast(m => m.type === 'cancelScheduledTask')?.taskId), 'sched-later');
+    assert.equal(await page.evaluate(() => window.sent.findLast(m => m.type === 'queueTurn')?.turn?.text), 'Run after removing schedule');
+    await page.mouse.move(5, 5); // the send click leaves the pointer on the mic flyout, which would then cover the last queue row
+  } },
   { id: 'bridge-agents', focus: MODAL, setup: async page => {
     await page.evaluate(() => {
       const post = data => window.dispatchEvent(new MessageEvent('message', { data }));
@@ -360,15 +768,43 @@ export const scenarios = [
     assert.equal(await item.locator('.history-peek-context').innerText(), 'Interface');
     assert.equal(await item.locator('.history-peek-context svg').isVisible(), true);
   } },
+  { id: 'project-rail-three', sidebar: true, height: 1050, focus: '.project-pill', scope: '.project-pill', setup: async page => {
+    const projects = ['a', 'b', 'c', 'd'].map(id => ({ id, name: `Project ${id.toUpperCase()}`, root: `C:/projects/${id}` }));
+    const post = data => page.evaluate(data => window.dispatchEvent(new MessageEvent('message', { data })), data);
+    const ids = () => page.locator('.project-item[data-id]').evaluateAll(items => items.map(item => item.dataset.id));
+    const select = (id, pinnedProjectIds = ['b']) => post({ type: 'project', projects, project: projects.find(project => project.id === id), pinnedProjectIds });
+    await post({ type: 'history', sessions: [{ id: 'recent-d', projectId: 'd', updatedAt: '2026-11-17T10:00:00Z' }, { id: 'older-c', projectId: 'c', updatedAt: '2026-11-16T10:00:00Z' }] });
+    await select('a');
+    assert.deepEqual(await ids(), ['b', 'a', 'd']);
+    const height = await page.locator('.project-pill').evaluate(el => el.offsetHeight);
+    await select('b');
+    assert.deepEqual(await ids(), ['b', 'd', 'c'], 'a pinned current project still leaves three unique tiles');
+    assert.equal(await page.locator('.project-pill').evaluate(el => el.offsetHeight), height);
+    await select('a', []);
+    assert.deepEqual(await ids(), ['a', 'd', 'c'], 'without pins, recent projects fill the rail');
+    await post({ type: 'history', sessions: [] });
+    assert.equal((await ids()).length, 3, 'unused registered projects fill missing history slots');
+    await post({ type: 'project', projects: projects.slice(0, 2), project: projects[0], pinnedProjectIds: [] });
+    assert.deepEqual(await ids(), ['a', 'b'], 'fewer than three projects render without duplicates');
+    await select('b');
+    await page.waitForTimeout(700);
+  } },
   { id: 'sidebar-loading', sidebar: true, height: 1500, focus: '.rail', setup: async page => {
     const projects = page.locator('.project-pill');
     const recent = page.locator('#historyList');
     assert.equal(await projects.getAttribute('aria-busy'), 'true');
     assert.equal(await recent.getAttribute('aria-busy'), 'true');
+    assert.doesNotMatch(await page.locator('.rail').evaluate(el => getComputedStyle(el).backgroundImage), /repeating-linear-gradient/, 'no diagonal hatching behind the rail');
+    assert.equal(await recent.locator('.history-row.skeleton').first().evaluate(el => ({ anim: getComputedStyle(el).animationName, bg: getComputedStyle(el).backgroundImage })).then(s => s.anim === 'skeleton-shimmer' && s.bg.includes('linear-gradient')), true, 'recent chat skeleton rows shimmer before history arrives');
     await page.emulateMedia({ reducedMotion: 'reduce' });
     assert.equal(await projects.locator('.skeleton').first().evaluate(el => getComputedStyle(el).animationName), 'none');
+    assert.equal(await recent.locator('.history-row.skeleton').first().evaluate(el => getComputedStyle(el).animationName), 'none');
     await page.emulateMedia({ reducedMotion: 'no-preference' });
     const send = data => page.evaluate(data => window.dispatchEvent(new MessageEvent('message', { data })), data);
+    // When history lands before projects, recent tiles show a shimmer mark instead of blank tiles.
+    await send({ type: 'history', sessions: [{ id: 'proj-wait', projectId: 'p1', title: 'Waiting project icon', models: ['codex'], updatedAt: '2026-03-02T07:58:00Z' }] });
+    assert.equal(await recent.locator('.history-row .rail-skeleton-mark.skeleton').count(), 1, 'recent tile mark shimmers while projects are still loading');
+    assert.equal(await recent.locator('.history-row .rail-skeleton-mark.skeleton').evaluate(el => getComputedStyle(el).animationName), 'skeleton-shimmer');
     await send({ type: 'history', sessions: [] });
     assert.equal(await recent.locator('.rail-skeleton').count(), 0, 'empty history finishes loading');
     assert.equal(await recent.getAttribute('aria-busy'), null);
@@ -542,8 +978,65 @@ export const scenarios = [
     }
     await page.waitForTimeout(450);
   } })),
+  { id: 'composer-narrow-squircle', focus: '.composer', setup: async page => {
+    await page.evaluate(() => {
+      const post = data => window.dispatchEvent(new MessageEvent('message', { data }));
+      const now = Date.now();
+      post({ type: 'chatLoaded', chat: { id: 'narrow-squircle', modelId: 'gpt-6.1-sol-high', messages: [{ role: 'user', text: 'Working' }] }, running: { agentId: 'codex', startedAt: now } });
+      post({ type: 'quotas', quotas: { codex: { remaining: 0, resetsAt: now / 1000 + 6754 } } });
+      post({ type: 'schedulerQueue', queue: [{ id: 'wait', chatId: 'narrow-squircle', model: 'codex', modelId: 'gpt-6.1-sol-high', prompt: 'Next step', status: 'pending', dispatchTrigger: 'quota-reset', notBefore: new Date(now + 6754000).toISOString(), attachments: [] }] });
+      for (const id of ['a1', 'a2', 'a3']) post({ type: 'subagent_start', id, agent: 'codex', status: 'running', description: id });
+    });
+    await page.waitForFunction(() => document.querySelector('.schedule-time').textContent !== '');
+    await page.waitForTimeout(200);
+    const state = await page.evaluate(() => ({
+      width: window.innerWidth,
+      multiline: document.querySelector('.composer').classList.contains('is-multiline'),
+      inputWidth: document.querySelector('#promptInput').getBoundingClientRect().width,
+    }));
+    if (state.width <= 420) {
+      assert.equal(state.multiline, true, 'narrow composer starts out as a squircle');
+      assert.ok(state.inputWidth >= 250, `expected roomy input row, got ${state.inputWidth}px`);
+    } else {
+      assert.equal(state.multiline, false, 'wide composer stays a one-line pill');
+    }
+  } },
   { id: 'queue-edit-stability', focus: '.compose-row', setup: queueStability },
   { id: 'queue-reset-wait', focus: '.compose-row', setup: queueReset },
+  { id: 'queue-strip-dense', sidebar: true, focus: '.compose-row', setup: async page => {
+    await applyIdePalette(page, IDE_PALETTES.light);
+    const svg = color => `data:image/svg+xml,${encodeURIComponent(`<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64"><rect width="64" height="64" fill="${color}"/></svg>`)}`;
+    const files = [{ name: 'shot.png', path: '/staged/shot.png', mime: 'image/png', uri: svg('#cbd5e1') }];
+    await page.evaluate(({ files }) => {
+      const post = data => window.dispatchEvent(new MessageEvent('message', { data }));
+      const hyd = 'gemini-4-hydrogen-xhigh';
+      post({ type: 'modelCatalog', catalog: [{ id: hyd, agent: 'gemini', model: hyd, label: 'Gemini 4 Hydrogen XHigh', shortLabel: 'Hydrogen', company: 'Google' }], available: [{ id: hyd, agent: 'gemini', model: hyd, label: 'Gemini 4 Hydrogen XHigh', shortLabel: 'Hydrogen', company: 'Google' }] });
+      post({ type: 'chatLoaded', chat: { id: 'dense-queue', modelId: hyd, messages: [{ role: 'user', text: 'Working' }] }, running: { agentId: 'gemini', startedAt: Date.now() } });
+      const now = Date.now();
+      const prompts = [
+        'dont show the scheduler timer down here when you still have usage and make sure it stays clean',
+        'Why cant i see which model is working here? Is it because no real model ran?',
+        'why is steer now greyed out for 3/4 queued prompts?',
+        'add the shimmer loading animation to the recent chats too. Remove extra borders',
+        'make it so that only 7 scheduled / queued prompts can be displayed cleanly',
+        'make it so you can see the full Model name when hovering of the name',
+      ];
+      const queue = prompts.map((prompt, i) => ({
+        id: `s${i}`, chatId: 'dense-queue', model: 'gemini', modelId: hyd, prompt, status: 'pending',
+        dispatchTrigger: 'fixed-time',
+        dispatchTime: new Date(i === 3 ? now + 3600000 : now - 600000 * (i + 1)).toISOString(),
+        files, attachments: [{ name: 'shot.png', mimeType: 'image/png', absolutePath: '/staged/shot.png' }],
+      }));
+      post({ type: 'schedulerQueue', queue });
+      post({ type: 'turnQueue', chatId: 'dense-queue', paused: false, turns: [{ id: 'q1', text: 'i changes the model of the automatically queued turn', modelId: hyd, files, attachments: [] }] });
+    }, { files });
+    await page.waitForTimeout(700);
+    const overflow = await page.locator('.turn-queue-item').evaluateAll(rows =>
+      rows.filter(r => r.scrollHeight > r.clientHeight + 1 || r.scrollWidth > r.clientWidth + 1).length);
+    assert.equal(overflow, 0, 'queue rows must never crush vertically or overflow horizontally');
+    const pills = await page.locator('.turn-queue-item .model-pill').evaluateAll(els => els.map(el => ({ text: el.textContent.trim(), title: el.getAttribute('title') })));
+    assert.ok(pills.length === 7 && pills.every(p => p.text === 'Hydrogen' && p.title === 'Gemini 4 Hydrogen XHigh'), 'queue model pills display short label with full model name in hover tooltip');
+  } },
   { id: 'queue-usage-warning', setup: async page => {
     await page.evaluate(() => {
       const post = data => window.dispatchEvent(new MessageEvent('message', { data }));
@@ -688,8 +1181,72 @@ export const scenarios = [
     await composerChip.focus(); await page.keyboard.press('Enter');
     assert.equal(await page.evaluate(() => window.sent.filter(message => message.type === 'openFile').length), 2);
   } },
+  ...['light', 'dark'].map(theme => ({ id: `model-menu-queue-${theme}`, height: 1050, scope: '#modelMenu', setup: async page => {
+    const post = data => page.evaluate(data => window.dispatchEvent(new MessageEvent('message', { data })), data);
+    await page.evaluate(theme => { document.body.classList.toggle('vscode-light', theme === 'light'); document.body.classList.toggle('vscode-dark', theme === 'dark'); }, theme);
+    const now = await page.evaluate(() => Date.now());
+    await post({ type: 'chatLoaded', chat: { id: 'menu-queue', messages: [] } });
+    await post({ type: 'schedulerQueue', queue: Array.from({ length: 8 }, (_, i) => ({ id: `menu-task-${i}`, chatId: 'menu-queue', model: 'claude', modelId: 'claude-sonnet-5-5-high', status: 'pending', prompt: `Scheduled prompt ${i + 1}: keep the model selector readable above this text`, dispatchTrigger: 'quota-reset', notBefore: new Date(now + 600000).toISOString() })) });
+    await page.locator('#modelPill').click();
+    await page.waitForTimeout(900);
+    assert.equal(await page.locator('.turn-queue-item').count(), 8);
+    assert.equal(await page.locator('#ig-upper-silhouette path').count(), 1);
+    assert.equal(await page.locator('#ig-silhouette path').count(), 0);
+    const above = await page.locator('.model-option').first().evaluate(el => {
+      const b = el.getBoundingClientRect();
+      return el.contains(document.elementFromPoint(b.x + b.width / 2, b.y + b.height / 2));
+    });
+    assert.ok(above, 'menu options receive pointer input above queue rows');
+  } })),
   { id: 'model-menu', scope: '#modelMenu', focus: '#modelMenu', setup: async page => { await page.locator('#modelPill').click(); await page.locator('.model-option').first().waitFor(); await page.waitForTimeout(700); /* the spring-open takes 0.5s */ } },
+  ...['light', 'dark'].map(theme => ({ id: `settings-quiet-${theme}`, height: 1400, focus: MODAL, setup: async page => {
+    await page.evaluate(theme => {
+      document.body.classList.toggle('vscode-light', theme === 'light');
+      document.body.classList.toggle('vscode-dark', theme === 'dark');
+    }, theme);
+    await openSettings('general')(page);
+    await page.evaluate(() => window.dispatchEvent(new MessageEvent('message', { data: { type: 'fleet', models: [], pinged: true, services: {}, clis: {
+      claude: { path: 'claude.exe', version: '2.1.326' }, codex: { path: 'codex.cmd', version: '0.169.0' }, gemini: { path: 'agy.cmd', version: '1.5.10' },
+    } } })));
+    await page.evaluate(() => window.dispatchEvent(new MessageEvent('message', { data: { type: 'cliConnections', setupNeeded: false, checking: false, providers: {
+      claude: { enabled: true, installed: true, auth: 'connected', note: '' },
+      codex: { enabled: true, installed: true, auth: 'connected', note: '' },
+      gemini: { enabled: true, installed: true, auth: 'connected', note: '' },
+      copilot: { enabled: false, installed: false, auth: 'missing', note: '' },
+    } } })));
+    assert.equal(await page.locator('#settingsModal').innerText().then(text => text.includes('Use your existing account, or create one during sign-in.')), false);
+  } })),
   ...['general', 'voice', 'remote', 'models'].map(tab => ({ id: `settings-${tab}`, height: 1400, focus: MODAL, setup: openSettings(tab) })),
+  { id: 'settings-chat-names', height: 1400, scope: '.chat-names-picker', focus: MODAL, setup: async page => {
+    await openSettings('general')(page);
+    const pill = name => page.locator(`.names-pill[data-names="${name}"]`);
+    await page.evaluate(() => window.dispatchEvent(new MessageEvent('message', { data: { type: 'fleet', models: [], clis: {}, services: {} } })));
+    await pill('agent').scrollIntoViewIfNeeded();
+    assert.equal(await pill('agent').evaluate(el => el.classList.contains('active')), true, 'the agent title is the default');
+    assert.equal(await pill('groq').evaluate(el => el.classList.contains('active')), false);
+    await pill('groq').click();
+    assert.deepEqual(await page.evaluate(() => window.sent.findLast(m => m.type === 'setChatNames')), { type: 'setChatNames', value: 'groq' });
+    assert.equal(await pill('groq').evaluate(el => el.classList.contains('active')), true);
+    assert.equal(await pill('agent').evaluate(el => el.classList.contains('active')), false);
+    await page.evaluate(() => window.dispatchEvent(new MessageEvent('message', { data: { type: 'fleet', models: [], clis: {}, services: { chatNames: 'agent' } } })));
+    assert.equal(await pill('agent').evaluate(el => el.classList.contains('active')), true, 'the saved choice is shown when the window opens');
+    await pill('agent').evaluate(el => el.closest('.cs-row').scrollIntoView({ block: 'center' }));
+  } },
+  { id: 'settings-completion-sound', height: 1400, scope: '[data-role=completionSound]', focus: MODAL, setup: async page => {
+    await openSettings('general')(page);
+    const sw = page.locator('[data-role=completionSound]');
+    const fleet = services => page.evaluate(services => window.dispatchEvent(new MessageEvent('message', { data: { type: 'fleet', models: [], clis: {}, services } })), services);
+    await fleet({});
+    await sw.evaluate(el => el.closest('.cs-row').scrollIntoView({ block: 'center' }));
+    assert.equal(await sw.getAttribute('aria-checked'), 'true', 'the chime is on by default');
+    await sw.click();
+    assert.equal(await sw.getAttribute('aria-checked'), 'false');
+    assert.deepEqual(await page.evaluate(() => window.sent.findLast(m => m.type === 'setCompletionSound')), { type: 'setCompletionSound', enabled: false });
+    await fleet({ completionSound: true });
+    assert.equal(await sw.getAttribute('aria-checked'), 'true', 'the saved choice is shown when the window opens');
+    await sw.click();
+    assert.equal(await sw.getAttribute('aria-checked'), 'false');
+  } },
   { id: 'settings-cloud-warmup', height: 1400, scope: '[data-role=cloudWarmupPanel]', focus: '[data-role=cloudWarmupPanel]', setup: async page => {
     await openSettings('general')(page);
     assert.equal(await page.locator('[data-role=cloudWarmupEnabled]').getAttribute('aria-checked'), 'false');
@@ -736,6 +1293,8 @@ export const scenarios = [
     const input = page.getByRole('combobox', { name: 'Search settings' });
     await input.fill('confidence needed'); await input.press('Enter');
     await page.locator('[data-pane="routing"] .cs-search-target').waitFor();
+    // The highlight clears itself after 2.2 s; the tester's scope is that class, and a slow screenshot must not outlive it.
+    await page.evaluate(() => { const t = document.querySelector('.cs-search-target'); new MutationObserver(() => t.classList.add('cs-search-target')).observe(t, { attributes: true, attributeFilter: ['class'] }); });
     await page.waitForTimeout(400);
   } },
   ...['collapsed', 'expanded', 'empty'].map(state => ({ id: `settings-project-icons-${state}`, height: 1400, focus: MODAL, setup: async page => {
@@ -771,6 +1330,186 @@ export const scenarios = [
     assert.equal(await page.locator('.tool-card.is-running .tool-time').textContent(), '12m 7s');
     await page.clock.fastForward(1000);
     assert.equal(await page.locator('.tool-card.is-running .tool-time').textContent(), '12m 8s');
+  } },
+  { id: 'turn-role-before-tools', focus: '.turn', setup: async page => {
+    const send = data => page.evaluate(msg => window.dispatchEvent(new MessageEvent('message', { data: msg })), data);
+    const inspectTurn = () => page.evaluate(() => {
+      const turn = document.querySelector('.turn');
+      if (!turn) return null;
+      const kids = [...turn.children].map(el => el.className);
+      const role = turn.querySelector('.msg-role');
+      const tool = turn.querySelector('.tool-card, .work-summary');
+      const reply = turn.querySelector('.msg-assistant');
+      return {
+        kids,
+        roleCount: turn.querySelectorAll('.msg-role').length,
+        assistantCount: turn.querySelectorAll('.msg-assistant').length,
+        roleText: role?.textContent.trim() || '',
+        roleTop: role?.getBoundingClientRect().top ?? -1,
+        toolTop: tool?.getBoundingClientRect().top ?? -1,
+        replyTop: reply?.getBoundingClientRect().top ?? -1,
+      };
+    });
+
+    // 1. Restored turn with tools before reply: single role header stays at top above tools and reply.
+    await send({
+      type: 'chatLoaded',
+      chat: {
+        id: 'role-restored-chat',
+        messages: [
+          { role: 'user', text: 'continue' },
+          { role: 'assistant', text: 'Done.', agent: 'gemini', modelLabel: 'Gemini 4 Hydrogen XHigh' },
+          { role: 'tool', offset: 0, done: true, event: { name: 'read_file', file: 'main.js' } },
+        ],
+      },
+    });
+    const restored = await inspectTurn();
+    assert.equal(restored.roleCount, 1);
+    assert.match(restored.roleText, /Gemini 4 Hydrogen XHigh/);
+    assert.ok(restored.kids[0].includes('msg-group-user') && restored.kids[1].includes('msg-role'));
+    assert.ok(restored.toolTop > restored.roleTop && restored.replyTop > restored.toolTop);
+
+    // 2. Live turn: routing -> tool -> delta keeps exactly one role header at the top above tools.
+    await send({ type: 'chatLoaded', chat: { id: 'role-stream-chat', messages: [] } });
+    await send({ type: 'userMessage', text: 'continue' });
+    await send({ type: 'routing', agentId: 'gemini', modelLabel: 'Gemini 4 Hydrogen XHigh' });
+    await send({ type: 'tool_start', toolId: 't0', name: 'read_file', file: 'ai-chat-panel/media/main.js' });
+    await send({ type: 'delta', text: 'Working on it.', model: 'gemini' });
+    const streamed = await inspectTurn();
+    assert.equal(streamed.roleCount, 1);
+    assert.equal(streamed.assistantCount, 1);
+    assert.ok(streamed.kids[0].includes('msg-group-user') && streamed.kids[1].includes('msg-role'));
+    assert.ok(streamed.toolTop > streamed.roleTop && streamed.replyTop > streamed.toolTop);
+
+    // 3. Tool-only live turn left visible for visual & geometry verification.
+    await send({ type: 'chatLoaded', chat: { id: 'role-live-tool-only', messages: [] } });
+    await send({ type: 'userMessage', text: 'continue' });
+    await send({ type: 'routing', agentId: 'gemini', modelLabel: 'Gemini 4 Hydrogen XHigh' });
+    await send({ type: 'tool_start', toolId: 't1', name: 'read_file', file: 'ai-chat-panel/media/main.js' });
+    await send({ type: 'tool_start', toolId: 't2', name: 'run_command', command: 'npm.cmd run check' });
+    const liveOnly = await inspectTurn();
+    assert.equal(liveOnly.roleCount, 1);
+    assert.equal(liveOnly.assistantCount, 0);
+    assert.match(liveOnly.roleText, /Gemini 4 Hydrogen XHigh/);
+    assert.ok(liveOnly.kids[0].includes('msg-group-user') && liveOnly.kids[1].includes('msg-role'));
+    assert.ok(liveOnly.toolTop > liveOnly.roleTop);
+  } },
+  { id: 'queue-loading-skeleton', focus: '.compose-row', setup: async page => {
+    const now = await page.evaluate(() => Date.now());
+    const send = data => page.evaluate(msg => window.dispatchEvent(new MessageEvent('message', { data: msg })), data);
+    // 1. chatLoaded arrives before schedulerQueue with unknown/pending scheduled tasks + one local queued turn.
+    await send({
+      type: 'chatLoaded',
+      chat: {
+        id: 'queue-skel-chat',
+        modelId: 'gpt-6.1-sol-high',
+        scheduledPending: 2,
+        turnQueue: { paused: false, turns: [{ id: 'q-local', modelId: 'gpt-6.1-sol-high', text: 'Continue once reset finishes', attachments: [] }] },
+        messages: [{ role: 'user', text: 'Work on queue shimmer' }],
+      },
+    });
+    const strip = page.locator('.turn-queue-strip');
+    await strip.waitFor({ state: 'visible' });
+    assert.equal(await strip.getAttribute('aria-busy'), 'true');
+    assert.equal(await strip.locator('.turn-queue-skeleton').count(), 2);
+    assert.equal(await strip.locator('.turn-queue-item:not(.turn-queue-skeleton)').count(), 1);
+    assert.match(await strip.locator('.turn-queue-head > span').innerText(), /loading scheduled/);
+    assert.equal(await strip.locator('.turn-queue-skeleton .skeleton').first().evaluate(el => getComputedStyle(el).animationName), 'skeleton-shimmer');
+
+    // 2. Real schedulerQueue arrival swaps skeletons out seamlessly.
+    await send({
+      type: 'schedulerQueue',
+      queue: [
+        { id: 's1', chatId: 'queue-skel-chat', model: 'codex', modelId: 'gpt-6.1-sol-high', prompt: 'Scheduled task 1', status: 'pending', dispatchTrigger: 'fixed-time', dispatchTime: new Date(now + 600000).toISOString(), attachments: [] },
+        { id: 's2', chatId: 'queue-skel-chat', model: 'codex', modelId: 'gpt-6.1-sol-high', prompt: 'Scheduled task 2', status: 'pending', dispatchTrigger: 'fixed-time', dispatchTime: new Date(now + 1200000).toISOString(), attachments: [] },
+      ],
+    });
+    assert.equal(await strip.getAttribute('aria-busy'), null);
+    assert.equal(await strip.locator('.turn-queue-skeleton').count(), 0);
+    assert.equal(await strip.locator('.turn-queue-item.is-scheduled').count(), 2);
+
+    // 3. chatLoading while switching to a chat with pending prompts shows shimmer placeholders immediately for visual inspection.
+    await send({ type: 'chatLoading', queueCount: 2 });
+    assert.equal(await strip.getAttribute('aria-busy'), 'true');
+    assert.equal(await strip.locator('.turn-queue-skeleton').count(), 2);
+    assert.equal(await strip.locator('.turn-queue-item:not(.turn-queue-skeleton)').count(), 0);
+    assert.match(await strip.locator('.turn-queue-head > span').innerText(), /Loading prompts/);
+    await page.waitForTimeout(600);
+  } },
+  ...['light', 'dark'].map(theme => ({ id: `glass-scrollbars-${theme}`, height: 1050, scope: '.turn-queue-strip', setup: async page => {
+    const send = data => page.evaluate(data => window.dispatchEvent(new MessageEvent('message', { data })), data);
+    await page.evaluate(t => { document.body.classList.toggle('vscode-light', t === 'light'); document.body.classList.toggle('vscode-dark', t === 'dark'); }, theme);
+    const now = await page.evaluate(() => Date.now());
+    await send({ type: 'chatLoaded', chat: { id: 'scrollbars', messages: Array.from({ length: 30 }, (_, i) => ({ role: i % 2 ? 'assistant' : 'user', agent: 'codex', text: `Message ${i + 1}: Review the glass dock and its scrolling content.\n\nKeep the transcript readable while prompts wait below.` })) } });
+    await send({ type: 'schedulerQueue', queue: Array.from({ length: 12 }, (_, i) => ({ id: `scroll-${i}`, chatId: 'scrollbars', model: 'claude', modelId: 'claude-sonnet-5-5-high', status: 'pending', prompt: `Scheduled prompt ${i + 1}: inspect the shared glass scrollbar`, dispatchTrigger: 'fixed-time', dispatchTime: new Date(now + 600000).toISOString() })) });
+    await page.waitForTimeout(700);
+    const bars = await page.evaluate(() => ['.transcript', '.turn-queue-strip'].map(sel => {
+      const el = document.querySelector(sel);
+      const thumb = getComputedStyle(el, '::-webkit-scrollbar-thumb');
+      const rail = getComputedStyle(el, '::-webkit-scrollbar');
+      el.scrollTop = 100;
+      return { width: rail.width, thumb: thumb.backgroundImage, radius: thumb.borderRadius, overflow: el.scrollHeight > el.clientHeight, scrolled: el.scrollTop > 0 };
+    }));
+    assert.deepEqual(bars[0], bars[1], 'both scroll areas use the same rail and thumb and can scroll');
+    assert.equal(bars[0].width, '12px');
+    assert.ok(bars[0].overflow && bars[0].scrolled);
+  } })),
+  { id: 'queue-seven-cap', height: 1400, focus: '.compose-row', setup: async page => {
+    const now = await page.evaluate(() => Date.now());
+    const send = data => page.evaluate(msg => window.dispatchEvent(new MessageEvent('message', { data: msg })), data);
+    const hyd = 'gemini-4-hydrogen-high';
+    await send({ type: 'modelCatalog', catalog: [{ id: hyd, agent: 'gemini', model: hyd, label: 'Gemini 4 Hydrogen High', shortLabel: 'Hydrogen', company: 'Google' }], available: [{ id: hyd, agent: 'gemini', model: hyd, label: 'Gemini 4 Hydrogen High', shortLabel: 'Hydrogen', company: 'Google' }] });
+    await send({ type: 'chatLoaded', chat: { id: 'seven-cap', modelId: hyd, messages: [{ role: 'user', text: 'Working' }, { role: 'assistant', agent: 'gemini', modelLabel: 'Gemini 4 Hydrogen High', text: 'Typing response remains visible above the queue.' }] } });
+    const queue = Array.from({ length: 9 }, (_, i) => ({
+      id: `cap-${i}`, chatId: 'seven-cap', model: 'gemini', modelId: hyd,
+      prompt: `Queued prompt #${i + 1}: keep the chat readable`,
+      status: 'pending', dispatchTrigger: 'fixed-time', dispatchTime: new Date(now + (i + 1) * 600000).toISOString(), attachments: [],
+    }));
+    await send({ type: 'schedulerQueue', queue });
+    await page.waitForTimeout(650);
+    const metrics = await page.locator('.turn-queue-strip').evaluate(strip => {
+      const s = strip.getBoundingClientRect();
+      const visible = [...strip.querySelectorAll('.turn-queue-item')].filter(r => {
+        const b = r.getBoundingClientRect();
+        return b.bottom > s.top + 1 && b.top < s.bottom - 1;
+      }).length;
+      const before = strip.scrollTop;
+      strip.scrollTop = strip.scrollHeight;
+      const scrolled = strip.scrollTop;
+      strip.scrollTop = before;
+      return { total: strip.querySelectorAll('.turn-queue-item').length, visible, scrollHeight: strip.scrollHeight, clientHeight: strip.clientHeight, scrolled, vhCap: Math.floor(innerHeight * 0.34 - 20) };
+    });
+    assert.equal(metrics.total, 9);
+    // Seven rows, unless a narrow panel wraps each row onto three lines and the strip's 34vh ceiling cuts the list shorter.
+    const clamped = metrics.clientHeight >= metrics.vhCap - 1;
+    if (clamped) assert.ok(metrics.visible >= 4 && metrics.visible <= 7, `a height-clamped strip still shows 4 to 7 prompts, got ${metrics.visible}`);
+    else assert.equal(metrics.visible, 7, 'displays only 7 prompts at once even on a 1400px tall viewport');
+    assert.ok(metrics.scrollHeight > metrics.clientHeight + 20, 'extra prompts scroll inside the strip');
+    assert.ok(metrics.scrolled > 0, 'scrolling reveals the remaining prompts');
+    assert.equal(await page.locator('.turn-queue-item .model-pill').first().getAttribute('title'), 'Gemini 4 Hydrogen High');
+  } },
+  { id: 'queue-pill-change-model', height: 900, focus: '.compose-row', setup: async page => {
+    const now = await page.evaluate(() => Date.now());
+    const send = data => page.evaluate(msg => window.dispatchEvent(new MessageEvent('message', { data: msg })), data);
+    const hyd = 'gemini-4-hydrogen-high';
+    const entry = { id: hyd, agent: 'gemini', model: hyd, label: 'Gemini 4 Hydrogen High', shortLabel: 'Hydrogen', company: 'Google' };
+    await send({ type: 'modelCatalog', catalog: [entry], available: [entry] });
+    await send({ type: 'chatLoaded', chat: { id: 'pill-chat', modelId: hyd, turnQueue: { paused: false, turns: [{ id: 'q1', modelId: hyd, text: 'Queued turn', attachments: [] }] }, messages: [{ role: 'user', text: 'Working' }] } });
+    await send({ type: 'schedulerQueue', queue: [{ id: 's1', chatId: 'pill-chat', model: 'gemini', modelId: hyd, prompt: 'Scheduled turn', status: 'pending', dispatchTrigger: 'fixed-time', dispatchTime: new Date(now + 600000).toISOString(), attachments: [] }] });
+    await page.waitForTimeout(650);
+    assert.equal(await page.locator('.turn-queue-item button[aria-label*="Change model"]').count(), 0, 'the robot button is gone');
+    // The handle is as tall as its row, which is two lines tall at this width.
+    const heights = await page.locator('.turn-queue-item').evaluateAll(rows => rows.map(row => ({ row: Math.round(row.getBoundingClientRect().height), grip: Math.round(row.querySelector('.turn-queue-grip').getBoundingClientRect().height) })));
+    for (const h of heights) assert.equal(h.grip, h.row, 'handle spans the whole row');
+    // Clicking the scheduled row's model asks the host to take the task back with the model menu open.
+    await page.locator('[data-task-id="s1"] .model-pill').click();
+    assert.deepEqual(await page.evaluate(() => { const m = window.sent.findLast(x => x.type === 'unscheduleToComposer'); return m && { taskId: m.taskId, chooseModel: m.chooseModel }; }), { taskId: 's1', chooseModel: true });
+    // Clicking a queued turn's model moves it into the composer and opens the model menu.
+    await page.locator('[data-id="q1"] .model-pill').click();
+    assert.equal(await page.locator('#promptInput').inputValue(), 'Queued turn');
+    await page.locator('.model-option').first().waitFor({ state: 'visible' });
+    await page.keyboard.press('Escape');
+    await page.waitForTimeout(300);
   } },
   ...LOOP_STATES.map(state => ({ id: `loops-${state}`, height: 2600, focus: MODAL, setup: loopsState(state) })),
 ];

@@ -68,7 +68,7 @@
       ready,
       tag: !connection.enabled ? 'Not added' : ready ? connection.auth === 'ready' ? 'Ready' : 'Connected' : connection.settingUp ? 'Setting up' : !connection.installed ? 'Not installed' : connection.auth === 'broken' ? 'Broken' : 'Sign in',
       action: connection.settingUp && !ready ? 'Open setup' : !connection.installed ? 'Install & sign in' : connection.auth === 'broken' ? 'Repair & sign in' : ready ? 'Add CLI' : 'Sign in / Sign up',
-      description: connection.note || (connection.auth === 'ready' ? 'CLI is ready. Complete Google sign-in in its terminal if prompted.' : ready ? 'Account connected on this computer.' : 'Use your existing account, or create one during sign-in.'),
+      description: connection.note || (connection.auth === 'ready' ? 'CLI is ready. Complete Google sign-in in its terminal if prompted.' : ready ? 'Account connected on this computer.' : ''),
     };
   }
   function connectionActions(agent, connection, vscode) {
@@ -86,9 +86,9 @@
     return actions;
   }
 
-  window.initCliSetup = function ({ vscode, body, onClose, onOpenSettings, onStartOnboardingChat }) {
+  window.initCliSetup = function ({ vscode, body, onClose, onOpenSettings, onStartOnboardingChat, onModelsStep }) {
     body.classList.add('cs', 'cs-setup');
-    body.innerHTML = `<div class="cs-setup-hero"><span class="cs-setup-mark"><img src="${window.CLANKER_MARK || ''}" alt="" /></span><h2>Your models. One place.</h2><p>Connect the CLIs you use — Claude Code, Codex, Antigravity, or GitHub Copilot — then optionally set up voice dictation, free smart routing, or let an AI walk you through the rest.</p></div>
+    body.innerHTML = `<div class="cs-setup-step" data-role="setupConnections"><p class="cs-note">Step 1 of 2 · Connect your CLIs</p><div class="cs-setup-hero"><span class="cs-setup-mark"><img src="${window.CLANKER_MARK || ''}" alt="" /></span><h2>Your models. One place.</h2><p>Connect the CLIs you use — Claude Code, Codex, Antigravity, or GitHub Copilot — then choose your favorite models.</p></div>
       <div class="cs-setup-tools"><button class="cs-btn is-primary" data-role="connectAll" type="button">Set up all</button><button class="cs-btn" data-role="checkConnections" type="button">${ICON.refresh}<span>Check connections</span></button></div>
       <div class="cs-setup-providers" data-role="setupProviders"></div>
       <p class="cs-note cs-setup-note" role="status" data-role="setupProgress">Choose a provider to get started.</p>
@@ -109,7 +109,13 @@
           <button class="cs-btn is-small is-primary" data-role="setupWithAi" type="button">Set up with AI</button>
         </div>
       </section>
-      <div class="cs-setup-footer"><button class="cs-btn is-quiet" data-role="setupLater" type="button">Set up later</button><button class="cs-btn is-primary" data-role="setupContinue" type="button" disabled>Start chatting</button></div>`;
+      <div class="cs-setup-footer"><button class="cs-btn is-quiet" data-role="setupLater" type="button">Set up later</button><button class="cs-btn is-primary" data-role="setupContinue" type="button" disabled>Next: favorite models</button></div></div>
+      <div class="cs-setup-step cs-setup-models" data-role="setupModels" hidden>
+        <p class="cs-note">Step 2 of 2 · Favorite models</p><h2>Choose your favorite models</h2>
+        <p class="cs-note">Use the hearts to choose the models you want in your chat picker. You can change them later in Settings.</p>
+        <div data-role="setupModelPicker"></div>
+        <div class="cs-setup-footer"><button class="cs-btn" data-role="setupBack" type="button">Back</button><button class="cs-btn is-primary" data-role="setupFinish" type="button" disabled>Start chatting</button></div>
+      </div>`;
     const $ = role => body.querySelector(`[data-role="${role}"]`);
     $('connectAll').addEventListener('click', () => vscode.postMessage({ type: 'connectAllClis' }));
     $('checkConnections').addEventListener('click', () => vscode.postMessage({ type: 'checkCliConnections' }));
@@ -126,13 +132,25 @@
       else vscode.postMessage({ type: 'startOnboardingChat' });
     });
     $('setupLater').addEventListener('click', onClose);
-    $('setupContinue').addEventListener('click', onClose);
+    function showStep(models) {
+      $('setupConnections').hidden = models;
+      $('setupModels').hidden = !models;
+      onModelsStep?.(models ? $('setupModelPicker') : null);
+      body.scrollTop = 0;
+      if (models) $('setupModels').querySelector('input')?.focus();
+      else $('setupContinue').focus();
+    }
+    $('setupContinue').addEventListener('click', () => showStep(true));
+    $('setupBack').addEventListener('click', () => showStep(false));
+    $('setupFinish').addEventListener('click', onClose);
     return {
+      show: () => showStep(false),
       update(snapshot) {
         const providers = snapshot.providers || {};
         const total = PROVIDERS.length;
         const ready = PROVIDERS.filter(agent => providers[agent]?.enabled && connectionDetails(providers[agent]).ready).length;
         $('setupContinue').disabled = ready === 0 || snapshot.checking;
+        $('setupFinish').disabled = ready === 0 || snapshot.checking;
         $('connectAll').disabled = ready === total || snapshot.checking;
         $('checkConnections').disabled = snapshot.checking;
         $('checkConnections').querySelector('span').textContent = snapshot.checking ? 'Checking…' : 'Check connections';
@@ -147,6 +165,7 @@
           tag.textContent = details.tag;
           tag.classList.toggle('is-ok', connection.enabled && details.ready);
           card.querySelector('.cs-connection-note').textContent = details.description;
+          card.querySelector('.cs-connection-note').hidden = !details.description;
           card.append(connectionActions(agent, connection, vscode));
           return card;
         }));
@@ -209,6 +228,14 @@
             <button class="format-pill" data-format="auto" type="button">Auto</button>
           </div>
         </div>
+        <div class="cs-row">
+          <span class="cs-icon">${ICON.note}</span>
+          <div class="cs-info"><span class="cs-title">Chat names</span><span class="cs-desc">Agent: use the name the agent writes itself. Antigravity does; Claude Code and Codex don't for chats run here, so Groq names those. Groq: always name chats with Groq.</span></div>
+          <div class="chat-names-picker pill-track" role="radiogroup" aria-label="Chat names">
+            <button class="names-pill" data-names="agent" type="button" title="The agent's own title where it writes one, Groq otherwise">Agent</button>
+            <button class="names-pill" data-names="groq" type="button" title="Always name chats with Groq">Groq</button>
+          </div>
+        </div>
         <div class="cs-row cs-row-wrap">
           <span class="cs-icon">${ICON.chart}</span>
           <div class="cs-info"><span class="cs-title">Antigravity usage circle</span><span class="cs-desc">What the Gemini circle in the launcher draws. Hovering it still lists every group.</span></div>
@@ -228,6 +255,11 @@
           <span class="cs-icon">${ICON.up}</span>
           <div class="cs-info"><span class="cs-title">Automatically update idle CLIs</span><span class="cs-desc">Update connected providers silently when they have no active work and you have not typed with them for 30 seconds. Other providers can update while you chat. Turn off to update manually.</span></div>
           <button class="cs-switch" data-role="autoUpdateClis" role="switch" aria-checked="true" aria-label="Automatically update idle CLIs" type="button"></button>
+        </div>
+        <div class="cs-row">
+          <span class="cs-icon">${ICON.sound}</span>
+          <div class="cs-info"><span class="cs-title">Completion sound</span><span class="cs-desc">Play a chime when a reply finishes and nothing you queued is left to run. The notification while the IDE is in the background stays.</span></div>
+          <button class="cs-switch" data-role="completionSound" role="switch" aria-checked="true" aria-label="Completion sound" type="button"></button>
         </div>
         <div class="cs-row">
           <span class="cs-icon">${ICON.note}</span>
@@ -763,7 +795,9 @@
       } else if (action.kind === 'test') setRoutingStatus(`${SERVICES[action.provider]?.name || 'Service'} is working.`, 'ok');
       else setRoutingStatus('Saved.', 'ok');
     }
-    const $ = (role) => body.querySelector(`[data-role="${role}"]`);
+    // The same live picker visits onboarding Step 2, keeping its listeners, state and host updates intact.
+    const modelPickerCard = body.querySelector('[data-role="modelList"]').closest('.cs-card');
+    const $ = (role) => body.querySelector(`[data-role="${role}"]`) || modelPickerCard.querySelector(`[data-role="${role}"]`);
     // Setup belongs to General; Models contains only the favorite editors.
     const general = body.querySelector('[data-pane="general"]');
     general.prepend($('providers').previousElementSibling, $('providers'));
@@ -776,6 +810,8 @@
     updateAll.addEventListener('click', () => vscode.postMessage({ type: 'updateAllClis' }));
     $('checkCliConnections').before(updateAll);
     general.append($('modelList').closest('.cs-card'), body.querySelector('.cs-footer'));
+    const modelPickerHome = document.createComment('available models');
+    modelPickerCard.before(modelPickerHome);
     const ICONS = window.AGENT_ICONS || {};
     const MP = window.modelPrompts;
     const names = window.AGENT_NAMES || { claude: 'Claude Code', codex: 'Codex', gemini: 'Antigravity' };
@@ -784,6 +820,7 @@
     const pingLabel = $('pingClis').querySelector('span');
     const formatPills = body.querySelectorAll('.format-pill');
     const ringPills = body.querySelectorAll('.ring-source-pill');
+    const namesPills = body.querySelectorAll('.names-pill');
     const permissionPills = body.querySelectorAll('.permission-pill');
 
     function renderPermissionSupport(mode = 'fullAccess') {
@@ -980,7 +1017,7 @@
 
       const row = document.createElement('div');
       row.className = 'cs-row';
-      row.innerHTML = `<span class="cs-icon">${ICONS[agent] || ''}<i class="cs-dot${tone ? ` is-${tone}` : ''}"></i></span><div class="cs-info"><span class="cs-title-line"><span class="cs-title"></span><code class="cs-ver"></code><span class="cs-state${tone ? ` is-${tone}` : ''}"></span></span><span class="cs-models"></span></div><div class="cs-ractions"></div>`;
+      row.innerHTML = `<span class="cs-icon">${ICONS[agent] || ''}<i class="cs-dot${tone ? ` is-${tone}` : ''}"></i></span><div class="cs-info"><span class="cs-title-line"><span class="cs-title"></span><code class="cs-ver"></code></span><span class="cs-models"></span></div><span class="cs-state${tone ? ` is-${tone}` : ''}"></span><div class="cs-ractions"></div>`;
       row.querySelector('.cs-title').textContent = names[agent] || agent;
       const ver = row.querySelector('.cs-ver');
       ver.textContent = version ? `v${version}` : '';
@@ -1029,7 +1066,7 @@
         outcome.textContent = note.ok ? 'Update complete.' : note.text;
         card.append(outcome);
       }
-      if (connection && !connected) {
+      if (connection && !connected && details.description) {
         const hint = document.createElement('p');
         hint.className = 'cs-provider-note';
         hint.textContent = details.description;
@@ -1360,12 +1397,14 @@
       $('statusBar').setAttribute('aria-checked', String(Boolean(services.statusBar)));
       $('autoContinueOnLimit').setAttribute('aria-checked', String(services.autoContinueOnLimit !== false));
       $('autoUpdateClis').setAttribute('aria-checked', String(services.autoUpdateClis !== false));
+      $('completionSound').setAttribute('aria-checked', String(services.completionSound !== false));
       $('workContextIcons').setAttribute('aria-checked', String(services.workContextIcons === true));
       renderWarmup(services.sessionWarmup);
       renderCloudWarmup(services.cloudWarmup);
       renderLoops(services.compliance);
       const currentFormat = services.timeFormat || '24h';
       for (const pill of formatPills) pill.classList.toggle('active', pill.dataset.format === currentFormat);
+      for (const pill of namesPills) pill.classList.toggle('active', pill.dataset.names === (services.chatNames || 'agent'));
       for (const pill of ringPills) pill.classList.toggle('active', pill.dataset.ring === (services.antigravityRing || 'split'));
       for (const pill of permissionPills) pill.classList.toggle('active', pill.dataset.mode === currentPermMode);
       renderPermissionSupport(currentPermMode);
@@ -1391,6 +1430,13 @@
         for (const p of formatPills) p.classList.remove('active');
         pill.classList.add('active');
         vscode.postMessage({ type: 'setTimeFormat', format: pill.dataset.format });
+      });
+    }
+    for (const pill of namesPills) {
+      pill.addEventListener('click', () => {
+        for (const p of namesPills) p.classList.remove('active');
+        pill.classList.add('active');
+        vscode.postMessage({ type: 'setChatNames', value: pill.dataset.names });
       });
     }
     for (const pill of ringPills) {
@@ -1422,6 +1468,11 @@
       const enabled = $('autoUpdateClis').getAttribute('aria-checked') !== 'true';
       $('autoUpdateClis').setAttribute('aria-checked', String(enabled));
       vscode.postMessage({ type: 'setAutoUpdateClis', enabled });
+    });
+    $('completionSound').addEventListener('click', () => {
+      const enabled = $('completionSound').getAttribute('aria-checked') !== 'true';
+      $('completionSound').setAttribute('aria-checked', String(enabled));
+      vscode.postMessage({ type: 'setCompletionSound', enabled });
     });
     $('workContextIcons').addEventListener('click', () => {
       const enabled = $('workContextIcons').getAttribute('aria-checked') !== 'true';
@@ -1950,6 +2001,13 @@
 
     showTab('general');
     return { fleet, cliStatus, cliConnections, showTab, voice, micDevices, projectIcons, voiceDictionary, groqResult, routingResult, apiValue,
+      mountModelPicker(container) {
+        if (container) {
+          container.append(modelPickerCard);
+          vscode.postMessage({ type: 'requestCliStatus' });
+          if (!status.fetched.length && !status.modelsBusy) vscode.postMessage({ type: 'refreshModels' });
+        } else modelPickerHome.after(modelPickerCard);
+      },
       chatCost: usd => { $('apiValueChat').textContent = `Current chat ≈ ${window.apiValue.formatUsd(usd)}`; },
     };
   };

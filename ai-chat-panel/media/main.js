@@ -39,6 +39,8 @@
   const turnHost = () => (currentTurnEl?.isConnected ? currentTurnEl : transcriptEl);
   let openToolCard = null;
   let attachments = [];
+  const pendingAttachments = new Map();
+  let waitingToSend = null;
   let emptyMascot = null;
   const chatDrafts = new Map();
   const projectBar = document.createElement('div');
@@ -130,7 +132,8 @@
     const touched = new Set(chat?.touchedProjectIds || []);
     const running = new Set(railSessions.filter((session) => session.state && session.id !== railChatId).map((session) => session.projectId));
     const target = busy ? railWorking || railActiveProject : null;
-    const visible = [railProjects.find(project => project.id === railActiveProject), ...railPinnedProjects.map(id => railProjects.find(project => project.id === id))]
+    const recentIds = [...railSessions].sort((a, b) => (Date.parse(b.updatedAt) || 0) - (Date.parse(a.updatedAt) || 0)).map(session => session.projectId);
+    const visible = [...railPinnedProjects, railActiveProject, ...recentIds, ...railProjects.map(project => project.id)].map(id => railProjects.find(project => project.id === id))
       .filter((project, index, projects) => project && projects.findIndex(item => item?.id === project.id) === index).slice(0, 3);
     const items = visible.map((project) => {
       const active = project.id === railActiveProject;
@@ -271,6 +274,7 @@
     document.getElementById('loopsBtn')?.setAttribute('aria-expanded', String(modal.el.id === 'loopsModal'));
     document.getElementById('allProjectsBtn')?.setAttribute('aria-expanded', String(modal.el.id === 'projectsModal'));
     modal.el.hidden = false;
+    if (modal === settingsModal) chatSettings.mountModelPicker();
     if (modal === historyModal) renderHistory(historySessions);
     if (modal === projectModal) renderProjectGallery();
     modal.el.querySelector('.fs-modal-close').focus();
@@ -285,12 +289,12 @@
     if (el.hidden) return;
     el.querySelector('.history-card input, .project-gallery input')?.blur();
     el.hidden = true;
-    if (el.id === 'historyModal') historyModal.body.replaceChildren();
+    if (el.id === 'historyModal') { historyModal.body.replaceChildren(); reusableHistoryCards.clear(); }
     if (el.id === 'agentsModal') { agentPane.replaceChildren(); agentLog = null; }
     if (el.id === 'projectsModal') projectModal.body.querySelector('.project-gallery').replaceChildren();
     if (el.id === 'loopsModal') document.getElementById('loopsBtn')?.setAttribute('aria-expanded', 'false');
     if (el.id === 'projectsModal') document.getElementById('allProjectsBtn')?.setAttribute('aria-expanded', 'false');
-    if (el.id === 'cliSetupModal') vscode.postMessage({ type: 'completeCliSetup' });
+    if (el.id === 'cliSetupModal') { chatSettings.mountModelPicker(); vscode.postMessage({ type: 'completeCliSetup' }); }
     if (lastFocus && document.contains(lastFocus)) lastFocus.focus();
     else if (el.id === 'projectsModal') document.getElementById('allProjectsBtn')?.focus();
   }
@@ -391,7 +395,22 @@
   const clockParts = (extra) => ({ ...extra, hour: '2-digit', minute: '2-digit', ...(HOUR_CYCLE ? { hourCycle: HOUR_CYCLE } : {}) });
   function formatWhen(iso) {
     const date = new Date(iso);
-    return Number.isNaN(date.getTime()) ? '' : date.toLocaleString(TIME_PREFS.locale, clockParts({ month: 'short', day: 'numeric' }));
+    return Number.isNaN(date.getTime()) ? '' : window.chatTime.formatDate(date, TIME_PREFS.locale, clockParts({ month: 'short', day: 'numeric' }));
+  }
+  function quotaForEntry(option, fallbackAgent) {
+    const agent = option?.agent || fallbackAgent;
+    if (!option) return lastQuotas[agent] || null;
+    if (agent === 'gemini') {
+      if (/argon/i.test(option.model || option.id || '')) return lastQuotas.antigravityArgon || lastQuotas.gemini || null;
+      if ((option.company && option.company !== 'Google') || /^(?:gemini:)?(?:claude|gpt)-/i.test(option.id || option.model || '')) return lastQuotas.antigravityClaudeGpt || lastQuotas.gemini || null;
+    }
+    if (agent === 'claude' && option.brand === 'opus') return lastQuotas.opus || lastQuotas.claude || null;
+    return lastQuotas[agent] || null;
+  }
+  function queuedTurnBlocked(entry) {
+    const agent = optionFor(entry?.modelId)?.agent;
+    return !entry?.scheduled && schedulerTasks.some(task => task.status === 'pending' && task.chatId === currentChatId && task.model === agent
+      && (agent !== 'gemini' || !task.modelId || !entry?.modelId || task.modelId === entry.modelId) && resetWaiting(task));
   }
   // When a task will actually fire: its fixed time, else its model's next quota reset.
   function fireTimeOf(task) {
@@ -399,20 +418,51 @@
     // Keep the reset this task was scheduled for, even after the provider starts a new window.
     const saved = Date.parse(task.notBefore);
     if (Number.isFinite(saved)) return saved;
-    const resetsAt = lastQuotas[task.model]?.resetsAt;
+    const resetsAt = quotaForEntry(optionFor(task.modelId), task.model)?.resetsAt;
     return typeof resetsAt === 'number' ? resetsAt * 1000 : null;
   }
   function resetWaiting(task) {
-    return task?.dispatchTrigger === 'quota-reset' && (Date.parse(task.notBefore) > Date.now() || lastQuotas[task.model]?.remaining === 0 || lastQuotas[task.model]?.secondary?.remaining === 0);
+    const quota = quotaForEntry(optionFor(task?.modelId), task?.model);
+    return task?.dispatchTrigger === 'quota-reset' && (Date.parse(task.notBefore) > Date.now() || quota?.remaining === 0 || quota?.secondary?.remaining === 0);
   }
   function resetLabel(task) {
     const at = fireTimeOf(task);
-    return at && at > Date.now() ? `at reset · ${formatCountdown(at - Date.now())}` : resetWaiting(task) ? 'waiting for usage' : 'ready · sends when chat is idle';
+    return at && at > Date.now() ? `at reset · ${formatCountdown(at - Date.now())}` : resetWaiting(task) ? 'waiting for usage' : '';
+  }
+  function scheduledLabel(task) {
+    if (dueNow(task)) return '';
+    const at = fireTimeOf(task);
+    return task.dispatchTrigger === 'quota-reset' ? resetLabel(task) : at ? formatWhen(at) : '';
+  }
+  // A scheduled prompt whose time has come only waits for its chat's turn: that is a queued prompt, not a third state.
+  function dueNow(task) {
+    return task.dispatchTrigger === 'quota-reset' ? !resetWaiting(task) && !(fireTimeOf(task) > Date.now()) : !(fireTimeOf(task) > Date.now());
+  }
+  let schedulerQueueLoaded = false;
+  let isChatSwitching = false;
+  let chatLoadingQueueCount = (() => {
+    if (window.INITIAL_QUEUE_LOADING === null) return null;
+    if (typeof window.INITIAL_QUEUE_LOADING === 'number') return Math.max(0, window.INITIAL_QUEUE_LOADING);
+    try { return Math.min(3, Math.max(0, Number(vscode.getState()?.queueSkeletonCount) || 0)); } catch { return 0; }
+  })();
+  // Placeholder rows only for prompts known to be on their way. An unknown count (null) shows nothing: a "Loading prompts…" strip
+  // that may turn out to hold no prompts at all is just noise.
+  const loadingQueueCount = () => (chatLoadingQueueCount === null ? 0 : Math.min(3, Math.max(0, Number(chatLoadingQueueCount) || 0)));
+  function persistQueueHint(count) {
+    try {
+      const next = Math.min(3, Math.max(0, count));
+      const state = vscode.getState() || {};
+      if ((state.queueSkeletonCount || 0) !== next) vscode.setState({ ...state, queueSkeletonCount: next });
+    } catch {}
   }
   function turnQueueTitle() {
-    const scheduled = scheduledHere();
-    const ready = scheduled.filter(task => task.dispatchTrigger === 'quota-reset' ? !resetWaiting(task) && fireTimeOf(task) <= Date.now() : fireTimeOf(task) <= Date.now()).length;
-    return [turnQueue.length && `${turnQueue.length}${queuePaused ? ' queued · paused' : ' queued · sends after this turn'}`, scheduled.length - ready && `${scheduled.length - ready} scheduled`, ready && `${ready} ready`].filter(Boolean).join(' · ');
+    const loading = loadingQueueCount();
+    const scheduled = isChatSwitching ? [] : scheduledHere();
+    const queued = isChatSwitching ? [] : turnQueue;
+    const due = scheduled.filter(dueNow).length, waiting = scheduled.length - due;
+    const parts = [queued.length + due && `${queued.length + due}${queuePaused ? ' queued · paused' : ' queued · sends after this turn'}`, waiting && `${waiting} scheduled`].filter(Boolean);
+    if (loading) parts.push(parts.length ? 'loading scheduled…' : (isChatSwitching ? 'Loading prompts…' : 'Loading scheduled prompts…'));
+    return parts.join(' · ');
   }
   function formatCountdown(ms) {
     const s = Math.max(0, Math.floor(ms / 1000));
@@ -461,14 +511,15 @@
     lines.forEach((text, i) => { const el = queueCountdown.children[i]; if (el.textContent !== text) el.textContent = text; });
     queueCountdown.title = next ? formatCountdown(next - Date.now()) : '';
     document.querySelectorAll('.turn-queue-item.is-scheduled').forEach((row) => { // the strip's own countdowns
-      const task = schedulerTasks.find((item) => item.id === row.dataset.taskId); const at = task && fireTimeOf(task);
-      if (task) renderQueueMark(row, true);
-      if (task?.dispatchTrigger === 'quota-reset') row.querySelector('.turn-queue-when').textContent = resetLabel(task);
+      const task = schedulerTasks.find((item) => item.id === row.dataset.taskId);
+      if (!task) return;
+      renderQueueMark(row, true);
+      const label = scheduledLabel(task), text = row.querySelector('.turn-queue-when-text');
+      if (text.textContent !== label) text.textContent = label;
     });
     document.querySelectorAll('.turn-queue-item .is-primary').forEach(button => {
       const row = button.closest('.turn-queue-item'), entry = row.queueEntry;
-      const agent = optionFor(entry?.modelId)?.agent;
-      button.disabled = row.classList.contains('is-scheduled') ? resetWaiting(entry) : !entry?.scheduled && schedulerTasks.some(task => task.status === 'pending' && task.chatId === currentChatId && task.model === agent && resetWaiting(task));
+      button.disabled = row.classList.contains('is-scheduled') ? resetWaiting(entry) : queuedTurnBlocked(entry);
     });
     document.querySelectorAll('.queue-card .queue-take[data-reset-send]').forEach(button => {
       button.disabled = resetWaiting(schedulerTasks.find(task => task.id === button.dataset.resetSend));
@@ -476,13 +527,14 @@
     const heading = document.querySelector('.turn-queue-head > span');
     if (heading && heading.textContent !== turnQueueTitle()) heading.textContent = turnQueueTitle();
     queueBtn.classList.toggle('is-pill', Boolean(next));
+    renderSchedPill(); // refresh countdowns; close only when no chats remain
   }
   function renderQueueButton() {
     const count = activeTasks().length;
     queueBtn.hidden = count === 0;
     queueBadge.textContent = String(count);
     queueBadge.dataset.count = String(count);
-    queueBtn.title = `${count} scheduled prompt${count === 1 ? '' : 's'}`;
+    if (!queueBtn.classList.contains('is-sched-open')) queueBtn.title = `${count} scheduled prompt${count === 1 ? '' : 's'}`;
     tickQueueCountdown();
     if (count && !queueTick) queueTick = setInterval(tickQueueCountdown, 1000);
     if (!count && queueTick) { clearInterval(queueTick); queueTick = null; }
@@ -654,6 +706,7 @@
     body: settingsModal.body,
     onOpenSetupGuide: () => {
       closeModal(settingsModal.el);
+      cliSetup.show();
       openModal(cliSetupModal);
       vscode.postMessage({ type: 'requestCliConnections' });
     },
@@ -702,6 +755,7 @@
   const cliSetup = window.initCliSetup({
     vscode,
     body: cliSetupModal.body,
+    onModelsStep: container => chatSettings.mountModelPicker(container),
     onClose: () => closeModal(cliSetupModal.el),
     onOpenSettings: (tab) => {
       closeModal(cliSetupModal.el);
@@ -767,27 +821,34 @@
     preferred: window.SCHEDULE_MODE, // the mode the last scheduled prompt used (saved by the host)
     // The chosen model's two limits, for the usage-reset mode: what it waits for and when that comes.
     usage: () => {
-      const quota = lastQuotas[scheduleModel()];
+      const quota = quotaForEntry(activeAgent === 'auto' ? null : optionFor(activeModelId), scheduleModel());
       return { windows: [
         { key: '5h', name: '5h', remaining: quota?.remaining ?? null, resetsAt: quota?.resetsAt ?? null },
         { key: '7d', name: '7d', remaining: quota?.secondary?.remaining ?? null, resetsAt: quota?.secondary?.resetsAt ?? null },
       ] };
     },
-    onChange: () => { scheduleChoice = true; refreshScheduleDefault(); },
+    onChange: (nextMode = scheduleTimer.mode) => {
+      scheduleChoice = nextMode !== null;
+      if (editingQueue) editingQueue.scheduleTouched = true;
+      refreshScheduleDefault();
+      renderComposerState();
+      if (nextMode === null) promptInput.focus();
+    },
   });
   const countdownClock = (ms) => {
     const s = Math.max(0, Math.ceil(ms / 1000));
     const pad = (n) => String(n).padStart(2, '0');
     return s >= 3600 ? `${Math.floor(s / 3600)}:${pad(Math.floor((s % 3600) / 60))}:${pad(s % 60)}` : `${Math.floor(s / 60)}:${pad(s % 60)}`;
   };
-  // Beside its icon the clock shows what the mode holds: the countdown to the reset it waits for, the delay, the day
-  // and time. Off, it shows the countdown to the next of this chat's already sent scheduled prompts, if any.
+  // Beside its icon the clock shows only what scheduling mode is active for the message currently being composed
+  // (reset countdown, timer delay, or calendar date/time); when off, already-sent prompts do not echo here.
   function renderScheduleTime() {
     let text = '';
-    if (scheduleTimer.mode) text = scheduleTimer.short();
-    else {
-      const sent = activeTasks().filter((task) => task.status === 'pending' && task.chatId === currentChatId && task.model === scheduleModel()).map(fireTimeOf).filter(at => at > Date.now());
-      if (sent.length) text = countdownClock(Math.min(...sent) - Date.now());
+    if (scheduleTimer.mode) {
+      text = scheduleTimer.short();
+      if (!text && scheduleTimer.mode === 'reset' && editingQueue?.taskId && !editingQueue.scheduleTouched && editingQueue.notBefore > Date.now()) {
+        text = countdownClock(editingQueue.notBefore - Date.now());
+      }
     }
     if (scheduleTime.textContent !== text) scheduleTime.textContent = text;
     scheduleBtn.classList.toggle('has-time', Boolean(text));
@@ -832,13 +893,20 @@
   // The clock still overrides (send anyway, or schedule while usage is left) until the model or chat changes.
   const limitHitAgents = new Set();
   let scheduleChoice = null; // the clock's own pick; null follows the model's usage
-  function isOutOfUsage(agent) {
-    const remaining = lastQuotas[agent]?.remaining;
-    return limitHitAgents.has(agent) || (typeof remaining === 'number' && remaining < 1);
+  function activeModelOption() { return activeAgent === 'auto' ? null : optionFor(activeModelId); }
+  function limitScope(agent, modelId) { return agent === 'gemini' && modelId ? `gemini:${modelId}` : agent; }
+  function modelIdForLabel(agent, label) {
+    return (label && [...MODEL_OPTIONS, ...availableModels].find((option) => option.agent === agent && option.label === label)?.id) || null;
+  }
+  function isOutOfUsage(agent, option = activeModelOption()) {
+    const quota = quotaForEntry(option, agent);
+    const scope = limitScope(agent, option?.id);
+    const hit = limitHitAgents.has(agent) || (scope !== agent && limitHitAgents.has(scope));
+    return hit || (typeof quota?.remaining === 'number' && quota.remaining < 1);
   }
   /** The usage display shows real room left for this provider (a few percent, not a rounding leftover). */
-  function hasHeadroom(agent) {
-    const remaining = lastQuotas[agent]?.remaining;
+  function hasHeadroom(agent, option = null) {
+    const remaining = quotaForEntry(option, agent)?.remaining;
     return typeof remaining === 'number' && remaining >= 5;
   }
   // A reply that *is* the CLI's limit notice (one or two short lines), not an answer that happens to
@@ -849,7 +917,7 @@
     setScheduleArmed(scheduleChoice ?? outOfUsage, { outOfUsage: scheduleChoice === null && outOfUsage });
   }
   // Each click is the next mode: the one last used, the other two in turn, then off (send as usual).
-  scheduleBtn.addEventListener('click', () => { scheduleChoice = scheduleTimer.advance() !== null; refreshScheduleDefault(); promptInput.focus(); });
+  scheduleBtn.addEventListener('click', () => { scheduleChoice = scheduleTimer.advance() !== null; if (editingQueue) editingQueue.scheduleTouched = true; refreshScheduleDefault(); promptInput.focus(); });
   setScheduleArmed(false);
 
   function schedulePrompt(text, queuedEdit = null) {
@@ -975,26 +1043,33 @@
 
   let closeImageMenu = null;
   function openImageContextMenu(x, y, attachment, imageEl, onRename, onMarkup = null) {
+    const entries = [
+      { icon: COPY_ICON, text: 'Copy', action: 'copy', run: () => { void copyImageToClipboard(attachment, imageEl); } },
+      { icon: DOWNLOAD_ICON, text: 'Download', action: 'download', run: () => downloadAttachment(attachment) },
+      { icon: PENCIL_SVG, text: 'Rename', action: 'rename', run: () => onRename?.() },
+    ];
+    if (onMarkup) entries.push({ icon: MARKUP_ICON, text: 'Mark up', action: 'markup', run: onMarkup });
+    showContextMenu(x, y, `Actions for ${shownName(attachment?.name) || 'image'}`, entries);
+  }
+
+  // One small glass menu for every right-click: entries are { icon, text, action, hint?, run }. The first entry has focus.
+  function showContextMenu(x, y, label, entries) {
     closeImageMenu?.();
     const menu = document.createElement('div');
     menu.className = 'image-context-menu';
     menu.setAttribute('role', 'menu');
-    menu.setAttribute('aria-label', `Actions for ${shownName(attachment?.name) || 'image'}`);
-    const makeItem = (icon, text, action, onClick) => {
+    menu.setAttribute('aria-label', label);
+    const items = entries.map(({ icon, text, action, hint, run }) => {
       const btn = document.createElement('button');
       btn.type = 'button';
       btn.className = 'image-context-item';
       btn.dataset.action = action;
       btn.setAttribute('role', 'menuitem');
-      btn.innerHTML = `${icon}<span>${text}</span>`;
-      btn.addEventListener('click', (event) => { event.stopPropagation(); closeImageMenu?.(); onClick(); });
+      btn.innerHTML = `${icon}<span>${escapeHtml(text)}</span>${hint ? `<kbd class="image-context-hint">${escapeHtml(hint)}</kbd>` : ''}`;
+      btn.addEventListener('click', (event) => { event.stopPropagation(); closeImageMenu?.(); run(); });
       return btn;
-    };
-    const copyBtn = makeItem(COPY_ICON, 'Copy', 'copy', () => { void copyImageToClipboard(attachment, imageEl); });
-    const downloadBtn = makeItem(DOWNLOAD_ICON, 'Download', 'download', () => downloadAttachment(attachment));
-    const renameBtn = makeItem(PENCIL_SVG, 'Rename', 'rename', () => onRename?.());
-    const items = [copyBtn, downloadBtn, renameBtn];
-    if (onMarkup) items.push(makeItem(MARKUP_ICON, 'Mark up', 'markup', onMarkup));
+    });
+    const copyBtn = items[0];
     menu.append(...items);
     document.body.appendChild(menu);
     const rect = menu.getBoundingClientRect();
@@ -1105,6 +1180,11 @@
         markBtn.addEventListener('click', (event) => { event.stopPropagation(); close(); extra.markup(); });
         toolbar.append(markBtn);
       }
+      if (extra.openPath) {
+        const openBtn = lightboxButton('image-lightbox-open', `Open ${caption} in editor`, OPEN_ICON);
+        openBtn.addEventListener('click', (event) => { event.stopPropagation(); vscode.postMessage({ type: 'openFile', path: extra.openPath }); });
+        toolbar.append(openBtn);
+      }
       toolbar.append(downloadBtn, closeBtn);
     } else {
       box.classList.add('is-pdf');
@@ -1134,6 +1214,11 @@
   }
   function renderAttachments() {
     attachmentStrip.replaceChildren(...attachments.map((attachment) => attachmentChip(attachment, () => {
+      if (attachment.pending) {
+        const pending = pendingAttachments.get(attachment.requestId);
+        pending?.finish(true);
+        URL.revokeObjectURL(attachment.uri);
+      }
       vscode.postMessage({ type: 'removeAttachment', path: attachment.path }); attachments = attachments.filter((item) => item.path !== attachment.path); renderAttachments();
     })));
     saveQueueEdit();
@@ -1183,7 +1268,8 @@
     const meta = document.createElement('span'); meta.className = 'attachment-meta';
     const withPx = (dims) => (dims ? `${dims} px` : '');
     const imageMeta = () => `${withPx(attachment.dims)}${attachment.markup ? `${attachment.dims ? ' · ' : ''}marked up` : ''}`;
-    meta.textContent = isImage ? imageMeta() : formatSize(attachment.size);
+    meta.textContent = attachment.pending ? 'Attaching…' : isImage ? imageMeta() : formatSize(attachment.size);
+    if (attachment.pending) { chip.classList.add('is-attaching'); chip.setAttribute('aria-busy', 'true'); }
     label.append(name, meta);
     if (attachment.markup) chip.classList.add('is-marked');
     let remove = null;
@@ -1215,7 +1301,7 @@
           meta.textContent = `${result.pages} ${result.pages === 1 ? 'page' : 'pages'} · ${formatSize(attachment.size)}`;
         }).catch(() => { meta.textContent = `${formatSize(attachment.size)} · Preview unavailable`; });
       } else image.src = attachment.uri;
-      if (!isPdf && !attachment.dims) image.addEventListener('load', () => { attachment.dims = `${image.naturalWidth}×${image.naturalHeight}`; meta.textContent = imageMeta(); }, { once: true });
+      if (!isPdf && !attachment.dims) image.addEventListener('load', () => { attachment.dims = `${image.naturalWidth}×${image.naturalHeight}`; if (!attachment.pending) meta.textContent = imageMeta(); }, { once: true });
       chip.appendChild(image);
       chip.classList.add('is-previewable');
       chip.title = `Preview ${shownName(attachment.name)}`;
@@ -1249,7 +1335,7 @@
     if (onRemove) {
       name.title = 'Click to rename';
       name.classList.add('is-renamable');
-      name.addEventListener('click', (event) => { event.stopPropagation(); renameAttachmentInline(name, attachment, syncChip); });
+      name.addEventListener('click', (event) => { event.stopPropagation(); if (!attachment.pending) renameAttachmentInline(name, attachment, syncChip); });
       remove = document.createElement('button'); remove.type = 'button'; remove.className = 'attachment-remove'; remove.textContent = '×'; remove.title = `Remove ${shownName(attachment.name)}`; remove.setAttribute('aria-label', remove.title);
       remove.addEventListener('click', (event) => { event.stopPropagation(); onRemove(); });
       remove.addEventListener('keydown', (event) => event.stopPropagation());
@@ -1278,11 +1364,32 @@
   function readAttachment(file) {
     if (!file) return;
     const chatId = currentChatId;
+    const requestId = crypto.randomUUID();
+    const preview = { requestId, path: `pending:${requestId}`, name: file.name || 'image.png', mime: file.type, size: file.size, uri: URL.createObjectURL(file), pending: true };
+    let resolve;
+    const done = new Promise(finish => { resolve = finish; });
+    const pending = { chatId, preview, done, finish(ok) { clearTimeout(pending.timer); pendingAttachments.delete(requestId); resolve(ok); } };
+    pending.timer = setTimeout(() => attachmentFinished(requestId, null, 'Attaching timed out. Please paste the image again.'), 60000);
+    pendingAttachments.set(requestId, pending);
+    attachments.push(preview);
+    renderAttachments(); // paint and start the dock animation before decoding or resizing
     void capImage(file).then((image) => {
       const reader = new FileReader();
-      reader.onload = () => vscode.postMessage({ type: 'attachmentData', chatId, name: file.name || 'image.png', mime: file.type || 'application/octet-stream', data: reader.result });
+      reader.onload = () => { if (pendingAttachments.has(requestId)) vscode.postMessage({ type: 'attachmentData', requestId, chatId, name: file.name || 'image.png', mime: file.type || 'application/octet-stream', data: reader.result }); };
+      reader.onerror = () => attachmentFinished(requestId, null, 'Could not read the attachment. Please paste it again.');
       reader.readAsDataURL(image);
-    });
+    }).catch(() => attachmentFinished(requestId, null, 'Could not prepare the attachment. Please paste it again.'));
+  }
+  function attachmentFinished(requestId, attachment, error) {
+    const pending = pendingAttachments.get(requestId);
+    if (!pending) { if (attachment) vscode.postMessage({ type: 'removeAttachment', path: attachment.path }); return; }
+    const files = pending.chatId === currentChatId ? attachments : chatDrafts.get(pending.chatId)?.files;
+    const at = files?.findIndex(file => file.requestId === requestId) ?? -1;
+    if (at >= 0) files.splice(at, 1, ...(attachment ? [attachment] : []));
+    URL.revokeObjectURL(pending.preview.uri);
+    pending.finish(Boolean(attachment));
+    if (pending.chatId === currentChatId) renderAttachments();
+    if (error) showToast(error, { error: true });
   }
   attachBtn.addEventListener('click', () => vscode.postMessage({ type: 'pickAttachments', chatId: currentChatId }));
   promptInput.addEventListener('paste', (event) => { const files = [...(event.clipboardData?.items || [])].filter(item => item.kind === 'file'); if (files.length) { event.preventDefault(); for (const item of files) readAttachment(item.getAsFile()); } });
@@ -1570,7 +1677,8 @@
     modelPickerBtn.dataset.brand = brandOf(option);
     modelPickerBtn.querySelector('.model-picker-icon').innerHTML = iconFor(brandOf(option));
     renderRouting();
-    if (scheduleChoice === false || (editingQueue?.taskId && optionFor(editingQueue.turn.modelId)?.agent !== option.agent && scheduleTimer.mode === 'reset')) scheduleChoice = null;
+    if (editingQueue && editingQueue.turn.modelId !== option.id) editingQueue.modelTouched = true;
+    if (scheduleChoice === false || (editingQueue?.taskId && scheduleTimer.mode === 'reset' && (optionFor(editingQueue.turn.modelId)?.agent !== option.agent || (option.agent === 'gemini' && editingQueue.turn.modelId !== option.id)))) scheduleChoice = null;
     refreshScheduleDefault(); // on if this model is out of usage; the placeholder names it
     if (slashMenu && !slashMenu.hidden) updateSlashMenu();
     try { vscode.setState({ ...(vscode.getState() || {}), modelId: option.id }); } catch {}
@@ -1661,41 +1769,54 @@
     }
     const option = optionFor(activeModelId);
     if (option) {
-        // The family word hides first when the composer is narrow; the icon already identifies it.
-        const [family, ...rest] = option.label.split(' ');
-        const label = modelPickerBtn.querySelector('.model-picker-label');
-        label.replaceChildren();
-        if (rest.length) { const span = document.createElement('span'); span.className = 'model-picker-family'; span.textContent = `${family} `; label.append(span, rest.join(' ')); }
-        else label.textContent = option.label;
-        modelPickerBtn.querySelector('.model-picker-icon').innerHTML = iconFor(brandOf(option));
-        modelPickerBtn.title = `Model: ${option.label}`;
+      // Hide a redundant family prefix or trailing pool tag when narrow; never hide the model's own name.
+      const label = modelPickerBtn.querySelector('.model-picker-label');
+      const familyMatch = /^((?:Claude|Gemini|Codex|Copilot|GPT(?:-[\w.]+)?)\s+)(.+)$/i.exec(option.label);
+      const qualifierMatch = !familyMatch && /^(.+?)(\s+\([^)]+\))$/.exec(option.label);
+      label.replaceChildren();
+      if (familyMatch || qualifierMatch) {
+        const span = document.createElement('span');
+        span.className = 'model-picker-family';
+        span.textContent = familyMatch ? familyMatch[1] : qualifierMatch[2];
+        label.append(...(familyMatch ? [span, familyMatch[2]] : [qualifierMatch[1], span]));
+      } else label.textContent = option.label;
+      modelPickerBtn.querySelector('.model-picker-icon').innerHTML = iconFor(brandOf(option));
+      modelPickerBtn.title = `Model: ${option.label}`;
     }
   }
 
   function placeModelMenu() {
     const rect = modelPickerBtn.getBoundingClientRect();
-    const composerTop = modelPickerBtn.closest('.composer').getBoundingClientRect().top;
+    const composer = modelPickerBtn.closest('.composer').getBoundingClientRect();
     const css = getComputedStyle(modelMenuStage);
     const fillet = parseFloat(css.getPropertyValue('--menu-fillet'));
     // The seam sits 1px into the composer, over its top hairline; the root hangs below it, clipped.
-    modelMenuStage.style.bottom = `${window.innerHeight - composerTop - 1 - parseFloat(css.getPropertyValue('--menu-root'))}px`;
-    modelMenuStage.style.right = `${Math.max(10, window.innerWidth - rect.right) - fillet}px`;
-    // A picker that sits left of centre in a narrow panel would push the menu off the left edge; keep 10px.
-    const overflow = 10 - (modelMenuStage.getBoundingClientRect().left + fillet);
-    if (overflow > 0) modelMenuStage.style.right = `${parseFloat(modelMenuStage.style.right) - overflow}px`;
-    const menuLeft = modelMenuStage.getBoundingClientRect().left + fillet;
+    modelMenuStage.style.bottom = `${window.innerHeight - composer.top - 1 - parseFloat(css.getPropertyValue('--menu-root'))}px`;
+    // Centre above the selected model, clamping only to keep the menu inside the chat column.
+    const width = modelMenu.offsetWidth;
+    const menuLeft = Math.max(10, Math.min(rect.left + rect.width / 2 - width / 2, Math.min(composer.right, window.innerWidth - 10) - width));
+    modelMenuStage.style.right = `${window.innerWidth - menuLeft - width - fillet}px`;
     modelMenuStage.style.setProperty('--bud-x', `${rect.left + rect.width / 2 - menuLeft}px`);
   }
   const menuOpen = () => modelMenu.classList.contains('is-open');
+  // While the menu grows or sinks it carries its own backing (see .is-moving in style.css); the island glass catches up after.
+  let movingTimer = 0;
+  function markMoving() {
+    modelMenu.classList.add('is-moving');
+    clearTimeout(movingTimer);
+    movingTimer = setTimeout(() => modelMenu.classList.remove('is-moving'), 450);
+  }
   function openModelMenu() {
     renderModelMenu();
     placeModelMenu();
+    markMoving();
     modelMenu.classList.add('is-open');
     modelPickerBtn.setAttribute('aria-expanded', 'true');
     (modelMenu.querySelector('.model-option[aria-selected="true"]') || modelMenu.querySelector('.model-option'))?.focus({ preventScroll: true });
   }
   function closeModelMenu({ refocus = false } = {}) {
     if (!menuOpen()) return;
+    markMoving();
     modelMenu.classList.remove('is-open');
     modelPickerBtn.setAttribute('aria-expanded', 'false');
     if (refocus) modelPickerBtn.focus();
@@ -1737,35 +1858,40 @@
     selectModel(option.id);
   });
 
-  // P17-G: the composer is a squircle whenever the text has a newline or would
-  // wrap inside the one-line pill. While already a squircle, the wrap check is
-  // measured at the pill's (narrower) text width without dropping the class, so
-  // layout never flip-flops per keystroke and the lift animation never replays.
+  // P17-G: the composer is a squircle whenever the text has a newline, would
+  // wrap inside the one-line pill, or the pill's text column is too narrow to
+  // type in comfortably. While already a squircle, checks use the pill's text
+  // width (with hysteresis) so layout never flip-flops and lift never replays.
   const composerEl = document.querySelector('.composer');
   const composerActions = composerEl.querySelector('.composer-actions');
+  const MIN_PILL_TEXT_PX = 104;
   let savedDraft = null;
   function saveDraft(userInput = false) {
     if (!currentChatId) return;
     const text = editingQueue ? composerDraft?.text || '' : promptInput.value;
-    const files = (editingQueue ? composerDraft?.files || [] : attachments).map((file) => file.path);
+    const files = (editingQueue ? composerDraft?.files || [] : attachments).filter(file => !file.pending).map((file) => file.path);
     const signature = JSON.stringify([currentChatId, text, files]);
     if (signature === savedDraft && !userInput) return;
     savedDraft = signature;
     vscode.postMessage({ type: 'saveDraft', chatId: currentChatId, text, attachments: files, ...(userInput && text.length ? { userInput: true } : {}) });
   }
-  function autoGrow(event) {
-    if (event?.type === 'input') vscode.postMessage({ type: 'composerActivity' });
-    saveDraft(event?.type === 'input' && !editingQueue);
+  function pillTextWidth() {
+    if (!composerEl.clientWidth) return Infinity;
+    // 16px horizontal padding + 8px column gaps + 2px #attachBtn right margin.
+    return Math.max(0, composerEl.clientWidth - 26 - attachBtn.offsetWidth - composerActions.offsetWidth);
+  }
+  function syncComposerShape() {
     const value = promptInput.value;
-    // Empty is always the one-line pill. Measuring scrollHeight here would size
-    // the box to the placeholder, which wraps whenever the pill is a little too
-    // narrow for it, giving a two-line-tall pill: neither pill nor squircle.
-    if (!value) { composerEl.classList.remove('is-multiline'); promptInput.style.height = ''; return; }
-    let multiline = value.includes('\n');
-    if (!multiline && value) {
-      if (composerEl.classList.contains('is-multiline')) {
-        promptInput.style.width = `${promptInput.offsetWidth - attachBtn.offsetWidth - composerActions.offsetWidth - 8}px`;
-      }
+    const threshold = composerEl.classList.contains('is-multiline') ? MIN_PILL_TEXT_PX + 12 : MIN_PILL_TEXT_PX;
+    const narrow = pillTextWidth() < threshold;
+    if (!value) {
+      composerEl.classList.toggle('is-multiline', narrow);
+      promptInput.style.height = '';
+      return;
+    }
+    let multiline = narrow || value.includes('\n');
+    if (!multiline) {
+      if (composerEl.classList.contains('is-multiline')) promptInput.style.width = `${pillTextWidth()}px`;
       promptInput.style.height = 'auto';
       multiline = promptInput.scrollHeight > 32;
       promptInput.style.width = '';
@@ -1774,8 +1900,18 @@
     promptInput.style.height = 'auto';
     promptInput.style.height = `${Math.min(promptInput.scrollHeight, 140)}px`;
   }
+  function autoGrow(event) {
+    if (event?.type === 'input') vscode.postMessage({ type: 'composerActivity' });
+    saveDraft(event?.type === 'input' && !editingQueue);
+    syncComposerShape();
+  }
   promptInput.addEventListener('input', autoGrow);
-  window.addEventListener('resize', autoGrow);
+  window.addEventListener('resize', syncComposerShape);
+  if (typeof ResizeObserver === 'function') {
+    const composerResize = new ResizeObserver(syncComposerShape);
+    composerResize.observe(composerEl);
+    composerResize.observe(composerActions);
+  }
 
   // ---------- P17-F: Stop, in-session turn queue, Steer Now ----------
   // Idle: send arrow. Busy + empty composer: the arrow gives way to a crimson
@@ -1798,52 +1934,111 @@
   let queuePaused = false;
   let awaitingInterruptAck = false; // the host's turn_complete for a turn this window already closed out
   let turnQueue = []; // { id, text, modelId, attachments }
+  let queueOrder = []; // the strip's one list, as the user dragged it: "turn:<id>" / "scheduled:<id>" keys
+  let pendingQueueOrder = null; // keep the drop visible through intermediate host snapshots
+  const pendingQueueEdits = new Map();
+  function receiveQueueTurns(turns, chatId) {
+    const result = (turns || []).slice();
+    for (const [key, pending] of pendingQueueEdits) {
+      if (pending.chatId !== chatId) continue;
+      const at = result.findIndex(turn => turn.id === pending.turn.id);
+      if (at >= 0 && result[at].clientEditId === pending.turn.clientEditId) pendingQueueEdits.delete(key);
+      else if (at >= 0) result[at] = { ...result[at], ...pending.turn, editing: pending.editing };
+      else result.push({ ...pending.turn, queued: true, editing: pending.editing });
+    }
+    return result;
+  }
+  function receiveQueueOrder(order) {
+    const received = Array.isArray(order) ? order : [];
+    if (pendingQueueOrder?.chatId !== currentChatId) pendingQueueOrder = null;
+    if (pendingQueueOrder && received.join() !== pendingQueueOrder.order.join()) queueOrder = pendingQueueOrder.order;
+    else { queueOrder = received; pendingQueueOrder = null; }
+  }
   let composerDraft = null;
-  function saveQueueEdit(finish = false) {
+  function saveQueueEdit(finish = false, { submit = false } = {}) {
+    if (attachments.some(file => file.pending)) return;
     if (!editingQueue) return;
     const turn = { ...editingQueue.turn, text: promptInput.value, modelId: pendingModelId || activeModelId, attachments: attachments.map(file => file.path), files: attachments.slice() };
     if (!editingQueue.taskId) {
       const original = turnQueue.find(item => item.id === turn.id);
       if (original) Object.assign(original, turn);
     }
-    queueAction(editingQueue.taskId ? 'saveScheduledDraft' : 'editQueuedTurn', { chatId: editingQueue.chatId, taskId: editingQueue.taskId, turn, editing: !finish });
+    const clearReset = Boolean(finish && editingQueue.wasQuotaReset && (editingQueue.chooseModel || editingQueue.modelTouched) && !scheduleArmed);
+    let nextSchedule = null;
+    if (finish && editingQueue.taskId && editingQueue.scheduleTouched && scheduleArmed) {
+      const at = scheduleTimer.resolve();
+      nextSchedule = at ? { dispatchTrigger: 'fixed-time', dispatchTime: new Date(at).toISOString() } : { dispatchTrigger: 'quota-reset', resetWindow: scheduleTimer.resetWindow };
+      if (submit && scheduleTimer.mode) {
+        scheduleTimer.setPreferred(scheduleTimer.mode);
+        vscode.postMessage({ type: 'scheduleMode', mode: scheduleTimer.mode });
+      }
+    }
+    queueAction(editingQueue.taskId ? 'saveScheduledDraft' : 'editQueuedTurn', {
+      chatId: editingQueue.chatId,
+      taskId: editingQueue.taskId,
+      turn,
+      editing: !finish,
+      ...(clearReset ? { clearReset: true } : {}),
+      ...(nextSchedule ? { schedule: nextSchedule } : {}),
+    });
     if (finish) editingQueue = null;
   }
-  function editQueuePrompt(turn, taskId = null) {
+  function editQueuePrompt(turn, taskId = null, { chooseModel = false, schedule = null } = {}) {
     if (!editingQueue) composerDraft = { text: promptInput.value, files: attachments.slice(), modelId: pendingModelId || activeModelId };
     saveQueueEdit(true);
-    editingQueue = { turn, taskId, chatId: currentChatId };
+    const taskSchedule = schedule || (taskId && schedulerTasks.find(item => item.id === taskId));
+    const wasQuotaReset = Boolean(taskSchedule?.dispatchTrigger === 'quota-reset');
+    const notBefore = Number.isFinite(Date.parse(taskSchedule?.notBefore || '')) ? Date.parse(taskSchedule.notBefore) : 0;
+    editingQueue = { turn, taskId, chatId: currentChatId, wasQuotaReset, notBefore, chooseModel, modelTouched: false, scheduleTouched: false };
     promptInput.value = turn.text;
     attachments = (turn.files || []).slice();
+    const hadSchedule = Boolean(taskId && taskSchedule && scheduleTimer.load(taskSchedule));
+    scheduleChoice = hadSchedule ? true : (taskId ? false : null);
     selectModel(turn.modelId || 'auto');
+    if (pendingModelId) refreshScheduleDefault();
     if (!taskId) queueAction('editQueuedTurn', { turn, editing: true });
     renderAttachments(); autoGrow(); renderComposerState(); renderTurnQueue(); promptInput.focus();
   }
-  function finishQueueEdit({ schedule = false } = {}) {
+  function finishQueueEdit({ schedule = false, submit = false } = {}) {
     if (schedule && editingQueue && !editingQueue.taskId && promptInput.value.trim()) {
       schedulePrompt(promptInput.value.trim(), editingQueue);
       editingQueue = null;
-    } else saveQueueEdit(true);
+    } else if (submit && editingQueue?.taskId && editingQueue.scheduleTouched && !scheduleArmed && promptInput.value.trim()) {
+      const text = promptInput.value.trim();
+      flushVoiceDraft(text);
+      const turn = { id: crypto.randomUUID(), text, modelId: pendingModelId || activeModelId, attachments: attachments.map(file => file.path), files: attachments.slice(), verify: autoVerify, pipeline: false };
+      queueAction('cancelScheduledTask', { taskId: editingQueue.taskId });
+      editingQueue = null;
+      if (busy || turnQueue.length) { turnQueue.push(turn); queueAction('queueTurn', { turn }); }
+      else steerTurn(turn);
+    } else saveQueueEdit(true, { submit });
     const draft = composerDraft;
     composerDraft = null;
+    scheduleChoice = null;
+    scheduleTimer.clear();
     promptInput.value = draft?.text || '';
     attachments = draft?.files || [];
-    if (draft?.modelId) selectModel(draft.modelId);
+    if (draft?.modelId) selectModel(draft.modelId); else refreshScheduleDefault();
     renderAttachments(); autoGrow(); renderComposerState(); renderTurnQueue();
   }
 
   function renderComposerState() {
-    const queueing = !editingQueue && (busy || turnQueue.length > 0) && !scheduleArmed && Boolean(promptInput.value.trim());
+    const unscheduling = Boolean(editingQueue?.taskId && editingQueue.scheduleTouched && !scheduleArmed);
+    const queueing = (!editingQueue && (busy || turnQueue.length > 0) && !scheduleArmed && Boolean(promptInput.value.trim()))
+      || (unscheduling && (busy || turnQueue.length > 0));
     stopBtn.hidden = !busy;
     sendBtn.hidden = !editingQueue && busy && !queueing && !scheduleArmed;
-    const mode = editingQueue ? 'edit' : queueing ? 'queue' : 'send';
+    sendBtn.disabled = unscheduling && !promptInput.value.trim();
+    const mode = unscheduling ? (queueing ? 'queue' : 'send') : editingQueue ? 'edit' : queueing ? 'queue' : 'send';
     if (sendBtn.dataset.mode !== mode) {
       sendBtn.dataset.mode = mode;
       sendBtn.classList.toggle('is-queue', queueing);
-      sendBtn.innerHTML = editingQueue ? SAVE_EDIT_SVG : queueing ? QUEUE_SVG : SEND_SVG;
+      sendBtn.innerHTML = mode === 'edit' ? SAVE_EDIT_SVG : queueing ? QUEUE_SVG : SEND_SVG;
     }
-    sendBtn.title = queueing ? (queuePaused ? 'Add to the paused queue (Enter). Ctrl+Enter sends now.' : 'Queue for after this turn (Enter). Ctrl+Enter sends now.') : 'Send';
-    if (editingQueue) sendBtn.title = 'Save queue edits (Enter). Ctrl+Enter sends now.';
+    sendBtn.title = unscheduling
+      ? (queueing ? 'Remove schedule and queue after this turn (Enter). Ctrl+Enter sends now.' : 'Remove schedule and send now (Enter)')
+      : queueing ? (queuePaused ? 'Add to the paused queue (Enter). Ctrl+Enter sends now.' : 'Queue for after this turn (Enter). Ctrl+Enter sends now.')
+      : editingQueue ? 'Save queue edits (Enter). Ctrl+Enter sends now.' : 'Send';
     // Stop and send together: send steps in left of the clock (style.css), so the clock under your pointer never moves.
     composerActions.classList.toggle('is-queueing', !stopBtn.hidden && !sendBtn.hidden);
     polishBtn.disabled = micWrap.classList.contains('is-polishing') || !promptInput.value.trim();
@@ -2008,6 +2203,7 @@
   queueStrip.setAttribute('aria-label', 'Queued turns');
   // Inside the dock, so it fuses with the pill (docs/dynamic-island-composer-spec.md).
   document.querySelector('.compose-row').prepend(queueStrip);
+  if (typeof ResizeObserver === 'function') new ResizeObserver(() => !queueStrip.hidden && updateQueueMaxHeight()).observe(queueStrip);
 
   // P17-L: hairline icons, no emoji.
   const queueSvg = (d) => `<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${d}</svg>`;
@@ -2020,22 +2216,58 @@
     pause: queueSvg('<path d="M5.5 4v8M10.5 4v8"/>'),
     play: queueSvg('<path d="m5.5 3.5 7 4.5-7 4.5z"/>'),
   };
-  const queueAction = (type, details = {}) => vscode.postMessage({ type, chatId: currentChatId, ...details });
+  const queueAction = (type, details = {}) => {
+    const chatId = details.chatId || currentChatId;
+    if ((type === 'editQueuedTurn' || type === 'queueTurn') && details.turn?.id) {
+      details = { ...details, turn: { ...details.turn, clientEditId: crypto.randomUUID() } };
+      pendingQueueEdits.set(`${chatId}:${details.turn.id}`, { chatId, turn: details.turn, editing: details.editing === true });
+    } else if (type === 'removeQueuedTurn' || type === 'steerQueuedTurn') pendingQueueEdits.delete(`${chatId}:${details.id}`);
+    vscode.postMessage({ type, chatId, ...details });
+  };
 
   // P17-M: the dragged row follows the pointer; siblings spring aside by one
   // row pitch (transform only, no reflow). On drop the queue re-renders in the
   // new order and the row FLIPs from where it was let go into its slot.
-  function startQueueDrag(event, row, turn) {
+  // The new strip order (keys "turn:<id>" / "scheduled:<id>"): remembered per chat by the host, and each kind's own order
+  // is also sent to its store, so a turn still runs after the ones above it and scheduled prompts keep their own priority.
+  function applyQueueOrder(order, before) {
+    if (order.join() === before.join()) return;
+    queueOrder = order;
+    pendingQueueOrder = { chatId: currentChatId, order: order.slice() };
+    const idsOf = (keys, kind) => keys.filter((key) => key.startsWith(`${kind}:`)).map((key) => key.slice(kind.length + 1));
+    const turnIds = idsOf(order, 'turn'), taskIds = idsOf(order, 'scheduled');
+    if (turnIds.length > 1 && turnIds.join() !== idsOf(before, 'turn').join()) {
+      const rank = new Map(turnIds.map((id, i) => [id, i]));
+      turnQueue = turnQueue.slice().sort((a, b) => (rank.get(a.id) ?? 1e9) - (rank.get(b.id) ?? 1e9));
+      queueAction('reorderQueuedTurns', { ids: turnIds });
+    }
+    if (taskIds.length > 1 && taskIds.join() !== idsOf(before, 'scheduled').join()) {
+      const byId = new Map(scheduledHere().map((task) => [task.id, task]));
+      const sorted = taskIds.map((id) => byId.get(id)).filter(Boolean);
+      const moved = new Set(sorted.map((task) => task.id));
+      let index = 0;
+      schedulerTasks = schedulerTasks.map((task) => (moved.has(task.id) ? sorted[index++] : task));
+      queueAction('reorderScheduledTasks', { ids: taskIds });
+    }
+    queueAction('setQueueOrder', { order });
+  }
+  // One list: queued turns and scheduled prompts are dragged among each other. Rows can differ in height (a wrapped prompt,
+  // a time label), so the slots come from each row's own measured box, not one shared pitch.
+  function startQueueDrag(event, row) {
     if (event.button !== 0) return;
     event.preventDefault();
-    const scheduled = row.classList.contains('is-scheduled');
-    const rows = [...queueStrip.querySelectorAll(scheduled ? '.turn-queue-item.is-scheduled' : '.turn-queue-item:not(.is-scheduled)')];
+    const rows = [...queueStrip.querySelectorAll('.turn-queue-item:not(.turn-queue-skeleton)')];
     const from = rows.indexOf(row);
-    const tops = rows.map((r) => r.offsetTop);
-    const pitch = rows.length > 1 ? tops[1] - tops[0] : row.offsetHeight;
+    if (from < 0) return;
+    const keyOf = (r) => r.dataset.queueKey;
+    const tops = rows.map((r) => r.offsetTop), heights = rows.map((r) => r.offsetHeight);
+    const mids = rows.map((r, i) => tops[i] + heights[i] / 2);
+    const gap = rows.length > 1 ? Math.max(0, tops[1] - tops[0] - heights[0]) : 0;
+    const last = rows.length - 1;
     const startY = event.clientY;
     const grip = event.currentTarget;
     const chatId = currentChatId;
+    const before = rows.map(keyOf);
     let to = from;
     let dy = 0;
     grip.setPointerCapture(event.pointerId);
@@ -2043,12 +2275,19 @@
     for (const sibling of rows) sibling.classList.remove('is-entering');
     row.classList.add('is-dragging');
     const move = (e) => {
-      dy = Math.max(tops[0] - tops[from], Math.min(tops[rows.length - 1] - tops[from], e.clientY - startY));
+      dy = Math.max(tops[0] - tops[from], Math.min(tops[last] + heights[last] - heights[from] - tops[from], e.clientY - startY));
       row.style.transform = `translateY(${dy}px)`;
-      to = Math.max(0, Math.min(rows.length - 1, from + Math.round(dy / pitch)));
+      // The row takes a slot once its leading edge passes that row's middle, so a tall row can still reach a short one at an end.
+      const top = tops[from] + dy, bottom = top + heights[from];
+      to = from;
+      rows.forEach((_, i) => {
+        if (i > from && bottom >= mids[i]) to = Math.max(to, i);
+        if (i < from && top <= mids[i]) to = Math.min(to, i);
+      });
+      const step = heights[from] + gap;
       rows.forEach((r, i) => {
         if (r === row) return;
-        const shift = i > from && i <= to ? -pitch : i < from && i >= to ? pitch : 0;
+        const shift = i > from && i <= to ? -step : i < from && i >= to ? step : 0;
         r.style.transform = shift ? `translateY(${shift}px)` : '';
       });
     };
@@ -2060,18 +2299,11 @@
       for (const sibling of rows) sibling.style.transform = '';
       if (chatId !== currentChatId) return;
       const letGoAt = tops[from] + dy;
-      const entries = scheduled ? scheduledHere() : turnQueue;
-      const source = entries.findIndex(item => item.id === turn.id);
-      const target = entries.findIndex(item => item.id === (scheduled ? rows[to].dataset.taskId : rows[to].dataset.id));
-      if (source >= 0 && target >= 0 && source !== target) entries.splice(target, 0, ...entries.splice(source, 1));
-      if (scheduled) {
-        const ids = new Set(entries.map(item => item.id));
-        let index = 0;
-        schedulerTasks = schedulerTasks.map(item => ids.has(item.id) ? entries[index++] : item);
-      }
-      queueAction(scheduled ? 'reorderScheduledTasks' : 'reorderQueuedTurns', { ids: entries.map((item) => item.id) });
+      const order = before.slice();
+      order.splice(to, 0, ...order.splice(from, 1));
+      applyQueueOrder(order, before);
       renderTurnQueue();
-      const settled = queueStrip.querySelector(`[${scheduled ? 'data-task-id' : 'data-id'}="${CSS.escape(turn.id)}"]`);
+      const settled = [...queueStrip.querySelectorAll('.turn-queue-item')].find((r) => keyOf(r) === keyOf(row));
       if (settled) {
         settled.style.transition = 'none';
         settled.style.transform = `translateY(${letGoAt - settled.offsetTop}px)`;
@@ -2123,10 +2355,14 @@
     const clock = scheduled && (fireTimeOf(entry) > Date.now() || resetWaiting(entry));
     if (row.queueClock === clock) return;
     row.queueClock = clock;
+    // The grip stays on every row, scheduled or not; a row that is still waiting also wears a clock before its time.
     const mark = row.querySelector('.turn-queue-grip');
-    mark.classList.toggle('turn-queue-clock', clock);
-    mark.innerHTML = clock ? CLOCK_SVG : QUEUE_ICONS.grip;
-    mark.title = clock ? 'Scheduled · drag to reorder' : 'Drag to reorder';
+    if (!mark.firstChild) { mark.innerHTML = QUEUE_ICONS.grip; mark.title = 'Drag to reorder'; }
+    const when = row.querySelector('.turn-queue-when');
+    if (!when) return;
+    const icon = when.querySelector('.turn-queue-clock');
+    if (clock && !icon) when.insertAdjacentHTML('afterbegin', CLOCK_SVG.replace('<svg ', '<svg class="turn-queue-clock" '));
+    else if (!clock && icon) icon.remove();
   }
   function queueRow(entry, scheduled, row) {
     if (!row) {
@@ -2137,9 +2373,17 @@
       row.addEventListener('animationend', event => { if (event.target === row && event.animationName === 'msg-in') row.classList.remove('is-entering'); });
       const mark = document.createElement('span');
       mark.className = 'turn-queue-grip';
-      mark.addEventListener('pointerdown', event => startQueueDrag(event, row, row.queueEntry));
+      mark.addEventListener('pointerdown', event => startQueueDrag(event, row));
+      // The current model is also the way to change it: click the pill, pick another model in the composer's menu.
       const pill = document.createElement('span');
-      pill.className = 'model-pill';
+      pill.className = 'model-pill is-changeable';
+      pill.setAttribute('role', 'button'); pill.tabIndex = 0; pill.setAttribute('aria-label', 'Change model');
+      const changeModel = () => {
+        if (scheduled) vscode.postMessage({ type: 'unscheduleToComposer', taskId: row.queueEntry.id, chooseModel: true });
+        else { editQueuePrompt(row.queueEntry, null, { chooseModel: true }); openModelMenu(); }
+      };
+      pill.addEventListener('click', changeModel);
+      pill.addEventListener('keydown', event => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); changeModel(); } });
       const text = document.createElement('span');
       text.className = 'turn-queue-text';
       const button = (icon, label, title, cls, onClick) => {
@@ -2150,33 +2394,40 @@
         return btn;
       };
       row.append(mark, pill, text);
+      const controls = document.createElement('span'); controls.className = 'turn-queue-controls';
+      const actions = document.createElement('span'); actions.className = 'turn-queue-actions';
       if (scheduled) {
-        const when = document.createElement('span'); when.className = 'turn-queue-when'; row.append(when);
-        row.append(
+        const when = document.createElement('span'); when.className = 'turn-queue-when'; when.innerHTML = '<span class="turn-queue-when-text"></span>';
+        actions.append(
           button(QUEUE_ICONS.steer, 'Send Now', 'Send this now instead of waiting', 'is-primary', () => vscode.postMessage({ type: 'dispatchNowWithAutoRoute', taskId: row.queueEntry.id })),
-          button(QUEUE_ICONS.edit, 'Change model', 'Choose another model, then confirm to continue when the chat is idle. Ctrl+Enter steers now.', '', () => vscode.postMessage({ type: 'unscheduleToComposer', taskId: row.queueEntry.id, chooseModel: true })),
           button(QUEUE_ICONS.edit, '', 'Move back into the composer', 'is-icon', () => vscode.postMessage({ type: 'unscheduleToComposer', taskId: row.queueEntry.id })),
           button(QUEUE_ICONS.remove, '', 'Delete', 'is-danger is-icon', () => vscode.postMessage({ type: 'cancelScheduledTask', taskId: row.queueEntry.id })));
-      } else row.append(
-        button(QUEUE_ICONS.steer, 'Steer Now', 'Send this now', 'is-primary', () => queueAction('steerQueuedTurn', { id: row.queueEntry.id })),
-        button(QUEUE_ICONS.edit, '', 'Move back into the composer', 'is-icon', () => editQueuePrompt(row.queueEntry)),
-        button(QUEUE_ICONS.remove, '', 'Delete', 'is-danger is-icon', () => {
-          const turn = row.queueEntry;
-          for (const file of turn.files || []) vscode.postMessage({ type: 'removeAttachment', path: file.path });
-          queueAction('removeQueuedTurn', { id: turn.id });
-          turnQueue = turnQueue.filter(item => item.id !== turn.id);
-          renderTurnQueue();
-        }));
+        controls.append(when, actions);
+      } else {
+        actions.append(
+          button(QUEUE_ICONS.steer, 'Steer Now', 'Send this now', 'is-primary', () => queueAction('steerQueuedTurn', { id: row.queueEntry.id })),
+          button(QUEUE_ICONS.edit, '', 'Move back into the composer', 'is-icon', () => editQueuePrompt(row.queueEntry)),
+          button(QUEUE_ICONS.remove, '', 'Delete', 'is-danger is-icon', () => {
+            const turn = row.queueEntry;
+            for (const file of turn.files || []) vscode.postMessage({ type: 'removeAttachment', path: file.path });
+            queueAction('removeQueuedTurn', { id: turn.id });
+            turnQueue = turnQueue.filter(item => item.id !== turn.id);
+            renderTurnQueue();
+          }));
+        controls.append(actions);
+      }
+      row.append(controls);
     }
     // Keep controls mounted; their handlers always read the latest host snapshot.
     row.queueEntry = entry;
     renderQueueMark(row, scheduled);
     const option = optionFor(entry.modelId) || (scheduled && MODEL_OPTIONS.find(candidate => candidate.agent === entry.model)) || MODEL_OPTIONS[0];
-    const brand = brandOf(option), label = option.shortLabel || option.label, icon = iconFor(brand);
-    const modelKey = JSON.stringify([brand, label, icon]);
+    const brand = brandOf(option), label = option.shortLabel || option.label, fullLabel = option.label || label, icon = iconFor(brand);
+    const modelKey = JSON.stringify([brand, label, fullLabel, icon]);
     if (row.queueModelKey !== modelKey) {
       const pill = row.querySelector('.model-pill');
       pill.dataset.brand = brand; pill.innerHTML = icon; pill.append(label);
+      pill.title = fullLabel;
       row.queueModelKey = modelKey;
     }
     const text = row.querySelector('.turn-queue-text');
@@ -2187,13 +2438,12 @@
     const filesKey = JSON.stringify(files);
     if (row.queueFilesKey !== filesKey) {
       row.querySelector('.turn-queue-files')?.remove();
-      if (files.length) row.insertBefore(queuedFilesBadge(files), row.querySelector('.turn-queue-when, button'));
+      if (files.length) row.insertBefore(queuedFilesBadge(files), row.querySelector('.turn-queue-controls, .turn-queue-when, button'));
       row.queueFilesKey = filesKey;
     }
     if (scheduled) {
-      const at = fireTimeOf(entry);
-      const value = entry.dispatchTrigger === 'quota-reset' ? resetLabel(entry) : at ? formatWhen(at) : '';
-      const when = row.querySelector('.turn-queue-when');
+      const value = scheduledLabel(entry);
+      const when = row.querySelector('.turn-queue-when-text');
       if (when.textContent !== value) when.textContent = value;
     } else {
       const steer = row.querySelector('.is-primary');
@@ -2201,21 +2451,56 @@
       if (steer.title !== title) steer.title = title;
     }
     const sendButton = row.querySelector('.is-primary');
-    const agent = optionFor(entry.modelId)?.agent;
-    sendButton.disabled = scheduled ? resetWaiting(entry) : !entry.scheduled && schedulerTasks.some(task => task.status === 'pending' && task.chatId === currentChatId && task.model === agent && resetWaiting(task));
+    sendButton.disabled = scheduled ? resetWaiting(entry) : queuedTurnBlocked(entry);
     return row;
   }
 
+  function queueSkeletonRow(index) {
+    const row = document.createElement('div');
+    row.className = 'turn-queue-item turn-queue-skeleton';
+    row.dataset.queueKey = `skel:${index}`;
+    row.setAttribute('aria-hidden', 'true');
+    const pill = document.createElement('i'); pill.className = 'turn-queue-skel-pill skeleton';
+    const text = document.createElement('i'); text.className = 'turn-queue-skel-text skeleton';
+    text.style.maxWidth = `${[62, 48, 56][index % 3]}%`;
+    const actions = document.createElement('span'); actions.className = 'turn-queue-skel-actions';
+    const btn = document.createElement('i'); btn.className = 'turn-queue-skel-btn skeleton';
+    const edit = document.createElement('i'); edit.className = 'turn-queue-skel-icon skeleton';
+    const del = document.createElement('i'); del.className = 'turn-queue-skel-icon skeleton';
+    actions.append(btn, edit, del);
+    row.append(pill, text, actions);
+    return row;
+  }
+
+  const QUEUE_VISIBLE_LIMIT = 7;
+  function updateQueueMaxHeight() {
+    const rows = queueStrip.querySelectorAll('.turn-queue-item');
+    const head = queueStrip.querySelector('.turn-queue-head');
+    if (rows.length <= QUEUE_VISIBLE_LIMIT || !head) {
+      queueStrip.style.removeProperty('--queue-max-h');
+      return;
+    }
+    const padTop = parseFloat(getComputedStyle(queueStrip).paddingTop) || 6;
+    const cap = Math.floor(rows[QUEUE_VISIBLE_LIMIT].offsetTop - head.offsetTop + padTop);
+    if (cap > 0) queueStrip.style.setProperty('--queue-max-h', `${cap}px`);
+  }
+
   function renderTurnQueue() {
-    if (queueStrip.dataset.chatId === currentChatId && queueStrip.querySelector('.is-dragging')) return; // reconcile pending snapshots on pointer release
-    const scheduled = scheduledHere();
-    const hidden = !(turnQueue.length || scheduled.length);
+    if (queueStrip.dataset.chatId === (currentChatId || '') && queueStrip.querySelector('.is-dragging')) return; // reconcile pending snapshots on pointer release
+    const scheduled = isChatSwitching ? [] : scheduledHere();
+    const queued = isChatSwitching ? [] : turnQueue;
+    const loading = loadingQueueCount();
+    const hidden = !(queued.length || scheduled.length || loading);
     if (queueStrip.hidden !== hidden) queueStrip.hidden = hidden;
-    if (queueStrip.dataset.chatId !== currentChatId || hidden) {
+    if (queueStrip.dataset.chatId !== (currentChatId || '') || hidden) {
       queueStrip.classList.remove('is-sorting');
       if (queueStrip.childElementCount) queueStrip.replaceChildren();
-      queueStrip.dataset.chatId = currentChatId;
+      queueStrip.dataset.chatId = currentChatId || '';
     }
+    queueStrip.classList.toggle('is-loading', loading > 0);
+    if (loading > 0) queueStrip.setAttribute('aria-busy', 'true');
+    else queueStrip.removeAttribute('aria-busy');
+    if (schedulerQueueLoaded && !isChatSwitching) persistQueueHint(scheduled.length + queued.length);
     if (hidden) return;
     let head = queueStrip.querySelector('.turn-queue-head');
     if (!head) {
@@ -2237,7 +2522,7 @@
     const title = head.querySelector('span'), label = turnQueueTitle();
     if (title.textContent !== label) title.textContent = label;
     const transport = head.querySelector('.queue-transport');
-    if (transport.hidden !== !turnQueue.length) transport.hidden = !turnQueue.length;
+    if (transport.hidden !== !queued.length) transport.hidden = !queued.length;
     if (transport.dataset.paused !== String(queuePaused)) {
       transport.dataset.paused = String(queuePaused);
       transport.innerHTML = queuePaused ? QUEUE_ICONS.play : QUEUE_ICONS.pause;
@@ -2246,13 +2531,18 @@
     }
     // Scheduled and queued prompts share a stable list, with distinct ID namespaces.
     const existing = new Map([...queueStrip.querySelectorAll('.turn-queue-item')].map(row => [row.dataset.queueKey, row]));
-    const desired = [
-      ...scheduled.filter(task => task.id !== editingQueue?.taskId).map(task => [task, true]),
-      ...turnQueue.filter(turn => editingQueue?.taskId || turn.id !== editingQueue?.turn.id).map(turn => [turn, false]),
-    ];
-    desired.forEach(([entry, scheduled], index) => {
-      const key = (scheduled ? 'scheduled:' : 'turn:') + entry.id;
-      const row = queueRow(entry, scheduled, existing.get(key));
+    const skeletons = loading > 0 ? Array.from({ length: loading }, (_, i) => [null, 'skel', i]) : [];
+    // One list. Prompts the user never placed keep the default (scheduled first, then queued) after the ones they did.
+    // Ranked by id alone: a scheduled prompt that comes due moves into the chat's queue under the same id and keeps its place.
+    const rank = new Map(queueOrder.map((key, i) => [key.slice(key.indexOf(':') + 1), i]));
+    const keyed = [
+      ...scheduled.filter(task => task.id !== editingQueue?.taskId).map(task => [task, 'scheduled']),
+      ...queued.filter(turn => editingQueue?.taskId || turn.id !== editingQueue?.turn.id).map(turn => [turn, 'turn']),
+    ].sort((a, b) => (rank.get(a[0].id) ?? 1e9) - (rank.get(b[0].id) ?? 1e9));
+    const desired = [...skeletons, ...keyed];
+    desired.forEach(([entry, kind, skelIndex], index) => {
+      const key = kind === 'skel' ? `skel:${skelIndex}` : `${kind}:${entry.id}`;
+      const row = kind === 'skel' ? (existing.get(key) || queueSkeletonRow(skelIndex)) : queueRow(entry, kind === 'scheduled', existing.get(key));
       existing.delete(key);
       const before = queueStrip.children[index + 1] || null;
       if (before !== row) {
@@ -2261,12 +2551,29 @@
       }
     });
     for (const row of existing.values()) row.remove();
+    updateQueueMaxHeight();
   }
 
-  function sendPrompt({ steer = false } = {}) {
+  async function sendPrompt({ steer = false } = {}) {
+    if (waitingToSend) return;
+    const pending = attachments.filter(file => file.pending).map(file => pendingAttachments.get(file.requestId)?.done).filter(Boolean);
+    if (pending.length) {
+      const chatId = currentChatId, text = promptInput.value;
+      const intent = {};
+      waitingToSend = intent;
+      promptInput.readOnly = true;
+      let results, canceled;
+      try { results = await Promise.all(pending); }
+      finally {
+        canceled = waitingToSend !== intent;
+        if (!canceled) { waitingToSend = null; promptInput.readOnly = false; }
+      }
+      if (canceled || chatId !== currentChatId || text !== promptInput.value || results.some(ok => !ok)) return;
+      return sendPrompt({ steer }); // include any further paste that arrived while waiting
+    }
     if (polishing) return; // the draft is being rewritten; sending now would send the old text
     let text = promptInput.value.trim();
-    if (editingQueue && !steer) { finishQueueEdit({ schedule: scheduleArmed }); return; }
+    if (editingQueue && !steer) { finishQueueEdit({ schedule: scheduleArmed, submit: true }); return; }
     if (!text) return;
     // /undo is Clanker's own: the host asks, then puts the last turn's file changes back.
     if (/^\/undo\s*$/i.test(text)) {
@@ -2303,6 +2610,7 @@
     if (editingQueue) {
       queueAction(editingQueue.taskId ? 'cancelScheduledTask' : 'removeQueuedTurn', { chatId: editingQueue.chatId, taskId: editingQueue.taskId, id: editingQueue.turn.id });
       editingQueue = null;
+      if (!scheduleArmed) { scheduleChoice = null; scheduleTimer.clear(); if (!composerDraft) refreshScheduleDefault(); }
     }
     if (scheduleArmed) {
       schedulePrompt(text);
@@ -2639,8 +2947,9 @@
     if (lastVoiceDraft) voiceEditTimer = setTimeout(() => checkVoiceCorrections(), 700);
   });
 
-  // The pill is the way back to the prompts: it jumps to the chat holding the next one to go out; with scheduled prompts in
-  // several chats, hovering lists them all (the same marks and names as Recent in the sidebar).
+  // The pill is the way back to the prompts: it jumps to the chat holding the next one to go out;
+  // hovering grows the pill leftward into a card listing its chats (the marks and names of Recent in the
+  // sidebar: each chat's project icon). The card is a child of the pill, like the usage ring's, so the two are one surface.
   const scheduledChats = () => {
     const byChat = new Map();
     for (const task of activeTasks().filter((entry) => entry.status === 'pending' && entry.chatId)) {
@@ -2651,44 +2960,79 @@
     }
     return [...byChat.values()].sort((a, b) => a.at - b.at);
   };
-  const schedPop = document.createElement('div');
-  schedPop.className = 'sched-pop';
-  schedPop.hidden = true;
-  document.body.appendChild(schedPop);
-  let schedPopTimer;
-  function showSchedPop() {
-    clearTimeout(schedPopTimer);
-    const chats = scheduledChats();
-    if (chats.length < 2) { schedPop.hidden = true; return; }
-    schedPop.replaceChildren(...chats.map((entry) => {
-      const session = historySessions.find((item) => item.id === entry.id);
-      const row = document.createElement('button');
-      row.type = 'button';
-      row.className = 'sched-pop-row';
-      row.dataset.agent = (session?.models || []).at(-1) || entry.agent;
-      row.innerHTML = '<span class="sched-pop-mark"></span><span class="sched-pop-title"></span><span class="sched-pop-meta"></span>';
-      row.querySelector('.sched-pop-mark').innerHTML = (window.AGENT_ICONS && window.AGENT_ICONS[row.dataset.agent]) || '';
-      row.querySelector('.sched-pop-title').textContent = session?.title || session?.preview || 'Chat';
-      row.querySelector('.sched-pop-meta').textContent = `${entry.count} scheduled${Number.isFinite(entry.at) ? ` · ${formatCountdown(entry.at - Date.now())}` : ''}`;
-      row.classList.toggle('is-here', entry.id === currentChatId);
-      row.addEventListener('click', () => { schedPop.hidden = true; if (entry.id !== currentChatId) vscode.postMessage({ type: 'restoreChat', id: entry.id }); });
-      return row;
-    }));
-    const rect = queueBtn.getBoundingClientRect();
-    schedPop.hidden = false;
-    schedPop.style.top = `${Math.max(8, Math.min(rect.top, window.innerHeight - schedPop.offsetHeight - 12))}px`;
-    schedPop.style.right = `${window.innerWidth - rect.left + 10}px`;
+  const schedPill = document.createElement('span');
+  schedPill.className = 'sched-pill';
+  schedPill.inert = true; // not focusable or clickable until it is open
+  queueBtn.prepend(schedPill);
+  let schedLeaveTimer;
+  const queueTitle = () => `${activeTasks().length} scheduled prompt${activeTasks().length === 1 ? '' : 's'}`;
+  /** The chat's project icon, as in Recent; a chat without a project (or before the projects arrive) keeps the agent's logo. */
+  function schedMark(session, agent) {
+    const project = session?.projectId ? window.railProjectMark?.(session.projectId) : null;
+    if (project) return project;
+    const logo = document.createElement('span');
+    logo.className = 'sched-pill-agent';
+    logo.innerHTML = AGENT_ICONS[agent] || '';
+    return logo;
   }
-  const hideSchedPop = () => { schedPopTimer = setTimeout(() => { schedPop.hidden = true; }, 220); };
-  queueBtn.addEventListener('mouseenter', showSchedPop);
-  queueBtn.addEventListener('mouseleave', hideSchedPop);
-  schedPop.addEventListener('mouseenter', () => clearTimeout(schedPopTimer));
-  schedPop.addEventListener('mouseleave', hideSchedPop);
+  /** Fills the card. Rebuilt when the set of chats changes; otherwise only the countdowns move. */
+  function renderSchedPill() {
+    if (!queueBtn.classList.contains('is-sched-open')) return;
+    const chats = scheduledChats();
+    if (!chats.length) { closeSchedPill(true); return; }
+    const key = JSON.stringify([railMarks, chats.map(entry => {
+      const session = historySessions.find(item => item.id === entry.id);
+      return [entry.id, entry.count, session?.title, session?.preview, session?.projectId, session?.models];
+    })]);
+    const metaOf = (entry) => `${entry.count} scheduled${Number.isFinite(entry.at) ? ` · ${formatCountdown(entry.at - Date.now())}` : ''}`;
+    if (schedPill.dataset.key !== key) {
+      schedPill.dataset.key = key;
+      schedPill.style.setProperty('--rows', chats.length);
+      schedPill.replaceChildren(...chats.map((entry) => {
+        const session = historySessions.find((item) => item.id === entry.id);
+        const agent = (session?.models || []).at(-1) || entry.agent;
+        const row = document.createElement('span');
+        row.className = 'sched-pill-row';
+        row.tabIndex = 0;
+        row.setAttribute('role', 'button');
+        row.innerHTML = '<span class="sched-pill-mark"></span><span class="sched-pill-title"></span><span class="sched-pill-meta"></span>';
+        row.querySelector('.sched-pill-mark').append(schedMark(session, agent));
+        row.querySelector('.sched-pill-title').textContent = session?.title || session?.preview || 'Chat';
+        row.classList.toggle('is-here', entry.id === currentChatId);
+        const go = (event) => { event.stopPropagation(); closeSchedPill(true); if (entry.id !== currentChatId) vscode.postMessage({ type: 'restoreChat', id: entry.id }); };
+        row.addEventListener('click', go);
+        row.addEventListener('keydown', (event) => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); go(event); } });
+        return row;
+      }));
+    }
+    chats.forEach((entry, i) => { schedPill.children[i].querySelector('.sched-pill-meta').textContent = metaOf(entry); });
+  }
+  function openSchedPill() {
+    clearTimeout(schedLeaveTimer);
+    if (queueBtn.classList.contains('is-sched-open') || !scheduledChats().length) return;
+    queueBtn.classList.add('is-sched-open');
+    queueBtn.removeAttribute('title'); // the native tooltip would sit on top of the card
+    schedPill.inert = false;
+    renderSchedPill();
+  }
+  function closeSchedPill(now = false) {
+    clearTimeout(schedLeaveTimer);
+    const close = () => {
+      queueBtn.classList.remove('is-sched-open');
+      schedPill.inert = true;
+      queueBtn.title = queueTitle();
+    };
+    if (now) close(); else schedLeaveTimer = setTimeout(close, 140);
+  }
+  queueBtn.addEventListener('mouseenter', openSchedPill);
+  queueBtn.addEventListener('mouseleave', () => closeSchedPill());
+  queueBtn.addEventListener('focusin', () => { if (queueBtn.matches(':focus-visible, :has(:focus-visible)')) openSchedPill(); });
+  queueBtn.addEventListener('focusout', (event) => { if (!queueBtn.contains(event.relatedTarget)) closeSchedPill(); });
+  queueBtn.addEventListener('keydown', (event) => { if (event.key === 'Escape' && queueBtn.classList.contains('is-sched-open')) { event.stopPropagation(); closeSchedPill(true); queueBtn.focus(); } });
   queueBtn.addEventListener('click', () => {
     const chats = scheduledChats();
     // Tasks from before they were tied to a chat have no chat to jump to: the old list opens.
     if (!chats.length) { if (!queueModal.el.hidden) { closeModal(queueModal.el); return; } queuePinned = false; renderQueue(); openModal(queueModal); return; }
-    schedPop.hidden = true;
     if (chats[0].id !== currentChatId) vscode.postMessage({ type: 'restoreChat', id: chats[0].id }); else promptInput.focus();
   });
   newChatBtn.addEventListener('click', () => { if (editingQueue) finishQueueEdit(); clearEmptyState(); vscode.postMessage({ type: 'newChat' }); });
@@ -3503,6 +3847,48 @@
     openImageContextMenu(event.clientX, event.clientY, { uri: img.src, name: /\.[a-z0-9]{2,5}$/i.test(rawName) ? rawName : 'image.png' }, img);
   });
 
+  // Right-click copies what is under the pointer: the selection, a file, link, code block, table cell, paragraph or the whole
+  // message (media/copy-targets.js decides). Typing fields and Shift+right-click keep the browser's own menu.
+  async function copyToClipboard(text, noun) {
+    try {
+      if (navigator.clipboard?.writeText) await navigator.clipboard.writeText(text);
+      else throw new Error('no clipboard API');
+    } catch {
+      const area = document.createElement('textarea');
+      area.value = text; area.style.cssText = 'position:fixed;opacity:0;pointer-events:none';
+      document.body.appendChild(area); area.select();
+      const ok = document.execCommand('copy');
+      area.remove();
+      if (!ok) { showToast('Could not copy to the clipboard.', { error: true }); return; }
+    }
+    showToast(`Copied ${noun || 'text'}.`);
+  }
+  function selectionUnderPointer(event) {
+    const selection = window.getSelection?.();
+    if (!selection || selection.isCollapsed || !selection.rangeCount || !selection.toString().trim()) return '';
+    const rects = [...selection.getRangeAt(0).getClientRects()];
+    const hit = rects.some((r) => event.clientX >= r.left - 2 && event.clientX <= r.right + 2 && event.clientY >= r.top - 2 && event.clientY <= r.bottom + 2);
+    return hit ? selection.toString() : '';
+  }
+  document.addEventListener('contextmenu', (event) => {
+    if (event.defaultPrevented || event.shiftKey || !window.copyTargets) return;
+    if (event.target.closest?.('input, textarea, select, [contenteditable=""], [contenteditable="true"]')) return;
+    const targets = window.copyTargets.targetsAt(event.target, { selection: selectionUnderPointer(event) });
+    event.preventDefault(); // never the generic Cut/Copy/Paste, which copies nothing unless something is selected
+    if (!targets.length) { closeImageMenu?.(); return; }
+    const entries = targets.map((target) => {
+      switch (target.kind) {
+        case 'openFile': return { icon: OPEN_ICON, text: target.label, action: 'open', run: () => vscode.postMessage({ type: 'openFile', path: target.path, line: target.line }) };
+        case 'openUrl': return { icon: OPEN_ICON, text: target.label, action: 'open-link', run: () => vscode.postMessage({ type: 'openUrl', url: target.url }) };
+        case 'download': return { icon: DOWNLOAD_ICON, text: target.label, action: 'download', run: () => downloadAttachment(target.attachment) };
+        case 'copyPath': return { icon: COPY_ICON, text: target.label, action: 'copy-path', run: () => vscode.postMessage({ type: 'copyFilePath', path: target.path, mode: 'path' }) };
+        case 'copyFile': return { icon: COPY_ICON, text: target.label, action: 'copy-file', run: () => vscode.postMessage({ type: 'copyFilePath', path: target.path, mode: 'file' }) };
+        default: return { icon: COPY_ICON, text: target.label, action: 'copy', hint: target.hint, run: () => { void copyToClipboard(target.text, target.noun); } };
+      }
+    });
+    showContextMenu(event.clientX, event.clientY, 'Copy actions', entries);
+  });
+
   function formatTime(at) {
     return at ? window.chatTime.messageTime(at, { locale: TIME_PREFS.locale, hourCycle: HOUR_CYCLE }) : '';
   }
@@ -3686,6 +4072,7 @@
     }
     const bubble = document.createElement('div');
     bubble.className = 'msg msg-user';
+    bubble.dataset.raw = text; // right-click "Copy message" copies exactly what was sent
     if (files?.length) {
       const strip = document.createElement('div');
       strip.className = 'attachment-strip msg-attachments';
@@ -3729,6 +4116,34 @@
     return chip;
   }
 
+  function buildRoleLabel(model, label = null, roleName = null) {
+    const roleLabel = document.createElement('div');
+    roleLabel.className = 'msg-role';
+    roleLabel.dataset.agent = model;
+    if (label) roleLabel.dataset.modelLabel = label;
+    roleLabel.innerHTML = AGENT_ICONS[model] || '';
+    roleLabel.append(label || REPLY_NAMES[model] || model); // the exact model, e.g. "GPT 6 Sol High"
+    if (roleName) roleLabel.append(roleChip(roleName));
+    return roleLabel;
+  }
+
+  function ensureTurnRole(model, label = null, roleName = null) {
+    if (!model || !currentTurnEl?.isConnected) return null;
+    currentTurnEl.dataset.agent ||= model;
+    const existing = currentTurnEl.querySelector(':scope > .msg-role');
+    const next = buildRoleLabel(model, label, roleName);
+    if (existing) {
+      if ((label && existing.dataset.modelLabel !== label) || (roleName && !existing.querySelector('.msg-role-chip'))) {
+        existing.replaceWith(next);
+        return next;
+      }
+      return existing;
+    }
+    if (turnAnchor?.parentElement === currentTurnEl) turnAnchor.after(next);
+    else currentTurnEl.prepend(next);
+    return next;
+  }
+
   function appendAssistantDelta(textChunk, model, label = null, roleName = null) {
     if (!textChunk) return;
     clearEmptyState();
@@ -3747,13 +4162,8 @@
       currentAssistantBubble.className = `msg msg-assistant${continued ? ' msg-continued' : ''}`;
       currentAssistantBubble.dataset.raw = '';
       if (model && !continued) {
-        const roleLabel = document.createElement('div');
-        roleLabel.className = 'msg-role';
-        roleLabel.dataset.agent = model;
-        roleLabel.innerHTML = AGENT_ICONS[model] || '';
-        roleLabel.append(label || REPLY_NAMES[model] || model); // the exact model, e.g. "GPT 6 Sol High"
-        if (roleName) roleLabel.append(roleChip(roleName));
-        currentAssistantBubble.appendChild(roleLabel);
+        if (currentTurnEl?.isConnected) ensureTurnRole(model, label, roleName);
+        else currentAssistantBubble.appendChild(buildRoleLabel(model, label, roleName));
       }
       const body = document.createElement('div');
       body.className = 'msg-body';
@@ -3777,8 +4187,58 @@
 
   const pendingAssistantBodies = new Set();
   let assistantRenderFrame = 0;
+  // A streaming reply used to be re-parsed and replaced whole on every frame, so a long answer cost quadratic work and
+  // lost any text selection. Finished blocks now stay in the DOM and only the tail after the last safe cut is rebuilt.
+  // stableCut() picks cuts the renderer would have made anyway (so the result matches a full render, see
+  // test/stream-incremental.mjs): the end of a closed code fence, and a blank line that no list, table, maths block or
+  // footnote can reach across.
+  const FENCE_RE = /```([^\n`]*)\n?([\s\S]*?)(```|$)/g;
+  const NO_INCREMENTAL = /\[\^|<details/i;
+  const BLANK_LINES = /\n(?:[ \t]*\n)+/g;
+  const LIST_ANYWHERE_RE = new RegExp(LIST_RE.source, 'm'); // the renderer's own list-line test, over a whole chunk
+  function paragraphCut(text, from, to) {
+    let cut = from;
+    BLANK_LINES.lastIndex = from;
+    let sep;
+    while ((sep = BLANK_LINES.exec(text)) && sep.index + sep[0].length <= to) {
+      const end = sep.index + sep[0].length;
+      const chunk = text.slice(cut, end);
+      if (/\$\$|\\\[/.test(chunk)) continue; // a maths block may span a blank line
+      // A list goes on past a blank line while the next line is indented or another item; a line that starts with a letter ends it.
+      if (LIST_ANYWHERE_RE.test(chunk) && !(end < to && /\p{L}/u.test(text[end]))) continue;
+      cut = end;
+    }
+    return cut;
+  }
+  function stableCut(text, from) {
+    let cut = from, start = from, m;
+    FENCE_RE.lastIndex = from;
+    while ((m = FENCE_RE.exec(text))) {
+      if (m.index > start) cut = Math.max(cut, paragraphCut(text, start, m.index));
+      if (m[3] !== '```') return Math.max(cut, m.index); // an unclosed fence is still growing
+      start = cut = FENCE_RE.lastIndex;
+    }
+    return Math.max(cut, paragraphCut(text, start, text.length));
+  }
   function renderAssistantBody(bubble) {
-    bubble.querySelector('.msg-body').replaceChildren(buildMessageBody(bubble.dataset.raw));
+    const body = bubble.querySelector('.msg-body');
+    const raw = bubble.dataset.raw;
+    let inc = bubble._incremental;
+    if (restoringHistory || NO_INCREMENTAL.test(raw)) { bubble._incremental = null; body.replaceChildren(buildMessageBody(raw)); return; }
+    if (!inc || inc.body !== body || !raw.startsWith(inc.prefix)) {
+      inc = bubble._incremental = { body, prefix: '', cut: 0, count: 0 };
+      body.replaceChildren();
+    }
+    const cut = stableCut(raw, inc.cut);
+    while (body.childNodes.length > inc.count) body.lastChild.remove(); // the previous tail
+    if (cut > inc.cut) {
+      const stable = buildMessageBody(raw.slice(inc.cut, cut));
+      inc.count += stable.childNodes.length;
+      inc.cut = cut;
+      inc.prefix = raw.slice(0, cut);
+      body.appendChild(stable);
+    }
+    if (raw.length > inc.cut) body.appendChild(buildMessageBody(raw.slice(inc.cut)));
   }
 
   // A reply can span several bubbles (text, tool card, more text). The last one
@@ -3829,8 +4289,15 @@
     // A notice that names its own reset time (agy: "Resets in 4h43m") beats the rail, which reads a different pool for Claude and GPT through agy.
     if (!restoringHistory && limitHit && (limitActive(last?.dataset.raw) ?? !hasHeadroom(replied))) offerContinueAtReset(last || turnHost());
     // The model's own answer is the freshest word on its usage: a limit reply turns scheduling on, a normal one off.
+    const repliedLabel = turnModelLabel || [...transcriptEl.querySelectorAll('.msg-role[data-model-label]')].pop()?.dataset.modelLabel || null;
+    const repliedModelId = replied === 'gemini' ? (modelIdForLabel(replied, repliedLabel) || (activeAgent === 'gemini' ? activeModelId : null)) : null;
     if (!restoringHistory && AGENT_IDS.includes(replied)) {
-      if (limitHit) limitHitAgents.add(replied); else limitHitAgents.delete(replied);
+      const scope = limitScope(replied, repliedModelId);
+      if (limitHit) limitHitAgents.add(scope);
+      else {
+        limitHitAgents.delete(scope);
+        if (scope === replied) for (const entry of [...limitHitAgents]) if (entry.startsWith(`${replied}:`)) limitHitAgents.delete(entry);
+      }
       refreshScheduleDefault();
     }
     limitHitThisTurn = false;
@@ -3895,7 +4362,10 @@
       if (turn === currentTurnEl) currentTurnEl = null;
     }
     foldSteps(anchor.parentElement);
-    if (ms > 0) anchor.after(workSummary(`Worked for ${formatDuration(ms)}`));
+    if (ms > 0) {
+      const role = anchor.parentElement?.querySelector(':scope > .msg-role');
+      (role || anchor).after(workSummary(`Worked for ${formatDuration(ms)}`));
+    }
   }
 
   // Tool cards, matched to their result by toolId (Claude tool_use id, Codex
@@ -4023,6 +4493,68 @@
     if (kind !== 'monitor' && !(sleep && !shell.slice(sleep[0].length).trim())) return null;
     return sleep ? Math.round(Number(sleep[1]) * { s: 1, m: 60, h: 3600 }[sleep[2].toLowerCase() || 's']) : 0;
   }
+  // What a tool card can show or open (tool-targets.js): a viewed picture previews in the lightbox, a read or edited file
+  // opens in the editor, a fetched page in the browser, and the paths in a Grep or Glob result open on click.
+  const PEEK_ICONS = {
+    image: '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M1.75 8S4.25 3.5 8 3.5 14.25 8 14.25 8 11.75 12.5 8 12.5 1.75 8 1.75 8z"/><circle cx="8" cy="8" r="2"/></svg>',
+    file: OPEN_ICON,
+    url: OPEN_ICON,
+  };
+  const PEEK_TITLES = { image: 'Preview picture', file: 'Open in editor', url: 'Open in browser' };
+  const previewCache = new Map(); // path -> the host's reply, so a second look is instant
+  const previewWaiting = new Map(); // requestId -> resolve
+  let previewSeq = 0;
+  const baseName = (file) => String(file).split(/[\\/]/).pop();
+  function loadPreview(file) {
+    if (previewCache.has(file)) return Promise.resolve(previewCache.get(file));
+    return new Promise((resolve) => {
+      const requestId = `peek-${++previewSeq}`;
+      const timer = setTimeout(() => { previewWaiting.delete(requestId); resolve({ error: 'The preview took too long' }); }, 15000);
+      previewWaiting.set(requestId, (reply) => {
+        clearTimeout(timer);
+        if (!reply.error) { previewCache.set(file, reply); if (previewCache.size > 8) previewCache.delete(previewCache.keys().next().value); }
+        resolve(reply);
+      });
+      vscode.postMessage({ type: 'previewFile', path: file, requestId });
+    });
+  }
+  function peek(target, trigger = null) {
+    if (!target) return;
+    if (target.type === 'url') { vscode.postMessage({ type: 'openUrl', url: target.value }); return; }
+    if (target.type === 'file') { vscode.postMessage({ type: 'openFile', path: target.value, line: target.line }); return; }
+    trigger?.classList.add('is-loading');
+    void loadPreview(target.value).then((reply) => {
+      trigger?.classList.remove('is-loading');
+      if (reply.error) { showToast(`${reply.error}: ${baseName(target.value)}`, { error: true }); return; }
+      openLightbox(reply.uri, reply.name || baseName(target.value), false, { uri: reply.uri, name: reply.name }, null, { openPath: reply.path });
+    });
+  }
+  // Grep and Glob results: each line that names a file opens it (at its line), a picture previews.
+  function linkifyResults(body, text) {
+    const targets = window.toolTargets?.resultTargets(text) || [];
+    if (!targets.some(Boolean)) return;
+    const lines = text.split('\n');
+    const nodes = [];
+    lines.forEach((line, index) => {
+      const target = targets[index];
+      if (target) {
+        const hit = document.createElement('span');
+        hit.className = 'tool-hit'; hit.dataset.i = String(index); hit.textContent = line;
+        hit.setAttribute('role', 'button'); hit.tabIndex = 0; hit.title = PEEK_TITLES[target.type];
+        nodes.push(hit);
+      } else nodes.push(document.createTextNode(line));
+      if (index < lines.length - 1) nodes.push(document.createTextNode('\n'));
+    });
+    body.replaceChildren(...nodes);
+    const open = (event) => {
+      const hit = event.target.closest?.('.tool-hit');
+      if (!hit) return;
+      event.preventDefault();
+      peek(targets[Number(hit.dataset.i)], hit);
+    };
+    body.addEventListener('click', open);
+    body.addEventListener('keydown', (event) => { if (event.key === 'Enter' || event.key === ' ') open(event); });
+  }
   // `host`: where the card goes (the agents viewer passes its own pane); default, the running turn.
   function appendToolCard({ name, command, output, toolId, done, error, diff, cancelled, startedAt, durationMs, host = null }) {
     if (!host) clearEmptyState();
@@ -4069,6 +4601,25 @@
     } else {
       label.textContent = skills.length ? skills.join(', ') : command || '';
     }
+    // Clicking the name (or the small icon beside it) shows what the agent is looking at; the rest of the row still folds the card.
+    const target = window.toolTargets?.cardTarget(kind, command) || null;
+    let peekButton = null;
+    if (target) {
+      details.dataset.peek = target.type;
+      const hit = label.querySelector('.tool-file');
+      if (hit) hit.classList.add('tool-hit');
+      else { const link = document.createElement('span'); link.className = 'tool-hit'; link.textContent = label.textContent; label.replaceChildren(link); }
+      label.title = `${PEEK_TITLES[target.type]}: ${command}`;
+      peekButton = document.createElement('button');
+      peekButton.type = 'button';
+      peekButton.className = 'tool-peek';
+      peekButton.title = PEEK_TITLES[target.type];
+      peekButton.setAttribute('aria-label', `${PEEK_TITLES[target.type]}: ${command}`);
+      peekButton.innerHTML = PEEK_ICONS[target.type];
+      const act = (event) => { event.preventDefault(); event.stopPropagation(); peek(target, details); };
+      peekButton.addEventListener('click', act);
+      label.addEventListener('click', (event) => { if (event.target.closest('.tool-hit')) act(event); });
+    }
     const meta = document.createElement('span');
     meta.className = 'tool-meta';
     const time = document.createElement('span');
@@ -4077,7 +4628,7 @@
     if (Number.isFinite(initialMs) && initialMs >= 1000) time.textContent = formatDuration(initialMs);
     const state = document.createElement('span');
     state.className = 'tool-state';
-    summary.append(icon, tool, label, meta, time, state);
+    summary.append(icon, tool, label, ...(peekButton ? [peekButton] : []), meta, time, state);
 
     if (output && (typeof output.added === 'number' || typeof output.removed === 'number')) {
       const stat = document.createElement('span');
@@ -4114,6 +4665,26 @@
       body.textContent = (output && output.text) || '';
     }
     details.appendChild(body);
+    // A picture shows itself when the card opens, so you see what the agent saw without another click.
+    if (target?.type === 'image') {
+      details.addEventListener('toggle', () => {
+        if (!details.open || details.querySelector('.tool-thumb, .tool-thumb-note')) return;
+        const thumb = document.createElement('button');
+        thumb.type = 'button'; thumb.className = 'tool-thumb is-loading'; thumb.title = 'Preview picture';
+        details.insertBefore(thumb, body);
+        void loadPreview(target.value).then((reply) => {
+          thumb.classList.remove('is-loading');
+          if (reply.error) { thumb.replaceWith(Object.assign(document.createElement('div'), { className: 'tool-thumb-note', textContent: reply.error })); return; }
+          const img = document.createElement('img'); img.src = reply.uri; img.alt = reply.name || ''; img.draggable = false;
+          thumb.append(img);
+          thumb.addEventListener('click', () => peek(target, thumb));
+        });
+      });
+    }
+    if (/^(Grep|Glob)$/.test(toolDisplayName(name, kind))) {
+      details.dataset.results = '1';
+      if (done && !diffLines && output?.text) linkifyResults(body, output.text); // a chat restored from disk
+    }
     if (host) { host.appendChild(details); return details; }
     turnHost().appendChild(details);
     if (toolId) toolCards.set(toolId, details);
@@ -4133,6 +4704,7 @@
     const body = card.querySelector('.tool-body');
     // A diff card keeps its diff; only a failure replaces it with the reason.
     if (body && (!card.dataset.diff || (error && output))) body.textContent = output || '';
+    if (body && card.dataset.results && typeof output === 'string') linkifyResults(body, output);
     // What came back, at a glance: lines read, results found.
     const meta = card.querySelector('.tool-meta');
     const lines = typeof output === 'string' && output.trim() && !/^No (matches|files) found/i.test(output.trim()) ? output.trim().split('\n').length : 0;
@@ -4651,6 +5223,7 @@
       pendingEl.dataset.agent = running.agentId || '';
       if (currentTurnEl) currentTurnEl.dataset.agent = running.agentId || '';
       turnRoutedAgent = running.agentId || null;
+      if (!running.compact && currentTurnEl?.isConnected && running.agentId) ensureTurnRole(running.agentId, running.modelLabel, running.roleName);
     } else {
       flush();
       turnAnchor = null;
@@ -4703,6 +5276,7 @@
       }
       else if (hiddenCompactTurn) return;
       else if (message.role === 'assistant') {
+        if (message.agent) ensureTurnRole(message.agent, message.modelLabel, message.roleName);
         // The tools that follow a reply record where in its text they ran, so
         // text and steps come back in the order they happened (older chats: tools last).
         const text = message.text || '';
@@ -4796,7 +5370,7 @@
   // Manage Chats: a search field above the list, Active Chats first, the rest grouped by day (Today, Yesterday, ...).
   const timeOptions = () => ({ locale: TIME_PREFS.locale, hourCycle: HOUR_CYCLE });
   const chatWhen = (iso) => window.chatTime.chatTime(iso, timeOptions());
-  const fullWhen = (iso) => { const date = new Date(iso); return Number.isNaN(date.getTime()) ? '' : date.toLocaleString(TIME_PREFS.locale, clockParts({ weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })); };
+  const fullWhen = (iso) => { const date = new Date(iso); return Number.isNaN(date.getTime()) ? '' : window.chatTime.formatDate(date, TIME_PREFS.locale, clockParts({ weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })); };
   const historySearch = document.createElement('input');
   historySearch.type = 'search';
   historySearch.className = 'history-search';
@@ -4831,7 +5405,7 @@
   historyTools.append(historySearch, filterBtn);
   historyModal.body.before(historyTools, filterPanel);
   let historySessions = [];
-  let reusableHistoryCards = new Map();
+  const reusableHistoryCards = new Map();
   historySearch.addEventListener('input', () => renderHistory(historySessions));
   filterBtn.addEventListener('click', () => {
     filterPanel.hidden = !filterPanel.hidden;
@@ -4912,8 +5486,9 @@
     const query = historySearch.value.trim().toLowerCase();
     const { projects, models, status, sort } = historyFilter;
     // Dates search too: "yesterday", "oct 29", "october", "29.10." all find the chats last active then.
-    const dateText = (session) => [chatWhen(session.updatedAt), window.chatTime.chatDayGroup(session.updatedAt, timeOptions()), fullWhen(session.updatedAt), new Date(session.updatedAt).toLocaleDateString(TIME_PREFS.locale)];
-    const list = all.filter((session) => (!query || [session.title, session.projectName, ...(session.projectNames || []), session.preview, session.lastMessage?.text, ...dateText(session)].some((field) => String(field || '').toLowerCase().includes(query)))
+    const dateText = (session) => [chatWhen(session.updatedAt), window.chatTime.chatDayGroup(session.updatedAt, timeOptions()), fullWhen(session.updatedAt), window.chatTime.formatDate(new Date(session.updatedAt), TIME_PREFS.locale, { year: 'numeric', month: 'numeric', day: 'numeric' })];
+    const matches = fields => fields.some(field => String(field || '').toLowerCase().includes(query));
+    const list = all.filter((session) => (!query || matches([session.title, session.projectName, ...(session.projectNames || []), session.preview, session.lastMessage?.text]) || matches(dateText(session)))
       && (!projects.size || sessionProjectIds(session).some((id) => projects.has(id)))
       && (!models.size || (session.models || []).some((model) => models.has(model)))
       && (status === 'all' || (status === 'active' ? session.active : session.state === 'waiting')));
@@ -4925,14 +5500,17 @@
     renderFilterPanel();
     const scrolled = historyModal.body.scrollTop; // a live refresh keeps your place
     const focused = document.activeElement;
-    reusableHistoryCards = new Map([...historyModal.body.querySelectorAll('.history-card')].map(card => [card.dataset.id, card]));
+    // Keep filtered-out cards only while the dialog is open, so clearing a search does not rebuild the whole list.
+    const known = new Set(all.map(session => session.id));
+    for (const id of reusableHistoryCards.keys()) if (!known.has(id)) reusableHistoryCards.delete(id);
+    for (const card of historyModal.body.querySelectorAll('.history-card')) reusableHistoryCards.set(card.dataset.id, card);
     historyModal.body.replaceChildren();
     if (!list.length) {
       const empty = document.createElement('p');
       empty.className = 'fs-modal-empty';
       empty.textContent = !all.length ? 'No conversations yet.' : query ? `No chats match “${historySearch.value.trim()}”.` : 'No chats match the filter.';
       historyModal.body.append(empty);
-      reusableHistoryCards.clear();
+      if (!all.length) reusableHistoryCards.clear();
       return;
     }
     if (sort !== 'recent') historyModal.body.append(historySection(HISTORY_SORTS.find(([key]) => key === sort)[1], list));
@@ -4946,7 +5524,6 @@
       }
       for (const group of groups) historyModal.body.append(historySection(group.label || 'Older', group.sessions));
     }
-    reusableHistoryCards.clear();
     if (focused?.isConnected && focused !== document.activeElement) focused.focus({ preventScroll: true });
     historyModal.body.scrollTop = scrolled;
   }
@@ -4975,6 +5552,7 @@
       if (existing?.dataset.signature === signature) { wrap.append(existing); continue; }
       const card = document.createElement('article');
       card.dataset.signature = signature;
+      reusableHistoryCards.set(session.id, card);
       // The same look as the rail's Recent tiles: a chat bubble whose rim is white for the chat in this window, blue for
       // one that ran in the last minutes, orange when it waits for you; a running chat wears the orb on its top right.
       card.className = `history-card${session.state ? ` is-${session.state}` : ''}${session.active ? ' is-recent' : ''}${session.id === currentChatId ? ' is-current' : ''}`;
@@ -5102,16 +5680,20 @@
     const message = event.data;
     // Chat navigation reveals the thread instead of leaving a popup over it.
     if (message.type === 'chatLoading' || message.type === 'chatLoaded') {
+      waitingToSend = null;
+      promptInput.readOnly = false;
       document.querySelectorAll('.fs-modal:not([hidden])').forEach(closeModal);
     }
     switch (message.type) {
       case 'attachmentSaved': {
+        if (message.requestId) { attachmentFinished(message.requestId, message.attachment); break; }
         if (message.chatId && message.chatId !== currentChatId) {
           const draft = chatDrafts.get(message.chatId) || { text: '', files: [], mentions: [] };
           draft.files.push(message.attachment); chatDrafts.set(message.chatId, draft);
         } else { attachments.push(message.attachment); renderAttachments(); }
         break;
       }
+      case 'attachmentFailed': attachmentFinished(message.requestId, null, message.error || 'Could not attach the image.'); break;
       case 'attachmentRenamed': {
         const at = attachments.findIndex((item) => item.path === message.from);
         if (at >= 0) {
@@ -5158,7 +5740,7 @@
         projectList.removeAttribute('aria-busy');
         projectBar.hidden = false;
         railProjects = message.projects || []; railActiveProject = message.project?.id || null; railChatId = message.chatId || railChatId;
-        railPinnedProjects = (Array.isArray(message.pinnedProjectIds) ? message.pinnedProjectIds : railProjects.filter(project => project.id !== railActiveProject).slice(0, 2).map(project => project.id))
+        railPinnedProjects = (Array.isArray(message.pinnedProjectIds) ? message.pinnedProjectIds : [])
           .filter((id, index, ids) => railProjects.some(project => project.id === id) && ids.indexOf(id) === index).slice(0, 2);
         const tiles = projectList.isConnected && railProjects.length; // tiles and All projects cover it; the picker stays for an empty rail
         projectBtn.hidden = Boolean(tiles); projectBtn.textContent = message.project?.name || 'Choose project';
@@ -5174,6 +5756,10 @@
       // A chat switch has started: the old thread goes, shimmering placeholders stand in until chatLoaded renders the new one.
       case 'chatLoading': {
         historyStart = 0; loadingHistory = false; historyRequest++;
+        isChatSwitching = true;
+        chatLoadingQueueCount = message.queueCount === null ? null : Math.max(0, Number(message.queueCount) || 0);
+        renderTurnQueue();
+        renderScheduleTime();
         pendingAssistantBodies.clear();
         resetVoiceCorrections(); lastVoiceDraft = null;
         if (editingQueue) finishQueueEdit();
@@ -5189,6 +5775,7 @@
       case 'chatSynced':
       case 'chatLoaded': {
         if (message.type === 'chatSynced' && message.chat?.id !== currentChatId) break;
+        isChatSwitching = false;
         if (message.chat?.id !== currentChatId) {
           resetVoiceCorrections(); lastVoiceDraft = null; dismissedVoiceTerms.clear();
           if (editingQueue) finishQueueEdit();
@@ -5209,8 +5796,11 @@
         const legacy = { ...state?.queues };
         if (state?.queue?.chatId && !legacy[state.queue.chatId]) legacy[state.queue.chatId] = state.queue.turns;
         for (const [chatId, turns] of Object.entries(legacy)) if (Array.isArray(turns) && turns.length) vscode.postMessage({ type: 'importTurnQueue', chatId, turns });
-        turnQueue = message.chat?.turnQueue?.turns || [];
+        turnQueue = receiveQueueTurns(message.chat?.turnQueue?.turns, currentChatId);
+        receiveQueueOrder(message.chat?.turnQueue?.order);
         queuePaused = message.chat?.turnQueue?.paused === true;
+        const pendingScheduled = message.chat?.scheduledPending;
+        chatLoadingQueueCount = !schedulerQueueLoaded && (pendingScheduled === null || (typeof pendingScheduled === 'number' && pendingScheduled > 0)) ? pendingScheduled : 0;
         busy = false;
         resetThought();
         resetAgents(); // the new chat's own agents follow in a subagentReplay
@@ -5221,6 +5811,12 @@
         break;
       }
       case 'chatHistory': prependHistory(message); break;
+      case 'filePreview': {
+        const resolve = previewWaiting.get(message.requestId);
+        previewWaiting.delete(message.requestId);
+        resolve?.(message);
+        break;
+      }
       case 'turnQueue': {
         // Clear acknowledged legacy copies before checking visibility, so they can't reappear on a later switch.
         try {
@@ -5233,7 +5829,8 @@
         } catch {}
         if (message.chatId !== currentChatId) break;
         const transportFocused = document.activeElement?.matches('.queue-transport');
-        turnQueue = message.turns || [];
+        turnQueue = receiveQueueTurns(message.turns, currentChatId);
+        receiveQueueOrder(message.order);
         for (const warning of transcriptEl.querySelectorAll('.queue-usage-warning')) if (!turnQueue.some(turn => turn.id === warning.dataset.queueId)) warning.remove();
         for (const button of transcriptEl.querySelectorAll('.continue-at-reset')) if (hasQueuedContinue(button.dataset.resetAgent)) button.remove();
         queuePaused = message.paused === true;
@@ -5258,7 +5855,10 @@
         for (const agent of AGENT_IDS) {
           if (!hasHeadroom(agent)) continue;
           limitHitAgents.delete(agent);
-          transcriptEl.querySelectorAll(`.continue-at-reset[data-reset-agent="${agent}"]:not(:disabled)`).forEach((btn) => btn.remove());
+          transcriptEl.querySelectorAll(`.continue-at-reset[data-reset-agent="${agent}"]:not(:disabled)`).forEach((btn) => {
+            if (agent === 'gemini' && limitActive(btn.closest('.msg-assistant')?.dataset.raw) === true) return;
+            btn.remove();
+          });
         }
         refreshScheduleDefault();
         break;
@@ -5361,7 +5961,7 @@
           if (busy) { turnQueue.unshift(turn); renderTurnQueue(); } else dispatchTurn(turn);
           break;
         }
-        editQueuePrompt({ text, files, modelId: message.modelId }, message.taskId);
+        editQueuePrompt({ text, files, modelId: message.modelId }, message.taskId, { chooseModel: Boolean(message.chooseModel), schedule: message.schedule });
         if (message.chooseModel) openModelMenu();
         break;
       }
@@ -5388,7 +5988,7 @@
           break;
         }
         foldThought();
-        appendAssistantDelta(message.text, message.model, turnModelLabel, turnRoleName);
+        appendAssistantDelta(message.text, message.model || turnRoutedAgent, turnModelLabel, turnRoleName);
         break;
       }
       case 'tool_start': {
@@ -5416,6 +6016,10 @@
       }
       case 'notice': {
         appendNotice(message.text || '');
+        break;
+      }
+      case 'toast': {
+        if (message.text) showToast(String(message.text), { error: message.error === true });
         break;
       }
       case 'queueUsageWarning': {
@@ -5526,6 +6130,7 @@
         if (currentTurnEl) currentTurnEl.dataset.agent = message.agentId || '';
         turnModelLabel = message.modelLabel || null;
         turnRoleName = message.roleName || null;
+        if (!isCompacting && !message.compact && currentTurnEl?.isConnected && turnRoutedAgent) ensureTurnRole(turnRoutedAgent, turnModelLabel, turnRoleName);
         resetThought();
         setBusy(true);
         break;
@@ -5582,8 +6187,11 @@
         // Its CLI was removed or turned unavailable (plan ended, credits out): Auto instead of a model that can no longer be used.
         if (pendingModelId && availableModels.length && !optionFor(pendingModelId)) selectModel('auto');
         if (menuOpen()) renderModelMenu();
+        if (!queueStrip.querySelector('.is-dragging')) renderTurnQueue();
         break;
       case 'schedulerQueue': {
+        schedulerQueueLoaded = true;
+        chatLoadingQueueCount = 0;
         schedulerTasks = Array.isArray(message.queue) ? message.queue : [];
         for (const button of transcriptEl.querySelectorAll('.continue-at-reset')) if (hasQueuedContinue(button.dataset.resetAgent)) button.remove();
         renderQueueButton();
@@ -5623,6 +6231,9 @@
     }
   });
 
+  // Skeleton rows for a queue that is still loading; drawn here because renderTurnQueue needs state declared further down.
+  if (loadingQueueCount() > 0) renderTurnQueue();
+  window.CLANKER_UI_INITIALIZED = true;
   vscode.postMessage({ type: 'chatReady' });
   vscode.postMessage({ type: 'requestQuotas' });
   vscode.postMessage({ type: 'requestProject' });

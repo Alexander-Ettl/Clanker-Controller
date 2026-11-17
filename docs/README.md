@@ -25,7 +25,7 @@ Start at the [root README](../README.md). For remaining work, use [TODO.md](../T
 | Usage windows | [Google Cloud setup, costs and removal](cloud-usage-windows.md); local warmups and automatic updates are in the [development guide](development.md#usage-windows-and-cli-maintenance) |
 | Loops | [Loop guide](loops.md); LOOP-01 tracks reconciliation with recent work |
 | Remote access and compliance | [Telegram setup](telegram-setup.md), [Telegram risks](telegram-security-and-risks.md), [EU compliance notes](compliance-eu.md) |
-| Performance already implemented | [Paged chat history](chat-performance.md), [rendering and persistence improvements](performance-implementation.md) |
+| Performance already implemented | [Paged chat history](chat-performance.md), [rendering and persistence improvements](performance-implementation.md), [interaction benchmark](interaction-performance.md) |
 
 The [21 October performance audit](performance-opportunities.md) records an earlier state. Read its implementation follow-up first; TODO lists the unresolved investigations. Reports under `out/` are local evidence and may be missing in a fresh checkout.
 

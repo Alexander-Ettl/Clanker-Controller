@@ -90,4 +90,23 @@ function resolveModel(name) {
     || displayName(option.model).toLowerCase() === query || option.shortLabel.toLowerCase() === query) || null;
 }
 
-module.exports = { MODEL_CATALOG, AVAILABLE_MODELS, displayName, normalizeModels, visionSupported, setModelCatalog, setFavoriteModels, setEnabledAgents, defaultModel, modelOption, resolveModel };
+function quotaPoolKey(optionOrId, fallbackAgent) {
+  const option = typeof optionOrId === 'string' ? modelOption(optionOrId) : optionOrId;
+  const agent = option?.agent || fallbackAgent;
+  if (!option) return agent;
+  if (agent === 'gemini') {
+    if (/argon/i.test(option.model || option.id || '')) return 'antigravityArgon';
+    if ((option.company && option.company !== 'Google') || /^(?:gemini:)?(?:claude|gpt)-/i.test(option.id || option.model || '')) return 'antigravityClaudeGpt';
+    return 'gemini';
+  }
+  return agent === 'claude' && option.brand === 'opus' ? 'opus' : agent;
+}
+
+function quotaFor(quotas, optionOrId, fallbackAgent) {
+  const option = typeof optionOrId === 'string' ? modelOption(optionOrId) : optionOrId;
+  const agent = option?.agent || fallbackAgent;
+  const key = quotaPoolKey(option, agent);
+  return (key && quotas?.[key]) || (agent && quotas?.[agent]) || null;
+}
+
+module.exports = { MODEL_CATALOG, AVAILABLE_MODELS, displayName, normalizeModels, visionSupported, setModelCatalog, setFavoriteModels, setEnabledAgents, defaultModel, modelOption, resolveModel, quotaPoolKey, quotaFor };

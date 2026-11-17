@@ -48,6 +48,12 @@ function probe(options) {
     }
     return null;
   };
+  const inScrollView = (parent, r) => {
+    if (!parent) return true;
+    const b = parent.getBoundingClientRect();
+    return r.left + r.width / 2 >= b.left && r.left + r.width / 2 <= b.right
+      && r.top + r.height / 2 >= b.top && r.top + r.height / 2 <= b.bottom;
+  };
   const clippedBy = el => {
     // An ancestor that clips (overflow hidden/clip) and does not contain the element's box.
     const box = el.getBoundingClientRect();
@@ -74,7 +80,7 @@ function probe(options) {
     const cutter = clippedBy(el);
     if (cutter && !parent) add('offscreen', 'error', el, { detail: `cut off by ${selectorOf(cutter)}` });
     // Covered: the topmost thing at the control's centre must be the control, something inside it, or its label.
-    if (r.top >= 0 && r.bottom <= innerHeight && r.left >= 0 && r.right <= innerWidth) {
+    if (inScrollView(parent, r) && r.top >= 0 && r.bottom <= innerHeight && r.left >= 0 && r.right <= innerWidth) {
       const top = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
       if (top && top !== el && !el.contains(top) && !top.contains(el) && !(el.labels && [...el.labels].some(l => l === top || l.contains(top)))) {
         add('covered-control', 'error', el, { detail: `covered by ${selectorOf(top)}`, other: selectorOf(top) });
@@ -112,7 +118,14 @@ function probe(options) {
     if (kids.length < 2 || kids.length > 60) continue;
     for (let i = 0; i < kids.length; i++) for (let j = i + 1; j < kids.length; j++) compare(kids[i], kids[j]);
   }
-  for (let i = 0; i < controls.length; i++) for (let j = i + 1; j < Math.min(controls.length, i + 40); j++) compare(controls[i], controls[j]);
+  for (let i = 0; i < controls.length; i++) {
+    const pa = scrollParent(controls[i]), ra = controls[i].getBoundingClientRect();
+    for (let j = i + 1; j < Math.min(controls.length, i + 40); j++) {
+      const pb = scrollParent(controls[j]), rb = controls[j].getBoundingClientRect();
+      if (pa !== pb && (!inScrollView(pa, ra) || !inScrollView(pb, rb))) continue;
+      compare(controls[i], controls[j]);
+    }
+  }
 
   // Most severe first, capped.
   const order = { error: 0, warn: 1, info: 2 };

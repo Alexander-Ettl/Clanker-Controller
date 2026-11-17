@@ -85,6 +85,10 @@ if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.ar
     const first = await openChat(browser, { width: 900, height: 1000 });
     first.page.setDefaultTimeout(10000);
     await hiddenDialogs(first.page);
+    await first.page.evaluate(() => { window.savedSearchCard = document.querySelector('.history-card'); });
+    await first.page.getByRole('searchbox', { name: 'Search chats' }).fill('change 210');
+    await first.page.getByRole('searchbox', { name: 'Search chats' }).fill('');
+    assert.equal(await first.page.evaluate(() => window.savedSearchCard === document.querySelector('.history-card')), true, 'clearing a search restores filtered-out cards');
     await first.page.locator('#historyModal .fs-modal-close').click();
     await lazyHighlighting(first.page);
     await agentBudget(first.page);

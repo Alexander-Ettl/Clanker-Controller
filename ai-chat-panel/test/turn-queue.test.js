@@ -21,17 +21,19 @@ class Engine extends EventEmitter {
   complete(interrupted = false) { this.running = false; this.emit('event', { type: 'turn_complete', interrupted }); }
   dispose() { this.disposed = true; }
 }
-let quotaHook;
-const quotas = { claude: { remaining: 100 }, codex: { remaining: 100 }, gemini: { remaining: 100 } };
+let quotaHook, chatNames; // chatNames: the aiChatPanel.chatNames setting a test wants (default 'agent')
+const agentTitles = {}; // what Antigravity "wrote" per conversation id
+const quotas ={ claude: { remaining: 100 }, codex: { remaining: 100 }, gemini: { remaining: 100 } };
 const load = Module._load;
 const vscodeStub = {
   env: { language: 'en' },
-  workspace: { getConfiguration: () => ({ get: (key, fallback) => key === 'verifyCommand' ? 'npm run check' : fallback }) },
+  workspace: { getConfiguration: () => ({ get: (key, fallback) => key === 'verifyCommand' ? 'npm run check' : key === 'chatNames' && chatNames ? chatNames : fallback }) },
   Uri: { file: file => ({ fsPath: file, toString: () => file }), joinPath: (base, ...parts) => ({ fsPath: path.join(String(base), ...parts), toString: () => path.join(String(base), ...parts) }) },
 };
 Module._load = function (request, parent, isMain) {
   if (request === 'vscode') return vscodeStub;
   if (request === './lib/stream-engine.js') return { StreamEngine: Engine };
+  if (request === './lib/agent-titles.js') return { ...load.call(this, request, parent, isMain), readAgentTitle: async (agent, id) => agentTitles[`${agent}:${id}`] || '' };
   if (request === './lib/quota-bridge.js') return { readQuotas: async () => quotaHook ? quotaHook() : quotas, claudeUsageAge: () => 0, recordClaudeUsage() {} }; // age 0: the watchdog never probes the real claude CLI
   return load.call(this, request, parent, isMain);
 };
@@ -40,6 +42,64 @@ Module._load = load;
 
 const tick = () => new Promise(resolve => setImmediate(resolve));
 const settle = async () => { await tick(); await tick(); };
+
+test('queued edit acknowledgements identify the exact saved text revision', async t => {
+  const f = fixture(t), run = f.chat(), host = f.host(run);
+  run.queuePaused = true;
+  await host.handleMessage({ type: 'queueTurn', chatId: run.chat.id, turn: { id: 'revision-test', text: 'Initial prompt', clientEditId: 'initial', attachments: [] } });
+  const text = 'The full edited prompt. '.repeat(60) + 'COMPLETE_END';
+  await host.handleMessage({ type: 'editQueuedTurn', chatId: run.chat.id, turn: { id: 'revision-test', text, clientEditId: 'saved-latest', attachments: [] }, editing: false });
+  const echoed = host.messages.findLast(message => message.type === 'turnQueue').turns[0];
+  assert.equal(echoed.text, text);
+  assert.equal(echoed.clientEditId, 'saved-latest');
+  f.deps.chatStore.flush();
+  assert.equal(f.deps.chatStore.load(run.chat.id).turnQueue.turns[0].text, text);
+});
+
+test('mixed strip dispatches top to bottom and a future first row holds later prompts', async t => {
+  const f = fixture(t), run = f.chat(), modelId = 'gpt-6.1-sol-high';
+  const queue = run.deps.schedulerQueue = f.deps.schedulerQueue = new SchedulerQueue({ workspaceDir: f.deps.workspaceDir, sessionDir: f.deps.sessionDir });
+  const task = await queue.enqueue({ model: 'codex', modelId, chatId: run.chat.id, prompt: 'Scheduled middle', dispatchTrigger: 'fixed-time', dispatchTime: '2099-01-01T00:00:00Z' });
+  run.queuePaused = true;
+  run.enqueue({ id: 'last', text: 'Queued last', modelId, attachments: [], queued: true });
+  run.enqueue({ id: 'first', text: 'Queued first', modelId, attachments: [], queued: true });
+  run.setQueueOrder(['turn:first', `scheduled:${task.id}`, 'turn:last']);
+  run.pauseQueue(false);
+  await settle();
+  assert.equal(run.chat.messages.find(m => m.role === 'user').text, 'Queued first');
+  run.streamEngine.complete(); await settle();
+  assert.equal(run.streamEngine.runs.length, 1, 'future middle row holds the last queued prompt');
+  const watchdog = new SchedulerWatchdog({ queue, workspaceDir: f.deps.workspaceDir, getModels: () => ({}), chatStore: f.deps.chatStore,
+    getQueueState: id => f.manager.runs.get(id)?.queueState() || {},
+    isChatBusy: (id, task) => f.manager.isChatBusy(id, task), resumeInChat: task => f.manager.resumeChat(task) });
+  t.after(() => watchdog.engine.dispose());
+  await watchdog.tick(); await settle();
+  assert.equal(run.streamEngine.runs.length, 1);
+  await queue.update(task.id, item => { item.dispatchTime = new Date(0).toISOString(); });
+  await watchdog.tick();
+  for (let i = 0; i < 15; i++) await tick();
+  const live = f.manager.runs.get(run.chat.id);
+  assert.deepEqual(live.chat.messages.filter(m => m.role === 'user').map(m => m.text), ['Queued first', 'Scheduled middle']);
+  live.streamEngine.complete();
+  for (let i = 0; i < 15; i++) await tick();
+  assert.deepEqual(live.chat.messages.filter(m => m.role === 'user').map(m => m.text), ['Queued first', 'Scheduled middle', 'Queued last']);
+});
+
+test('an exhausted first model holds later rows in its chat but not another chat', async t => {
+  const f = fixture(t);
+  const queue = new SchedulerQueue({ workspaceDir: f.deps.workspaceDir, sessionDir: f.deps.sessionDir });
+  quotaHook = () => ({ codex: { remaining: 0 }, claude: { remaining: 100 } });
+  const base = { dispatchTrigger: 'fixed-time', dispatchTime: new Date(0).toISOString() };
+  await queue.enqueue({ ...base, chatId: 'blocked-chat', model: 'codex', prompt: 'First blocked' });
+  await queue.enqueue({ ...base, chatId: 'blocked-chat', model: 'claude', prompt: 'Second must wait' });
+  await queue.enqueue({ ...base, chatId: 'other-chat', model: 'claude', prompt: 'Independent' });
+  const sent = [];
+  const watchdog = new SchedulerWatchdog({ queue, workspaceDir: f.deps.workspaceDir, getModels: () => ({}), resumeInChat: task => { sent.push(task.prompt); return true; } });
+  t.after(() => watchdog.engine.dispose());
+  await watchdog.tick();
+  assert.deepEqual(sent, ['Independent']);
+  assert.deepEqual((await queue.getQueue()).filter(task => task.status === 'pending').map(task => task.prompt), ['First blocked', 'Second must wait']);
+});
 
 test('scheduled queue snapshots include viewable staged images without changing attachment dispatch paths', async t => {
   const f = fixture(t);
@@ -88,6 +148,25 @@ test('Codex session discovery and chat title changes sync the external thread na
   assert.equal(calls.at(-1).project, 'Test Project');
 });
 
+test('resumed manual turns send no obsolete role reset and retain input fingerprints', async t => {
+  const f = fixture(t), run = f.chat();
+  run.chat.sessions = { codex: { id: 'existing-thread', seen: 0 } };
+  await run.startTurn({ text: 'commit', modelId: 'gpt-6.1-sol-high' });
+  const request = run.streamEngine.runs[0];
+  assert.doesNotMatch(request.prompt, /Earlier Auto-mode|The model was selected manually/);
+  assert.equal(run.chat.messages[0].text, 'commit');
+  const { inputHash } = require('../lib/codex-chat-sync');
+  assert.ok(run.chat.messages[0].codexInputHashes.includes(inputHash(request.prompt)));
+});
+
+test('opening a saved chat repairs legacy imported prompt bubbles durably', t => {
+  const f = fixture(t);
+  const stored = f.deps.chatStore.save({ ...f.deps.chatStore.create(), messages: [{ role: 'user', agent: 'codex', codexItemId: 'native-user', text: "The model was selected manually. Earlier Auto-mode role restrictions no longer apply. Follow the user's current request.\n\nPROJECT: Wittmann Website\n\ncommit" }] });
+  const run = f.manager.runFor(stored.id);
+  assert.equal(run.chat.messages[0].text, 'commit');
+  assert.equal(f.deps.chatStore.load(stored.id).messages[0].text, 'commit');
+});
+
 test('manual sends confirm their bubble to the origin and preserve the identity on replay', async t => {
   const f = fixture(t), run = f.chat(), host = f.host(run);
   await host.startTurn({ text: 'Keep this bubble', clientTurnId: 'local-send-1', modelId: 'gpt-6.1-sol-high' });
@@ -115,6 +194,60 @@ test('a reset Continue retargeted in the composer dispatches to the new provider
   assert.equal(run.streamEngine.runs.at(-1).agent, 'codex');
   assert.equal(run.streamEngine.runs.at(-1).model, 'gpt-6.1-sol');
   assert.equal(run.chat.messages.filter(message => message.role === 'user').at(-1).text, 'continue');
+});
+
+test('a reset Continue on Antigravity Claude/GPT switched to Orchestrator fires immediately when Gemini has quota', async t => {
+  const { models, seedModels } = require('./model-fixture');
+  const { setModelCatalog, setFavoriteModels } = require('../lib/model-catalog');
+  const { parseAgyModels } = require('../lib/cli-tools');
+  const extra = [...models, ...parseAgyModels('claude-sonnet-5-5-high\tClaude Sonnet 5.5 (High)\ngemini-pro-orchestrator-g1-pro\tOrchestrator')];
+  setModelCatalog(extra); setFavoriteModels(extra);
+  t.after(seedModels);
+  const f = fixture(t), run = f.chat(), host = f.host(run);
+  const queue = f.deps.schedulerQueue = run.deps.schedulerQueue = new SchedulerQueue({ workspaceDir: f.deps.workspaceDir, sessionDir: f.deps.sessionDir });
+  host.deps.schedulerQueue = queue;
+  const deadline = new Date(Date.now() + 3600000).toISOString();
+  const task = await queue.enqueue({ model: 'gemini', modelId: 'gemini:claude-sonnet-5-5-high', chatId: run.chat.id, projectId: run.chat.projectId, workspaceDir: run.deps.workspaceDir, prompt: 'continue', dispatchTrigger: 'quota-reset', notBefore: deadline });
+  await queue.getQueue();
+  assert.equal(run.pendingUsageReset('gemini-pro-orchestrator-g1-pro'), null, 'another Antigravity model does not inherit the Sonnet reset wait');
+  assert.ok(run.pendingUsageReset('gemini:claude-sonnet-5-5-high'));
+  quotaHook = () => ({ gemini: { remaining: 80, resetsAt: Date.now() / 1000 + 18000 }, antigravityClaudeGpt: { remaining: 0, resetsAt: Date.now() / 1000 + 3600 } });
+  await host.handleMessage({ type: 'saveScheduledDraft', taskId: task.id, turn: { text: 'continue', modelId: 'gemini-pro-orchestrator-g1-pro', attachments: [] }, editing: false });
+  const updated = (await queue.getQueue())[0];
+  assert.equal(updated.dispatchTrigger, 'fixed-time');
+  assert.equal(updated.notBefore, undefined);
+  const watcher = new SchedulerWatchdog({ queue, workspaceDir: f.deps.workspaceDir, getModels: () => ({}), chatStore: f.deps.chatStore, onQueueChange() {}, resumeInChat: task => f.manager.resumeChat(task) });
+  t.after(() => watcher.engine.dispose());
+  await watcher.tick();
+  await settle();
+  assert.equal(run.streamEngine.runs.at(-1).agent, 'gemini');
+  assert.equal(run.streamEngine.runs.at(-1).model, 'gemini-pro-orchestrator-g1-pro');
+  assert.equal(run.chat.messages.filter(message => message.role === 'user').at(-1).text, 'continue');
+  const stuck = await queue.enqueue({ model: 'gemini', modelId: 'gemini:claude-sonnet-5-5-high', chatId: run.chat.id, projectId: run.chat.projectId, workspaceDir: run.deps.workspaceDir, prompt: 'Try Auto', dispatchTrigger: 'quota-reset', notBefore: deadline });
+  quotaHook = () => ({ gemini: { remaining: 80 }, claude: { remaining: 0 }, codex: { remaining: 0 }, antigravityClaudeGpt: { remaining: 0 } });
+  await host.handleMessage({ type: 'saveScheduledDraft', taskId: stuck.id, turn: { text: 'Try Auto', modelId: 'auto', attachments: [] }, editing: false, clearReset: true });
+  const autoSaved = (await queue.getQueue()).find(item => item.id === stuck.id);
+  assert.ok(['gemini-3.8-flash-high', 'gemini-pro-orchestrator-g1-pro'].includes(autoSaved.modelId));
+  assert.equal(autoSaved.dispatchTrigger, 'fixed-time');
+  assert.equal(autoSaved.notBefore, undefined);
+});
+
+test('editing a scheduled task restores its schedule to the composer and applies schedule changes on save', async t => {
+  const f = fixture(t), run = f.chat(), host = f.host(run); host.panel.reveal = () => {};
+  const queue = f.deps.schedulerQueue = new SchedulerQueue({ workspaceDir: f.deps.workspaceDir, sessionDir: f.deps.sessionDir });
+  host.deps.schedulerQueue = queue;
+  const dispatchTime = new Date(Date.now() + 7200000).toISOString();
+  const task = await queue.enqueue({ model: 'codex', modelId: 'gpt-6.1-sol-high', chatId: run.chat.id, projectId: run.chat.projectId, workspaceDir: run.deps.workspaceDir, prompt: 'Later edit', dispatchTrigger: 'fixed-time', dispatchTime });
+  await host.handleMessage({ type: 'unscheduleToComposer', taskId: task.id });
+  const restored = host.messages.findLast(m => m.type === 'restoreScheduledDraft');
+  assert.deepEqual(restored.schedule, { dispatchTrigger: 'fixed-time', dispatchTime });
+  const nextAt = Date.now() / 1000 + 5400;
+  quotaHook = () => ({ codex: { remaining: 60, resetsAt: nextAt } });
+  await host.handleMessage({ type: 'saveScheduledDraft', taskId: task.id, turn: { text: 'Wait for reset', modelId: 'gpt-6.1-sol-high', attachments: [] }, editing: false, schedule: { dispatchTrigger: 'quota-reset', resetWindow: '5h' } });
+  const saved = (await queue.getQueue())[0];
+  assert.equal(saved.dispatchTrigger, 'quota-reset');
+  assert.equal(saved.dispatchTime, undefined);
+  assert.equal(saved.notBefore, new Date(nextAt * 1000).toISOString());
 });
 
 test('Send Now cannot remove a reset-waiting task, but the saved deadline expires independently of the next window', async t => {
@@ -176,9 +309,9 @@ test('Steer Now and automatic queue draining preserve an active saved reset wait
     if (steer) await host.handleMessage({ type: 'steerQueuedTurn', chatId: run.chat.id, id: 'follow-up' });
     else await run.drain();
     assert.equal(run.streamEngine.runs.length, 0);
-    assert.equal(run.queue.length, 0);
+    assert.equal(run.queue.length, steer ? 0 : 1);
     const tasks = await queue.getQueue();
-    assert.deepEqual(tasks.map(task => task.prompt), ['continue', 'Implement the next feature']);
+    assert.deepEqual(tasks.map(task => task.prompt), steer ? ['continue', 'Implement the next feature'] : ['continue']);
     assert.ok(tasks.every(task => task.notBefore === notBefore), 'do not move prompts to the provider’s next window');
   }
 });
@@ -383,7 +516,7 @@ test('startup discovery finishes before a manual queued model is resolved', asyn
 test('saved JSON attachments retain their bytes and reach the destination request', async t => {
   const f = fixture(t), run = f.chat(), host = f.host(run);
   const content = JSON.stringify({ feedback: 'Prefer Gemini for documentation', accepted: true });
-  host.saveAttachment({ chatId: run.chat.id, name: 'router feedback.json', mime: 'application/json', data: Buffer.from(content).toString('base64') });
+  await host.saveAttachment({ chatId: run.chat.id, name: 'router feedback.json', mime: 'application/json', data: Buffer.from(content).toString('base64') });
   const saved = host.messages.findLast(message => message.type === 'attachmentSaved').attachment;
   assert.equal(fs.readFileSync(saved.path, 'utf8'), content);
   await host.startTurn({ chatId: run.chat.id, text: 'Review this feedback', modelId: 'gpt-6.1-sol-high', attachments: [saved.path] });
@@ -418,7 +551,7 @@ test('registered projects isolate execution, context, attachments and restored c
   assert.equal(manager.runFor(second.chat.id).streamEngine.cwd, b.root);
   assert.equal(f.manager.listChats().find(chat => chat.id === second.chat.id).projectName, 'Extension');
   const host = f.host(second);
-  host.saveAttachment({ chatId: first.chat.id, name: 'late.png', mime: 'image/png', data: Buffer.from('late picture').toString('base64') });
+  await host.saveAttachment({ chatId: first.chat.id, name: 'late.png', mime: 'image/png', data: Buffer.from('late picture').toString('base64') });
   const upload = host.messages.findLast(message => message.type === 'attachmentSaved');
   assert.equal(upload.chatId, first.chat.id);
   assert.ok(upload.attachment.path.startsWith(first.deps.attachmentsDir));
@@ -642,7 +775,8 @@ test('a limit after a long Codex reply schedules Continue, the prompt that never
   const queue = run.deps.schedulerQueue = new SchedulerQueue({ workspaceDir: f.deps.workspaceDir, sessionDir: f.deps.sessionDir });
   quotaHook = () => ({ codex: { remaining: 0, resetsAt: Math.ceil(Date.now() / 1000) + 3600 } });
   t.after(() => { quotaHook = undefined; });
-  await queue.enqueue({ model: 'codex', modelId, chatId: run.chat.id, prompt: 'Now I have got a build prompt', dispatchTrigger: 'quota-reset' });
+  const older = await queue.enqueue({ model: 'codex', modelId, chatId: run.chat.id, prompt: 'Now I have got a build prompt', dispatchTrigger: 'quota-reset' });
+  run.queueOrder = [`scheduled:${older.id}`, 'turn:built']; // the user dragged the list: unranked prompts would otherwise land below it
   let scheduling;
   const schedule = run.scheduleQueuedUntilReset.bind(run);
   run.scheduleQueuedUntilReset = (...args) => (scheduling = schedule(...args));
@@ -653,6 +787,8 @@ test('a limit after a long Codex reply schedules Continue, the prompt that never
   assert.equal(run.streamEngine.runs.length, 1, 'the queued prompt is not sent into the exhausted model');
   assert.equal(run.queue.length, 0);
   assert.deepEqual((await queue.getQueue()).map(task => task.prompt), ['continue', 'So now that everything is built, simplify the code', 'Now I have got a build prompt']);
+  const tasks = await queue.getQueue(), ids = ['continue', 'So now that everything is built, simplify the code', 'Now I have got a build prompt'].map(prompt => tasks.find(task => task.prompt === prompt).id);
+  assert.deepEqual(run.queueOrder, ids.map(id => `scheduled:${id}`), 'the strip shows Continue as #1');
 });
 
 test('the watchdog hands a chat one scheduled prompt at a time and only once the model has finished the previous one', async t => {
@@ -730,9 +866,11 @@ test('project favorites persist across windows without closing hidden chats or s
   await current.startTurn({ text: 'Current task', modelId: 'gpt-6.1-sol-high' }); current.streamEngine.complete();
   await hidden.startTurn({ text: 'Keep working in the background', modelId: 'gpt-6.1-sol-high' });
   const scheduled = await queue.enqueue({ model: 'codex', prompt: 'Later in hidden project', projectId: registered[3].id, chatId: hidden.chat.id, workspaceDir: hidden.deps.workspaceDir, dispatchTrigger: 'quota-reset' });
-  assert.deepEqual(host.projectPins(), [registered[1].id, registered[2].id]);
+  assert.deepEqual(host.projectPins(), [], 'recent projects are not implicitly pinned');
+  await host.handleMessage({ type: 'pinProject', projectId: registered[1].id, pinned: true });
+  await host.handleMessage({ type: 'pinProject', projectId: registered[2].id, pinned: true });
   await host.handleMessage({ type: 'pinProject', projectId: registered[3].id, pinned: true });
-  assert.equal(saved, undefined, 'a third favorite cannot be saved');
+  assert.deepEqual(saved, [registered[1].id, registered[2].id], 'a third favorite cannot be saved');
   await host.handleMessage({ type: 'pinProject', projectId: registered[2].id, pinned: false });
   await host.handleMessage({ type: 'pinProject', projectId: registered[3].id, pinned: true });
   assert.deepEqual(saved, [registered[1].id, registered[3].id]);
@@ -1164,7 +1302,7 @@ test('Auto runs the exact chosen favorite with its own instructions, permissions
   assert.equal(request.permissionMode, 'ask');
   assert.equal(request.resume, 'existing-thread');
   assert.match(request.prompt, /Check keyboard access/);
-  assert.match(request.prompt, /Earlier Auto-mode role restrictions no longer apply/);
+  assert.doesNotMatch(request.prompt, /Earlier Auto-mode role restrictions|The model was selected manually/);
   assert.equal(run.chat.modelId, 'auto');
   assert.equal(run.activeAssistantMessage.modelLabel, require('../lib/model-catalog').modelOption(id).label);
   run.streamEngine.complete();
@@ -1298,7 +1436,7 @@ test('editing holds the original queue slot and saves text, model and images ind
   assert.equal(run.queue[1].editing, false, 'closing the editor releases its hold');
 });
 
-test('queue conversion preserves edits, images and project; Continue stays first and survives reload', async t => {
+test('queue conversion preserves edits, images and project; explicit reordering survives reload', async t => {
   const f = fixture(t), run = f.chat();
   f.deps.schedulerQueue = new SchedulerQueue({ workspaceDir: f.deps.workspaceDir, sessionDir: f.deps.sessionDir });
   run.deps.schedulerQueue = f.deps.schedulerQueue;
@@ -1321,7 +1459,7 @@ test('queue conversion preserves edits, images and project; Continue stays first
   assert.deepEqual(tasks.map(task => task.prompt), ['continue', 'Edited regulatory task', 'Next task']);
   await f.deps.schedulerQueue.reorder(tasks.map(task => task.id).reverse());
   const reloaded = new SchedulerQueue({ workspaceDir: f.deps.workspaceDir, sessionDir: f.deps.sessionDir });
-  assert.equal((await reloaded.getQueue())[0].prompt, 'continue');
+  assert.equal((await reloaded.getQueue())[0].prompt, 'Next task');
   await f.deps.schedulerQueue.update((await reloaded.getQueue())[0].id, task => { task.notBefore = '2099-01-01T00:00:00Z'; });
   assert.equal(await f.deps.schedulerQueue.getNextPendingForModel('claude'), null, 'later prompts wait for the continuation even if already due');
   const independent = await f.deps.schedulerQueue.enqueue({ chatId: 'another-chat', model: 'claude', prompt: 'Independent task', dispatchTrigger: 'quota-reset' });
@@ -1437,6 +1575,15 @@ test('pause during planning neither starts nor loses a task', async t => {
   run.pauseQueue(false); await settle();
   assert.equal(run.chat.messages.find(m => m.role === 'user').text, 'Task two');
   assert.equal(run.streamEngine.runs.length, 1);
+});
+
+test('the strip order mixing queued and scheduled prompts is saved with the chat and sent to every window', async t => {
+  const f = fixture(t), run = f.chat(), host = f.host(run);
+  run.queuePaused = true;
+  run.enqueue(turn('one'));
+  run.setQueueOrder(['scheduled:task-a', 'turn:one', 'turn:one', 'junk', 'scheduled:']);
+  assert.deepEqual(f.deps.chatStore.load(run.chat.id).turnQueue.order, ['scheduled:task-a', 'turn:one'], 'duplicates and malformed keys are dropped');
+  assert.deepEqual(host.messages.findLast(m => m.type === 'turnQueue').order, ['scheduled:task-a', 'turn:one']);
 });
 
 test('reorder or delete while a task is being planned cannot start the old front item', async t => {
@@ -1580,12 +1727,14 @@ test('streaming without a window saves text, tool steps and session IDs before t
   const f = fixture(t), run = f.chat();
   await run.startTurn({ text: 'Long task', modelId: 'gpt-6.1-sol-high' });
   run.handleStreamEvent({ type: 'session', agent: 'codex', sessionId: 'durable-thread' });
+  await new Promise(resolve => setTimeout(resolve, 80)); // written off the host thread now, straight away rather than synchronously
   assert.equal(f.deps.chatStore.load(run.chat.id).sessions.codex.id, 'durable-thread');
   run.handleStreamEvent({ type: 'delta', agent: 'codex', text: 'Saved progress' });
   await new Promise(resolve => setTimeout(resolve, 300));
   assert.equal(f.deps.chatStore.load(run.chat.id).messages.at(-1).text, 'Saved progress');
   assert.equal(f.deps.chatStore.load(run.chat.id).messages.at(-1).inProgress, true);
   run.handleStreamEvent({ type: 'tool_start', name: 'shell', toolId: 'step' });
+  await new Promise(resolve => setTimeout(resolve, 320)); // tool boundaries share the checkpoint's off-thread write
   assert.equal(f.deps.chatStore.load(run.chat.id).messages.at(-1).offset, 'Saved progress'.length);
   run.streamEngine.complete();
   assert.equal(f.deps.chatStore.load(run.chat.id).messages.at(-2).inProgress, undefined);
@@ -1771,4 +1920,110 @@ test('tool_start and tool_end record startedAt and durationMs on saved tool step
   assert.ok(step.durationMs >= 142000);
   assert.equal(endEvent.durationMs, step.durationMs);
   assert.equal(step.event.durationMs, step.durationMs);
+});
+
+test('chatLoading and chatLoaded report pending scheduled/queued counts while scheduler loads or switches', async t => {
+  const f = fixture(t), first = f.chat(), second = f.chat();
+  const scheduler = f.deps.schedulerQueue = f.manager.deps.schedulerQueue = new SchedulerQueue({ workspaceDir: f.deps.workspaceDir, sessionDir: f.deps.sessionDir });
+  const host = f.host(first);
+  host.deps.schedulerQueue = scheduler;
+  // Cold start before scheduler-queue.json is loaded: chatLoaded reports unknown (null) instead of empty.
+  host.replay();
+  assert.equal(host.messages.findLast(m => m.type === 'chatLoaded').chat.scheduledPending, null);
+  await scheduler.enqueue({ model: 'codex', modelId: 'gpt-6.1-sol-high', chatId: second.chat.id, prompt: 'Scheduled on second', dispatchTrigger: 'fixed-time', dispatchTime: new Date(Date.now() + 600000).toISOString() });
+  second.queue.push({ id: 'q1', text: 'Queued on second', modelId: 'gpt-6.1-sol-high', queued: true });
+  // Empty chat after scheduler loaded omits scheduledPending.
+  host.replay();
+  assert.equal(host.messages.findLast(m => m.type === 'chatLoaded').chat.scheduledPending, undefined);
+  // Switching to second chat sends combined queueCount on chatLoading and exact scheduledPending on chatLoaded.
+  host.restoreChat(second.chat.id);
+  const loading = host.messages.findLast(m => m.type === 'chatLoading');
+  const loaded = host.messages.findLast(m => m.type === 'chatLoaded');
+  assert.equal(loading.queueCount, 2);
+  assert.equal(loaded.chat.scheduledPending, 1);
+});
+
+// Chat names: the agent's own title where it writes one (Antigravity), Groq otherwise or when asked.
+async function nameTurn(t, { modelId, agent, setting, annotation }) {
+  const { setChatSpill } = await import('../../voice-router/lib/groq-client.mjs');
+  const asked = [];
+  setChatSpill({ callChat: async body => { asked.push(body.messages[1].content); return 'Groq name'; } });
+  chatNames = setting;
+  t.after(() => { chatNames = undefined; setChatSpill({ callChat: null }); for (const key of Object.keys(agentTitles)) delete agentTitles[key]; });
+  const f = fixture(t);
+  f.deps.agentTitleRetryMs = 1;
+  const run = f.manager.runFor(f.deps.chatStore.save(f.deps.chatStore.create()).id);
+  if (annotation) agentTitles[`${agent}:session-1`] = annotation;
+  await run.startTurn({ text: 'Fix the dock hover', modelId });
+  await settle();
+  const duringTurn = { title: run.chat.title, asked: asked.length };
+  run.streamEngine.emit('event', { type: 'session', agent, sessionId: 'session-1' });
+  run.streamEngine.complete();
+  for (let i = 0; i < 20; i++) await tick();
+  await new Promise(resolve => setTimeout(resolve, 20));
+  return { duringTurn, title: run.chat.title, asked };
+}
+
+test('an Antigravity chat takes the name Antigravity wrote and never asks Groq', async t => {
+  const result = await nameTurn(t, { modelId: 'gemini-3.8-flash-high', agent: 'gemini', setting: 'agent', annotation: 'Fix Dock Hover Animation' });
+  assert.deepEqual(result.duringTurn, { title: undefined, asked: 0 }, 'nothing is guessed while the turn runs');
+  assert.equal(result.title, 'Fix Dock Hover Animation');
+  assert.deepEqual(result.asked, []);
+});
+
+test('an Antigravity chat with no title written falls back to Groq', async t => {
+  const result = await nameTurn(t, { modelId: 'gemini-3.8-flash-high', agent: 'gemini', setting: 'agent' });
+  assert.equal(result.title, 'Groq name');
+  assert.deepEqual(result.asked, ['Fix the dock hover']);
+});
+
+test('Claude chats are named by Groq at once, since headless Claude writes no title', async t => {
+  const result = await nameTurn(t, { modelId: 'claude-sonnet-5-5-high', agent: 'claude', setting: 'agent', annotation: 'Ignored' });
+  assert.deepEqual(result.duringTurn, { title: 'Groq name', asked: 1 });
+  assert.equal(result.title, 'Groq name');
+});
+
+test('with chat names set to Groq an Antigravity chat is named by Groq at once, ignoring its own title', async t => {
+  const result = await nameTurn(t, { modelId: 'gemini-3.8-flash-high', agent: 'gemini', setting: 'groq', annotation: 'Fix Dock Hover Animation' });
+  assert.deepEqual(result.duringTurn, { title: 'Groq name', asked: 1 });
+  assert.equal(result.title, 'Groq name');
+  assert.equal(result.asked.length, 1);
+});
+
+test('a name you typed is never replaced by the agent title', async t => {
+  const f = fixture(t);
+  f.deps.agentTitleRetryMs = 1;
+  agentTitles['gemini:session-2'] = 'Agent Name';
+  const run = f.manager.runFor(f.deps.chatStore.save({ ...f.deps.chatStore.create(), title: 'Mine', customTitle: true }).id);
+  run.chat.sessions = { gemini: { id: 'session-2' } };
+  await run.adoptAgentTitle('gemini');
+  assert.equal(run.chat.title, 'Mine');
+});
+
+test('reply text is sent to the windows in batches without changing order or content', async t => {
+  const f = fixture(t), run = f.chat();
+  const seen = []; // what the first window received
+  const secondSeen = [];
+  const window = log => ({ panel: { webview: { postMessage: message => { log.push(message); } } } });
+  const first = window(seen), second = window(secondSeen);
+  run.hosts.add(first);
+  const text = () => seen.filter(m => m.type === 'delta').map(m => m.text).join('');
+  const delta = word => run.postEvent({ type: 'delta', agent: 'codex', model: 'codex', text: word });
+  delta('One '); // leaves at once
+  assert.equal(seen.length, 1);
+  delta('two '); delta('three ');
+  assert.equal(seen.length, 1, 'the next chunks wait for the batch');
+  run.postEvent({ type: 'tool_start', name: 'shell', toolId: 'x' });
+  assert.deepEqual(seen.map(m => m.type), ['delta', 'delta', 'tool_start'], 'a batch goes out before the event that follows it');
+  assert.equal(seen[1].text, 'two three ');
+  delta('four ');
+  run.focus(second); // a window attaching mid-batch must not receive the text twice
+  assert.equal(text(), 'One two three four ');
+  delta('five '); delta('six ');
+  await new Promise(resolve => setTimeout(resolve, 80));
+  assert.equal(text(), 'One two three four five six ');
+  assert.equal(secondSeen.map(m => m.text).join(''), 'five six ', 'the window that attached later gets only what came after it');
+  assert.equal(run.pendingDelta, null);
+  run.postEvent({ type: 'delta', agent: 'codex', model: 'codex', text: 'whole', block: true });
+  assert.equal(seen.at(-1).block, true, 'block replies are never merged');
 });

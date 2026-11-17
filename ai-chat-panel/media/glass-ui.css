@@ -1,0 +1,374 @@
+/* Liquid glass for the rest of the UI: the settings popup, the other full-screen popups, and every card, control, tag,
+   switch and menu inside them. liquid-glass.js adds body.lg-on once the engine runs; high contrast and reduced
+   transparency never get any of this (the script skips the first, and the rules below exclude it).
+
+   Cost rule. The engine's refraction is one SVG backdrop filter per surface and is kept for the few big, floating
+   surfaces (see style.css). Everything here is paint only: gradients and inset shadows, no backdrop-filter and no
+   extra layers, so a popup with a hundred controls costs the same to scroll as before. What makes it read as glass:
+     - a lit edge. Two inset shadows offset the other way (1px, no blur) draw a bright crescent on the side facing the
+       light (top left) and a faint echo on the opposite side, as the engine's rim does, instead of an even border;
+     - a sheen: a diagonal gradient, bright at the lit corner, clear in the middle;
+     - a little colour behind it. The popup's sheet carries the same soft Claude / Codex / Antigravity washes as the
+       window, so the clear surfaces on top of it have something to catch;
+     - wells (inputs, tracks) are recessed: an inner shadow on top and a lit lip at the bottom edge.
+   Colours stay on the theme tokens (--panel, --ink, --sheen), so the light theme gets the same shapes with a dark
+   hairline and white light. */
+
+body.lg-on:not(.vscode-high-contrast, .vscode-high-contrast-light) {
+  --gc-sheen: linear-gradient(150deg, rgb(var(--sheen) / 0.15), rgb(var(--sheen) / 0.035) 38%, rgb(var(--sheen) / 0) 62%, rgb(var(--sheen) / 0.06));
+  --gc-sheen-soft: linear-gradient(155deg, rgb(var(--sheen) / 0.08), rgb(var(--sheen) / 0.015) 45%, rgb(var(--sheen) / 0));
+  --gc-lit: inset 1px 1px 0 0 rgb(var(--sheen) / 0.3), inset -1px -1px 0 0 rgb(var(--sheen) / 0.09);
+  --gc-lit-soft: inset 1px 1px 0 0 rgb(var(--sheen) / 0.2), inset -1px -1px 0 0 rgb(var(--sheen) / 0.06);
+  --gc-hair: inset 0 0 0 1px rgb(var(--ink) / 0.075);
+  --gc-glow: inset 0 0 16px rgb(var(--sheen) / 0.05);
+  --gc-well: inset 0 2px 5px rgb(0 0 0 / calc(0.32 * var(--shadow-k))), inset 0 0 0 1px rgb(var(--ink) / 0.08), 0 1px 0 rgb(var(--sheen) / 0.1);
+  --gc-wash:
+    radial-gradient(62% 40% at 0% 0%, color-mix(in srgb, var(--claude-color) 10%, transparent), transparent),
+    radial-gradient(56% 40% at 100% 40%, color-mix(in srgb, var(--codex-color) 9%, transparent), transparent),
+    radial-gradient(72% 38% at 28% 100%, color-mix(in srgb, var(--gemini-color) 9%, transparent), transparent);
+  --gc-card: rgb(var(--ink) / 0.065);
+  --gc-well-fill: rgb(0 0 0 / calc(0.24 * var(--well-k)));
+  --gc-thumb: linear-gradient(165deg, rgb(var(--sheen) / 0.2), rgb(var(--sheen) / 0.06) 50%, rgb(var(--sheen) / 0.1)), rgb(var(--panel-raised) / 0.72);
+  --gc-thumb-shadow: inset 1px 1px 0 0 rgb(var(--sheen) / 0.28), inset 0 0 0 1px rgb(var(--ink) / 0.1), 0 3px 9px rgb(0 0 0 / calc(0.45 * var(--shadow-k)));
+  --gc-primary-sheen: linear-gradient(180deg, rgb(255 255 255 / 0.2), rgb(255 255 255 / 0) 55%);
+  --gc-primary-shadow: inset 0 1px 0 0 rgb(255 255 255 / 0.45), inset 0 -1.5px 3px rgb(0 0 0 / 0.22), 0 4px 12px -2px rgb(0 0 0 / calc(0.4 * var(--shadow-k)));
+  --gc-pill-fill: rgb(var(--panel) / 0.4);
+  --gc-pill-fill-focus: rgb(var(--panel) / 0.52);
+  --gc-pill-sheen: linear-gradient(160deg, rgb(var(--sheen) / 0.09), rgb(var(--sheen) / 0.01) 45%, transparent);
+  --gc-pill-lift: 0 10px 24px -10px rgb(0 0 0 / calc(0.45 * var(--shadow-k))), 0 2px 6px rgb(0 0 0 / calc(0.14 * var(--shadow-k)));
+  --gc-pill-lip: inset 0 -9px 14px -11px rgb(0 0 0 / calc(0.26 * var(--shadow-k)));
+  --gc-sheet-fill: rgb(var(--panel) / 0.72);
+  --gc-top-fade: rgb(var(--panel) / 0.94);
+  --gc-close-fill: rgb(var(--ink) / 0.08);
+}
+body.lg-on:not(.vscode-light):not(.vscode-high-contrast, .vscode-high-contrast-light) {
+  --gc-sheen: linear-gradient(150deg, rgb(var(--sheen) / 0.11), rgb(var(--sheen) / 0.025) 38%, transparent 62%, rgb(var(--sheen) / 0.04));
+  --gc-sheen-soft: linear-gradient(155deg, rgb(var(--sheen) / 0.06), rgb(var(--sheen) / 0.012) 45%, transparent);
+  --gc-lit: inset 1px 1px 0 0 rgb(var(--sheen) / 0.2), inset -1px -1px 0 0 rgb(var(--sheen) / 0.06);
+  --gc-lit-soft: inset 1px 1px 0 0 rgb(var(--sheen) / 0.13), inset -1px -1px 0 0 rgb(var(--sheen) / 0.04);
+  --gc-glow: inset 0 0 16px rgb(var(--sheen) / 0.03);
+}
+body.lg-on.vscode-light:not(.vscode-high-contrast-light) {
+  --gc-sheen: linear-gradient(150deg, rgb(255 255 255 / 0.88), rgb(255 255 255 / 0.34) 40%, rgb(255 255 255 / 0.08) 64%, rgb(255 255 255 / 0.28));
+  --gc-sheen-soft: linear-gradient(155deg, rgb(255 255 255 / 0.56), rgb(255 255 255 / 0.15) 50%, rgb(255 255 255 / 0));
+  --gc-lit: inset 1px 1px 0 0 rgb(255 255 255 / 0.92), inset -1px -1px 0 0 rgb(var(--ink) / 0.05);
+  --gc-lit-soft: inset 1px 1px 0 0 rgb(255 255 255 / 0.86), inset -1px -1px 0 0 rgb(var(--ink) / 0.04);
+  --gc-hair: inset 0 0 0 1px rgb(var(--ink) / 0.085);
+  --gc-glow: inset 0 0 16px rgb(255 255 255 / 0.45);
+  --gc-well: inset 0 2px 4px rgb(var(--ink) / 0.1), inset 0 0 0 1px rgb(var(--ink) / 0.1), 0 1px 0 rgb(255 255 255 / 0.9);
+  --gc-wash:
+    radial-gradient(62% 40% at 0% 0%, color-mix(in srgb, var(--claude-color) 8%, transparent), transparent),
+    radial-gradient(56% 40% at 100% 40%, color-mix(in srgb, var(--codex-color) 7%, transparent), transparent),
+    radial-gradient(72% 38% at 28% 100%, color-mix(in srgb, var(--gemini-color) 7%, transparent), transparent);
+  --gc-card: rgb(255 255 255 / 0.54);
+  --gc-well-fill: rgb(var(--ink) / 0.045);
+  --gc-thumb: linear-gradient(165deg, rgb(255 255 255 / 0.96), rgb(255 255 255 / 0.72) 55%, rgb(255 255 255 / 0.88));
+  --gc-thumb-shadow: inset 1px 1px 0 0 rgb(255 255 255 / 0.95), inset 0 0 0 1px rgb(var(--ink) / 0.08), 0 2px 7px rgb(0 0 0 / 0.14), 0 1px 2px rgb(0 0 0 / 0.08);
+  --gc-primary-sheen: linear-gradient(180deg, rgb(255 255 255 / 0.34), rgb(255 255 255 / 0) 58%);
+  --gc-primary-shadow: inset 0 1px 0 0 rgb(255 255 255 / 0.7), inset 0 -1.5px 3px rgb(0 0 0 / 0.14), 0 4px 12px -2px rgb(0 0 0 / calc(0.28 * var(--shadow-k)));
+  --gc-pill-fill: rgb(255 255 255 / 0.44);
+  --gc-pill-fill-focus: rgb(255 255 255 / 0.62);
+  --gc-pill-sheen: linear-gradient(160deg, rgb(255 255 255 / 0.55), rgb(255 255 255 / 0.1) 50%, transparent);
+  --gc-pill-lift: 0 8px 20px -10px rgb(0 0 0 / 0.22), 0 2px 6px rgb(0 0 0 / 0.07);
+  --gc-pill-lip: inset 0 -6px 10px -9px rgb(0 0 0 / 0.12);
+  --gc-sheet-fill: rgb(var(--panel) / 0.68);
+  --gc-top-fade: color-mix(in srgb, rgb(var(--panel)) 72%, rgb(255 255 255 / 0.92));
+  --gc-close-fill: rgb(255 255 255 / 0.58);
+}
+
+body.lg-on:not(.vscode-high-contrast, .vscode-high-contrast-light) {
+
+  /* ----- The popup. The overlay frosts the chat behind it (one backdrop blur, as before); the sheet is a clear slab on
+     top of that. The sheet's own backdrop blur is dropped: inside the overlay it could only see the overlay. ----- */
+  & .fs-modal {
+    background: rgb(8 8 10 / calc(0.34 * var(--well-k))); /* no colour washes here: the sheet covers all but a 10px margin, and a big gradient costs paint */
+    backdrop-filter: blur(22px) saturate(170%);
+    -webkit-backdrop-filter: blur(22px) saturate(170%);
+  }
+  & .fs-modal-sheet {
+    border-color: transparent;
+    background:
+      var(--gc-wash),
+      linear-gradient(160deg, rgb(var(--sheen) / 0.12), rgb(var(--sheen) / 0.02) 32%, rgb(var(--sheen) / 0) 62%, rgb(var(--sheen) / 0.05)),
+      var(--gc-sheet-fill);
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+    box-shadow: var(--shadow-modal), var(--gc-hair), inset 1.5px 1.5px 0 0 rgb(var(--sheen) / 0.34), inset -1px -1px 0 0 rgb(var(--sheen) / 0.1), inset 0 0 40px rgb(var(--sheen) / 0.04);
+  }
+  & .fs-modal-head {
+    position: relative;
+    border-bottom-color: transparent;
+    background: linear-gradient(180deg, rgb(var(--sheen) / 0.07), rgb(var(--sheen) / 0));
+    box-shadow: 0 1px 0 rgb(var(--ink) / 0.07), 0 2px 0 rgb(var(--sheen) / 0.04);
+    border-radius: 20px 20px 0 0;
+  }
+  & .fs-modal-head::after {
+    content: '';
+    position: absolute;
+    left: 0;
+    right: 0;
+    top: 100%;
+    height: 26px;
+    z-index: 7;
+    pointer-events: none;
+    background: linear-gradient(to bottom, var(--gc-top-fade) 0%, color-mix(in srgb, var(--gc-top-fade) 72%, transparent) 38%, transparent 100%);
+  }
+  & .fs-modal-close {
+    width: 32px;
+    height: 32px;
+    border-color: transparent;
+    background: var(--gc-sheen), var(--gc-close-fill);
+    box-shadow: var(--gc-hair), var(--gc-lit), 0 2px 6px rgb(0 0 0 / calc(0.18 * var(--shadow-k)));
+  }
+  & .fs-modal-close:hover { background: var(--gc-sheen), rgb(var(--ink) / 0.14); }
+
+  /* ----- Floating 3D Liquid Glass 2.0 bars & companion pills across every popup -----
+     Same floating glass plane in Settings, Manage Chats, All projects and Loops: frosted interior, real Snell rim
+     refraction and crisp specular highlight (liquid-glass.js KINDS), floating 10px below the header so scrolling
+     content dissolves gently into the top edge and glides visibly underneath the pills. */
+  & :is(.cs-settings-search, .history-tools .history-search, .history-filter-btn, .project-gallery-search, .project-gallery-quota, .inv-bar, .cs-route-status) {
+    border-color: transparent;
+    border-radius: 20px;
+    background-color: var(--gc-pill-fill);
+    -webkit-backdrop-filter: var(--lg-bd, blur(18px) saturate(170%));
+    backdrop-filter: var(--lg-bd, blur(18px) saturate(170%));
+    box-shadow: var(--gc-pill-lift), var(--gc-hair), var(--gc-lit), var(--gc-pill-lip);
+  }
+  & :is(.cs-settings-search, .history-filter-btn, .project-gallery-quota, .inv-bar, .cs-route-status) {
+    background-image: var(--gc-pill-sheen);
+  }
+  & .cs-settings-search { top: 10px; z-index: 8; }
+  & .cs-settings-search-field { min-height: 40px; padding: 0 10px 0 14px; }
+  & .cs-settings-search-field > svg { width: 16px; height: 16px; }
+  & :is(.history-tools .history-search, .project-gallery-search.cs-field) { height: 40px; padding-left: 38px; }
+  & .history-tools .history-search { background-position: 14px 50%; background-size: 16px; }
+  & :is(.history-filter-btn, .project-gallery-quota) { height: 40px; padding: 0 15px 0 13px; color: var(--text-primary); }
+  & .history-filter-btn:hover, & .history-filter-btn[aria-expanded='true'] { background-color: var(--gc-pill-fill-focus); }
+  & .history-filter-btn.is-filtered { box-shadow: var(--gc-pill-lift), inset 0 0 0 1px color-mix(in srgb, var(--accent) 55%, transparent), var(--gc-lit), var(--gc-pill-lip); }
+  & .project-gallery-quota.is-full { background-color: color-mix(in srgb, var(--fg-cyan) 16%, var(--gc-pill-fill)); box-shadow: var(--gc-pill-lift), inset 0 0 0 1px rgba(100, 210, 255, 0.35), var(--gc-lit), var(--gc-pill-lip); color: var(--fg-cyan); }
+  & :is(.cs-settings-search:focus-within, .history-tools .history-search:focus, .project-gallery-search:focus) {
+    background-color: var(--gc-pill-fill-focus);
+    box-shadow: var(--gc-pill-lift), 0 0 0 1.5px var(--accent), var(--gc-lit), var(--gc-pill-lip);
+  }
+  & :is(.cs-settings-search-field input, .history-tools .history-search, .project-gallery-search.cs-field) { font-size: 13.5px; }
+  & .cs-settings-search-results { border-top-color: rgb(var(--ink) / 0.08); }
+  & .cs-settings-search-option:hover { background: var(--gc-sheen-soft), rgb(var(--ink) / 0.06); }
+  & .project-gallery-tools { position: sticky; top: 10px; z-index: 8; margin: 0; padding: 0; }
+  & .project-gallery-searchbox > svg { left: 14px; width: 16px; height: 16px; z-index: 1; }
+  & .inv-bar { top: 10px; z-index: 8; padding: 6px 8px 6px 14px; }
+  & .cs-route-status { top: 10px; z-index: 8; }
+  & #settingsModal .fs-modal-body,
+  & #projectsModal .fs-modal-body { scroll-padding-top: 66px; }
+  & #historyModal .history-tools { position: relative; z-index: 8; margin: 10px 14px 0; }
+  & #historyModal .history-filter-panel {
+    position: relative;
+    z-index: 8;
+    margin: 8px 14px 0;
+    border-color: transparent;
+    background: var(--gc-sheen-soft), var(--gc-card);
+    box-shadow: var(--gc-hair), var(--gc-lit-soft), 0 10px 24px -10px rgb(0 0 0 / calc(0.35 * var(--shadow-k)));
+    transform-origin: top right;
+  }
+  & #historyModal:has(.history-tools:not([hidden])):has(.history-filter-panel[hidden]) .fs-modal-body {
+    margin-top: -50px;
+    padding-top: 62px;
+    scroll-padding-top: 62px;
+  }
+
+  /* Segmented tabs: a recessed track with a raised 3D glass capsule thumb gliding inside it. */
+  & .cs-tabs, & #settingsModal .pill-track, & .pill-track {
+    background: var(--gc-well-fill);
+    box-shadow: var(--gc-well);
+  }
+  & .pill-track:not(.question-options)::before,
+  & #settingsModal .pill-track::before {
+    background: var(--gc-thumb);
+    box-shadow: var(--gc-thumb-shadow);
+  }
+  & .agents-tabs::before {
+    background: var(--gc-sheen-soft), color-mix(in srgb, var(--pill-tint, transparent) 22%, var(--gc-thumb));
+    box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--pill-tint, transparent) 38%, rgb(var(--ink) / 0.08)), var(--gc-lit), 0 2px 7px rgb(0 0 0 / calc(0.26 * var(--shadow-k)));
+  }
+  & .pill-track > :is([aria-selected='true'], [aria-checked='true'], .active) { color: var(--text-primary); }
+
+  /* ----- Cards and rows ----- */
+  & :is(.cs-card, .queue-card, .tool-card, .msg-pending, .setup-card, .inv-run-card, .inv-loop-item, .turn-queue-item, .project-gallery-open, .agents-task) {
+    border-color: transparent;
+    background: var(--gc-sheen-soft), rgb(var(--panel) / 0.34);
+    box-shadow: var(--gc-hair), var(--gc-lit-soft), 0 8px 20px -12px rgb(0 0 0 / calc(0.38 * var(--shadow-k)));
+  }
+  & :is(.cs-card, .project-gallery-open) { background: var(--gc-sheen-soft), var(--gc-card); }
+  & .project-gallery-open:hover { background: var(--gc-sheen), var(--gc-card); }
+  & .project-gallery-card.is-pinned .project-gallery-open { box-shadow: inset 0 0 0 1px rgba(100, 210, 255, 0.36), var(--gc-lit-soft), 0 8px 20px -12px rgb(0 0 0 / calc(0.38 * var(--shadow-k))); }
+  & .project-gallery-open.is-active { background: var(--gc-sheen), var(--gc-card); box-shadow: inset 0 0 0 1px rgb(var(--ink) / 0.52), var(--gc-lit-soft), 0 8px 20px -12px rgb(0 0 0 / calc(0.38 * var(--shadow-k))); }
+  & .agents-task { background: var(--gc-sheen-soft), rgba(100, 210, 255, 0.08); box-shadow: inset 0 0 0 1px rgba(100, 210, 255, 0.2), var(--gc-lit-soft); }
+  & .setup-card { border-color: rgba(255, 159, 10, 0.4); background: linear-gradient(180deg, rgba(255, 159, 10, 0.12), rgba(255, 159, 10, 0) 55%), var(--gc-sheen-soft), rgb(var(--panel) / 0.4); }
+  & .code-block {
+    border-color: transparent;
+    background: rgb(var(--panel-deep) / 0.7);
+    box-shadow: var(--gc-hair), var(--gc-lit-soft), inset 0 6px 14px -8px rgb(0 0 0 / calc(0.4 * var(--shadow-k)));
+  }
+  & .cs-row + .cs-row, & .cs-set + .cs-set, & .cs-set-list, & .cs-dict-scan, & .cs-model-card { border-top-color: transparent; background-image: linear-gradient(90deg, transparent, rgb(var(--ink) / 0.09) 12%, rgb(var(--ink) / 0.09) 88%, transparent); background-size: 100% 1px; background-repeat: no-repeat; background-position: top; }
+  & .cs-group > summary:hover, & .cs-project:hover, & .cs-project:focus-within, & .cs-dict-row:hover, & .cs-dict-row:focus-within, & .cs-model-row:hover { background-color: rgb(var(--ink) / 0.045); }
+
+  /* Manage Chats cards are drawn bubbles (bubble-shape.js reads these two tokens when it paints the shape): clear fill,
+     matching card brightness across popups, brighter rim. The current / recent / waiting states keep their own rim colours. */
+  & .history-card { --card-fill: var(--gc-card); --card-rim: rgb(var(--ink) / 0.16); }
+  & .history-card.is-recent { --card-rim: rgba(100, 210, 255, 0.55); }
+  & .history-card.is-current { --card-rim: rgb(var(--ink) / 0.85); }
+  & .history-card.is-waiting { --card-rim: #ffd60a; }
+
+  /* ----- Tiles that hold a logo ----- */
+  & :is(.cs-icon, .cs-project-tile, .cs-setup-mark) {
+    background: var(--gc-sheen-soft), rgb(var(--ink) / 0.055);
+    box-shadow: var(--gc-hair), var(--gc-lit-soft);
+  }
+  & .cs-head-icon { background: var(--gc-sheen), rgb(var(--ink) / 0.055); box-shadow: var(--gc-hair), var(--gc-lit-soft); }
+
+  /* ----- Buttons ----- */
+  & .cs-btn:not(.is-primary, .is-quiet) {
+    border-color: transparent;
+    background: var(--gc-sheen-soft), rgb(var(--ink) / 0.075);
+    box-shadow: var(--gc-hair), var(--gc-lit-soft), 0 2px 5px -1px rgb(0 0 0 / calc(0.2 * var(--shadow-k)));
+  }
+  & .cs-btn:not(.is-primary, .is-quiet):hover:not(:disabled) { background: var(--gc-sheen), rgb(var(--ink) / 0.15); }
+  & .cs-btn.is-danger:not(.is-quiet) { box-shadow: inset 0 0 0 1px rgba(255, 138, 128, 0.38), var(--gc-lit), 0 2px 8px rgb(0 0 0 / calc(0.2 * var(--shadow-k))); }
+  & .cs-btn.is-primary {
+    background: var(--gc-primary-sheen), var(--strong);
+    box-shadow: var(--gc-primary-shadow);
+  }
+  & .cs-btn.is-primary:hover:not(:disabled) { background: var(--gc-primary-sheen), var(--strong-hover); }
+  & .icon-btn {
+    border-color: transparent;
+    background: var(--gc-sheen), rgb(var(--ink) / 0.06);
+    box-shadow: var(--gc-hair), var(--gc-lit-soft);
+  }
+  & .icon-btn:hover:not(:disabled) { background: var(--gc-sheen), rgb(var(--ink) / 0.14); }
+  /* Small icon actions that repeat on a page (row actions, copy/undo, queue controls) are bare glyphs: no fill, rim or
+     shadow at rest, only a soft round highlight under the pointer. */
+  & :is(.cs-icon-btn, .history-icon-btn) {
+    border-color: transparent;
+    background: transparent;
+    box-shadow: none;
+  }
+  & :is(.cs-icon-btn, .history-icon-btn):hover:not(:disabled) { background: rgb(var(--ink) / 0.1); }
+  & .history-icon-btn.is-danger:hover, & .cs-icon-btn.is-danger:hover:not(:disabled) { background: rgba(255, 69, 58, 0.14); }
+
+  /* ----- Inputs: recessed wells ----- */
+  & :is(.cs-num, .cs-select, .cs-area, .cs-field, .cs-dd-trigger):not(.project-gallery-search) {
+    border-color: transparent;
+    background: var(--gc-well-fill);
+    box-shadow: var(--gc-well);
+  }
+  & .cs-dd-trigger:hover { background: rgb(var(--ink) / 0.06); }
+  & .cs-dd.is-open .cs-dd-trigger { box-shadow: inset 0 0 0 1px var(--accent), var(--gc-well); background: rgba(10, 132, 255, 0.1); }
+  & :is(.cs-num, .cs-select, .cs-area, .cs-field):focus-within,
+  & :is(.cs-num, .cs-select, .cs-area, .cs-field):focus { box-shadow: inset 0 0 0 1px var(--accent), var(--gc-well); }
+
+  /* ----- Tags, chips, counters ----- */
+  & :is(.cs-tag, .cs-chip, .fs-modal-count, .cs-head-count, .cs-dict-source, .inv-chip, .history-chip, .attachment-chip) {
+    border-color: transparent;
+    background: var(--gc-sheen), rgb(var(--ink) / 0.06);
+    box-shadow: var(--gc-hair), var(--gc-lit-soft);
+  }
+  & .history-chip:hover { background: var(--gc-sheen), rgb(var(--ink) / 0.13); }
+  & .history-chip[aria-pressed='true'] { background: var(--gc-sheen), color-mix(in srgb, var(--accent) 22%, transparent); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 65%, transparent), var(--gc-lit-soft); }
+  & .cs-tag.is-ok { background: var(--gc-sheen), rgba(52, 211, 153, 0.15); box-shadow: inset 0 0 0 1px rgba(52, 211, 153, 0.28), var(--gc-lit-soft); }
+  & .cs-tag.is-warn { background: var(--gc-sheen), rgba(255, 179, 64, 0.15); box-shadow: inset 0 0 0 1px rgba(255, 179, 64, 0.3), var(--gc-lit-soft); }
+
+  /* ----- Switch: a glass track with a glass bead ----- */
+  & .cs-switch {
+    background: var(--gc-well-fill);
+    box-shadow: var(--gc-well);
+  }
+  & .cs-switch::after {
+    background: radial-gradient(circle at 32% 26%, #fff 0, #f4f4f8 38%, #d6d8e0 100%);
+    box-shadow: 0 2px 5px rgb(0 0 0 / calc(0.4 * var(--shadow-k))), inset 0 0 0 0.5px rgb(0 0 0 / 0.12), inset 0 -1px 2px rgb(0 0 0 / 0.14), inset 0 1px 1px rgb(255 255 255 / 0.9);
+  }
+  & .cs-switch[aria-checked='true'] {
+    background: linear-gradient(180deg, rgb(255 255 255 / 0.28), rgb(255 255 255 / 0) 60%), var(--accent);
+    box-shadow: inset 0 1px 0 rgb(255 255 255 / 0.4), inset 0 -2px 4px rgb(0 0 0 / 0.14), 0 2px 8px -2px color-mix(in srgb, var(--accent) 55%, transparent);
+  }
+
+  /* ----- Menus and toasts ----- */
+  & .cs-dd-menu {
+    border-color: transparent;
+    background: var(--gc-sheen-soft), var(--charcoal);
+    box-shadow: 0 18px 40px rgb(0 0 0 / calc(0.5 * var(--shadow-k))), var(--gc-hair), var(--gc-lit);
+  }
+  & :is(.mention-menu, .history-filter-panel) {
+    background: var(--gc-sheen-soft), var(--eo-surface-raised);
+    box-shadow: 0 18px 40px rgb(0 0 0 / calc(0.4 * var(--shadow-k))), var(--gc-hair), var(--gc-lit);
+  }
+  & .toast:not(.toast-error), & .glass:is(.approval-card, .question-card) {
+    border-color: transparent;
+    box-shadow: var(--shadow-panel), var(--gc-hair), var(--gc-lit), var(--gc-glow);
+  }
+  & .toast.toast-error { border-color: transparent; }
+  & .cs-dd-option:hover, & .cs-dd-option:focus-visible { background: var(--gc-sheen-soft), rgb(var(--ink) / 0.09); }
+}
+
+/* Secondary surfaces share the same material, without adding scroll-time backdrop filters. */
+body.lg-on:not(.vscode-high-contrast, .vscode-high-contrast-light) {
+  --user-bubble-rim: rgb(var(--ink) / 0.18);
+  --user-bubble-sheen: 0.08;
+
+  & :is(.timer-pill, .markup-bar, .inv-bar) {
+    border-color: transparent;
+    background: var(--gc-sheen), rgb(var(--panel) / 0.9);
+    box-shadow: var(--shadow-panel), var(--gc-hair), var(--gc-lit), var(--gc-glow);
+  }
+  & :is(.inv-form, .inv-edit, .inv-review, .inv-status) {
+    border-color: transparent;
+    background: var(--gc-sheen-soft), rgb(var(--panel) / 0.65);
+    box-shadow: var(--gc-hair), var(--gc-lit-soft);
+  }
+  & .inv-status.is-error { background: var(--gc-sheen-soft), color-mix(in srgb, var(--fg-red) 14%, rgb(var(--panel) / 0.7)); }
+  & .inv-status.is-ok { background: var(--gc-sheen-soft), rgba(52, 211, 153, 0.12); }
+  & :is(.timer-chip, .timer-off, .timer-window, .timer-nav, .timer-day, .markup-tool, .markup-act, .markup-size, .markup-cancel) {
+    background: var(--gc-sheen-soft), rgb(var(--ink) / 0.04);
+    box-shadow: var(--gc-hair), var(--gc-lit-soft);
+  }
+  & :is(.timer-chip, .markup-tool, .markup-size)[aria-pressed='true'],
+  & .timer-chip[aria-checked='true'], & .timer-day.is-sel, & .timer-window.is-sel {
+    background: var(--gc-sheen), color-mix(in srgb, var(--accent) 22%, rgb(var(--panel)));
+    box-shadow: inset 0 0 0 1px var(--accent), var(--gc-lit-soft);
+    color: var(--text-primary);
+  }
+  & .markup-bar .markup-done { background: var(--gc-sheen), var(--accent); box-shadow: var(--gc-lit-soft), var(--gc-hair); }
+  & :is(.image-lightbox-open, .image-lightbox-markup, .image-lightbox-close, .image-lightbox-download) {
+    border-color: transparent;
+    background: var(--gc-sheen), rgb(var(--panel) / 0.9);
+    color: var(--text-primary);
+    box-shadow: var(--shadow-control), var(--gc-hair), var(--gc-lit);
+  }
+  & :is(.image-lightbox-open, .image-lightbox-markup, .image-lightbox-close, .image-lightbox-download):hover {
+    background: var(--gc-sheen), rgb(var(--panel-raised) / 0.96);
+  }
+  & :is(.attachment-doc:not(.has-frame), .attachment-chip button) {
+    background: var(--gc-sheen-soft), rgb(var(--ink) / 0.045);
+    box-shadow: var(--gc-hair), var(--gc-lit-soft);
+  }
+  & :is(.markup-bar button, .timer-pill button):focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  & :is(.approval-card, .question-card):not(.resolved) {
+    border-color: transparent;
+    background: var(--gc-sheen-soft), rgb(var(--panel) / 0.88);
+    box-shadow: var(--shadow-panel), var(--gc-hair), var(--gc-lit);
+  }
+  & .doc-preview { box-shadow: var(--shadow-modal), var(--gc-hair), var(--gc-lit-soft); }
+  & .markup-hint { color: var(--text-secondary); }
+  & :is(.doc-preview-head, .doc-preview-note) { background: var(--gc-sheen-soft), rgb(var(--ink) / 0.025); }
+  & :is(.timer-chip, .timer-off, .timer-window, .timer-nav, .timer-day, .markup-tool, .markup-act, .markup-size, .markup-cancel):hover:not(:disabled, [aria-checked='true'], [aria-pressed='true'], .is-sel) {
+    background: var(--gc-sheen), rgb(var(--ink) / 0.12);
+  }
+}
+body.lg-on:not(.vscode-light):not(.vscode-high-contrast, .vscode-high-contrast-light) { --user-bubble-sheen: 0.035; }
+
+/* Settings use the same material as every other popup (the tokens above); only the sizes that are theirs stay here. */
+body.lg-on:not(.vscode-high-contrast, .vscode-high-contrast-light) #settingsModal {
+  & .cs-card { border-radius: 14px; }
+  & :is(.cs-btn, .cs-icon-btn, .fs-modal-close, .cs-switch, .cs-tab):focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+}
+
+/* Keyboard focus stays a clear ring on every glass control. */
+body.lg-on:not(.vscode-high-contrast, .vscode-high-contrast-light) :is(.cs-btn, .cs-icon-btn, .cs-switch, .cs-tab, .fs-modal-close):focus-visible { box-shadow: 0 0 0 2px var(--accent), var(--gc-lit); }

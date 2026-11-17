@@ -11,6 +11,16 @@ const at = (y, mo, d, h, mi) => new Date(y, mo, d, h, mi).getTime();
 const MIN = 60000;
 const HOUR = 60 * MIN;
 
+test('cached date formatting preserves locale, hour cycle and invalid-date handling', () => {
+  const { formatDate } = require('../media/chat-time.js');
+  const date = new Date(2026, 9, 1, 15, 30);
+  for (const locale of ['en-US', 'de-DE', 'ja-JP']) for (const hourCycle of ['h12', 'h23']) {
+    const options = { year: 'numeric', month: 'long', day: 'numeric', hour: '2-digit', minute: '2-digit', hourCycle };
+    for (let i = 0; i < 3; i++) assert.equal(formatDate(date, locale, options), new Intl.DateTimeFormat(locale, options).format(date));
+  }
+  assert.equal(formatDate(new Date('bad'), 'en-US', {}), 'Invalid Date');
+});
+
 test('chatTime: fresh chats read as minutes and hours ago', () => {
   assert.equal(chatTime(ago(10 * 1000), { now, ...opts }), 'Just now');
   assert.equal(chatTime(ago(MIN), { now, ...opts }), '1 minute ago');

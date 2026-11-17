@@ -182,6 +182,18 @@
                     "default": "split",
                     "markdownDescription": "Which Antigravity usage the launcher's Gemini circle shows. `split` divides it into one arc per pool. The hover card always lists every group."
                 },
+                "aiChatPanel.chatNames": {
+                    "type": "string",
+                    "enum": ["agent", "groq"],
+                    "enumDescriptions": ["Use the name the agent gives the chat where it gives one (Antigravity does); Groq names chats from Claude Code and Codex, which don't", "Always have Groq name new chats"],
+                    "default": "agent",
+                    "markdownDescription": "Who names a new chat. `agent` takes the title the agent wrote itself once its first turn is under way, and falls back to Groq when there is none. `groq` always asks Groq (needs a Groq key in Settings > Routing; without one, chats are named from their first words)."
+                },
+                "aiChatPanel.completionSound": {
+                    "type": "boolean",
+                    "default": true,
+                    "markdownDescription": "Play the notification chime when a reply finishes and nothing you queued is left to run. Turn off for silence; the Windows toast shown while the IDE is in the background is unaffected. Chat Settings > General has the switch."
+                },
                 "aiChatPanel.workContextIcons": {
                     "type": "boolean",
                     "default": false,
