@@ -254,7 +254,7 @@ class ChatStore {
     } catch (error) {
       this.indexDirty = true;
       await fs.promises.unlink(temporary).catch(() => {});
-      console.error('[clanker] Could not write the chat summary index:', messageOf(error));
+      require('./log.js').error('chat store', 'Could not write the chat summary index:', error);
     }
   }
 
@@ -281,7 +281,7 @@ class ChatStore {
       }
       return { file, locate: model.locate, turnOf: model.turnOf };
     } catch (error) {
-      console.error('[clanker] Could not write chat transcript:', messageOf(error));
+      require('./log.js').error('chat store', 'Could not write chat transcript:', error);
       return null;
     }
   }
@@ -358,7 +358,7 @@ class ChatStore {
         this.writeCost.set(id, Math.min(2000, Math.round((Date.now() - started) * 1.5)));
       }
     })().catch(error => {
-      console.error('[clanker] Could not checkpoint chat:', messageOf(error));
+      require('./log.js').error('chat store', 'Could not checkpoint chat:', error);
       // Keep failed work flushable at shutdown or the next explicit save.
       write.error = error;
     }).finally(() => { if (!write.error && this.writes.get(id) === write) this.writes.delete(id); });

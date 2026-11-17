@@ -509,12 +509,13 @@
       <div class="cs-footer">
         <button class="cs-btn" data-role="pingClis" type="button">${ICON.refresh}<span>Check CLIs</span></button>
         <button class="cs-btn is-quiet" data-role="openSetupGuide" type="button">${ICON.book}<span>Setup guide</span></button>
+        <button class="cs-btn is-quiet" data-role="openLogs" type="button" title="Errors and messages from Clanker Controller, for when something does not work">${ICON.note}<span>Logs</span></button>
         <button class="cs-btn is-quiet" data-role="modelSettings" type="button">${ICON.sliders}<span>Advanced settings</span></button>
         <button class="cs-btn is-quiet" data-role="resetCache" type="button" title="Forget resolved CLI paths and look them up again">${ICON.reset}<span>Reset CLI cache</span></button>
       </div>
     </div>`;
 
-  window.initChatSettings = function initChatSettings({ vscode, body, onOpenSetupGuide }) {
+  window.initChatSettings = function initChatSettings({ vscode, body, onOpenSetupGuide, onOpenLogs }) {
     body.classList.add('cs');
     body.innerHTML = MARKUP;
     // ---------- Routing: a free model picks the CLI model for each message ----------
@@ -847,7 +848,7 @@
     }
 
     let lastFleet = null; // until the first fleet message the provider cards would all read "Missing"
-    let status = { versions: {}, updating: {}, notes: {}, fetched: [], favorites: [], catalog: [], prompts: {}, modelsBusy: false };
+    let status = { versions: {}, updating: {}, notes: {}, fetched: [], modelErrors: {}, favorites: [], catalog: [], prompts: {}, modelsBusy: false };
     let modelsRequested = false;
     let connections = null;
     function showTab(name) {
@@ -1116,7 +1117,8 @@
       const visible = all.filter((entry) => (company === 'all' || entry.agent === company)
         && `${entry.label} ${entry.model} ${entry.effort || ''}`.toLowerCase().includes(query));
       const list = $('modelList');
-      const signature = JSON.stringify(visible);
+      const errors = status.modelErrors || {};
+      const signature = JSON.stringify([visible, errors, company]);
       $('modelCount').textContent = `${visible.length} of ${all.length} models`;
       $('refreshModels').disabled = status.modelsBusy;
       $('availableDesc').textContent = status.modelsBusy ? 'Asking the installed CLIs…' : all.length ? 'Favorite a model to add it to the chat\'s model picker.' : 'No model list yet. Refresh to ask the CLIs.';
@@ -1125,6 +1127,13 @@
         const scrollTop = list.scrollTop;
         list.replaceChildren(...PROVIDERS.flatMap((agent) => {
           const entries = visible.filter((entry) => entry.agent === agent);
+          if (errors[agent] && (company === 'all' || company === agent)) {
+            const note = document.createElement('p');
+            note.className = 'cs-note is-error';
+            note.setAttribute('role', 'alert');
+            note.textContent = errors[agent];
+            return [providerHead(agent, 0), note];
+          }
           if (!entries.length) return [];
           return [providerHead(agent, entries.length), ...entries.map((entry) => {
             const row = document.createElement('div');
@@ -1154,7 +1163,7 @@
             return row;
           })];
         }));
-        if (!visible.length) {
+        if (!visible.length && !list.querySelector('.cs-note.is-error')) {
           const empty = document.createElement('p');
           empty.className = 'cs-note';
           empty.textContent = all.length ? 'No models match your search and company filter.' : 'Refresh to discover available models.';
@@ -1414,6 +1423,10 @@
     }
 
     $('pingClis').addEventListener('click', () => { $('pingClis').disabled = true; pingLabel.textContent = 'Checking…'; vscode.postMessage({ type: 'pingClis' }); });
+    $('openLogs').addEventListener('click', () => {
+      if (onOpenLogs) onOpenLogs();
+      else vscode.postMessage({ type: 'openLogs' });
+    });
     $('openSetupGuide').addEventListener('click', () => {
       if (onOpenSetupGuide) onOpenSetupGuide();
       else vscode.postMessage({ type: 'openSetupGuide' });

@@ -68,17 +68,25 @@ test('a provider registered at run time flows through locating, sign-in, model d
   assert.deepEqual(providers.ids(), ['claude', 'codex', 'gemini', 'copilot']);
 });
 
-test('copilot descriptor builds commands, discovers fallback models, and normalizes events', async () => {
-  const copilot = providers.get('copilot');
-  const discovered = await copilot.discoverModels({ file: 'copilot.cmd', runCli: async () => ({ ok: false }) });
-  assert.ok(discovered.length >= 3);
-  assert.equal(discovered[0].agent, 'copilot');
+test('copilot descriptor builds commands and normalizes events', async () => {
   const engine = new StreamEngine({ cwd: 'C:/Repo', models: { copilot: 'claude-sonnet-4.5' } });
   try {
     const spec = engine.commandFor('copilot', 'Fix tests', [], { model: 'gpt-5', resume: 'sess-1', permissionMode: 'fullAccess' });
-    assert.deepEqual(spec.args, ['-p', 'Fix tests', '--model', 'gpt-5', '--resume', 'sess-1', '--allow-all-tools', '--add-dir', 'C:/Repo']);
-    assert.deepEqual(normalizeEvent({ type: 'init', session_id: 'sess-1' }, 'copilot'), { type: 'session', sessionId: 'sess-1', agent: 'copilot' });
-    assert.deepEqual(normalizeEvent({ type: 'delta', text: 'Hello from Copilot' }, 'copilot'), { type: 'delta', text: 'Hello from Copilot', model: 'copilot', agent: 'copilot' });
+    assert.deepEqual(spec.args, ['-p', 'Fix tests', '--output-format', 'json', '--stream', 'off', '--model', 'gpt-5', '--resume', 'sess-1', '--allow-all-tools', '--add-dir', 'C:/Repo']);
+    // `copilot -p --output-format json` session events (SDK shapes).
+    const event = (type, data) => normalizeEvent({ type, data, id: 'e', timestamp: '2026-11-17T00:00:00Z' }, 'copilot');
+    assert.deepEqual(event('session.start', { sessionId: 'sess-1' }), { type: 'session', sessionId: 'sess-1', agent: 'copilot' });
+    assert.deepEqual(event('assistant.message', { messageId: 'm1', content: 'Line one.\n\n- item', toolRequests: [] }), { type: 'delta', text: 'Line one.\n\n- item', block: true, model: 'copilot', agent: 'copilot' });
+    assert.equal(event('assistant.message', { messageId: 'm2', content: '', toolRequests: [{}] }), null);
+    assert.deepEqual(event('tool.execution_start', { toolCallId: 't1', toolName: 'bash', arguments: { command: 'npm test', description: 'Run tests' } }),
+      { type: 'tool_start', toolId: 't1', agent: 'copilot', name: 'bash', command: 'npm test', file: '', diff: '' });
+    assert.deepEqual(event('tool.execution_start', { toolCallId: 't2', toolName: 'edit', arguments: { path: 'a.js', old_str: 'x = 1', new_str: 'x = 2' } }),
+      { type: 'tool_start', toolId: 't2', agent: 'copilot', name: 'edit', command: 'a.js', file: 'a.js', diff: '-x = 1\n+x = 2' });
+    assert.equal(event('tool.execution_start', { toolCallId: 't3', toolName: 'report_intent', arguments: { intent: 'Testing' } }), null);
+    assert.deepEqual(event('tool.execution_complete', { toolCallId: 't1', success: false, error: { message: 'denied' } }), { type: 'tool_end', toolId: 't1', output: 'denied', error: true, diff: '', agent: 'copilot' });
+    assert.equal(event('assistant.message', { content: 'subagent reply', parentToolCallId: 't9' }), null);
+    assert.equal(event('assistant.turn_start', { turnId: '0' }), null);
+    assert.deepEqual(normalizeEvent({ type: 'result', sessionId: 'sess-1', exitCode: 0 }, 'copilot'), { type: 'turn_complete', agent: 'copilot' });
   } finally {
     engine.dispose();
   }
@@ -87,4 +95,46 @@ test('copilot descriptor builds commands, discovers fallback models, and normali
 test('model lists still parse through the providers (Codex sample)', () => {
   const text = JSON.stringify({ models: [{ slug: 'gpt-x', display_name: 'GPT X', visibility: 'list', is_default: true, default_reasoning_level: 'medium', supported_reasoning_levels: [{ effort: 'low' }, { effort: 'medium' }] }] });
   assert.deepEqual(parseCodexModels(text).map((entry) => entry.id), ['gpt-x-low', 'gpt-x-medium']);
+});
+
+test('copilot models come only from the CLI\'s ACP session (account list); a failure is an error, not a fallback list', async () => {
+  const copilot = providers.get('copilot');
+  const acp = [
+    JSON.stringify({ jsonrpc: '2.0', id: 1, result: { protocolVersion: 1 } }),
+    JSON.stringify({ jsonrpc: '2.0', method: 'session/update', params: {} }),
+    JSON.stringify({ jsonrpc: '2.0', id: 2, result: { sessionId: 'not-a-uuid', models: { currentModelId: 'claude-sonnet-5.5', availableModels: [
+      { modelId: 'auto', name: 'Auto' }, { modelId: 'auto', name: 'Auto', _meta: { copilotEnablement: 'enabled' } },
+      { modelId: 'claude-sonnet-5.5', name: 'Claude Sonnet 5.5', _meta: { copilotEnablement: 'enabled' } },
+      { modelId: 'gpt-6-sol', name: 'GPT-6 Sol' }, { modelId: 'grok-4.7', name: 'Grok 4.7', _meta: { copilotEnablement: 'disabled' } },
+    ] } } }),
+  ].join('\n');
+  const calls = [];
+  const found = await copilot.discoverModels({ file: 'copilot', runCli: async (file, args, timeout, onLine, input) => { calls.push({ args, input }); return { ok: true, stdout: acp }; } });
+  assert.deepEqual(calls[0].args, ['--acp']);
+  assert.match(calls[0].input, /"method":"initialize"[\s\S]*"method":"session\/new"/);
+  assert.equal(calls[0].input.includes('session/prompt'), false, 'discovery never sends a prompt');
+  assert.deepEqual(found.map((e) => e.model), ['auto', 'claude-sonnet-5.5', 'gpt-6-sol'], 'deduplicated, disabled models dropped');
+  assert.equal(found.find((e) => e.isDefault).model, 'claude-sonnet-5.5');
+  assert.equal(found[2].label, 'Copilot · GPT-6 Sol');
+
+  const failing = (result) => copilot.discoverModels({ file: 'copilot', runCli: async () => result });
+  await assert.rejects(failing({ ok: false, code: 1, stdout: '', stderr: 'boom\nError: not authenticated\n' }), /Could not discover Copilot models: Error: not authenticated/);
+  await assert.rejects(failing({ ok: true, stdout: JSON.stringify({ jsonrpc: '2.0', id: 2, error: { message: 'Session limit' } }) }), /Session limit/);
+  await assert.rejects(failing({ ok: true, stdout: JSON.stringify({ jsonrpc: '2.0', id: 2, result: { models: { availableModels: [] } } }) }), /no enabled models/);
+});
+
+test('the copilot model probe removes only its own empty session folder', () => {
+  const fs = require('node:fs'), os = require('node:os'), path = require('node:path');
+  const { removeProbeSession } = providers.get('copilot');
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'copilot-home-'));
+  const make = (id, files) => { const dir = path.join(home, 'session-state', id); fs.mkdirSync(dir, { recursive: true }); for (const [name, text] of Object.entries(files)) fs.writeFileSync(path.join(dir, name), text); return dir; };
+  const empty = make('11111111-1111-1111-1111-111111111111', { 'workspace.yaml': 'client_name: github/acp\n' });
+  const used = make('22222222-2222-2222-2222-222222222222', { 'workspace.yaml': 'client_name: github/acp\n', 'events.jsonl': '{}' });
+  const other = make('33333333-3333-3333-3333-333333333333', { 'workspace.yaml': 'client_name: cli\n' });
+  for (const dir of [empty, used, other]) removeProbeSession(path.basename(dir), { COPILOT_HOME: home });
+  removeProbeSession('../..', { COPILOT_HOME: home });
+  assert.equal(fs.existsSync(empty), false);
+  assert.equal(fs.existsSync(used), true);
+  assert.equal(fs.existsSync(other), true);
+  fs.rmSync(home, { recursive: true, force: true });
 });
