@@ -15,11 +15,11 @@ const names = (name, command) => Array.from(context.names(name, command));
 
 test('real provider event shapes identify skill loads without changing tool/result IDs', () => {
   const fixtures = [
-    ['claude', { type: 'assistant', message: { content: [{ type: 'tool_use', id: 'claude-read', name: 'Read', input: { file_path: 'C:\\Users\\ettla\\Nextcloud\\ClaudeConfig\\skills\\claude-config-sync\\SKILL.md' } }] } }, 'claude-config-sync', 'claude-read'],
+    ['claude', { type: 'assistant', message: { content: [{ type: 'tool_use', id: 'claude-read', name: 'Read', input: { file_path: 'C:\\Users\\user\\Nextcloud\\ClaudeConfig\\skills\\claude-config-sync\\SKILL.md' } }] } }, 'claude-config-sync', 'claude-read'],
     ['claude', { type: 'assistant', message: { content: [{ type: 'tool_use', id: 'claude-skill', name: 'Skill', input: { skill: 'anti-ai-slop-writing' } }] } }, 'anti-ai-slop-writing', 'claude-skill'],
-    ['codex', { type: 'item.started', item: { type: 'command_execution', id: 'item_1', command: '"C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command "Get-Content -Raw -LiteralPath \'C:\\Users\\ettla\\.codex\\skills\\.system\\openai-docs\\SKILL.md\'"' } }, 'openai-docs', 'item_1'],
-    ['codex', { __appServer: true, method: 'item/started', params: { item: { type: 'commandExecution', id: 'server-1', command: "Get-Content -LiteralPath 'C:/Users/ettla/.agents/skills/ponytail/SKILL.md'" } } }, 'ponytail', 'server-1'],
-    ['gemini', { event: 'step_update', step_update: { step_index: 6, step_type: 'tool', state: 'ACTIVE', tool_name: 'view_file', tool_info: { parameters: { AbsolutePath: 'C:\\Users\\ettla\\.gemini\\config\\skills\\claude-config-sync\\SKILL.md' } } } }, 'claude-config-sync', 'step-6'],
+    ['codex', { type: 'item.started', item: { type: 'command_execution', id: 'item_1', command: '"C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command "Get-Content -Raw -LiteralPath \'C:\\Users\\user\\.codex\\skills\\.system\\openai-docs\\SKILL.md\'"' } }, 'openai-docs', 'item_1'],
+    ['codex', { __appServer: true, method: 'item/started', params: { item: { type: 'commandExecution', id: 'server-1', command: "Get-Content -LiteralPath 'C:/Users/user/.agents/skills/ponytail/SKILL.md'" } } }, 'ponytail', 'server-1'],
+    ['gemini', { event: 'step_update', step_update: { step_index: 6, step_type: 'tool', state: 'ACTIVE', tool_name: 'view_file', tool_info: { parameters: { AbsolutePath: 'C:\\Users\\user\\.gemini\\config\\skills\\claude-config-sync\\SKILL.md' } } } }, 'claude-config-sync', 'step-6'],
   ];
   for (const [agent, raw, skill, id] of fixtures) {
     const event = normalizeEvent(raw, agent);
@@ -31,7 +31,7 @@ test('real provider event shapes identify skill loads without changing tool/resu
 });
 
 test('saved shell cards support Windows paths, wrappers, batched reads and multiple skills', () => {
-  assert.deepEqual(names('bash', '"C:\\\\WINDOWS\\\\powershell.exe" -Command "Get-Content -LiteralPath \'C:\\\\Users\\\\ettla\\\\Nextcloud\\\\My Skills\\\\ponytail\\\\SKILL.md\' -Raw"'), ['ponytail']);
+  assert.deepEqual(names('bash', '"C:\\\\WINDOWS\\\\powershell.exe" -Command "Get-Content -LiteralPath \'C:\\\\Users\\\\user\\\\Nextcloud\\\\My Skills\\\\ponytail\\\\SKILL.md\' -Raw"'), ['ponytail']);
   assert.deepEqual(names('shell', "Get-Content README.md; Get-Content 'skills/ponytail/SKILL.md','skills/openai-docs/SKILL.md'; Get-Content 'skills/ponytail/SKILL.md'"), ['ponytail', 'openai-docs']);
   assert.deepEqual(names('run_command', 'powershell -Command "Get-Content \'.agents\\skills\\synced\\SKILL.md\' -Head 15"'), ['synced']);
   assert.deepEqual(names('Bash', 'cat ~/.claude/skills/ponytail/SKILL.md'), ['ponytail']);

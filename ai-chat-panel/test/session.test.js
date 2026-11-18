@@ -758,6 +758,12 @@ test('session dir: Clanker keeps its own storage and copies a legacy session fol
   resolveSessionDir({ storageDir, legacyDirs: [legacy], override: '' });
   assert.ok(!fs.existsSync(path.join(dir, 'chats', 'b.json')), 'the legacy folder is never read a second time');
   assert.equal(resolveSessionDir({ storageDir, override: '/somewhere/else' }), '/somewhere/else');
+
+  // A legacy folder that is the session folder itself (the unpublished build's ID) is not copied onto itself.
+  const same = path.join(base, 'same');
+  fs.mkdirSync(path.join(same, 'session', 'chats'), { recursive: true });
+  resolveSessionDir({ storageDir: same, legacyDirs: [path.join(same, 'session')], override: '' });
+  assert.ok(fs.existsSync(path.join(same, 'session', '.migrated')), 'migration completes without copying onto itself');
 });
 
 test('voice dictionary: terms are added once, listed when enabled, and merged without repeats', async () => {
@@ -1635,7 +1641,7 @@ test('chat memory: intermediate messages keep a one-line digest and a pointer in
 
 test('chat memory: tool lines keep the start of the command and how each call ended, uncapped while the budget allows', () => {
   const { buildHandoff } = require('../lib/chat-handoff.js');
-  const command = `cd "C:/Users/ettla/Nextcloud/Eigene Projekte/Visor" && git diff --stat -- ${'src/components/Panel.tsx '.repeat(12)}`;
+  const command = `cd "C:/Users/user/Nextcloud/Eigene Projekte/Visor" && git diff --stat -- ${'src/components/Panel.tsx '.repeat(12)}`;
   const tool = (event, state = {}) => ({ role: 'tool', done: true, error: false, event, ...state });
   const messages = [
     { role: 'user', text: 'Prüfe den Diff', agent: 'claude' },
@@ -1652,7 +1658,7 @@ test('chat memory: tool lines keep the start of the command and how each call en
   const shown = command.replace(/\s+/g, ' ').trim();
   assert.ok(handoff.includes(shown.slice(0, 150)), 'the command is kept far beyond 90 characters');
   assert.ok(!handoff.includes(shown), 'but it is still cut at about 200');
-  assert.match(handoff, /Bash cd "C:\/Users\/ettla[^\n]*… \[ok\]/);
+  assert.match(handoff, /Bash cd "C:\/Users\/user[^\n]*… \[ok\]/);
   assert.match(handoff, /Bash npm test \[exit 1: FAIL src\/a\.test\.js\]/);
   assert.match(handoff, /PowerShell Get-Item missing\.txt \[failed: Get-Item : Cannot find path\]/);
   assert.match(handoff, /Read src\/a\.js \[ok\] ×3/, 'identical calls are counted, not repeated');

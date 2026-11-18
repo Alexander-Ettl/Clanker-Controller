@@ -63,7 +63,7 @@ flowchart LR
 * **The Blindspot**: On smartphone screens, long terminal commands or multi-line diffs can easily be truncated:
   - An agent executing a complex build command or modified patch could contain unintended or destructive operations past the visible line limit.
   - A user distracted while mobile might tap `[ ✅ Approve once ]` without noticing a dangerous argument.
-* **Code Mitigation**: The bridge implements **Approval Truncation Defense** ([`lib/telegram-control.js`](file:///C:/Users/ettla/Nextcloud/Eigene%20Projekte/Portfolio/2026/astro-visual-editor/tools/ai-chat-panel/lib/telegram-control.js)). When an action description exceeds 500 characters, it appends an explicit visual warning:
+* **Code Mitigation**: The bridge implements **Approval Truncation Defense** ([`lib/telegram-control.js`](file:///C:/Users/user/Nextcloud/Eigene%20Projekte/Portfolio/2026/astro-visual-editor/tools/ai-chat-panel/lib/telegram-control.js)). When an action description exceeds 500 characters, it appends an explicit visual warning:
   `⚠️ [TRUNCATED: X chars total. Review full command in editor before approving.]`
   This alerts the user that the mobile preview does not contain the full command payload.
 
@@ -106,14 +106,14 @@ flowchart LR
 
 | Layer | Defense Mechanism | Implementation File |
 |---|---|---|
-| **Identity** | Strict `ownerId` checking; foreign user messages dropped immediately | [`lib/telegram-bridge.js`](file:///C:/Users/ettla/Nextcloud/Eigene%20Projekte/Portfolio/2026/astro-visual-editor/tools/ai-chat-panel/lib/telegram-bridge.js) |
-| **Pairing** | 24-byte crypto nonce handshake via `/start <token>` | [`lib/telegram-setup.js`](file:///C:/Users/ettla/Nextcloud/Eigene%20Projekte/Portfolio/2026/astro-visual-editor/tools/ai-chat-panel/lib/telegram-setup.js) |
-| **Inbound Webhook** | 24-byte secret token (`x-telegram-bot-api-secret-token`) verification | [`lib/telegram-bridge.js`](file:///C:/Users/ettla/Nextcloud/Eigene%20Projekte/Portfolio/2026/astro-visual-editor/tools/ai-chat-panel/lib/telegram-bridge.js) |
-| **Mini App** | CSP, `SAMEORIGIN` framing, `no-store` caching, nosniff headers | [`lib/telegram-bridge.js`](file:///C:/Users/ettla/Nextcloud/Eigene%20Projekte/Portfolio/2026/astro-visual-editor/tools/ai-chat-panel/lib/telegram-bridge.js) |
-| **Approval Cards** | Single-use callback tokens (`approve:<hex>`), auto-pruned after 24h | [`lib/telegram-bridge.js`](file:///C:/Users/ettla/Nextcloud/Eigene%20Projekte/Portfolio/2026/astro-visual-editor/tools/ai-chat-panel/lib/telegram-bridge.js) |
-| **Truncation Guard** | Explicit truncation warning on approval descriptions > 500 chars | [`lib/telegram-control.js`](file:///C:/Users/ettla/Nextcloud/Eigene%20Projekte/Portfolio/2026/astro-visual-editor/tools/ai-chat-panel/lib/telegram-control.js) |
-| **Secrets Storage** | VS Code OS `SecretStorage` (Windows DPAPI encryption) | [`lib/telegram-setup.js`](file:///C:/Users/ettla/Nextcloud/Eigene%20Projekte/Portfolio/2026/astro-visual-editor/tools/ai-chat-panel/lib/telegram-setup.js) |
-| **Log Sanitization** | `safeError()` redacts bot token from API error messages | [`lib/telegram-bridge.js`](file:///C:/Users/ettla/Nextcloud/Eigene%20Projekte/Portfolio/2026/astro-visual-editor/tools/ai-chat-panel/lib/telegram-bridge.js) |
+| **Identity** | Strict `ownerId` checking; foreign user messages dropped immediately | [`lib/telegram-bridge.js`](file:///C:/Users/user/Nextcloud/Eigene%20Projekte/Portfolio/2026/astro-visual-editor/tools/ai-chat-panel/lib/telegram-bridge.js) |
+| **Pairing** | 24-byte crypto nonce handshake via `/start <token>` | [`lib/telegram-setup.js`](file:///C:/Users/user/Nextcloud/Eigene%20Projekte/Portfolio/2026/astro-visual-editor/tools/ai-chat-panel/lib/telegram-setup.js) |
+| **Inbound Webhook** | 24-byte secret token (`x-telegram-bot-api-secret-token`) verification | [`lib/telegram-bridge.js`](file:///C:/Users/user/Nextcloud/Eigene%20Projekte/Portfolio/2026/astro-visual-editor/tools/ai-chat-panel/lib/telegram-bridge.js) |
+| **Mini App** | CSP, `SAMEORIGIN` framing, `no-store` caching, nosniff headers | [`lib/telegram-bridge.js`](file:///C:/Users/user/Nextcloud/Eigene%20Projekte/Portfolio/2026/astro-visual-editor/tools/ai-chat-panel/lib/telegram-bridge.js) |
+| **Approval Cards** | Single-use callback tokens (`approve:<hex>`), auto-pruned after 24h | [`lib/telegram-bridge.js`](file:///C:/Users/user/Nextcloud/Eigene%20Projekte/Portfolio/2026/astro-visual-editor/tools/ai-chat-panel/lib/telegram-bridge.js) |
+| **Truncation Guard** | Explicit truncation warning on approval descriptions > 500 chars | [`lib/telegram-control.js`](file:///C:/Users/user/Nextcloud/Eigene%20Projekte/Portfolio/2026/astro-visual-editor/tools/ai-chat-panel/lib/telegram-control.js) |
+| **Secrets Storage** | VS Code OS `SecretStorage` (Windows DPAPI encryption) | [`lib/telegram-setup.js`](file:///C:/Users/user/Nextcloud/Eigene%20Projekte/Portfolio/2026/astro-visual-editor/tools/ai-chat-panel/lib/telegram-setup.js) |
+| **Log Sanitization** | `safeError()` redacts bot token from API error messages | [`lib/telegram-bridge.js`](file:///C:/Users/user/Nextcloud/Eigene%20Projekte/Portfolio/2026/astro-visual-editor/tools/ai-chat-panel/lib/telegram-bridge.js) |
 
 ---
 

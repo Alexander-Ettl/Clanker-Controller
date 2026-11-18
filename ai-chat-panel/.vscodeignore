@@ -1,0 +1,12 @@
+# Keeps the Marketplace package small. Tests, type stubs and dev-only scripts stay in the repo.
+.vscode/**
+test/**
+types/**
+out/**
+node_modules/**
+*.vsix
+.env*
+!.env.example
+install-into-antigravity.ps1
+patch-sidebar-width.ps1
+PROJECTS.md

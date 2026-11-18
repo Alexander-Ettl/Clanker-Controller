@@ -16,7 +16,7 @@ The following findings were empirically tested and validated on this Windows mac
 
 | Component | Target Binary / Service | Validation Result | Streaming Protocol |
 | :--- | :--- | :--- | :--- |
-| **Google Antigravity** | `C:\Users\ettla\AppData\Local\agy\bin\agy.exe` (v1.2.7) | **Verified Live**: Successfully executed non-interactive streaming turn with `gemini-3.8-flash-high`. Zero token cost via `~/.gemini/` local auth. | `agy --input-format stream-json --output-format stream-json --model <id>` |
+| **Google Antigravity** | `C:\Users\user\AppData\Local\agy\bin\agy.exe` (v1.2.7) | **Verified Live**: Successfully executed non-interactive streaming turn with `gemini-3.8-flash-high`. Zero token cost via `~/.gemini/` local auth. | `agy --input-format stream-json --output-format stream-json --model <id>` |
 | **Anthropic Claude** | `claude.cmd` (v2.1.278) | **Verified Live**: Global CLI active and healthy; supports bidirectional headless session continuation. | `claude --input-format stream-json --output-format stream-json --verbose` |
 | **OpenAI Codex** | `codex.cmd` (v0.155.1) | **Verified Live**: Local CLI active; supports non-interactive execution, session resumption, and daemon integration. | `codex exec --json` / `codex app-server` |
 | **Antigravity LS Quota** | `127.0.0.1:<port>` Language Server | **Verified Live**: Successfully queried live 5-hour and weekly Gemini quota (currently 37% remaining in 5h window). | Connect RPC over HTTP POST |
@@ -24,8 +24,8 @@ The following findings were empirically tested and validated on this Windows mac
 
 ### Shared Nextcloud Skill Parity Across CLIs
 
-All three AI agents running in the CLI and inside the AI Chat Panel share the unified skill catalog hosted in Nextcloud (`C:\Users\ettla\Nextcloud\ClaudeConfig\skills`):
-- **Anthropic Claude Code (`claude.cmd`):** Reads directly from `$env:CLAUDE_CONFIG_DIR\skills` (configured persistently at User scope to `C:\Users\ettla\Nextcloud\ClaudeConfig`).
+All three AI agents running in the CLI and inside the AI Chat Panel share the unified skill catalog hosted in Nextcloud (`C:\Users\user\Nextcloud\ClaudeConfig\skills`):
+- **Anthropic Claude Code (`claude.cmd`):** Reads directly from `$env:CLAUDE_CONFIG_DIR\skills` (configured persistently at User scope to `C:\Users\user\Nextcloud\ClaudeConfig`).
 - **Google Antigravity / Gemini (`agy.exe`):** `~/.gemini/config/skills` is a directory-level NTFS Junction pointing directly to `ClaudeConfig\skills`. Verified live via `agy.exe -p`: lists all 10 Nextcloud skills identically to the IDE.
 - **OpenAI Codex (`codex.cmd`):** `~/.agents/skills` maps each skill as an NTFS Junction to `ClaudeConfig\skills` via `claude-config-sync/codex-skill-links.ps1`. Verified live: 10/10 skills active.
 - **AI Chat Panel Subprocess Contract:** When `astro-visual-editor/tools/ai-chat-panel/lib/stream-engine.js` spawns child processes, it explicitly passes `env: { ...process.env, CLAUDE_CONFIG_DIR: process.env.CLAUDE_CONFIG_DIR }` and workspace `cwd` to ensure 100% skill parity between headless CLI execution and the IDE.

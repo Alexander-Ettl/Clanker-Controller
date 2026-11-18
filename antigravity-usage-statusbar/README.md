@@ -30,15 +30,13 @@ Hover any item to reveal a graphical Markdown dashboard showing:
 All sources are polled every five seconds. Missing, expired, or malformed data
 shows placeholder values (`--%`); errors are not surfaced as IDE notifications.
 
-## Local installation
+## Requirements
 
-Copy this directory to:
+Windows with Antigravity. Each gauge appears once its source exists: Antigravity's language server for Gemini, a Claude Code sign-in for Claude, and Codex rollout files for Codex. It is part of [Clanker Controller](https://github.com/Alexander-Ettl/Clanker-Controller) and works on its own.
 
-```text
-C:\Users\ettla\.antigravity-ide\extensions\local.antigravity-usage-statusbar-0.2.0
-```
+## Installation
 
-(or update your existing installed extension folder) then restart Antigravity.
+Install it from Open VSX (Antigravity) or the Marketplace, then restart the IDE. To run it from source, copy this directory to `%USERPROFILE%\.antigravity-ide\extensions\<publisher>.antigravity-usage-statusbar-<version>`.
 
 ## Test
 
@@ -46,3 +44,10 @@ C:\Users\ettla\.antigravity-ide\extensions\local.antigravity-usage-statusbar-0.2
 npm test
 ```
 
+## Not affiliated
+
+An independent project, not affiliated with or endorsed by Anthropic, OpenAI or Google. Claude, Codex, Gemini and Antigravity are trademarks of their owners. The extension only reads usage data your own sign-ins already produce.
+
+## License
+
+[MPL-2.0](LICENSE)

@@ -1075,7 +1075,7 @@ export const scenarios = [
     assert.equal(await page.evaluate(() => window.sent.filter(message => message.type === 'openFile').at(-1).path), 'review.pdf');
   } },
   { id: 'pdf-code-label-links', setup: async page => {
-    const text = '2. Allgemeine Vorlagen als PDF:\n   - [`Vorlage_Offiz.pdf`](file:///C:/Users/ettla/Docs/Vorlage_Offiz.pdf) *(Markdown)*\n   - [**Vorlage_Inoffiz.pdf**](<C:/Users/ettla/Docs/Vorlage Inoffiz.pdf>)\n   - [`C:/Docs/a.pdf`](C:/Docs/a.pdf)';
+    const text = '2. Allgemeine Vorlagen als PDF:\n   - [`Vorlage_Offiz.pdf`](file:///C:/Users/user/Docs/Vorlage_Offiz.pdf) *(Markdown)*\n   - [**Vorlage_Inoffiz.pdf**](<C:/Users/user/Docs/Vorlage Inoffiz.pdf>)\n   - [`C:/Docs/a.pdf`](C:/Docs/a.pdf)';
     await page.evaluate(text => window.dispatchEvent(new MessageEvent('message', { data: { type: 'chatLoaded', chat: { id: 'pdf-code-label', messages: [{ role: 'assistant', text }] } } })), text);
     const badges = page.locator('#transcript .file-badge');
     await badges.first().waitFor();
@@ -1085,10 +1085,10 @@ export const scenarios = [
     assert.equal(await badges.first().innerText(), 'Vorlage_Offiz.pdf');
     assert.equal(await badges.nth(1).innerText(), 'Vorlage_Inoffiz.pdf');
     await badges.first().click();
-    assert.equal(await page.evaluate(() => window.sent.filter(message => message.type === 'openFile').at(-1).path), 'C:/Users/ettla/Docs/Vorlage_Offiz.pdf');
+    assert.equal(await page.evaluate(() => window.sent.filter(message => message.type === 'openFile').at(-1).path), 'C:/Users/user/Docs/Vorlage_Offiz.pdf');
   } },
   { id: 'env-file-links', setup: async page => {
-    const text = '2. Geschützte [`.env`](file:///C:/Users/ettla/Nextcloud/Stauffia/.env) für deine Zugangsdaten angelegt, dazu `C:/Users/ettla/app/.env.production` und [Beispiel](<C:/Users/ettla/app/.env.local>).';
+    const text = '2. Geschützte [`.env`](file:///C:/Users/user/Nextcloud/Stauffia/.env) für deine Zugangsdaten angelegt, dazu `C:/Users/user/app/.env.production` und [Beispiel](<C:/Users/user/app/.env.local>).';
     await page.evaluate(text => window.dispatchEvent(new MessageEvent('message', { data: { type: 'chatLoaded', chat: { id: 'env-links', messages: [{ role: 'assistant', text }] } } })), text);
     const badges = page.locator('#transcript .file-badge[data-ext="env"]');
     await badges.first().waitFor();
@@ -1097,10 +1097,10 @@ export const scenarios = [
     assert.equal(await badges.first().innerText(), '.env');
     assert.equal(await badges.first().locator('code').count(), 0);
     await badges.first().click();
-    assert.deepEqual(await page.evaluate(() => window.sent.filter(message => message.type === 'openFile').at(-1)), { type: 'openFile', path: 'C:/Users/ettla/Nextcloud/Stauffia/.env', line: null });
+    assert.deepEqual(await page.evaluate(() => window.sent.filter(message => message.type === 'openFile').at(-1)), { type: 'openFile', path: 'C:/Users/user/Nextcloud/Stauffia/.env', line: null });
   } },
   { id: 'codex-pdf-file-links', setup: async page => {
-    const file = '/C:/Users/ettla/OneDrive - Hochschule München/RPLS/Unterlagen/Stakeholder_Maps_EyeDrop_Aid.pdf';
+    const file = '/C:/Users/user/OneDrive - Hochschule München/RPLS/Unterlagen/Stakeholder_Maps_EyeDrop_Aid.pdf';
     const label = 'Beide Stakeholder Maps als PDF';
     const text = `Fertig: [${label}](<${file}>).\n\nZwei Seiten, jeweils unverändert aus den Original-PDFs übernommen und geprüft.`;
     await page.evaluate(text => window.dispatchEvent(new MessageEvent('message', { data: { type: 'chatLoaded', chat: { id: 'codex-pdf-links', messages: [{ role: 'assistant', agent: 'codex', text }] } } })), text);

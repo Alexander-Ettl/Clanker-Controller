@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="docs/images/hero.svg" alt="Clanker Controller: one chat for all your AI harnesses, built on flat-rate subscriptions" width="100%">
+  <img src="docs/images/hero.png" alt="Clanker Controller: one chat for all your AI harnesses, built on flat-rate subscriptions" width="100%">
 </p>
 
 **Clanker Controller** is an IDE extension that puts your coding agents in one chat window. Claude Code, Codex, Antigravity (Gemini) and GitHub Copilot sit side by side. You pick a model per message. It drives the official CLIs you already have installed, so you keep your sign-ins, your plans and your setup. You give nothing up.
@@ -54,7 +54,7 @@ No PC running? An experimental option runs the warm-ups in your own Google Cloud
 Clanker keeps an **API value** meter. For every turn it prices the tokens at each provider's pay-per-token rates and adds them up. It is a comparison, not a bill: the work itself ran on your subscriptions.
 
 <p align="center">
-  <img src="docs/images/cost.svg" alt="October 2026 at API prices: 989 dollars. The same work on subscriptions at 45 dollars a month, 22 times cheaper." width="100%">
+  <img src="docs/images/cost.png" alt="October 2026 at API prices: 989 dollars. The same work on subscriptions at 45 dollars a month, 22 times cheaper." width="100%">
 </p>
 
 How to read it. These numbers are the maintainer's own: real usage and the plans the maintainer actually pays for.
@@ -86,7 +86,13 @@ You can see your own number under **Chat Settings > General > API value**.
 
 ## Install
 
-You need Node.js, Antigravity or VS Code, and at least one CLI: Claude Code, Codex, Antigravity or GitHub Copilot.
+You need Antigravity or VS Code and at least one CLI: Claude Code, Codex, Antigravity or GitHub Copilot.
+
+**Platform:** Windows 10 or 11. Hotkeys, notifications, microphone handling and some process cleanup call PowerShell and `taskkill`. Linux and macOS are untested; the chat and scheduler may work there, but expect rough edges and no voice dictation.
+
+**From the Marketplace:** search for **Clanker Controller** in the Extensions view (VS Code), or install it from Open VSX (Antigravity). The optional **Gemini, Claude & Codex Usage** extension adds the quota gauges to Antigravity's status bar.
+
+**From source** (needs Node.js):
 
 ```bash
 git clone https://github.com/Alexander-Ettl/Clanker-Controller.git
@@ -97,7 +103,7 @@ node scripts/install-extension.mjs        # vscode, antigravity or all; add --li
 
 Reload the IDE window. The first-run guide connects your CLIs, sets up voice and routing, or offers **Set up with AI** to walk you through it. You can reopen it anytime from **Chat Settings > General > Setup guide**.
 
-On Windows you can also run `ai-chat-panel/install-into-antigravity.ps1 -Link`. Built and used daily on Windows; the installer also works on Linux and macOS, but voice dictation is Windows-only for now.
+On Windows you can also run `ai-chat-panel/install-into-antigravity.ps1 -Link`.
 
 ## Repository
 
@@ -109,6 +115,10 @@ On Windows you can also run `ai-chat-panel/install-into-antigravity.ps1 -Link`. 
 | [`docs/`](docs/README.md) | Guides, specifications and proposals |
 
 Working on the code? Start with the [development guide](docs/development.md), [AGENTS.md](AGENTS.md) and the backlog in [TODO.md](TODO.md).
+
+## Not affiliated
+
+Clanker Controller is an independent project. It is not affiliated with, endorsed by or sponsored by Anthropic, OpenAI, Google or GitHub. Claude, Claude Code, Codex, ChatGPT, Gemini, Antigravity and GitHub Copilot are trademarks of their respective owners. The names only say which CLI a feature talks to. The extension runs the CLIs you installed and signed in to yourself.
 
 ## License
 

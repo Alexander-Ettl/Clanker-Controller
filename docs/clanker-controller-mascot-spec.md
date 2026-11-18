@@ -4,8 +4,8 @@ Document version: `1.0.0`
 Status: **Approved for Production & Animation Ready**  
 Owner: `ai-chat-panel` / Design & Architecture  
 Associated Repositories:
-- Workspace Master: [`Clanker_Controller_logo.svg`](file:///C:/Users/ettla/Nextcloud/Eigene%20Projekte/Portfolio/2026/Clanker_Controller_logo.svg)
-- Extension Media: [`astro-visual-editor/tools/ai-chat-panel/media/clanker.svg`](file:///C:/Users/ettla/Nextcloud/Eigene%20Projekte/Portfolio/2026/astro-visual-editor/tools/ai-chat-panel/media/clanker.svg), [`clanker-dark.svg`](file:///C:/Users/ettla/Nextcloud/Eigene%20Projekte/Portfolio/2026/astro-visual-editor/tools/ai-chat-panel/media/clanker-dark.svg)
+- Workspace Master: [`Clanker_Controller_logo.svg`](file:///C:/Users/user/Nextcloud/Eigene%20Projekte/Portfolio/2026/Clanker_Controller_logo.svg)
+- Extension Media: [`astro-visual-editor/tools/ai-chat-panel/media/clanker.svg`](file:///C:/Users/user/Nextcloud/Eigene%20Projekte/Portfolio/2026/astro-visual-editor/tools/ai-chat-panel/media/clanker.svg), [`clanker-dark.svg`](file:///C:/Users/user/Nextcloud/Eigene%20Projekte/Portfolio/2026/astro-visual-editor/tools/ai-chat-panel/media/clanker-dark.svg)
 
 ---
 
@@ -30,9 +30,9 @@ Associated Repositories:
 
 | File | Repo Location | Purpose | Theme / Behavior |
 | :--- | :--- | :--- | :--- |
-| [`Clanker_Controller_logo.svg`](file:///C:/Users/ettla/Nextcloud/Eigene%20Projekte/Portfolio/2026/Clanker_Controller_logo.svg) | Root (`.`) | Master Brand Asset | `fill="currentColor"`, stripped Adobe metadata (880 B). |
-| [`clanker.svg`](file:///C:/Users/ettla/Nextcloud/Eigene%20Projekte/Portfolio/2026/astro-visual-editor/tools/ai-chat-panel/media/clanker.svg) | `astro-visual-editor` | Activity Bar & Light Theme Tabs | `fill="currentColor"` with `style="color: #1e1e1e;"` fallback. |
-| [`clanker-dark.svg`](file:///C:/Users/ettla/Nextcloud/Eigene%20Projekte/Portfolio/2026/astro-visual-editor/tools/ai-chat-panel/media/clanker-dark.svg) | `astro-visual-editor` | Dark Theme Tabs & Sidebars | `fill="currentColor"` with `style="color: #C5C5C5;"` fallback. |
+| [`Clanker_Controller_logo.svg`](file:///C:/Users/user/Nextcloud/Eigene%20Projekte/Portfolio/2026/Clanker_Controller_logo.svg) | Root (`.`) | Master Brand Asset | `fill="currentColor"`, stripped Adobe metadata (880 B). |
+| [`clanker.svg`](file:///C:/Users/user/Nextcloud/Eigene%20Projekte/Portfolio/2026/astro-visual-editor/tools/ai-chat-panel/media/clanker.svg) | `astro-visual-editor` | Activity Bar & Light Theme Tabs | `fill="currentColor"` with `style="color: #1e1e1e;"` fallback. |
+| [`clanker-dark.svg`](file:///C:/Users/user/Nextcloud/Eigene%20Projekte/Portfolio/2026/astro-visual-editor/tools/ai-chat-panel/media/clanker-dark.svg) | `astro-visual-editor` | Dark Theme Tabs & Sidebars | `fill="currentColor"` with `style="color: #C5C5C5;"` fallback. |
 
 ### Stencil Geometry & ViewBox Specifications
 * **ViewBox:** `0 0 374.78 296.77`

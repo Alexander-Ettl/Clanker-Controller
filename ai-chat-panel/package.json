@@ -4,14 +4,21 @@
     "description": "Unified Liquid Glass launcher for headless Claude Code, Codex, and Gemini 3.8 chat sessions, opened as movable floating windows alongside the File Explorer.",
     "version": "0.1.0",
     "publisher": "local",
-    "private": true,
     "license": "MPL-2.0",
+    "repository": {
+        "type": "git",
+        "url": "https://github.com/Alexander-Ettl/Clanker-Controller.git",
+        "directory": "ai-chat-panel"
+    },
+    "bugs": { "url": "https://github.com/Alexander-Ettl/Clanker-Controller/issues" },
+    "homepage": "https://github.com/Alexander-Ettl/Clanker-Controller#readme",
+    "icon": "media/icon.png",
+    "galleryBanner": { "color": "#14161d", "theme": "dark" },
+    "keywords": ["claude", "codex", "gemini", "antigravity", "copilot", "ai", "chat", "agent", "scheduler", "usage"],
     "engines": {
         "vscode": "^1.85.0"
     },
-    "categories": [
-        "Other"
-    ],
+    "categories": ["AI", "Chat", "Other"],
     "activationEvents": [
         "*",
         "onWebviewPanel:aiChatPanel.chatWindow"

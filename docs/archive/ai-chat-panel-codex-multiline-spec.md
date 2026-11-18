@@ -20,8 +20,8 @@ In `astro-visual-editor/tools/ai-chat-panel`, the `.composer` container is style
 This is a polished, compact design for single-line queries.
 
 ### 1.2 The Multi-Line Degradation (Referenced Attachments)
-- Local Image: [`site/.astro/session/attachments/1790129585078_image.png`](file:///c:/Users/ettla/Nextcloud/Eigene%20Projekte/Portfolio/2026/site/.astro/session/attachments/1790129585078_image.png)
-- Local Image: [`site/.astro/session/attachments/1790129591694_image.png`](file:///c:/Users/ettla/Nextcloud/Eigene%20Projekte/Portfolio/2026/site/.astro/session/attachments/1790129591694_image.png)
+- Local Image: [`site/.astro/session/attachments/1790129585078_image.png`](file:///c:/Users/user/Nextcloud/Eigene%20Projekte/Portfolio/2026/site/.astro/session/attachments/1790129585078_image.png)
+- Local Image: [`site/.astro/session/attachments/1790129591694_image.png`](file:///c:/Users/user/Nextcloud/Eigene%20Projekte/Portfolio/2026/site/.astro/session/attachments/1790129591694_image.png)
 
 When the author enters more than one line of text (or enters a long prompt):
 1. `autoGrow()` expands the textarea's height up to 140px. The `.composer` container height expands from `52px` to `~168px`, taking on a squircle shape.

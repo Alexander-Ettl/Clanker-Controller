@@ -187,7 +187,7 @@ Creating a Windows Directory Junction directly links the source folder to the ex
 ```powershell
 $extDir = Join-Path $env:USERPROFILE '.antigravity-ide\extensions'
 $dest = Join-Path $extDir 'local.ai-chat-panel-0.1.0'
-$src = "C:\Users\ettla\Nextcloud\Eigene Projekte\Portfolio\2026\tools\ai-chat-panel"
+$src = "C:\Users\user\Nextcloud\Eigene Projekte\Portfolio\2026\tools\ai-chat-panel"
 
 # 1. Remove existing copied folder if present
 if (Test-Path -LiteralPath $dest) {

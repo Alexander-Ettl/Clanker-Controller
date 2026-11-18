@@ -58,7 +58,7 @@ try {
   await send({ type: 'tool_end', toolId: 'b0', output: '' });
 
   // A Monitor that sleeps 240s: a countdown.
-  await send({ type: 'tool_start', name: 'Monitor', command: 'sleep 240; cat /c/Users/ettla/AppData/Local/Temp/out.log', toolId: 'm1' });
+  await send({ type: 'tool_start', name: 'Monitor', command: 'sleep 240; cat /c/Users/user/AppData/Local/Temp/out.log', toolId: 'm1' });
   assert.equal(await label.textContent(), 'Timer');
   await page.waitForFunction(() => /^3m 5\ds$|^4m$/.test(document.querySelector('.msg-pending .pending-time').textContent), null, { timeout: 4000 });
   await shot('timer-countdown.png');
