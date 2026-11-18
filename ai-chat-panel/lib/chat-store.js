@@ -155,6 +155,14 @@ function deriveFallbackTitle(messages) {
   return words.slice(0, 5).join(' ');
 }
 
+// The rail sorts chats by `updatedAt`, which has millisecond precision; saves within one millisecond tied and came out in
+// directory order, so cleanup could drop a newer draft. Every stamp this process issues is later than the one before.
+let lastStamp = 0;
+function stamp() {
+  lastStamp = Math.max(Date.now(), lastStamp + 1);
+  return new Date(lastStamp).toISOString();
+}
+
 // A save stamps `updatedAt` even when nothing was said (closing a chat, switching away, the IDE shutting down), which made
 // day-old chats read "Just now". When the chat is idle, "last active" is its newest message's own time instead.
 /** @param {Chat} chat */
@@ -287,7 +295,7 @@ class ChatStore {
   }
 
   create() {
-    const now = new Date().toISOString();
+    const now = stamp();
     return { id: crypto.randomUUID(), createdAt: now, updatedAt: now, messages: [] };
   }
 
@@ -302,7 +310,7 @@ class ChatStore {
   /** @param {Chat} chat @returns {Chat} */
   save(chat) {
     /** @type {Chat} */
-    const clean = { ...chat, id: safeId(chat.id), updatedAt: new Date().toISOString(), messages: Array.isArray(chat.messages) ? chat.messages : [] };
+    const clean = { ...chat, id: safeId(chat.id), updatedAt: stamp(), messages: Array.isArray(chat.messages) ? chat.messages : [] };
     const file = this.fileFor(clean.id);
     writeChat(file, this.outputs.encode(clean));
     this.cancelCheckpoint(chat.id);
@@ -348,7 +356,7 @@ class ChatStore {
       if (previous) await previous.promise;
       if (this.writes.get(id) !== write) return;
       const started = Date.now();
-      const clean = { ...latest, updatedAt: new Date().toISOString() };
+      const clean = { ...latest, updatedAt: stamp() };
       const file = this.cachedFile(id);
       const trusted = this.stamps.get(file) || null;
       const text = this.serialise(clean, settled);

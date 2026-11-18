@@ -6,7 +6,7 @@
 
 const os = require('node:os');
 const path = require('node:path');
-const { CliAccounts } = require('../lib/cli-accounts');
+const { CliAccounts, terminalSpec } = require('../lib/cli-accounts');
 
 const CRASH = 'Error: Missing optional dependency @openai/codex-win32-x64. Reinstall Codex: npm install -g @openai/codex@latest\n    at findCodexExecutable (file:///C:/npm/codex.js:107:9)';
 
@@ -21,6 +21,7 @@ function fakeAccounts({ agents = ['codex'], status = {}, signIn = async () => ({
     store: { get: () => ({ enabled: agents, completed: true }), set: async () => {} },
     vscode: { window: { terminals: [], createTerminal: () => { calls.terminals++; return { show() {}, dispose() {} }; } } },
     find: (agent) => ({ path: state[agent] === 'missing' ? null : `C:/bin/${agent}.exe` }), reset() {}, broadcast: (message) => messages.push(message),
+    spec: (agent, file) => terminalSpec(agent, file, 'win32'), // the fake paths are Windows ones, on any host
     run: async (file, args) => {
       const agent = agentOf(file);
       if (args.includes('status') || args[0] === 'models') {
