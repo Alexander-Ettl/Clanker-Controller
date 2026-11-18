@@ -63,10 +63,11 @@ function snapshot(root, directory) {
   const listed = execFileSync('git', ['ls-files', '-z', '--cached', '--others', '--exclude-standard'], { cwd: root, windowsHide: true, maxBuffer: 4 * 1024 * 1024 }).toString().split('\0');
   const files = [...new Set([...listed.filter(safeSource), 'package.json'])].sort();
   const contents = new Map(); let bytes = 0;
+  const realRoot = fs.realpathSync.native(root); // the symlink check below compares real paths, so the root must be one too (8.3 short names, junctions)
   for (const file of files) {
     const source = path.resolve(root, file); if (!inside(root, source) || !fs.existsSync(source)) continue;
     const stat = fs.lstatSync(source); if (!stat.isFile() || stat.size > 512000) continue;
-    const canonical = fs.realpathSync.native(source); if (!inside(root, canonical)) continue;
+    const canonical = fs.realpathSync.native(source); if (!inside(realRoot, canonical)) continue;
     bytes += stat.size; if (bytes > 20 * 1024 * 1024) throw new Error('Source snapshot exceeds 20 MB.');
     const body = fs.readFileSync(source); const target = path.join(checkout, file);
     fs.mkdirSync(path.dirname(target), { recursive: true }); fs.writeFileSync(target, body);
