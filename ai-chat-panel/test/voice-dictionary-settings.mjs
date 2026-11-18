@@ -14,7 +14,7 @@ const html = `<!doctype html><meta charset="utf-8"><style>${['style.css', 'launc
 <script>window.sent = []; window.acquireVsCodeApi = () => ({ postMessage: (message) => window.sent.push(message) });</script>
 <script>${read('agent-icons.js')}</script><script>${read('model-prompts.js')}</script><script>${read('voice-hotkey.js')}</script><script>${read('settings.js')}</script>
 <script>window.api = window.initChatSettings({ vscode: window.acquireVsCodeApi(), body: document.getElementById('csBody') }); window.api.showTab('voice');</script>`;
-const limits = { entries: 5000, scanned: 1500, scanBatch: 60, promptTerms: 40, promptChars: 480, cleanupTerms: 150 };
+const limits = { entries: 5000, scanned: 1500, perScan: 80, promptTerms: 40, promptChars: 480, cleanupTerms: 150 };
 const word = (term, extra = {}) => ({ term, enabled: true, addedAt: 1, ...extra });
 const browser = await chromium.launch({ headless: true, channel: 'msedge' });
 try {
@@ -45,7 +45,7 @@ try {
 
   await page.fill('[data-role=dictNew]', '  Liquid Glass ');
   await page.press('[data-role=dictNew]', 'Enter');
-  assert.deepEqual(await lastSent('voiceDictionaryAdd'), { type: 'voiceDictionaryAdd', term: 'Liquid Glass' });
+  assert.deepEqual(await lastSent('voiceDictionaryAdd'), { type: 'voiceDictionaryAdd', term: 'Liquid Glass', projectId: '' });
   assert.equal(await page.inputValue('[data-role=dictNew]'), '');
   await page.click('[data-role=dictAdd]');
   assert.match(await page.locator('[data-role=dictStatus]').innerText(), /Type a word/);
@@ -53,28 +53,88 @@ try {
   await page.locator('.cs-dict-row', { hasText: 'SimTalk' }).locator('button[aria-label^=Rename]').click();
   await page.fill('.cs-dict-edit', 'SimTalk 2');
   await page.press('.cs-dict-edit', 'Enter');
-  assert.deepEqual(await lastSent('voiceDictionaryEdit'), { type: 'voiceDictionaryEdit', term: 'SimTalk', next: 'SimTalk 2' });
+  assert.deepEqual(await lastSent('voiceDictionaryEdit'), { type: 'voiceDictionaryEdit', term: 'SimTalk', projectId: '', next: 'SimTalk 2' });
   await page.locator('.cs-dict-row', { hasText: 'Tecnomatix' }).locator('.cs-switch').click();
-  assert.deepEqual(await lastSent('voiceDictionaryEdit'), { type: 'voiceDictionaryEdit', term: 'Tecnomatix', enabled: true });
+  assert.deepEqual(await lastSent('voiceDictionaryEdit'), { type: 'voiceDictionaryEdit', term: 'Tecnomatix', projectId: '', enabled: true });
   await page.locator('.cs-dict-row', { hasText: 'ChatWindowHost' }).locator('button[aria-label^=Delete]').click();
-  assert.deepEqual(await lastSent('voiceDictionaryRemove'), { type: 'voiceDictionaryRemove', term: 'ChatWindowHost' });
+  assert.deepEqual(await lastSent('voiceDictionaryRemove'), { type: 'voiceDictionaryRemove', term: 'ChatWindowHost', projectId: '' });
 
+  // Scanning: one button for every project, plus one per project that has a folder.
   await page.evaluate(() => window.api.projectIcons([{ id: 'p1', name: 'Visor', root: 'C:/p/visor' }, { id: 'p2', name: 'No folder', root: '' }]));
-  assert.deepEqual(await page.locator('[data-role=dictProjects] button').allInnerTexts(), ['Visor', 'Choose folder…']);
+  assert.deepEqual(await page.locator('[data-role=dictProjects] button').allInnerTexts(), ['Visor']);
+  assert.equal(await page.locator('[data-role=dictScanAll]').innerText(), 'Scan all projects');
   await page.click('[data-role=dictProjects] button >> text=Visor');
   assert.deepEqual(await lastSent('voiceDictionaryScan'), { type: 'voiceDictionaryScan', id: 'p1' });
   assert.equal(await page.locator('[data-role=dictProjects] button').first().isDisabled(), true, 'one scan at a time');
+  assert.equal(await page.locator('[data-role=dictScanAll]').isDisabled(), true, 'also for the scan-all button');
   await deliver([word('SimTalk')], { scanning: false, notice: 'Visor: added 12.' });
   assert.equal(await page.locator('[data-role=dictProjects] button').first().isDisabled(), false);
   assert.equal(await page.locator('[data-role=dictStatus]').innerText(), 'Visor: added 12.');
   await deliver([word('SimTalk')], { error: 'The dictionary is full.' });
   assert.match(await page.locator('[data-role=dictStatus]').getAttribute('class'), /is-error/);
 
+  await page.click('[data-role=dictScanAll]');
+  assert.deepEqual(await lastSent('voiceDictionaryScan'), { type: 'voiceDictionaryScan', all: true });
+  assert.equal(await page.locator('[data-role=dictScanAll]').isDisabled(), true);
+  await deliver([word('SimTalk')], { scanning: true, progress: 'Scanning Visor (1 of 2)…' });
+  assert.equal(await page.locator('[data-role=dictStatus]').innerText(), 'Scanning Visor (1 of 2)…');
+  await deliver([word('VisorBridge', { source: 'scan', projectId: 'p1' })], { scanning: false, notice: 'Scanned 1 project: added 12 words, refreshed 0. 1 had no folder.', report: [
+    { name: 'Visor', status: 'ok', added: 12, updated: 3, removed: 1 }, { name: 'No folder', status: 'no-folder' }] });
+  assert.deepEqual(await page.locator('.cs-dict-report-row').allInnerTexts(), ['Visor\n12 new · 3 refreshed · 1 dropped', 'No folder\nno folder']);
+  assert.equal(await page.locator('[data-role=dictScanAll]').isDisabled(), false);
+
+  // Each project has its own list; the shared words are a list of their own.
+  const projects = [{ id: 'p1', name: 'Visor', hasFolder: true }, { id: 'p2', name: 'Plant Sim', hasFolder: true }];
+  const mixed = [word('Tecnomatix', { projectId: 'p2' }), word('VisorBridge', { projectId: 'p1', source: 'scan', project: 'Visor' }), word('ChatGPT'), word('Astro', { projectId: 'p1' })];
+  const usage = { total: 4, enabled: 4, scanned: 1, shared: 1, byProject: { p1: 2, p2: 1 }, limits: { entries: 5000 } };
+  await page.setContent(html); // a fresh window: it opens on the project in front
+  await page.evaluate(([mixed, projects, usage]) => window.api.voiceDictionary({ entries: mixed, usage, projects, current: 'p1' }), [mixed, projects, usage]);
+  assert.equal(await page.locator('[data-role=dictScope]').inputValue(), 'p1', 'opens on the project you are working in');
+  assert.deepEqual(await page.locator('[data-role=dictScope] option').allInnerTexts(), ['All words (4)', 'Shared by every project (1)', 'Visor (2)', 'Plant Sim (1)']);
+  assert.deepEqual(await page.locator('.cs-dict-term').allInnerTexts(), ['VisorBridge', 'Astro'], 'only that project’s words');
+  assert.equal(await page.locator('[data-role=dictTag]').innerText(), '2 words');
+  assert.equal(await page.locator('[data-role=dictNew]').getAttribute('placeholder'), 'Add a word for Visor…');
+  await page.fill('[data-role=dictNew]', 'Kinetic');
+  await page.press('[data-role=dictNew]', 'Enter');
+  assert.deepEqual(await lastSent('voiceDictionaryAdd'), { type: 'voiceDictionaryAdd', term: 'Kinetic', projectId: 'p1' }, 'a new word goes to the dictionary on show');
+  await page.locator('.cs-dict-row', { hasText: 'Astro' }).locator('button[aria-label^="Share with every project"]').click();
+  assert.deepEqual(await lastSent('voiceDictionaryMove'), { type: 'voiceDictionaryMove', term: 'Astro', projectId: 'p1', to: '' });
+  await page.selectOption('[data-role=dictScope]', '');
+  assert.deepEqual(await page.locator('.cs-dict-term').allInnerTexts(), ['ChatGPT']);
+  assert.equal(await page.locator('[data-role=dictNew]').getAttribute('placeholder'), 'Add a shared word or name…');
+  await page.locator('.cs-dict-row', { hasText: 'ChatGPT' }).locator('button[aria-label^="Use only in Visor"]').click();
+  assert.deepEqual(await lastSent('voiceDictionaryMove'), { type: 'voiceDictionaryMove', term: 'ChatGPT', projectId: '', to: 'p1' });
+  await page.selectOption('[data-role=dictScope]', '*');
+  assert.equal(await page.locator('.cs-dict-term').count(), 4);
+  assert.deepEqual(await page.locator('.cs-dict-row', { hasText: 'Tecnomatix' }).locator('.cs-dict-source').allInnerTexts(), ['Plant Sim']);
+  assert.deepEqual(await page.locator('.cs-dict-row', { hasText: 'ChatGPT' }).locator('.cs-dict-source').allInnerTexts(), ['Shared']);
+  await page.locator('.cs-dict-row', { hasText: 'Tecnomatix' }).locator('button[aria-label^=Delete]').click();
+  assert.deepEqual(await lastSent('voiceDictionaryRemove'), { type: 'voiceDictionaryRemove', term: 'Tecnomatix', projectId: 'p2' }, 'a delete names the dictionary the word lives in');
+  await page.selectOption('[data-role=dictScope]', 'p1');
+  await page.click('[data-role=dictClearScanned]');
+  assert.deepEqual(await lastSent('voiceDictionaryClearScanned'), { type: 'voiceDictionaryClearScanned', projectId: 'p1' });
+  await page.selectOption('[data-role=dictScope]', '*');
+
+  // Suggestions are offered, never applied on their own.
+  assert.equal(await page.locator('[data-role=dictSuggest]').isHidden(), true);
+  await page.evaluate(([mixed, projects, usage]) => window.api.voiceDictionary({ entries: mixed, usage, projects, current: 'p1', suggestions: { share: [{ term: 'Tecnomatix', projectId: 'p2', projects: 2 }], add: [{ term: 'NeuronLedger', projectId: 'p1', count: 4 }] } }), [mixed, projects, usage]);
+  assert.equal(await page.locator('.cs-dict-hint').count(), 2);
+  assert.match(await page.locator('.cs-dict-hint').first().innerText(), /Tecnomatix was used in 2 projects/);
+  assert.match(await page.locator('.cs-dict-hint').nth(1).innerText(), /NeuronLedger came up in 4 of your messages in Visor/);
+  await page.getByRole('button', { name: 'Share Tecnomatix', exact: true }).click();
+  assert.deepEqual(await lastSent('voiceDictionarySuggestion'), { type: 'voiceDictionarySuggestion', kind: 'share', term: 'Tecnomatix', projectId: 'p2', accept: true });
+  await page.getByRole('button', { name: 'Dismiss NeuronLedger', exact: true }).click();
+  assert.deepEqual(await lastSent('voiceDictionarySuggestion'), { type: 'voiceDictionarySuggestion', kind: 'add', term: 'NeuronLedger', projectId: 'p1', accept: false });
+  await page.locator('[data-role=dictionary]').screenshot({ path: path.join(os.tmpdir(), 'clanker-dictionary-projects.png') });
+  await page.evaluate(([mixed, projects, usage]) => window.api.voiceDictionary({ entries: mixed, usage, projects, current: 'p1', suggestions: { share: [], add: [] } }), [mixed, projects, usage]);
+  await page.selectOption('[data-role=dictScope]', '*');
+
   await page.click('[data-role=dictAI]');
   assert.ok(await lastSent('voiceDictionaryWithAI'));
   await deliver([word('A', { source: 'scan' }), word('B', { source: 'scan' })]);
+  assert.equal(await page.locator('[data-role=dictClearScanned]').innerText(), 'Remove 2 scanned words');
   await page.click('[data-role=dictClearScanned]');
-  assert.ok(await lastSent('voiceDictionaryClearScanned'));
+  assert.deepEqual(await lastSent('voiceDictionaryClearScanned'), { type: 'voiceDictionaryClearScanned' }, 'all words: every project’s scanned words');
 
   // A long dictionary: only the first rows are drawn, search reaches the rest, and nothing overflows the narrow window.
   await deliver(Array.from({ length: 1800 }, (_, index) => word(`Term${index}`, { source: index % 2 ? 'scan' : undefined })));
@@ -122,5 +182,5 @@ try {
   await page.keyboard.press('Space');
   assert.equal(await panel.evaluate(el => el.open), false);
   assert.deepEqual(errors, []);
-  console.log('Settings dictionary: search, add, rename, switch, delete, scan, AI and limits passed.');
+  console.log('Settings dictionary: per-project lists, sharing, suggestions, scan all, search, add, rename, switch, delete, AI and limits passed.');
 } finally { await browser.close(); }

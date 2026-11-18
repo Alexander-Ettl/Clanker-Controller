@@ -71,11 +71,12 @@ export async function queueStability(page) {
   // The scheduled row stays outside ordinary queue drag positions, and host echoes must not break pointer capture.
   await send({ type: 'turnQueue', chatId: 'queue-stability', turns, paused: true });
   await page.waitForTimeout(400);
-  const grip = page.locator('[data-id="agenda"] .turn-queue-grip');
-  const from = await grip.boundingBox(), to = await page.locator('[data-id="verify"] .turn-queue-grip').boundingBox();
+  const grip = page.locator('[data-id="agenda"] .turn-queue-text');
+  const from = await grip.boundingBox(), to = await page.locator('[data-id="verify"] .turn-queue-text').boundingBox();
   const restarts = await page.evaluate(() => window.queueRestarts);
   await page.mouse.move(from.x + from.width / 2, from.y + from.height / 2);
   await page.mouse.down();
+  await page.mouse.move(from.x + from.width / 2, from.y + from.height / 2 + 10, { steps: 2 }); // the row lifts after a few pixels, a plain click does not
   turns[2].text = 'Updated while dragging';
   await send({ type: 'turnQueue', chatId: 'queue-stability', turns: structuredClone(turns), paused: true });
   await send({ type: 'schedulerQueue', queue: [task] });
@@ -96,6 +97,27 @@ export async function queueStability(page) {
   const scrollTop = await page.locator('.turn-queue-strip').evaluate(strip => { strip.scrollTop = 60; return strip.scrollTop; });
   await send({ type: 'turnQueue', chatId: 'queue-stability', turns: structuredClone(many), paused: true });
   assert.equal(await page.locator('.turn-queue-strip').evaluate(strip => strip.scrollTop), scrollTop, 'host echoes must preserve the queue scroll position');
+  // Numbers, arrows and the fixed two-line row. extra-0 .. extra-7 follow translate (agenda is gone; verify was deleted).
+  const order = () => page.locator('.turn-queue-item').evaluateAll(rows => rows.map(row => row.dataset.id));
+  const numbers = () => page.locator('.turn-queue-num').allTextContents();
+  const ids = await order();
+  assert.deepEqual(await numbers(), ids.map((_, i) => `#${i + 1}`), 'rows show their place in the send order');
+  const rows = page.locator('.turn-queue-item');
+  assert.equal(await rows.first().locator('.is-up').isVisible(), false, 'the first row cannot go up');
+  assert.equal(await rows.last().locator('.is-down').isVisible(), false, 'the last row cannot go down');
+  assert.equal(await rows.nth(1).locator('.is-up').isVisible() && await rows.nth(1).locator('.is-down').isVisible(), true);
+  assert.deepEqual(await rows.first().locator('.turn-queue-actions button').evaluateAll(b => b.map(x => x.getAttribute('aria-label'))), ['Delete', 'Move back into the composer', 'Send Now'], 'send sits at the right edge, then edit, then delete');
+  assert.equal(await rows.first().locator('.turn-queue-files img').count(), 0);
+  const heights = await rows.evaluateAll(list => new Set(list.map(row => Math.round(row.getBoundingClientRect().height))).size);
+  assert.equal(heights, 1, 'every prompt is the same two-line height');
+  await rows.nth(1).locator('.is-up').click();
+  await page.waitForTimeout(500);
+  assert.deepEqual(await order(), [ids[1], ids[0], ...ids.slice(2)], 'the up arrow moves a prompt one place earlier');
+  assert.deepEqual(await page.evaluate(() => window.sent.findLast(item => item.type === 'reorderQueuedTurns').ids.slice(0, 2)), [ids[1], ids[0]]);
+  await rows.first().locator('.is-down').click();
+  await page.waitForTimeout(500);
+  assert.deepEqual(await order(), ids, 'the down arrow moves it back');
+  assert.deepEqual(await numbers(), ids.map((_, i) => `#${i + 1}`));
   // Finish with the same two-row dock as the attached screenshot, settled after its single entrance animation.
   await send({ type: 'turnQueue', chatId: 'queue-stability', turns: turns.slice(0, 2), paused: false });
   await input.fill('');

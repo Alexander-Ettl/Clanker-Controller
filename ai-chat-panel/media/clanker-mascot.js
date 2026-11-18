@@ -117,19 +117,36 @@
   };
 
   window.createClankerMascot = function ({ root, input, modelPicker, attach, mic, schedule, transcript }) {
-    const clipId = `clanker-visor-${++serial}`;
+    const id = `clanker-glass-${++serial}`, clipId = `${id}-clip`;
     root.querySelector('.empty-mark').innerHTML = `<svg class="clanker-rig" viewBox="0 0 374.78 296.77" aria-hidden="true" focusable="false">
 <defs>
-<clipPath id="${clipId}">
-<path d="M289.89,178.84c4.41-2.14,8.16-4.6,11.92-7.45,17.27-13.06,27.8-33.76,27.85-55.39l.05-18.27c.04-16.43-4.99-32.63-15.1-45.63-5.96-7.66-13.29-13.79-21.7-18.64-11.41-6.58-24.43-9.75-37.65-9.75l-131.94.04c-11.18-.35-22.27,1.27-32.63,5.43-18.47,7.42-33.75,22.36-40.7,41.11-2.98,8.04-4.94,16.18-4.95,24.82l-.03,20.9c.21,11.28,3.09,22.28,8.34,32.25,12.54,23.81,38.33,38.31,65.17,38.31h137.46c11.74,0,23.34-2.61,33.91-7.74Z"/>
-</clipPath>
+<path id="${id}-visor" clip-rule="evenodd" d="M289.89,178.84c4.41-2.14,8.16-4.6,11.92-7.45,17.27-13.06,27.8-33.76,27.85-55.39l.05-18.27c.04-16.43-4.99-32.63-15.1-45.63-5.96-7.66-13.29-13.79-21.7-18.64-11.41-6.58-24.43-9.75-37.65-9.75l-131.94.04c-11.18-.35-22.27,1.27-32.63,5.43-18.47,7.42-33.75,22.36-40.7,41.11-2.98,8.04-4.94,16.18-4.95,24.82l-.03,20.9c.21,11.28,3.09,22.28,8.34,32.25,12.54,23.81,38.33,38.31,65.17,38.31h137.46c11.74,0,23.34-2.61,33.91-7.74Z"/>
+<path id="${id}-shape" fill-rule="evenodd" clip-rule="evenodd" d="M294.4,258.9l-14.83-21.98-11.92-17.18c-3.31-4.77-8.94-8.16-15.05-8.17l-130.21-.08c-6.12.46-11.61,3.01-15.08,8.06l-14.18,20.6-22.55,33.33c-4.46,6.6-13.31,17.34-19.76,21.29-5.85,3.59-14.06,1.67-19.94-1.7-7.03-4.03-13.25-9.34-18.23-15.78C3.66,265.7.41,249.46.05,234.98c-.44-17.56,2.36-38.84,5.42-56.35,2.35-13.4,4.93-26.6,8.16-39.81l8.76-35.87,6.5-23.72,5.65-18.6c2.35-7.73,5.29-15.01,9.1-22.12,4.7-8.78,13.13-16.6,21.55-21.93C79.86,7.3,96.57,1.64,113.86.1c6.63-.59,11.53,1.52,15.29,6.84.25.35.79.65,1.4.65h113.64c.66,0,1.2-.4,1.48-.8,3.27-4.73,8.37-7.18,14.24-6.75,17,1.25,33.49,6.62,48.05,15.47,4.45,2.7,8.43,5.68,12.26,9.15,5.23,4.72,9.27,10.35,12.34,16.68,2.36,4.87,4.48,9.6,6.12,14.75l5.04,15.82,3.22,10.99,10.75,41.3,9.91,44.81c2.82,14.36,4.99,28.62,6.22,43.18l.93,18.76c.06,15.99-2.52,33.05-12.22,46.07-4.86,6.52-11,11.73-17.97,15.85-3.6,2.13-7.42,3.35-11.54,3.8-3.66.4-7.07-.55-10.02-2.68-6.15-4.43-14.5-14.31-18.86-20.73l-9.78-14.37ZM289.89,178.84c4.41-2.14,8.16-4.6,11.92-7.45,17.27-13.06,27.8-33.76,27.85-55.39l.05-18.27c.04-16.43-4.99-32.63-15.1-45.63-5.96-7.66-13.29-13.79-21.7-18.64-11.41-6.58-24.43-9.75-37.65-9.75l-131.94.04c-11.18-.35-22.27,1.27-32.63,5.43-18.47,7.42-33.75,22.36-40.7,41.11-2.98,8.04-4.94,16.18-4.95,24.82l-.03,20.9c.21,11.28,3.09,22.28,8.34,32.25,12.54,23.81,38.33,38.31,65.17,38.31h137.46c11.74,0,23.34-2.61,33.91-7.74Z"/>
+<clipPath id="${clipId}"><use href="#${id}-visor"/></clipPath>
+<clipPath id="${id}-body"><use href="#${id}-shape"/></clipPath>
+<linearGradient id="${id}-fill" gradientUnits="userSpaceOnUse" x1="30" y1="0" x2="340" y2="297"><stop offset="0" class="cg-fill-a"/><stop offset="0.55" class="cg-fill-b"/><stop offset="1" class="cg-fill-c"/></linearGradient>
+<linearGradient id="${id}-sheen" gradientUnits="userSpaceOnUse" x1="0" y1="0" x2="0" y2="150"><stop offset="0" class="cg-sheen-a"/><stop offset="1" class="cg-sheen-b"/></linearGradient>
+<linearGradient id="${id}-shade" gradientUnits="userSpaceOnUse" x1="0" y1="120" x2="0" y2="297"><stop offset="0" class="cg-shade-a"/><stop offset="1" class="cg-shade-b"/></linearGradient>
+<linearGradient id="${id}-rim" gradientUnits="userSpaceOnUse" x1="20" y1="0" x2="350" y2="297"><stop offset="0" class="cg-rim-a"/><stop offset="0.45" class="cg-rim-b"/><stop offset="1" class="cg-rim-c"/></linearGradient>
+<linearGradient id="${id}-depth" gradientUnits="userSpaceOnUse" x1="0" y1="40" x2="0" y2="200"><stop offset="0" class="cg-depth-a"/><stop offset="1" class="cg-depth-b"/></linearGradient>
+<linearGradient id="${id}-glint" gradientUnits="userSpaceOnUse" x1="60" y1="30" x2="250" y2="190"><stop offset="0" class="cg-glint-a"/><stop offset="0.55" class="cg-glint-b"/></linearGradient>
+<filter id="${id}-blur" x="-10%" y="-10%" width="120%" height="120%"><feGaussianBlur stdDeviation="4"/></filter>
 </defs>
 <g class="clanker-body-rig">
 <g clip-path="url(#${clipId})">
 <rect class="clanker-visor-bg" fill="#141416" x="0" y="0" width="374.78" height="296.77" />
+<rect class="cg-screen-depth" fill="url(#${id}-depth)" x="0" y="0" width="374.78" height="296.77" />
+<use href="#${id}-visor" class="cg-screen-well" fill="none" stroke-width="18" filter="url(#${id}-blur)"/>
 </g>
 <g class="clanker-chassis-rig">
-<path fill="#ffffff" fill-rule="evenodd" d="M294.4,258.9l-14.83-21.98-11.92-17.18c-3.31-4.77-8.94-8.16-15.05-8.17l-130.21-.08c-6.12.46-11.61,3.01-15.08,8.06l-14.18,20.6-22.55,33.33c-4.46,6.6-13.31,17.34-19.76,21.29-5.85,3.59-14.06,1.67-19.94-1.7-7.03-4.03-13.25-9.34-18.23-15.78C3.66,265.7.41,249.46.05,234.98c-.44-17.56,2.36-38.84,5.42-56.35,2.35-13.4,4.93-26.6,8.16-39.81l8.76-35.87,6.5-23.72,5.65-18.6c2.35-7.73,5.29-15.01,9.1-22.12,4.7-8.78,13.13-16.6,21.55-21.93C79.86,7.3,96.57,1.64,113.86.1c6.63-.59,11.53,1.52,15.29,6.84.25.35.79.65,1.4.65h113.64c.66,0,1.2-.4,1.48-.8,3.27-4.73,8.37-7.18,14.24-6.75,17,1.25,33.49,6.62,48.05,15.47,4.45,2.7,8.43,5.68,12.26,9.15,5.23,4.72,9.27,10.35,12.34,16.68,2.36,4.87,4.48,9.6,6.12,14.75l5.04,15.82,3.22,10.99,10.75,41.3,9.91,44.81c2.82,14.36,4.99,28.62,6.22,43.18l.93,18.76c.06,15.99-2.52,33.05-12.22,46.07-4.86,6.52-11,11.73-17.97,15.85-3.6,2.13-7.42,3.35-11.54,3.8-3.66.4-7.07-.55-10.02-2.68-6.15-4.43-14.5-14.31-18.86-20.73l-9.78-14.37ZM289.89,178.84c4.41-2.14,8.16-4.6,11.92-7.45,17.27-13.06,27.8-33.76,27.85-55.39l.05-18.27c.04-16.43-4.99-32.63-15.1-45.63-5.96-7.66-13.29-13.79-21.7-18.64-11.41-6.58-24.43-9.75-37.65-9.75l-131.94.04c-11.18-.35-22.27,1.27-32.63,5.43-18.47,7.42-33.75,22.36-40.7,41.11-2.98,8.04-4.94,16.18-4.95,24.82l-.03,20.9c.21,11.28,3.09,22.28,8.34,32.25,12.54,23.81,38.33,38.31,65.17,38.31h137.46c11.74,0,23.34-2.61,33.91-7.74Z"/>
+<use href="#${id}-shape" fill="url(#${id}-fill)"/>
+<use href="#${id}-shape" fill="url(#${id}-shade)"/>
+<use href="#${id}-shape" fill="url(#${id}-sheen)"/>
+<g clip-path="url(#${id}-body)">
+<use href="#${id}-shape" class="cg-glow" fill="none" stroke="url(#${id}-rim)" stroke-width="15" filter="url(#${id}-blur)"/>
+<use href="#${id}-shape" fill="none" stroke="url(#${id}-rim)" stroke-width="3.4"/>
+</g>
+<use href="#${id}-shape" class="cg-edge" fill="none" stroke-width="1.3"/>
 </g>
 <g clip-path="url(#${clipId})">
 <g class="clanker-face-rig">
@@ -153,6 +170,7 @@
 </g>
 </g>
 <g clip-path="url(#${clipId})">
+<rect class="cg-screen-glint" fill="url(#${id}-glint)" x="0" y="0" width="374.78" height="296.77" pointer-events="none"/>
 <line class="clanker-scanline" x1="45" y1="0" x2="330" y2="0" stroke="var(--clanker-scanline, #60a5fa)" stroke-width="3.5" opacity="0" />
 </g>
 </g>

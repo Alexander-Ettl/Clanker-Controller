@@ -48,7 +48,7 @@ try {
   assert.equal(await valueCard.evaluate(el => el.open), false, 'value starts collapsed in Settings');
   await valueCard.locator('summary').click();
   assert.equal(await valueCard.locator('[data-role=apiValueTotal]').innerText(), '≈ $568');
-  assert.equal(await valueCard.locator('.cs-api-value-amount').allTextContents().then(values => values.join(', ')), '$497, $55.00, $16.00');
+  assert.equal(await valueCard.locator('.cs-api-value-amount').allTextContents().then(values => values.join(', ')), '$497, $55.00, $16.00, $0');
   assert.match(await valueCard.locator('[data-role=apiValueFoot]').innerText(), /This month ≈ \$300.*2 turns of unlisted models not counted/);
   await send({ type: 'apiValue', totalUsd: 600, monthUsd: 332, byAgent: { claude: 529, codex: 55, gemini: 16 } });
   assert.equal(await valueCard.locator('[data-role=apiValueTotal]').innerText(), '≈ $600', 'live updates reach Settings');
@@ -69,7 +69,7 @@ try {
   await send({ type: 'chatLoaded', chat: { id: 'chat-a', projectId: 'a', messages: [], apiCostUsd: 42, turnQueue: { turns: [], paused: false } } });
   assert.equal(await page.locator('[data-role=apiValueChat]').textContent(), 'Current chat ≈ $42.00');
   assert.equal(await page.locator('.pending-cost').count(), 0, 'chat value stays out of the running status pill');
-  await send({ type: 'project', project: projects[0], projects, chatId: 'chat-a', required: false });
+  await send({ type: 'project', project: projects[0], projects, chatId: 'chat-a', required: false, pinnedProjectIds: ['b', 'c'] });
   await send({ type: 'history', sessions: [
     { id: 'chat-a', projectId: 'a', touchedProjectIds: ['b', 'a'], projectNames: ['Visor', 'portfolio 2026'], lastMessage: { role: 'assistant', agent: 'claude', text: 'Now the library rewrite of the selection logic.' }, models: ['claude'], title: 'Fix animation', state: null },
     { id: 'chat-b', projectId: 'c', touchedProjectIds: [], title: 'Running elsewhere', state: 'running' },
@@ -181,6 +181,38 @@ try {
   await page.locator('.cs-card:has(.cs-project)').screenshot({ path: process.env.SHOT_SETTINGS || path.join(shotDir, 'project-icons-settings.png') });
   await send({ type: 'turn_complete' });
   assert.equal(await page.locator('.project-pill.is-busy').count(), 0, 'the ring leaves when the turn ends');
+  // Settings > General: how many projects and recent chats the rail lists.
+  const railSelects = page.locator('.cs-select[data-role=railProjects], .cs-select[data-role=railChats]');
+  assert.equal(await railSelects.count(), 2, 'Settings has both pickers');
+  await page.locator('.cs-select[data-role=railChats]').selectOption('0');
+  await page.locator('.cs-select[data-role=railProjects]').selectOption('2');
+  assert.deepEqual(await page.evaluate(() => window.sent.filter(m => m.type === 'setRailLimit')), [{ type: 'setRailLimit', key: 'railChats', value: 0 }, { type: 'setRailLimit', key: 'railProjects', value: 2 }]);
+  await send({ type: 'fleet', models: [], clis: {}, services: { rail: { projects: 7, chats: 5 } } });
+  assert.equal(await page.locator('.cs-select[data-role=railProjects]').inputValue(), '7', 'a value from settings.json that the list lacks still shows');
+  if (process.env.SHOT_RAILSET) { await page.locator('.cs-select[data-role=railProjects]').scrollIntoViewIfNeeded(); await page.locator('.cs-card:has(.cs-select[data-role=railProjects])').screenshot({ path: process.env.SHOT_RAILSET }); }
+  await send({ type: 'openSettings' }); // close it again
+  const shown = () => page.locator('.project-item[data-id]').evaluateAll(items => items.map(item => item.dataset.id));
+  await send({ type: 'project', project: projects[0], projects, chatId: 'chat-a', pinnedProjectIds: ['b', 'c'] });
+  assert.deepEqual(await shown(), ['b', 'c', 'a'], 'default: two favorites and the current project');
+  await send({ type: 'railLimits', value: { projects: 1, chats: 5 } });
+  assert.deepEqual(await shown(), ['a'], 'one slot: the current project stays');
+  await send({ type: 'railLimits', value: { projects: 2, chats: 5 } });
+  assert.deepEqual(await shown(), ['b', 'a'], 'the current project, then the first favorite');
+  await send({ type: 'project', project: projects[0], projects, chatId: 'chat-a', pinnedProjectIds: [] });
+  assert.deepEqual((await shown()).sort(), ['a', 'c'], 'nothing pinned: the most recent project fills the slot');
+  await send({ type: 'railLimits', value: { projects: 0, chats: 5 } });
+  assert.deepEqual((await shown()).sort(), ['a', 'b', 'c', 'd'], '0 lists every project');
+  await send({ type: 'railLimits', value: { projects: 3, chats: 5 } });
+  assert.equal(await page.locator('.project-item[data-id]').count(), 3);
+  const many = Array.from({ length: 9 }, (_, index) => ({ id: `m${index}`, projectId: 'a', touchedProjectIds: [], title: `Chat ${index}`, updatedAt: new Date(Date.now() - index * 60000).toISOString() }));
+  await send({ type: 'history', sessions: many });
+  assert.equal(await page.locator('#historyList .history-row').count(), 5, 'five recent chats by default');
+  await send({ type: 'railLimits', value: { projects: 3, chats: 8 } });
+  assert.equal(await page.locator('#historyList .history-row').count(), 8, 'the chat limit follows Settings');
+  await send({ type: 'railLimits', value: { projects: 0, chats: 0 } });
+  assert.equal(await page.locator('#historyList .history-row').count(), 9, '0 lists every chat');
+  if (process.env.SHOT_ALL) await page.screenshot({ path: process.env.SHOT_ALL });
+  await send({ type: 'railLimits', value: { projects: 3, chats: 5 } });
   assert.deepEqual(errors, []);
   console.log('project rail ok');
 } finally { await browser.close(); }

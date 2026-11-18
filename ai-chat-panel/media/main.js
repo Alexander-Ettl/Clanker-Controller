@@ -21,11 +21,6 @@
   const micBtn = document.getElementById('micBtn');
   const micWrap = document.getElementById('micWrap');
   const polishBtn = document.getElementById('polishBtn');
-  function setComposerAction(action) {
-    micWrap.classList.toggle('polish-default', action === 'polish');
-    try { vscode.setState({ ...(vscode.getState() || {}), composerAction: action }); } catch {}
-  }
-  micWrap.classList.toggle('polish-default', vscode.getState()?.composerAction === 'polish');
   polishBtn.disabled = !promptInput.value.trim();
   const transcriptEl = document.getElementById('transcript');
 
@@ -133,8 +128,11 @@
     const running = new Set(railSessions.filter((session) => session.state && session.id !== railChatId).map((session) => session.projectId));
     const target = busy ? railWorking || railActiveProject : null;
     const recentIds = [...railSessions].sort((a, b) => (Date.parse(b.updatedAt) || 0) - (Date.parse(a.updatedAt) || 0)).map(session => session.projectId);
-    const visible = [...railPinnedProjects, railActiveProject, ...recentIds, ...railProjects.map(project => project.id)].map(id => railProjects.find(project => project.id === id))
-      .filter((project, index, projects) => project && projects.findIndex(item => item?.id === project.id) === index).slice(0, 3);
+    // The chat's own project always stays, then the pinned favorites, then the most recent; Settings sets how many fit (0 = all).
+    const unique = (ids) => ids.map(id => railProjects.find(project => project.id === id)).filter((project, index, projects) => project && projects.findIndex(item => item?.id === project.id) === index);
+    const limit = window.RAIL_LIMITS?.projects || Infinity;
+    const keep = new Set(unique([railActiveProject, ...railPinnedProjects, ...recentIds, ...railProjects.map(project => project.id)]).slice(0, limit));
+    const visible = unique([...railPinnedProjects, railActiveProject, ...recentIds, ...railProjects.map(project => project.id)]).filter(project => keep.has(project));
     const items = visible.map((project) => {
       const active = project.id === railActiveProject;
       const item = document.createElement('div');
@@ -237,7 +235,7 @@
   const attachBtn = document.createElement('button');
   attachBtn.type = 'button'; attachBtn.id = 'attachBtn'; attachBtn.className = 'composer-icon-btn'; attachBtn.title = 'Attach files';
   attachBtn.innerHTML = '<svg viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><path d="M8 3v10M3 8h10" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>';
-  document.querySelector('.composer').insertBefore(attachBtn, promptInput);
+  document.querySelector('.composer-tools').prepend(attachBtn); // left edge of the bottom bar, the model picker right behind it
 
   // ---------- P16-K: full-screen Liquid Glass modals (queue + history) ----------
   // The one trash can: Manage Chats' Delete, a queued turn's Delete and a scheduled prompt's Delete all draw it.
@@ -430,6 +428,22 @@
     const at = fireTimeOf(task);
     return at && at > Date.now() ? `at reset · ${formatCountdown(at - Date.now())}` : resetWaiting(task) ? 'waiting for usage' : '';
   }
+  // The time beside a scheduled row's clock. "at reset · 45m 43s" keeps "at reset · " in its own span, so a narrow row can show
+  // just the countdown (style.css), and the whole label is the tooltip for when even that is dropped.
+  function setWhenLabel(row, label) {
+    const text = row.querySelector('.turn-queue-when-text');
+    if (text.textContent === label) return;
+    const [, lead, rest] = /^(at reset · )(.+)$/.exec(label) || [];
+    if (!lead) text.textContent = label;
+    else if (text.firstElementChild?.className === 'tq-lead') text.lastChild.textContent = rest;
+    else {
+      const span = document.createElement('span');
+      span.className = 'tq-lead'; span.textContent = lead;
+      text.replaceChildren(span, rest);
+    }
+    const when = text.parentElement;
+    if (when.title !== label) when.title = label;
+  }
   function scheduledLabel(task) {
     if (dueNow(task)) return '';
     const at = fireTimeOf(task);
@@ -515,8 +529,7 @@
       const task = schedulerTasks.find((item) => item.id === row.dataset.taskId);
       if (!task) return;
       renderQueueMark(row, true);
-      const label = scheduledLabel(task), text = row.querySelector('.turn-queue-when-text');
-      if (text.textContent !== label) text.textContent = label;
+      setWhenLabel(row, scheduledLabel(task));
     });
     document.querySelectorAll('.turn-queue-item .is-primary').forEach(button => {
       const row = button.closest('.turn-queue-item'), entry = row.queueEntry;
@@ -650,7 +663,7 @@
     head.append(position, modelPill(task.model, task.modelId), when);
     if (pending) { // a dispatched task is already running
       head.append(
-        take(QUEUE_ICONS.steer, 'Send Now', 'Send when this prompt is ready', 'dispatchNowWithAutoRoute'),
+        take(QUEUE_ICONS.send, 'Send Now', 'Send when this prompt is ready', 'dispatchNowWithAutoRoute'),
         take(QUEUE_ICONS.unschedule, 'Unschedule', 'Move back into the composer as an editable draft', 'unscheduleToComposer'),
         remove);
     }
@@ -805,6 +818,7 @@
   // One input, not two: the composer's clock button arms "schedule instead
   // of send" for the next submit (Enter or the send arrow), queued for the
   // active model's next quota reset.
+  let scheduleTitle = 'Schedule the next message: click to choose when (usage reset, timer or calendar)'; // the tooltip without the time
   const scheduleBtn = document.createElement('button');
   scheduleBtn.type = 'button'; scheduleBtn.id = 'scheduleBtn'; scheduleBtn.className = 'composer-icon-btn schedule-toggle';
   scheduleBtn.setAttribute('aria-pressed', 'false');
@@ -816,14 +830,23 @@
     + scheduleIcon('timer', '<circle cx="8" cy="9" r="5"/><path d="M8 6.5V9l1.6 1M6.5 2h3"/>')
     + scheduleIcon('calendar', '<rect x="2.5" y="3.5" width="11" height="10" rx="2.5"/><path d="M2.5 7h11M5.5 2v3M10.5 2v3"/>');
   scheduleBtn.dataset.mode = 'off';
-  document.querySelector('.composer-actions').insertBefore(scheduleBtn, sendBtn);
+  document.querySelector('.composer-actions').insertBefore(scheduleBtn, micWrap); // clock, format, dictate, then the one send/stop slot
   // Hovering the clock opens the timer pill (schedule-timer.js); picking a time arms scheduling for it.
   const scheduleTime = document.createElement('span');
   scheduleTime.className = 'schedule-time';
   scheduleBtn.append(scheduleTime);
+  const scheduleMenu = createIslandMenu('schedule-menu', 'Schedule');
+  scheduleMenu.setAttribute('role', 'dialog');
   const scheduleTimer = window.initScheduleTimer({
     button: scheduleBtn,
     composer: document.querySelector('.composer'),
+    // The picker is a menu on the composer's upper glass slab, like the model and permission menus (createIslandMenu).
+    menu: scheduleMenu,
+    placeMenu: (centerX) => placeIslandMenu(scheduleMenu, centerX, 248),
+    setMenuOpen: (open) => {
+      if (open) { closeMentionMenu(); closeSlashMenu(); closeModelMenu(); closePermMenu(); }
+      setIslandMenuOpen(scheduleMenu, open);
+    },
     preferred: window.SCHEDULE_MODE, // the mode the last scheduled prompt used (saved by the host)
     // The chosen model's two limits, for the usage-reset mode: what it waits for and when that comes.
     usage: () => {
@@ -858,6 +881,9 @@
     }
     if (scheduleTime.textContent !== text) scheduleTime.textContent = text;
     scheduleBtn.classList.toggle('has-time', Boolean(text));
+    // On a narrow composer the time is not drawn beside the icon (style.css fit-time), so the tooltip carries it.
+    const title = text ? `${text} · ${scheduleTitle}` : scheduleTitle;
+    if (scheduleBtn.title !== title) scheduleBtn.title = title;
   }
   setInterval(renderScheduleTime, 1000);
 
@@ -884,12 +910,13 @@
     scheduleBtn.classList.toggle('is-scheduled', armed);
     scheduleBtn.setAttribute('aria-pressed', String(armed));
     const modeName = { reset: 'when the usage resets', timer: 'after a delay', calendar: 'at a chosen day and time' }[scheduleTimer.mode];
-    scheduleBtn.title = armed && outOfUsage
+    scheduleTitle = armed && outOfUsage
       ? `${AGENT_LABELS[scheduleModel()]} is out of usage, so messages are scheduled for its reset. Click to change how, or to send now.`
       : armed ? `The next message is scheduled ${modeName}. Click for the next mode: usage reset, timer, calendar, off.` : 'Schedule the next message: click to choose when (usage reset, timer or calendar)';
     document.querySelector('.composer').classList.toggle('is-scheduled', armed);
     promptInput.placeholder = armed
-      ? `Schedule prompt for ${AGENT_LABELS[scheduleModel()]} (will auto-dispatch ${scheduleTimer.describe() || 'when quota resets'})\u2026`      : DEFAULT_PLACEHOLDER;
+      ? `Click to type a prompt for ${AGENT_LABELS[scheduleModel()]}. It sends ${scheduleTimer.describe() || 'when quota resets'}\u2026`
+      : DEFAULT_PLACEHOLDER;
     renderScheduleTime();
   }
 
@@ -1146,6 +1173,7 @@
     closeBtn.className = 'image-lightbox-close';
     closeBtn.setAttribute('aria-label', 'Close preview');
     closeBtn.innerHTML = '<svg viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M4.5 4.5l7 7M11.5 4.5l-7 7" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>';
+    if (extra.className) box.classList.add(extra.className);
     if (extra.viewer) {
       // Text, tables, Word, Excel, audio and video: a bounded preview inside the window, the original in the editor or the file dialog.
       box.classList.add('is-doc');
@@ -1154,7 +1182,7 @@
       openBtn.addEventListener('click', (event) => { event.stopPropagation(); if (targetAttachment.path) vscode.postMessage({ type: 'openFile', path: targetAttachment.path }); });
       const downloadBtn = lightboxButton('image-lightbox-download', `Download ${caption}`, DOWNLOAD_ICON);
       downloadBtn.addEventListener('click', (event) => { event.stopPropagation(); downloadAttachment(targetAttachment); });
-      toolbar.append(...(targetAttachment.path ? [openBtn] : []), downloadBtn, closeBtn);
+      toolbar.append(...(targetAttachment.path ? [openBtn] : []), ...(extra.noDownload ? [] : [downloadBtn]), closeBtn);
     } else if (!pdf) {
       const downloadBtn = document.createElement('button');
       downloadBtn.type = 'button';
@@ -1430,12 +1458,76 @@
   const mentionStrip = document.createElement('div');
   mentionStrip.className = 'attachment-strip mention-strip island-bud';
   document.querySelector('.compose-row').insertBefore(mentionStrip, document.querySelector('.composer'));
-  const mentionMenu = document.createElement('div');
-  mentionMenu.className = 'mention-menu glass';
-  mentionMenu.setAttribute('role', 'listbox');
-  mentionMenu.hidden = true;
-  // Outside the composer: the dock's goo filter (.compose-row) would clip a 260px menu.
-  document.body.appendChild(mentionMenu);
+  // ---------- Menus on the composer's upper glass slab ----------
+  // The model picker, the permission picker and the @ / "/" lists are one kind of surface: a menu resting on the composer's
+  // top edge, above any queued prompts, fused to the composer by the upper slab (liquid-glass.js) the way the model menu always was.
+  // Each lives in its own stage on the body: the dock's goo filter (.compose-row) would clip a menu this tall.
+  function createIslandMenu(className, label) {
+    const menu = document.createElement('div');
+    menu.className = `model-menu glass ${className}`.trim();
+    menu.setAttribute('role', 'listbox');
+    menu.setAttribute('aria-label', label);
+    const stage = document.createElement('div');
+    stage.className = 'model-menu-stage';
+    const fillets = document.createElement('div');
+    fillets.className = 'model-menu-fillets';
+    stage.append(menu, fillets);
+    document.body.appendChild(stage);
+    return menu;
+  }
+  const islandMenuOpen = (menu) => menu.classList.contains('is-open');
+  // While a menu grows or sinks it carries its own backing (see .is-moving in style.css); the island glass catches up after.
+  const movingTimers = new WeakMap();
+  function setIslandMenuOpen(menu, open) {
+    if (islandMenuOpen(menu) === open) return;
+    menu.classList.add('is-moving');
+    clearTimeout(movingTimers.get(menu));
+    movingTimers.set(menu, setTimeout(() => menu.classList.remove('is-moving'), 450));
+    menu.classList.toggle('is-open', open);
+  }
+  /** Rests the menu on the composer's top edge, its foot centred on `centerX` (clamped to stay inside the chat column). */
+  function placeIslandMenu(menu, centerX, width) {
+    const stage = menu.parentElement;
+    const composer = document.querySelector('.composer').getBoundingClientRect();
+    const css = getComputedStyle(stage);
+    const fillet = parseFloat(css.getPropertyValue('--menu-fillet'));
+    // The seam sits 1px into the composer, over its top hairline; the root hangs below it, clipped.
+    stage.style.bottom = `${window.innerHeight - composer.top - 1 - parseFloat(css.getPropertyValue('--menu-root'))}px`;
+    if (width) menu.style.width = `${width}px`;
+    const menuWidth = menu.offsetWidth;
+    const left = Math.max(10, Math.min(centerX - menuWidth / 2, Math.min(composer.right, window.innerWidth - 10) - menuWidth));
+    stage.style.right = `${window.innerWidth - left - menuWidth - fillet}px`;
+    stage.style.setProperty('--bud-x', `${centerX - left}px`);
+  }
+  /** The @ and / lists run nearly the composer's width, centred on it; the fillets need ~28px of composer edge on each side. */
+  function placeListMenu(menu) {
+    const composer = document.querySelector('.composer').getBoundingClientRect();
+    placeIslandMenu(menu, composer.left + composer.width / 2, Math.max(180, composer.width - 56));
+  }
+  /** Arrow keys, Home/End, Escape and Tab for a menu whose rows are `.model-option` buttons. */
+  function menuKeys(menu, close) {
+    menu.addEventListener('keydown', (event) => {
+      const items = [...menu.querySelectorAll('.model-option')];
+      const index = items.indexOf(document.activeElement);
+      if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+        event.preventDefault();
+        items[(index + (event.key === 'ArrowDown' ? 1 : -1) + items.length) % items.length]?.focus();
+      } else if (event.key === 'Home' || event.key === 'End') {
+        event.preventDefault();
+        items[event.key === 'Home' ? 0 : items.length - 1]?.focus();
+      } else if (event.key === 'Escape') {
+        event.preventDefault();
+        close({ refocus: true });
+      } else if (event.key === 'Tab') close();
+    });
+  }
+  // The lists belong to the text box: clicking one (or dragging its scrollbar) must not take the focus away and close it.
+  const listMenu = (className, label) => {
+    const menu = createIslandMenu(`list-menu ${className}`, label);
+    menu.addEventListener('mousedown', (event) => event.preventDefault());
+    return menu;
+  };
+  const mentionMenu = listMenu('mention-list', 'Files');
   let mentionHits = [];
   let mentionIndex = 0;
 
@@ -1445,19 +1537,13 @@
   let slashCommands = null;
   let slashHits = [];
   let slashIndex = 0;
-  // A bud of the dock (like queued turns and attachments): right above the pill, fused by the goo.
-  const slashMenu = document.createElement('div');
-  slashMenu.className = 'mention-menu slash-bud island-bud';
-  slashMenu.setAttribute('role', 'listbox');
-  slashMenu.setAttribute('aria-label', 'Commands');
-  slashMenu.hidden = true;
-  document.querySelector('.compose-row').insertBefore(slashMenu, document.querySelector('.compose-row > .composer'));
+  const slashMenu = listMenu('slash-list', 'Commands');
 
   function slashAtCaret() {
     if (promptInput.selectionStart !== promptInput.value.length || promptInput.selectionEnd !== promptInput.value.length) return null;
     return /^\/([^\s]*)$/.exec(promptInput.value);
   }
-  function closeSlashMenu() { slashMenu.hidden = true; slashHits = []; }
+  function closeSlashMenu() { setIslandMenuOpen(slashMenu, false); slashHits = []; }
   function slashScore(command, query) {
     const q = query.toLowerCase();
     const name = command.name.toLowerCase();
@@ -1477,7 +1563,7 @@
     closeMentionMenu();
     // Asked fresh each time the menu opens: the CLIs gain commands (skills, plugins) without this panel reloading.
     if (slashCommands === null) slashCommands = [];
-    if (!match[1] && slashMenu.hidden) vscode.postMessage({ type: 'querySlashCommands' });
+    if (!match[1] && !islandMenuOpen(slashMenu)) vscode.postMessage({ type: 'querySlashCommands' });
     // The picked provider's CLI only; Auto shows every CLI's commands.
     const pool = activeAgent === 'auto' ? slashCommands : slashCommands.filter((command) => command.panel || (command.agent || 'codex') === activeAgent);
     slashHits = pool.map((command) => [command, slashScore(command, match[1])]).filter(([, score]) => score > 0)
@@ -1495,8 +1581,10 @@
       item.addEventListener('mousedown', (event) => { event.preventDefault(); insertSlashCommand(command); });
       return item;
     }));
-    slashMenu.hidden = !slashHits.length;
-    if (slashMenu.hidden) return;
+    if (!slashHits.length) { setIslandMenuOpen(slashMenu, false); return; }
+    closeModelMenu(); closePermMenu();
+    placeListMenu(slashMenu);
+    setIslandMenuOpen(slashMenu, true);
     slashMenu.children[slashIndex]?.scrollIntoView({ block: 'nearest' }); // arrowing through a long list
   }
   function insertSlashCommand(command) {
@@ -1522,7 +1610,7 @@
     for (const ch of f) if (ch === q[i]) i++;
     return i === q.length ? 10 - f.length / 1000 : 0;
   }
-  function closeMentionMenu() { mentionMenu.hidden = true; mentionHits = []; }
+  function closeMentionMenu() { setIslandMenuOpen(mentionMenu, false); mentionHits = []; }
   function updateMentionMenu() {
     const match = mentionAtCaret();
     if (!match) return closeMentionMenu();
@@ -1544,10 +1632,11 @@
       item.addEventListener('mousedown', (event) => { event.preventDefault(); insertMention(file, true); });
       return item;
     }));
-    mentionMenu.hidden = !mentionHits.length;
-    if (mentionMenu.hidden) return;
-    const dock = document.querySelector('.compose-row').getBoundingClientRect();
-    Object.assign(mentionMenu.style, { left: `${dock.left + 8}px`, width: `${dock.width - 16}px`, bottom: `${innerHeight - dock.top + 6}px` });
+    if (!mentionHits.length) { setIslandMenuOpen(mentionMenu, false); return; }
+    closeModelMenu(); closePermMenu();
+    placeListMenu(mentionMenu);
+    setIslandMenuOpen(mentionMenu, true);
+    mentionMenu.children[mentionIndex]?.scrollIntoView({ block: 'nearest' });
   }
   function insertMention(file, replaceQuery) {
     if (!file) return;
@@ -1586,7 +1675,7 @@
   promptInput.addEventListener('mouseup', updateSlashMenu);
   promptInput.addEventListener('blur', () => setTimeout(() => { closeMentionMenu(); closeSlashMenu(); }, 120));
   promptInput.addEventListener('keydown', (event) => {
-    if (!mentionMenu.hidden && mentionHits.length) {
+    if (islandMenuOpen(mentionMenu) && mentionHits.length) {
       if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
         event.preventDefault();
         mentionIndex = (mentionIndex + (event.key === 'ArrowDown' ? 1 : -1) + mentionHits.length) % mentionHits.length;
@@ -1613,7 +1702,7 @@
     }
   });
   promptInput.addEventListener('keydown', (event) => {
-    if (slashMenu.hidden || !slashHits.length) return;
+    if (!islandMenuOpen(slashMenu) || !slashHits.length) return;
     if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
       event.preventDefault(); event.stopImmediatePropagation();
       slashIndex = (slashIndex + (event.key === 'ArrowDown' ? 1 : -1) + slashHits.length) % slashHits.length;
@@ -1631,19 +1720,10 @@
     }
   });
   // ---------- Model picker: a pill in the composer, menu opens above it ----------
-  const modelMenu = document.createElement('div');
-  modelMenu.id = 'modelMenu';
-  modelMenu.className = 'model-menu glass';
-  modelMenu.setAttribute('role', 'listbox');
-  modelMenu.setAttribute('aria-label', 'Model');
   // The menu and its two fillets share one goo-filtered stage (#msg-goo, as the bubble
   // dock), so the menu grows out of the composer's top edge and rests fused to it.
-  const modelMenuStage = document.createElement('div');
-  modelMenuStage.className = 'model-menu-stage';
-  const modelMenuFillets = document.createElement('div');
-  modelMenuFillets.className = 'model-menu-fillets';
-  modelMenuStage.append(modelMenu, modelMenuFillets);
-  document.body.appendChild(modelMenuStage); // outside the composer, above the transcript
+  const modelMenu = createIslandMenu('', 'Model');
+  modelMenu.id = 'modelMenu';
 
   // A small shield after the model's name while Auto-Verify is on, so it is never on without you seeing it.
   const verifyMark = document.createElement('span');
@@ -1686,7 +1766,8 @@
     if (editingQueue && editingQueue.turn.modelId !== option.id) editingQueue.modelTouched = true;
     if (scheduleChoice === false || (editingQueue?.taskId && scheduleTimer.mode === 'reset' && (optionFor(editingQueue.turn.modelId)?.agent !== option.agent || (option.agent === 'gemini' && editingQueue.turn.modelId !== option.id)))) scheduleChoice = null;
     refreshScheduleDefault(); // on if this model is out of usage; the placeholder names it
-    if (slashMenu && !slashMenu.hidden) updateSlashMenu();
+    renderPermission();
+    if (islandMenuOpen(slashMenu)) updateSlashMenu();
     try { vscode.setState({ ...(vscode.getState() || {}), modelId: option.id }); } catch {}
     // Picking a model only retargets the next message; it never reveals the
     // real terminal (that's the dedicated Terminal button).
@@ -1791,64 +1872,120 @@
     }
   }
 
-  function placeModelMenu() {
+  const placeModelMenu = () => {
     const rect = modelPickerBtn.getBoundingClientRect();
-    const composer = modelPickerBtn.closest('.composer').getBoundingClientRect();
-    const css = getComputedStyle(modelMenuStage);
-    const fillet = parseFloat(css.getPropertyValue('--menu-fillet'));
-    // The seam sits 1px into the composer, over its top hairline; the root hangs below it, clipped.
-    modelMenuStage.style.bottom = `${window.innerHeight - composer.top - 1 - parseFloat(css.getPropertyValue('--menu-root'))}px`;
-    // Centre above the selected model, clamping only to keep the menu inside the chat column.
-    const width = modelMenu.offsetWidth;
-    const menuLeft = Math.max(10, Math.min(rect.left + rect.width / 2 - width / 2, Math.min(composer.right, window.innerWidth - 10) - width));
-    modelMenuStage.style.right = `${window.innerWidth - menuLeft - width - fillet}px`;
-    modelMenuStage.style.setProperty('--bud-x', `${rect.left + rect.width / 2 - menuLeft}px`);
-  }
-  const menuOpen = () => modelMenu.classList.contains('is-open');
-  // While the menu grows or sinks it carries its own backing (see .is-moving in style.css); the island glass catches up after.
-  let movingTimer = 0;
-  function markMoving() {
-    modelMenu.classList.add('is-moving');
-    clearTimeout(movingTimer);
-    movingTimer = setTimeout(() => modelMenu.classList.remove('is-moving'), 450);
-  }
+    placeIslandMenu(modelMenu, rect.left + rect.width / 2); // centred above the selected model
+  };
+  const menuOpen = () => islandMenuOpen(modelMenu);
   function openModelMenu() {
+    closeMentionMenu(); closeSlashMenu(); closePermMenu();
     renderModelMenu();
     placeModelMenu();
-    markMoving();
-    modelMenu.classList.add('is-open');
+    setIslandMenuOpen(modelMenu, true);
     modelPickerBtn.setAttribute('aria-expanded', 'true');
     (modelMenu.querySelector('.model-option[aria-selected="true"]') || modelMenu.querySelector('.model-option'))?.focus({ preventScroll: true });
   }
   function closeModelMenu({ refocus = false } = {}) {
     if (!menuOpen()) return;
-    markMoving();
-    modelMenu.classList.remove('is-open');
+    setIslandMenuOpen(modelMenu, false);
     modelPickerBtn.setAttribute('aria-expanded', 'false');
     if (refocus) modelPickerBtn.focus();
   }
   modelPickerBtn.addEventListener('click', () => (menuOpen() ? closeModelMenu() : openModelMenu()));
-  modelMenu.addEventListener('keydown', (event) => {
-    const items = [...modelMenu.querySelectorAll('.model-option')];
-    const index = items.indexOf(document.activeElement);
-    if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
-      event.preventDefault();
-      const step = event.key === 'ArrowDown' ? 1 : -1;
-      items[(index + step + items.length) % items.length]?.focus();
-    } else if (event.key === 'Home' || event.key === 'End') {
-      event.preventDefault();
-      items[event.key === 'Home' ? 0 : items.length - 1]?.focus();
-    } else if (event.key === 'Escape') {
-      event.preventDefault();
-      closeModelMenu({ refocus: true });
-    } else if (event.key === 'Tab') {
-      closeModelMenu();
-    }
-  });
+  menuKeys(modelMenu, closeModelMenu);
   document.addEventListener('pointerdown', (event) => {
     if (menuOpen() && !modelMenu.contains(event.target) && !modelPickerBtn.contains(event.target)) closeModelMenu();
+    if (islandMenuOpen(permMenu) && !permMenu.contains(event.target) && !permBtn.contains(event.target)) closePermMenu();
   });
-  window.addEventListener('resize', () => closeModelMenu());
+  window.addEventListener('resize', () => { closeModelMenu(); closePermMenu(); });
+
+  // ---------- Permission chip: what the model may do on this PC, switchable from the bar ----------
+  // The mode a turn runs with is the model's own override (Settings > Models) when it has one, else the general setting.
+  // The chip shows that effective mode; picking one changes the same thing it was read from, so nothing is hidden behind it.
+  const permBtn = document.getElementById('permBtn');
+  const PERM_SVG = {
+    ask: '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3.25" y="7" width="9.5" height="6.75" rx="1.8"/><path d="M5.25 7V5.25a2.75 2.75 0 0 1 5.5 0V7"/></svg>',
+    auto: '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 1.75 2.75 3.75v4c0 3 2.2 5.2 5.25 6.5 3.05-1.3 5.25-3.5 5.25-6.5v-4z"/><path d="M8.7 5.1 6.3 8.5h3.2l-2.2 2.6"/></svg>',
+    // A key (Lucide "key", ISC): an open lock is too close to the closed one at 15px, a key is a different shape.
+    fullAccess: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m2 21 9.6-9.6"/><path d="m7.5 15.5 2.3 2.3a1 1 0 0 1 0 1.4l-2.1 2.1a1 1 0 0 1-1.4 0L4 19"/><circle cx="15.5" cy="7.5" r="5.5"/></svg>',
+  };
+  const PERMISSIONS = [
+    { id: 'ask', label: 'Ask', hint: 'Asks before risky actions. Gemini skips them instead of asking.' },
+    { id: 'auto', label: 'Auto', hint: 'An automated safety check approves routine actions.' },
+    { id: 'fullAccess', label: 'Full Access', hint: 'Runs commands and edits files on this PC without asking.' },
+  ];
+  let generalPermission = 'fullAccess';
+  let modelPermissions = {}; // { [modelId]: { permissionMode } }, the per-model overrides
+  const validPermission = (mode) => PERMISSIONS.some((entry) => entry.id === mode);
+  const modelOverride = () => (validPermission(modelPermissions[activeModelId]?.permissionMode) ? modelPermissions[activeModelId].permissionMode : null);
+  const effectivePermission = () => modelOverride() || generalPermission;
+  const permMenu = createIslandMenu('perm-menu', 'Permissions');
+  permMenu.id = 'permMenu';
+  function renderPermission() {
+    const mode = effectivePermission();
+    const entry = PERMISSIONS.find((item) => item.id === mode);
+    permBtn.dataset.mode = mode;
+    permBtn.innerHTML = `${PERM_SVG[mode]}<span class="perm-chip-label">${entry.label}</span>`;
+    const scope = modelOverride() ? 'this model only' : 'all models';
+    permBtn.title = `Permissions: ${entry.label} (${scope}). ${entry.hint} Click to change.`;
+    permBtn.setAttribute('aria-label', `Permissions: ${entry.label}. Change`);
+    for (const row of permMenu.querySelectorAll('.model-option')) row.setAttribute('aria-selected', String(row.dataset.mode === mode));
+  }
+  function renderPermMenu() {
+    const head = document.createElement('div');
+    head.className = 'model-group-head';
+    const title = document.createElement('span');
+    title.textContent = 'Permissions';
+    const scope = document.createElement('span');
+    scope.className = 'model-group-quota';
+    scope.textContent = modelOverride() ? 'This model only' : 'All models';
+    head.append(title, scope);
+    const rows = PERMISSIONS.map((entry) => {
+      const item = document.createElement('button');
+      item.type = 'button';
+      item.className = 'model-option perm-option';
+      item.dataset.mode = entry.id;
+      item.setAttribute('role', 'option');
+      item.innerHTML = `<span class="model-option-icon">${PERM_SVG[entry.id]}</span><span class="model-option-text"><span class="model-option-label"></span><span class="model-option-hint"></span></span><svg class="model-option-check" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="m3.5 8.5 3 3 6-7" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
+      item.querySelector('.model-option-label').textContent = entry.label;
+      item.querySelector('.model-option-hint').textContent = entry.hint;
+      item.addEventListener('click', () => { choosePermission(entry.id); closePermMenu({ refocus: true }); });
+      return item;
+    });
+    permMenu.replaceChildren(head, ...rows);
+    renderPermission();
+  }
+  function choosePermission(mode) {
+    if (!validPermission(mode)) return;
+    if (modelOverride()) { modelPermissions = { ...modelPermissions, [activeModelId]: { permissionMode: mode } }; vscode.postMessage({ type: 'setModelSettings', id: activeModelId, permissionMode: mode }); }
+    else { generalPermission = mode; vscode.postMessage({ type: 'setPermissionMode', mode }); }
+    renderPermission();
+  }
+  function openPermMenu() {
+    closeMentionMenu(); closeSlashMenu(); closeModelMenu();
+    renderPermMenu();
+    const rect = permBtn.getBoundingClientRect();
+    placeIslandMenu(permMenu, rect.left + rect.width / 2, Math.min(300, window.innerWidth - 20));
+    setIslandMenuOpen(permMenu, true);
+    permBtn.setAttribute('aria-expanded', 'true');
+    (permMenu.querySelector('.model-option[aria-selected="true"]') || permMenu.querySelector('.model-option'))?.focus({ preventScroll: true });
+  }
+  function closePermMenu({ refocus = false } = {}) {
+    if (!islandMenuOpen(permMenu)) return;
+    setIslandMenuOpen(permMenu, false);
+    permBtn.setAttribute('aria-expanded', 'false');
+    if (refocus) permBtn.focus();
+  }
+  permBtn.addEventListener('click', () => (islandMenuOpen(permMenu) ? closePermMenu() : openPermMenu()));
+  menuKeys(permMenu, closePermMenu);
+  /** The host's state: the general mode and/or the per-model overrides; a missing part keeps what it was. */
+  function receivePermission({ mode, models } = {}) {
+    if (validPermission(mode)) generalPermission = mode;
+    if (models && typeof models === 'object') modelPermissions = models;
+    renderPermission();
+  }
+  renderPermission();
+  vscode.postMessage({ type: 'requestPermission' });
 
   const savedModel = (() => { try { return vscode.getState()?.modelId; } catch { return null; } })();
   selectModel(optionFor(savedModel) ? savedModel : 'auto', { notifyExtension: Boolean(optionFor(savedModel)) && savedModel !== 'auto' });
@@ -1864,13 +2001,11 @@
     selectModel(option.id);
   });
 
-  // P17-G: the composer is a squircle whenever the text has a newline, would
-  // wrap inside the one-line pill, or the pill's text column is too narrow to
-  // type in comfortably. While already a squircle, checks use the pill's text
-  // width (with hysteresis) so layout never flip-flops and lift never replays.
+  // The composer is one squircle at every width: the text spans the full width on top, the buttons run along the bottom
+  // (the attach, model, agents and permission chips on the left; clock, dictate and the one send/stop slot on the right).
+  // There is no pill state any more, so only the textarea's height follows what is typed.
   const composerEl = document.querySelector('.composer');
   const composerActions = composerEl.querySelector('.composer-actions');
-  const MIN_PILL_TEXT_PX = 104;
   let savedDraft = null;
   function saveDraft(userInput = false) {
     if (!currentChatId) return;
@@ -1881,30 +2016,14 @@
     savedDraft = signature;
     vscode.postMessage({ type: 'saveDraft', chatId: currentChatId, text, attachments: files, ...(userInput && text.length ? { userInput: true } : {}) });
   }
-  function pillTextWidth() {
-    if (!composerEl.clientWidth) return Infinity;
-    // 16px horizontal padding + 8px column gaps + 2px #attachBtn right margin.
-    return Math.max(0, composerEl.clientWidth - 26 - attachBtn.offsetWidth - composerActions.offsetWidth);
-  }
+  // While dictation runs under existing text, the composer reserves one extra "live row" below it (two lines of the future text)
+  // for the meter and then the ghost lines; the written text above stays on screen. See openVoiceRow.
+  const VOICE_ROW = 40; // px, matches --voice-row in style.css
+  let voiceRowOpen = false;
   function syncComposerShape() {
-    const value = promptInput.value;
-    const threshold = composerEl.classList.contains('is-multiline') ? MIN_PILL_TEXT_PX + 12 : MIN_PILL_TEXT_PX;
-    const narrow = pillTextWidth() < threshold;
-    if (!value) {
-      composerEl.classList.toggle('is-multiline', narrow);
-      promptInput.style.height = '';
-      return;
-    }
-    let multiline = narrow || value.includes('\n');
-    if (!multiline) {
-      if (composerEl.classList.contains('is-multiline')) promptInput.style.width = `${pillTextWidth()}px`;
-      promptInput.style.height = 'auto';
-      multiline = promptInput.scrollHeight > 32;
-      promptInput.style.width = '';
-    }
-    composerEl.classList.toggle('is-multiline', multiline);
+    if (!promptInput.value) { promptInput.style.height = ''; return; }
     promptInput.style.height = 'auto';
-    promptInput.style.height = `${Math.min(promptInput.scrollHeight, 140)}px`;
+    promptInput.style.height = `${Math.min(promptInput.scrollHeight, 140 + (voiceRowOpen ? VOICE_ROW : 0))}px`;
   }
   function autoGrow(event) {
     if (event?.type === 'input') vscode.postMessage({ type: 'composerActivity' });
@@ -1913,11 +2032,23 @@
   }
   promptInput.addEventListener('input', autoGrow);
   window.addEventListener('resize', syncComposerShape);
-  if (typeof ResizeObserver === 'function') {
-    const composerResize = new ResizeObserver(syncComposerShape);
-    composerResize.observe(composerEl);
-    composerResize.observe(composerActions);
+  if (typeof ResizeObserver === 'function') new ResizeObserver(syncComposerShape).observe(composerEl); // a width change re-wraps the text
+
+  // The bar is always one line. Too tight, it sheds text in steps (permission text, model name, the clock's time, then the buttons
+  // shrink and the agents count goes) until it fits; wider again, the text returns in the reverse order. The steps are the
+  // fit-* classes in style.css. Measured, not guessed from the width, so a long model name or a long time takes the room it needs.
+  const FIT_STEPS = ['fit-perm', 'fit-model', 'fit-time', 'fit-tight', 'fit-bare'];
+  const composerBar = composerEl.querySelector('.composer-bar');
+  const composerTools = composerEl.querySelector('.composer-tools');
+  function fitComposerBar() {
+    composerEl.classList.remove(...FIT_STEPS);
+    const tight = () => composerTools.scrollWidth > composerTools.clientWidth + 0.5 || composerBar.scrollWidth > composerBar.clientWidth + 0.5;
+    for (const step of FIT_STEPS) { if (!tight()) break; composerEl.classList.add(step); }
   }
+  if (typeof ResizeObserver === 'function') new ResizeObserver(fitComposerBar).observe(composerEl);
+  if (typeof MutationObserver === 'function') new MutationObserver(fitComposerBar).observe(composerBar, { childList: true, characterData: true, subtree: true, attributes: true, attributeFilter: ['hidden'] });
+  document.fonts?.ready.then(fitComposerBar);
+  fitComposerBar();
 
   // ---------- P17-F: Stop, in-session turn queue, Steer Now ----------
   // Idle: send arrow. Busy + empty composer: the arrow gives way to a crimson
@@ -2032,21 +2163,27 @@
     const unscheduling = Boolean(editingQueue?.taskId && editingQueue.scheduleTouched && !scheduleArmed);
     const queueing = (!editingQueue && (busy || turnQueue.length > 0) && !scheduleArmed && Boolean(promptInput.value.trim()))
       || (unscheduling && (busy || turnQueue.length > 0));
-    stopBtn.hidden = !busy;
-    sendBtn.hidden = !editingQueue && busy && !queueing && !scheduleArmed;
-    sendBtn.disabled = unscheduling && !promptInput.value.trim();
+    const hasText = Boolean(promptInput.value.trim());
+    // Dictation owns the composer until it ends (the microphone again, or Esc): sending now would send a half-finished draft.
+    // Another window's recording (is-voice-mirror) is only echoed here and does not lock this one.
+    const dictating = composerEl.classList.contains('is-voice') && !composerEl.classList.contains('is-voice-mirror');
+    // The bottom-right slot holds exactly one of the two, so the bar never reshuffles under the pointer: send whenever there is
+    // something to send (or an edit to save), stop only while a turn runs and there is nothing typed.
+    const sending = Boolean(editingQueue) || !busy || hasText || unscheduling;
+    stopBtn.hidden = sending;
+    sendBtn.hidden = !sending;
+    sendBtn.disabled = dictating || (unscheduling && !hasText);
     const mode = unscheduling ? (queueing ? 'queue' : 'send') : editingQueue ? 'edit' : queueing ? 'queue' : 'send';
     if (sendBtn.dataset.mode !== mode) {
       sendBtn.dataset.mode = mode;
       sendBtn.classList.toggle('is-queue', queueing);
       sendBtn.innerHTML = mode === 'edit' ? SAVE_EDIT_SVG : queueing ? QUEUE_SVG : SEND_SVG;
     }
-    sendBtn.title = unscheduling
+    sendBtn.title = dictating ? 'Finish dictating first: click the microphone to stop, or press Esc to cancel'
+      : unscheduling
       ? (queueing ? 'Remove schedule and queue after this turn (Enter). Ctrl+Enter sends now.' : 'Remove schedule and send now (Enter)')
       : queueing ? (queuePaused ? 'Add to the paused queue (Enter). Ctrl+Enter sends now.' : 'Queue for after this turn (Enter). Ctrl+Enter sends now.')
       : editingQueue ? 'Save queue edits (Enter). Ctrl+Enter sends now.' : 'Send';
-    // Stop and send together: send steps in left of the clock (style.css), so the clock under your pointer never moves.
-    composerActions.classList.toggle('is-queueing', !stopBtn.hidden && !sendBtn.hidden);
     polishBtn.disabled = micWrap.classList.contains('is-polishing') || !promptInput.value.trim();
     autoGrow(); // Stop/Queue buttons change the text column's width, so re-measure
   }
@@ -2180,7 +2317,7 @@
     if (isCompacting) { finishCompactDivider('interrupted'); isCompacting = false; }
     for (const [id, card] of pendingCards) { if (card.dataset.deferred === 'true') continue; settleCard(card, 'Turn stopped', 'denied'); pendingCards.delete(id); }
     document.querySelectorAll('.tool-card.is-running').forEach((card) => {
-      finishToolCard(card, { output: card.querySelector('.tool-body')?.textContent || '' });
+      finishToolCard(card, { output: rawToolOutput(card) });
       card.classList.add('is-cancelled');
     });
     foldThought(); // what it was thinking when stopped stays readable
@@ -2214,11 +2351,12 @@
   // P17-L: hairline icons, no emoji.
   const queueSvg = (d) => `<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${d}</svg>`;
   const QUEUE_ICONS = {
-    steer: queueSvg('<path d="M9 1.75 3.5 9h4L7 14.25 12.5 7h-4z"/>'),
+    send: queueSvg('<path d="M3 8h9.5"/><path d="M8.75 4.25 12.5 8l-3.75 3.75"/>'),
+    up: queueSvg('<path d="m4.5 9.75 3.5-3.5 3.5 3.5"/>'),
+    down: queueSvg('<path d="m4.5 6.25 3.5 3.5 3.5-3.5"/>'),
     edit: PENCIL_SVG,
     remove: queueSvg(TRASH_PATH),
     unschedule: queueSvg('<path d="M5.5 3 2.5 6l3 3"/><path d="M2.5 6h6.75a4 4 0 0 1 0 8H7"/>'),
-    grip: queueSvg('<path d="M6 4h.01M10 4h.01M6 8h.01M10 8h.01M6 12h.01M10 12h.01" stroke-width="2"/>'),
     pause: queueSvg('<path d="M5.5 4v8M10.5 4v8"/>'),
     play: queueSvg('<path d="m5.5 3.5 7 4.5-7 4.5z"/>'),
   };
@@ -2259,8 +2397,9 @@
   }
   // One list: queued turns and scheduled prompts are dragged among each other. Rows can differ in height (a wrapped prompt,
   // a time label), so the slots come from each row's own measured box, not one shared pitch.
+  // The whole row is the handle: anything that is not a control (the prompt text, empty space, the file badge) drags it.
   function startQueueDrag(event, row) {
-    if (event.button !== 0) return;
+    if (event.button !== 0 || event.target.closest('button, a, input, textarea, [role="button"]')) return;
     event.preventDefault();
     const rows = [...queueStrip.querySelectorAll('.turn-queue-item:not(.turn-queue-skeleton)')];
     const from = rows.indexOf(row);
@@ -2271,16 +2410,22 @@
     const gap = rows.length > 1 ? Math.max(0, tops[1] - tops[0] - heights[0]) : 0;
     const last = rows.length - 1;
     const startY = event.clientY;
-    const grip = event.currentTarget;
+    const grip = row;
+    let engaged = false;
     const chatId = currentChatId;
     const before = rows.map(keyOf);
     let to = from;
     let dy = 0;
     grip.setPointerCapture(event.pointerId);
-    queueStrip.classList.add('is-sorting');
-    for (const sibling of rows) sibling.classList.remove('is-entering');
-    row.classList.add('is-dragging');
+    // A plain click on the text does nothing; the row only lifts once the pointer has really moved.
+    const engage = () => {
+      engaged = true;
+      queueStrip.classList.add('is-sorting');
+      for (const sibling of rows) sibling.classList.remove('is-entering');
+      row.classList.add('is-dragging');
+    };
     const move = (e) => {
+      if (!engaged) { if (Math.abs(e.clientY - startY) < 4) return; engage(); }
       dy = Math.max(tops[0] - tops[from], Math.min(tops[last] + heights[last] - heights[from] - tops[from], e.clientY - startY));
       row.style.transform = `translateY(${dy}px)`;
       // The row takes a slot once its leading edge passes that row's middle, so a tall row can still reach a short one at an end.
@@ -2301,6 +2446,7 @@
       grip.removeEventListener('pointermove', move);
       grip.removeEventListener('pointerup', up);
       grip.removeEventListener('pointercancel', up);
+      if (!engaged) return;
       row.classList.remove('is-dragging');
       for (const sibling of rows) sibling.style.transform = '';
       if (chatId !== currentChatId) return;
@@ -2323,25 +2469,45 @@
     grip.addEventListener('pointerup', up);
     grip.addEventListener('pointercancel', up);
   }
-  // A queued turn's files: up to three overlapping thumbnails plus "3 photos" /
-  // "2 files"; narrow rows drop the thumbnails, then the word (style.css).
+  // The up / down arrows beside a row's number: the same reorder as dragging, one step at a time. The row slides to its new slot
+  // (a FLIP, like a dropped drag), and the arrow keeps keyboard focus even though its row is re-inserted.
+  function moveQueueRow(row, delta) {
+    const rows = [...queueStrip.querySelectorAll('.turn-queue-item:not(.turn-queue-skeleton)')];
+    const before = rows.map((r) => r.dataset.queueKey);
+    const from = before.indexOf(row.dataset.queueKey), to = from + delta;
+    if (from < 0 || to < 0 || to >= rows.length) return;
+    const tops = new Map(rows.map((r) => [r.dataset.queueKey, r.offsetTop]));
+    const order = before.slice();
+    order.splice(to, 0, ...order.splice(from, 1));
+    applyQueueOrder(order, before);
+    renderTurnQueue();
+    const moved = [...queueStrip.querySelectorAll('.turn-queue-item:not(.turn-queue-skeleton)')];
+    if (!REDUCED_MOTION.matches) {
+      queueStrip.classList.add('is-sorting');
+      for (const r of moved) {
+        r.classList.remove('is-entering');
+        const dy = (tops.get(r.dataset.queueKey) ?? r.offsetTop) - r.offsetTop;
+        if (dy) { r.style.transition = 'none'; r.style.transform = `translateY(${dy}px)`; }
+      }
+      queueStrip.getBoundingClientRect();
+      for (const r of moved) { r.style.transition = ''; r.style.transform = ''; }
+      setTimeout(() => queueStrip.classList.remove('is-sorting'), 420);
+    }
+    const settled = moved.find((r) => r.dataset.queueKey === row.dataset.queueKey);
+    const next = settled?.querySelector(delta < 0 ? '.is-up:not([hidden])' : '.is-down:not([hidden])') || settled?.querySelector('.turn-queue-move:not([hidden])');
+    next?.focus({ preventScroll: true });
+  }
+  // A queued turn's files: a photo (or paperclip) icon plus "3 photos" / "2 files"; narrow rows drop the word (style.css).
+  // No thumbnails: at this size they were unreadable and cost decoding work for every row.
   function queuedFilesBadge(files) {
-    const photos = files.filter((file) => file.mime?.startsWith('image/') && file.uri);
-    const allPhotos = photos.length === files.length;
+    const allPhotos = files.every((file) => file.mime?.startsWith('image/'));
     const badge = document.createElement('span');
     badge.className = 'turn-queue-files';
     badge.title = files.map((file) => file.name).join('\n');
-    const thumbs = document.createElement('span');
-    thumbs.className = 'turn-queue-thumbs';
-    for (const photo of photos.slice(0, 3)) {
-      const img = document.createElement('img');
-      img.src = photo.uri; img.alt = '';
-      thumbs.append(img);
-    }
     const icon = document.createElement('span');
     icon.className = 'turn-queue-files-icon';
     icon.innerHTML = queueSvg(allPhotos
-      ? '<rect x="2" y="3" width="12" height="10" rx="2"/><circle cx="6" cy="6.5" r="1.1"/><path d="m2.5 12 3.5-3.5 2.5 2.5 2-2 3 3"/>'
+      ? '<rect x="2" y="3" width="12" height="10" rx="2"/><circle cx="10.4" cy="6" r="1.1"/><path d="m2.5 12 3.5-3.5 2.5 2.5 2-2 3 3"/>'
       : '<path d="M10.5 4.5 5.8 9.2a1.4 1.4 0 0 0 2 2l5-5a2.8 2.8 0 0 0-4-4l-5 5a4.2 4.2 0 0 0 6 6l4.2-4.2"/>');
     const count = document.createElement('span');
     count.className = 'turn-queue-files-count';
@@ -2349,7 +2515,6 @@
     word.className = 'turn-queue-files-word';
     word.textContent = allPhotos ? (files.length === 1 ? ' photo' : ' photos') : (files.length === 1 ? ' file' : ' files');
     count.append(String(files.length), word);
-    if (photos.length) badge.append(thumbs);
     badge.append(icon, count);
     return badge;
   }
@@ -2361,9 +2526,7 @@
     const clock = scheduled && (fireTimeOf(entry) > Date.now() || resetWaiting(entry));
     if (row.queueClock === clock) return;
     row.queueClock = clock;
-    // The grip stays on every row, scheduled or not; a row that is still waiting also wears a clock before its time.
-    const mark = row.querySelector('.turn-queue-grip');
-    if (!mark.firstChild) { mark.innerHTML = QUEUE_ICONS.grip; mark.title = 'Drag to reorder'; }
+    // A row that is still waiting wears a clock before its time.
     const when = row.querySelector('.turn-queue-when');
     if (!when) return;
     const icon = when.querySelector('.turn-queue-clock');
@@ -2377,9 +2540,18 @@
       row.dataset.queueKey = (scheduled ? 'scheduled:' : 'turn:') + entry.id;
       if (scheduled) row.dataset.taskId = entry.id; else row.dataset.id = entry.id;
       row.addEventListener('animationend', event => { if (event.target === row && event.animationName === 'msg-in') row.classList.remove('is-entering'); });
+      row.addEventListener('pointerdown', event => startQueueDrag(event, row));
+      // Position in the order the prompts go out, with a step up above it and a step down below it.
       const mark = document.createElement('span');
-      mark.className = 'turn-queue-grip';
-      mark.addEventListener('pointerdown', event => startQueueDrag(event, row));
+      mark.className = 'turn-queue-rank';
+      const moveButton = (cls, icon, label, delta) => {
+        const btn = document.createElement('button');
+        btn.type = 'button'; btn.className = 'turn-queue-move ' + cls; btn.innerHTML = icon; btn.title = label; btn.setAttribute('aria-label', label);
+        btn.addEventListener('click', () => moveQueueRow(row, delta));
+        return btn;
+      };
+      const num = document.createElement('span'); num.className = 'turn-queue-num';
+      mark.append(moveButton('is-up', QUEUE_ICONS.up, 'Move up', -1), num, moveButton('is-down', QUEUE_ICONS.down, 'Move down', 1));
       // The current model is also the way to change it: click the pill, pick another model in the composer's menu.
       const pill = document.createElement('span');
       pill.className = 'model-pill is-changeable';
@@ -2405,24 +2577,25 @@
       if (scheduled) {
         const when = document.createElement('span'); when.className = 'turn-queue-when'; when.innerHTML = '<span class="turn-queue-when-text"></span>';
         actions.append(
-          button(QUEUE_ICONS.steer, 'Send Now', 'Send this now instead of waiting', 'is-primary', () => vscode.postMessage({ type: 'dispatchNowWithAutoRoute', taskId: row.queueEntry.id })),
+          button(QUEUE_ICONS.remove, '', 'Delete', 'is-danger is-icon', () => vscode.postMessage({ type: 'cancelScheduledTask', taskId: row.queueEntry.id })),
           button(QUEUE_ICONS.edit, '', 'Move back into the composer', 'is-icon', () => vscode.postMessage({ type: 'unscheduleToComposer', taskId: row.queueEntry.id })),
-          button(QUEUE_ICONS.remove, '', 'Delete', 'is-danger is-icon', () => vscode.postMessage({ type: 'cancelScheduledTask', taskId: row.queueEntry.id })));
+          button(QUEUE_ICONS.send, '', 'Send this now instead of waiting', 'is-primary is-icon', () => vscode.postMessage({ type: 'dispatchNowWithAutoRoute', taskId: row.queueEntry.id })));
         controls.append(when, actions);
       } else {
         actions.append(
-          button(QUEUE_ICONS.steer, 'Steer Now', 'Send this now', 'is-primary', () => queueAction('steerQueuedTurn', { id: row.queueEntry.id })),
-          button(QUEUE_ICONS.edit, '', 'Move back into the composer', 'is-icon', () => editQueuePrompt(row.queueEntry)),
           button(QUEUE_ICONS.remove, '', 'Delete', 'is-danger is-icon', () => {
             const turn = row.queueEntry;
             for (const file of turn.files || []) vscode.postMessage({ type: 'removeAttachment', path: file.path });
             queueAction('removeQueuedTurn', { id: turn.id });
             turnQueue = turnQueue.filter(item => item.id !== turn.id);
             renderTurnQueue();
-          }));
+          }),
+          button(QUEUE_ICONS.edit, '', 'Move back into the composer', 'is-icon', () => editQueuePrompt(row.queueEntry)),
+          button(QUEUE_ICONS.send, '', 'Send this now', 'is-primary is-icon', () => queueAction('steerQueuedTurn', { id: row.queueEntry.id })));
         controls.append(actions);
       }
       row.append(controls);
+      row.querySelector('.is-primary').setAttribute('aria-label', 'Send Now'); // the title explains the state; the name stays put
     }
     // Keep controls mounted; their handlers always read the latest host snapshot.
     row.queueEntry = entry;
@@ -2432,7 +2605,9 @@
     const modelKey = JSON.stringify([brand, label, fullLabel, icon]);
     if (row.queueModelKey !== modelKey) {
       const pill = row.querySelector('.model-pill');
-      pill.dataset.brand = brand; pill.innerHTML = icon; pill.append(label);
+      pill.dataset.brand = brand; pill.innerHTML = icon;
+      const labelEl = document.createElement('span'); labelEl.className = 'model-pill-label'; labelEl.textContent = label; // its own element, so a narrow row can drop it
+      pill.append(labelEl);
       pill.title = fullLabel;
       row.queueModelKey = modelKey;
     }
@@ -2444,13 +2619,12 @@
     const filesKey = JSON.stringify(files);
     if (row.queueFilesKey !== filesKey) {
       row.querySelector('.turn-queue-files')?.remove();
-      if (files.length) row.insertBefore(queuedFilesBadge(files), row.querySelector('.turn-queue-controls, .turn-queue-when, button'));
+      if (files.length) row.insertBefore(queuedFilesBadge(files), row.querySelector(':scope > .turn-queue-controls'));
       row.queueFilesKey = filesKey;
     }
     if (scheduled) {
       const value = scheduledLabel(entry);
-      const when = row.querySelector('.turn-queue-when-text');
-      if (when.textContent !== value) when.textContent = value;
+      setWhenLabel(row, value);
     } else {
       const steer = row.querySelector('.is-primary');
       const title = busy ? 'Interrupt the running turn and send this now' : 'Send this now';
@@ -2557,6 +2731,14 @@
       }
     });
     for (const row of existing.values()) row.remove();
+    const placed = [...queueStrip.querySelectorAll('.turn-queue-item:not(.turn-queue-skeleton)')];
+    placed.forEach((item, i) => {
+      const label = `#${i + 1}`, num = item.querySelector('.turn-queue-num');
+      if (num.textContent !== label) num.textContent = label;
+      const up = item.querySelector('.is-up'), down = item.querySelector('.is-down');
+      if (up.hidden !== (i === 0)) up.hidden = i === 0; // the first prompt can't go up, the last can't go down, a lone one neither
+      if (down.hidden !== (i === placed.length - 1)) down.hidden = i === placed.length - 1;
+    });
     updateQueueMaxHeight();
   }
 
@@ -2578,6 +2760,7 @@
       return sendPrompt({ steer }); // include any further paste that arrived while waiting
     }
     if (polishing) return; // the draft is being rewritten; sending now would send the old text
+    if (composerEl.classList.contains('is-voice') && !composerEl.classList.contains('is-voice-mirror')) return; // dictating: finish or cancel it first
     let text = promptInput.value.trim();
     if (editingQueue && !steer) { finishQueueEdit({ schedule: scheduleArmed, submit: true }); return; }
     if (!text) return;
@@ -2661,13 +2844,12 @@
   });
 
   micBtn.addEventListener('click', () => {
-    setComposerAction('dictate');
     warmMicCue(); // a click is the gesture that lets the start cue play the instant the microphone is live
     if (!micBtn.classList.contains('recording')) applyMicState({ state: 'starting' }); // answer now; the host confirms a moment later
     vscode.postMessage({ type: 'micToggle' });
   });
 
-  // Polish shares the mic's expanding action pill: the typed draft goes through dictation's cleanup and comes back
+  // Polish sits beside the mic: the typed draft goes through dictation's cleanup and comes back
   // structured. It replaces the text through the editing stack, so Ctrl+Z brings the original back.
   let polishRequest = 0;
   let polishing = false;
@@ -2681,12 +2863,60 @@
     if (!on && (micBtn.classList.contains('recording') || micBtn.classList.contains('is-busy'))) return; // a recording took over the composer meanwhile
     composerEl.classList.toggle('is-voice', on);
     composerEl.classList.toggle('is-voice-processing', on);
-    if (!on) setTimeout(() => { if (!composerEl.classList.contains('is-voice')) voiceOverlay.hidden = true; }, 280);
+    if (!on) setTimeout(parkVoiceOverlay, 280);
+    renderComposerState();
+  }
+  function parkVoiceOverlay() {
+    if (composerEl.classList.contains('is-voice')) return;
+    voiceOverlay.hidden = true;
+    delete voiceOverlay.dataset.row;
+  }
+  // The live row: reserved under existing text while dictation runs. The overlay is pinned to the exact spot where the new
+  // text will start (--row-top), so the ghost lines stand where the words will appear, even after the box has grown.
+  function animateComposerHeight(from) {
+    const to = promptInput.offsetHeight;
+    if (REDUCED_MOTION.matches || from === to) return;
+    promptInput.animate([{ height: `${from}px` }, { height: `${to}px` }], { duration: 380, easing: 'cubic-bezier(0.16, 1, 0.3, 1)' });
+  }
+  function openVoiceRow() {
+    if (voiceRowOpen || !promptInput.value.trim()) return;
+    const from = promptInput.offsetHeight;
+    voiceRowOpen = true;
+    composerEl.classList.add('has-voice-row');
+    syncComposerShape();
+    promptInput.scrollTop = promptInput.scrollHeight;
+    voiceOverlay.dataset.row = '1';
+    voiceOverlay.style.setProperty('--row-top', `${Math.max(0, promptInput.scrollHeight - VOICE_ROW - promptInput.scrollTop)}px`);
+    animateComposerHeight(from);
+  }
+  function closeVoiceRow(animate = true) {
+    clearTimeout(voiceRowTimer);
+    if (!voiceRowOpen) return;
+    const from = promptInput.offsetHeight;
+    voiceRowOpen = false;
+    composerEl.classList.remove('has-voice-row');
+    syncComposerShape();
+    if (animate) animateComposerHeight(from);
+  }
+  let voiceRowTimer;
+  /**
+   * New text wipes in from `keep` px down (the end of what was already written) while the old text stays put: a soft edge
+   * travels top to bottom through a mask, so the words appear line by line where the ghost lines stood.
+   */
+  function revealFrom(keep) {
+    if (REDUCED_MOTION.matches || !promptInput.animate) return;
+    const start = Math.max(0, keep - promptInput.scrollTop);
+    const distance = promptInput.clientHeight - start;
+    if (distance <= 0) return;
+    promptInput.style.setProperty('--keep', `${start}px`);
+    promptInput.classList.add('is-revealing');
+    const done = () => { promptInput.classList.remove('is-revealing'); promptInput.style.removeProperty('--keep'); };
+    const wipe = promptInput.animate([{ '--wipe': '0px' }, { '--wipe': `${distance}px` }], { duration: Math.min(1100, 380 + distance * 3.2), easing: 'cubic-bezier(0.33, 1, 0.68, 1)' });
+    wipe.onfinish = done; wipe.oncancel = done;
   }
   polishBtn.addEventListener('click', () => {
     const text = promptInput.value;
     if (polishing || !text.trim()) return;
-    setComposerAction('polish');
     setPolishing(true);
     vscode.postMessage({ type: 'polishPrompt', text, requestId: ++polishRequest });
   });
@@ -2697,9 +2927,9 @@
     promptInput.select();
     if (!document.execCommand('insertText', false, text)) promptInput.value = text; // execCommand keeps the native undo stack
     autoGrow(); renderComposerState();
-    const to = promptInput.offsetHeight;
-    if (!REDUCED_MOTION.matches) promptInput.animate([{ height: `${from}px`, opacity: 0 }, { height: `${to}px`, opacity: 1 }], { duration: 320, easing: 'cubic-bezier(0.16, 1, 0.3, 1)' });
     promptInput.setSelectionRange(promptInput.value.length, promptInput.value.length);
+    animateComposerHeight(from);
+    revealFrom(0); // the rewritten draft wipes in from the top
   }
   // Esc drops the recording without transcribing it.
   document.addEventListener('keydown', (event) => {
@@ -2915,30 +3145,42 @@
       micBtn.style.removeProperty('--mic-level');
       composerEl.style.removeProperty('--mic-level');
     }
-    if (processing) {
-      waveBars.forEach((bar) => { bar.style.opacity = ''; bar.style.height = ''; bar.style.transform = ''; }); // CSS collapses them to the 4px baseline
-      promptInput.placeholder = 'Transcribing & formatting with Whisper…';
-    }
+    if (processing) waveBars.forEach((bar) => { bar.style.opacity = ''; bar.style.height = ''; bar.style.transform = ''; }); // CSS collapses them to the 4px baseline
+    // Written text stays visible: the meter and then the ghost lines take a row under it (the window that receives the text only).
+    if ((starting || recording || processing) && !voiceMirror) { clearTimeout(voiceRowTimer); openVoiceRow(); }
     composerEl.classList.toggle('is-voice', starting || recording || processing);
     composerEl.classList.toggle('is-voice-starting', starting);
     composerEl.classList.toggle('is-voice-processing', processing);
     if (!starting && !recording && !processing) {
       setScheduleArmed(scheduleArmed); // restores the placeholder
-      setTimeout(() => { if (!composerEl.classList.contains('is-voice')) voiceOverlay.hidden = true; }, 280);
+      setTimeout(parkVoiceOverlay, 280);
+      // On success the transcript follows this message at once and closes the row itself; on a cancel or an error nothing comes.
+      clearTimeout(voiceRowTimer); voiceRowTimer = setTimeout(closeVoiceRow, 180);
     }
+    renderComposerState(); // send is greyed out while dictating
   }
-  // The transcript lands as an editable draft: text fades in and the composer springs to its new height.
+  let voiceInserting = false;
+  // The transcript lands as an editable draft after what is already written, on a new line. It goes in through the editing stack
+  // (execCommand), so one Ctrl+Z takes the whole dictation back. The old text never moves: the new lines wipe in under it
+  // where the ghost lines stood, and the composer springs to its new height.
   function insertVoiceDraft(text) {
+    clearTimeout(voiceRowTimer);
+    const had = promptInput.value.trim();
     const from = promptInput.offsetHeight;
-    promptInput.value = promptInput.value.trim() ? `${promptInput.value}\n${text}` : text;
-    autoGrow();
-    renderComposerState();
-    const to = promptInput.offsetHeight;
-    if (!REDUCED_MOTION.matches) {
-      promptInput.animate([{ height: `${from}px`, opacity: 0 }, { height: `${to}px`, opacity: 1 }], { duration: 320, easing: 'cubic-bezier(0.16, 1, 0.3, 1)' });
-    }
+    const keep = had ? promptInput.scrollHeight - (voiceRowOpen ? VOICE_ROW : 0) : 0; // where the old text ends
+    voiceRowOpen = false;
+    composerEl.classList.remove('has-voice-row');
     promptInput.focus();
+    if (had) promptInput.setSelectionRange(promptInput.value.length, promptInput.value.length); else promptInput.select();
+    voiceInserting = true;
+    const added = had ? `\n${text}` : text;
+    if (!document.execCommand('insertText', false, added)) promptInput.value = had ? `${promptInput.value}${added}` : added; // no undo, but the text lands
+    voiceInserting = false;
+    autoGrow(); renderComposerState();
     promptInput.setSelectionRange(promptInput.value.length, promptInput.value.length);
+    promptInput.scrollTop = promptInput.scrollHeight;
+    animateComposerHeight(from);
+    revealFrom(keep);
   }
   // Sending ends edit monitoring; detected corrections retain their visible cancel window.
   function flushVoiceDraft(sent) {
@@ -2947,9 +3189,11 @@
     else resetVoiceCorrections();
     lastVoiceDraft = null;
   }
-  promptInput.addEventListener('input', () => {
+  promptInput.addEventListener('input', (event) => {
+    if (voiceInserting) return; // the dictation landing is not an edit of it
     resetVoiceCorrections(!!promptInput.value.trim());
-    if (!promptInput.value.trim()) lastVoiceDraft = null;
+    // Ctrl+Z / Ctrl+Y over a dictation is not a correction either; learning from it would read "everything deleted".
+    if (!promptInput.value.trim() || event.inputType === 'historyUndo' || event.inputType === 'historyRedo') { lastVoiceDraft = null; resetVoiceCorrections(); }
     if (lastVoiceDraft) voiceEditTimer = setTimeout(() => checkVoiceCorrections(), 700);
   });
 
@@ -3114,6 +3358,7 @@
     if (!match || /^(https?|mailto):/i.test(ref)) return null;
     let file = match[1];
     try { file = decodeURIComponent(file); } catch { /* keep as written */ }
+    if (file.includes('\u0000')) return null;
     const ext = match[2].toLowerCase();
     if (!KNOWN_FILE_EXTENSIONS.has(ext)) return null;
     const line = match[3] || match[4] || '';
@@ -3138,7 +3383,7 @@
     const hold = (html, raw) => { raws[slots.length] = raw; return `\u0000${slots.push(html) - 1}\u0000`; };
     // A link label like [`.env`](...) holds a code slot; the badge wants its plain text.
     const plain = (label) => label.replace(/\u0000(\d+)\u0000/g, (_, n) => raws[n] ?? '').replace(/^(\*{1,3}|_{1,3}|~~)(?=\S)([\s\S]*?\S)\1$/, '$2');
-    let s = String(text)
+    let s = String(text).replaceAll('\u0000', '')
       .replace(/(`+)([\s\S]*?[^`])\1(?!`)/g, (_, _ticks, code) => {
         const ref = code.trim();
         // A bare URL in backticks (how agents usually print dev-server addresses) stays code-styled but clickable.
@@ -3154,8 +3399,8 @@
         return pre + hold(renderMath(tex, false));
       });
     s = escapeHtml(s)
-      .replace(/\[([^\]]+)\]\(((?:https?:\/\/|mailto:)[^\s)]+)\)/g, (_, label, url) => hold(`<a href="${url}" title="${url}">${renderEmphasis(label)}</a>`))
-      .replace(/(^|[\s(])(https?:\/\/[^\s<]*[^\s<.,;:!?)\]'"])/g, (_, pre, url) => pre + hold(`<a href="${url}">${url}</a>`))
+      .replace(/\[([^\]]+)\]\(((?:https?:\/\/|mailto:)[^\s)\u0000]+)\)/g, (_, label, url) => hold(`<a href="${url}" title="${url}">${renderEmphasis(label)}</a>`))
+      .replace(/(^|[\s(])(https?:\/\/[^\s<\u0000]*[^\s<\u0000.,;:!?)\]'"])/g, (_, pre, url) => pre + hold(`<a href="${url}">${url}</a>`))
       .replace(/(^|[\s(])((?:(?:\.{1,2}[\\/])|[a-zA-Z]:[\\/]|[\w@-]{2,}[\\/])(?:[\w.@-]+[\\/])*[\w@-]+\.[a-z][a-z0-9]{0,7}(?::\d+(?::\d+)?)?)(?=[\s),;!?]|[.:](?:\s|$)|$)/gi, (whole, pre, ref) => {
         const badge = fileBadge(ref);
         return badge ? pre + hold(badge) : whole;
@@ -3283,6 +3528,7 @@
   let editorThemeName = null;
   let themeVersion = 0;
   const highlightCache = new Map();
+  const toolViews = new Set(); // tool output views holding Shiki colours, repainted when the theme changes
   const HIGHLIGHT_BUDGET = 2 * 1024 * 1024;
   let highlightBytes = 0;
   let highlighterLoading = null;
@@ -3327,15 +3573,15 @@
   }
   const FONT_STYLE = [[1, 'font-style:italic'], [2, 'font-weight:600'], [4, 'text-decoration:underline']];
 
-  function highlightInto(codeEl) {
-    if (!highlighter || !editorThemeName) return;
-    const code = codeEl.textContent;
-    if (code.length > 100000) return; // very large blocks remain readable without blocking the UI
-    const key = `${codeEl.dataset.lang}\u0000${code}`;
+  // The coloured HTML for `code` (one string, lines joined by a newline), or null while Shiki or the theme isn't ready or the language is unknown.
+  function highlightHtml(code, lang, complete) {
+    if (!highlighter || !editorThemeName || !lang) return null;
+    if (code.length > 100000) return null; // very large blocks remain readable without blocking the UI
+    const key = `${lang}\u0000${code}`;
     let html = highlightCache.get(key);
     if (html === undefined) {
       try {
-        html = highlighter.codeToTokensBase(code, { lang: codeEl.dataset.lang, theme: editorThemeName })
+        html = highlighter.codeToTokensBase(code, { lang, theme: editorThemeName })
           .map((line) => line.map((token) => {
             const style = [token.color && `color:${token.color}`, ...FONT_STYLE.filter(([bit]) => token.fontStyle > 0 && token.fontStyle & bit).map(([, css]) => css)].filter(Boolean).join(';');
             return style ? `<span style="${style}">${escapeHtml(token.content)}</span>` : escapeHtml(token.content);
@@ -3343,7 +3589,7 @@
           .join('\n');
       } catch { html = null; } // a language not in the bundle stays plain
       const bytes = 2 * (key.length + (html?.length || 0));
-      if (codeEl.dataset.complete === 'true' && bytes <= HIGHLIGHT_BUDGET) {
+      if (complete && bytes <= HIGHLIGHT_BUDGET) {
         while (highlightCache.size && (highlightBytes + bytes > HIGHLIGHT_BUDGET || highlightCache.size >= 300)) {
           const oldest = highlightCache.keys().next().value;
           highlightBytes -= 2 * (oldest.length + (highlightCache.get(oldest)?.length || 0));
@@ -3352,6 +3598,10 @@
         highlightCache.set(key, html); highlightBytes += bytes;
       }
     }
+    return html;
+  }
+  function highlightInto(codeEl) {
+    const html = highlightHtml(codeEl.textContent, codeEl.dataset.lang, codeEl.dataset.complete === 'true');
     if (html) codeEl.innerHTML = html;
   }
 
@@ -3370,6 +3620,7 @@
       if (next !== highlighter) { highlighter.dispose(); highlighter = next; }
       editorThemeName = name;
       highlightCache.clear(); highlightBytes = 0;
+      for (const view of toolViews) { if (view.isConnected) view.paint(); else toolViews.delete(view); }
       document.querySelectorAll('.code-block code[data-lang]').forEach(codeEl => {
         codeEl.textContent = codeEl.textContent; queueCode(codeEl);
       });
@@ -4561,6 +4812,301 @@
     body.addEventListener('click', open);
     body.addEventListener('keydown', (event) => { if (event.key === 'Enter' || event.key === ' ') open(event); });
   }
+  // ---------- Tool output views ----------
+  // A card's raw output becomes a view that suits the tool (shapes are read by media/tool-format.js): a file read is code
+  // with a line-number gutter and the editor's colours; Grep matches group by file; Glob is a file list; WebSearch is a
+  // link list; shell output keeps its terminal colours under the command; edits are coloured diffs. Wide lines scroll
+  // sideways instead of wrapping (a wrap button flips that), and the expand button opens the same view large.
+  // Views are built when a card first opens, so hundreds of closed steps cost nothing.
+  const toolRawOutput = new WeakMap(); // card -> its output text, kept once a view has replaced the body's own text
+  const toolInfo = new WeakMap(); // card -> { name, kind, command, diffLines }
+  const TV_ROWS = 1200; // rows drawn at once; the rest is one click away
+  const TV_ICONS = {
+    wrap: '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2.5 4h11M2.5 8h8.25a2.25 2.25 0 0 1 0 4.5H8.5"/><path d="m10 11 -1.75 1.5L10 14M2.5 12h2.5"/></svg>',
+    expand: '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9.5 2.5h4v4M6.5 13.5h-4v-4M13.5 2.5 9 7M2.5 13.5 7 9"/></svg>',
+    file: '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 1.75h5l3.5 3.5v8a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1v-10.5a1 1 0 0 1 1-1z"/><path d="M9 1.75v3.5h3.5"/></svg>',
+    image: '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2.5" y="2.5" width="11" height="11" rx="2"/><circle cx="5.75" cy="5.75" r="1.1"/><path d="m13.5 11-3.5-3.5-5.5 5.5"/></svg>',
+    link: '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="8" cy="8" r="5.5"/><ellipse cx="8" cy="8" rx="2.4" ry="5.5"/><path d="M2.5 8h11"/></svg>',
+  };
+  const rawToolOutput = (card) => toolRawOutput.get(card) ?? card.querySelector('.tool-body')?.textContent ?? '';
+  const tvEl = (tag, cls, text) => { const el = document.createElement(tag); if (cls) el.className = cls; if (text !== undefined) el.textContent = text; return el; };
+
+  function tvButton(title, icon, onClick) {
+    const button = tvEl('button', 'tv-btn');
+    button.type = 'button'; button.title = title; button.setAttribute('aria-label', title); button.innerHTML = icon;
+    button.addEventListener('click', (event) => { event.preventDefault(); event.stopPropagation(); onClick(button); });
+    return button;
+  }
+
+  // Code-like rows: [{ n | label, text | segments, kind, gap }] -> a sideways-scrolling block with a sticky gutter.
+  // `lang` colours the text through Shiki; rows keep their own kind tint (diff add/del, grep context, log tone).
+  function tvRows(rows, { lang = '', gutter = true, scroll = true } = {}) {
+    const holder = tvEl('div', `tv-scroll${gutter ? '' : ' no-gutter'}${scroll ? '' : ' is-flat'}`);
+    const list = tvEl('div', 'tv-rows');
+    holder.append(list);
+    const widest = rows.reduce((max, row) => Math.max(max, String(row.n ?? row.label ?? '').length), 0);
+    list.style.setProperty('--tv-nw', `${Math.max(widest, 2)}ch`);
+    const cells = []; // { el, index }: where each real line's colours go
+    let codeIndex = 0;
+    for (const row of rows) if (!row.gap) row.index = codeIndex++;
+    const draw = (batch) => {
+      const frag = document.createDocumentFragment();
+      for (const row of batch) {
+        const line = tvEl('div', `tv-row${row.gap ? ' is-gap' : ''}${row.kind ? ` is-${row.kind}` : ''}`);
+        if (row.target) { line.dataset.line = String(row.n); line.classList.add('is-link'); }
+        if (gutter) line.append(tvEl('span', 'tv-n', row.gap ? '⋮' : String(row.label ?? row.n ?? '')));
+        const cell = tvEl('span', 'tv-c');
+        if (row.segments) for (const seg of row.segments) { if (seg.cls) cell.append(Object.assign(tvEl('span', seg.cls), { textContent: seg.text })); else cell.append(seg.text); }
+        else cell.textContent = row.gap ? '' : (row.text || '');
+        line.append(cell);
+        if (!row.gap) cells.push({ el: cell, index: row.index, text: row.text });
+        frag.append(line);
+      }
+      return frag;
+    };
+    list.append(draw(rows.slice(0, TV_ROWS)));
+    const paint = () => {
+      if (!lang) return;
+      const html = highlightHtml(rows.filter((row) => !row.gap).map((row) => row.text).join('\n'), lang, true);
+      if (!html) return;
+      const parts = html.split('\n');
+      for (const cell of cells) if (parts[cell.index] !== undefined && cell.el.textContent === cell.text) cell.el.innerHTML = parts[cell.index];
+    };
+    if (rows.length > TV_ROWS) {
+      const more = tvEl('button', 'tv-more', `Show ${rows.length - TV_ROWS} more lines`);
+      more.type = 'button';
+      more.addEventListener('click', () => { more.remove(); list.append(draw(rows.slice(TV_ROWS))); paint(); });
+      list.after(more);
+    }
+    return { el: holder, paint };
+  }
+
+  // The frame every view sits in: a slim bar (what it is, how big; wrap / copy / expand) over the content.
+  function tvFrame({ left = [], content, painters = [], copy = '', wrap = false, expand = null, className = '' }) {
+    const frame = tvEl('div', `tv${wrap ? ' is-wrap' : ''}${className ? ` ${className}` : ''}`);
+    const bar = tvEl('div', 'tv-bar');
+    const info = tvEl('div', 'tv-bar-left');
+    for (const part of left) info.append(part);
+    const actions = tvEl('div', 'tv-actions');
+    const wrapButton = tvButton('Wrap long lines', TV_ICONS.wrap, (button) => { frame.classList.toggle('is-wrap'); button.classList.toggle('is-on', frame.classList.contains('is-wrap')); });
+    wrapButton.classList.toggle('is-on', wrap);
+    actions.append(wrapButton);
+    if (copy) actions.append(tvButton('Copy', COPY_ICON, (button) => {
+      void navigator.clipboard?.writeText(copy).then(() => {
+        button.innerHTML = CHECK_ICON; button.title = 'Copied';
+        setTimeout(() => { button.innerHTML = COPY_ICON; button.title = 'Copy'; }, 1400);
+      }).catch(() => {});
+    }));
+    if (expand) actions.append(tvButton('View larger', TV_ICONS.expand, expand));
+    bar.append(info, actions);
+    frame.append(bar, ...(Array.isArray(content) ? content : [content]));
+    if (painters.length) {
+      frame.paint = () => painters.forEach((paint) => paint());
+      toolViews.add(frame);
+      if (highlighter && editorThemeName) frame.paint();
+      else void ensureHighlighter().then(() => { if (frame.isConnected) frame.paint(); });
+    }
+    return frame;
+  }
+  const tvChip = (text, cls = '') => tvEl('span', `tv-chip${cls ? ` ${cls}` : ''}`, text);
+  const tvLabel = (text) => tvEl('span', 'tv-label', text);
+  const plural = (n, one, many = `${one}s`) => `${n.toLocaleString('en')} ${n === 1 ? one : many}`;
+  const langLabel = (lang) => ({ javascript: 'JS', typescript: 'TS', powershell: 'PowerShell', bash: 'Shell', markdown: 'MD', bat: 'Batch' }[lang] || lang.toUpperCase());
+
+  function tvNote(lines) {
+    const note = tvEl('div', 'tv-note', lines.join('\n').trim());
+    return note.textContent ? note : null;
+  }
+
+  function viewRead(info, parsed, big, expand) {
+    const lang = window.toolFormat.langFor(info.command);
+    const rows = tvRows(parsed.rows, { lang });
+    const first = parsed.rows[0].n, last = parsed.rows[parsed.rows.length - 1].n;
+    const range = first === 1 ? plural(parsed.rows.length, 'line') : `lines ${first}–${last}`;
+    const notes = tvNote([...parsed.head, ...parsed.tail]);
+    return tvFrame({ left: [...(lang ? [tvChip(langLabel(lang))] : []), tvLabel(range)], content: [rows.el, ...(notes ? [notes] : [])], painters: [rows.paint], copy: parsed.rows.map((row) => row.text).join('\n'), expand: big ? null : expand });
+  }
+
+  function viewDiff(info, big, expand) {
+    const lang = window.toolFormat.langFor(info.command);
+    const sign = { '+': '+', '-': '−' };
+    const rows = tvRows(info.diffLines.map((line) => ({ label: sign[line[0]] || '', text: line.slice(1), kind: line[0] === '+' ? 'add' : line[0] === '-' ? 'del' : '' })), { lang });
+    const add = info.diffLines.filter((line) => line[0] === '+').length, del = info.diffLines.filter((line) => line[0] === '-').length;
+    const stat = tvEl('span', 'tv-label');
+    stat.append(Object.assign(tvEl('span', 'diff-add'), { textContent: `+${add}` }), ' ', Object.assign(tvEl('span', 'diff-del'), { textContent: `−${del}` }));
+    return tvFrame({ left: [...(lang ? [tvChip(langLabel(lang))] : []), stat], content: rows.el, painters: [rows.paint], copy: info.diffLines.join('\n'), expand: big ? null : expand });
+  }
+
+  // path:line:text matches, grouped under their file; a file header or a line number opens the editor there.
+  function viewGrep(info, grep, big, expand) {
+    const groups = tvEl('div', 'tv-groups');
+    const painters = [];
+    for (const group of grep.groups) {
+      const { name, dir } = window.toolFormat.splitPath(group.file);
+      const head = tvEl('button', 'tv-file');
+      head.type = 'button'; head.dataset.path = group.file; head.title = `Open ${group.file}`;
+      head.append(tvEl('span', 'tv-file-icon'), tvEl('span', 'tv-file-name', name), tvEl('span', 'tv-file-dir', dir), tvEl('span', 'tv-file-count', String(group.rows.filter((row) => !row.gap && !row.context).length)));
+      head.firstChild.innerHTML = TV_ICONS.file;
+      const lang = window.toolFormat.langFor(group.file);
+      const rows = tvRows(group.rows.map((row) => row.gap ? { gap: true } : { n: row.n, text: row.text, kind: row.context ? 'ctx' : '', target: true }), { lang, scroll: false });
+      rows.el.dataset.path = group.file;
+      painters.push(rows.paint);
+      groups.append(head, rows.el);
+    }
+    const open = (event) => {
+      const row = event.target.closest?.('.tv-row[data-line]');
+      const file = event.target.closest?.('.tv-file');
+      if (row) peek({ type: 'file', value: row.closest('[data-path]').dataset.path, line: Number(row.dataset.line) });
+      else if (file) peek({ type: 'file', value: file.dataset.path });
+    };
+    groups.addEventListener('click', open);
+    const left = [tvLabel(`${plural(grep.hits, 'match', 'matches')} in ${plural(grep.files, 'file')}`)];
+    const notes = tvNote(grep.loose);
+    const copy = grep.groups.flatMap((group) => group.rows.filter((row) => !row.gap).map((row) => `${group.file}:${row.n}:${row.text}`)).join('\n');
+    return tvFrame({ left, content: [groups, ...(notes ? [notes] : [])], painters, copy, expand: big ? null : expand });
+  }
+
+  function viewList(list, big, expand) {
+    const box = tvEl('div', 'tv-list');
+    const shown = list.items.slice(0, TV_ROWS);
+    const draw = (items) => {
+      for (const item of items) {
+        const { name, dir } = window.toolFormat.splitPath(item.line);
+        const row = tvEl('button', 'tv-item');
+        row.type = 'button'; row.title = item.line;
+        row.append(Object.assign(tvEl('span', 'tv-file-icon'), { innerHTML: TV_ICONS[item.target.type] || TV_ICONS.file }), tvEl('span', 'tv-file-name', name), tvEl('span', 'tv-file-dir', dir));
+        row.addEventListener('click', () => peek(item.target, row));
+        box.append(row);
+      }
+    };
+    draw(shown);
+    if (list.items.length > TV_ROWS) {
+      const more = tvEl('button', 'tv-more', `Show ${list.items.length - TV_ROWS} more files`);
+      more.type = 'button';
+      more.addEventListener('click', () => { more.remove(); draw(list.items.slice(TV_ROWS)); });
+      box.append(more);
+    }
+    const notes = tvNote(list.tail);
+    const holder = tvEl('div', 'tv-scroll is-flat');
+    holder.append(box);
+    return tvFrame({ left: [tvLabel(plural(list.items.length, 'file'))], content: [holder, ...(notes ? [notes] : [])], copy: list.items.map((item) => item.line).join('\n'), expand: big ? null : expand });
+  }
+
+  function viewSearch(info, search) {
+    const links = tvEl('div', 'tv-list');
+    for (const link of search.links) {
+      const row = tvEl('button', 'tv-item tv-link');
+      row.type = 'button'; row.title = link.url;
+      row.append(Object.assign(tvEl('span', 'tv-file-icon'), { innerHTML: TV_ICONS.link }), tvEl('span', 'tv-file-name', link.title), tvEl('span', 'tv-file-dir', window.toolFormat.hostOf(link.url)));
+      row.addEventListener('click', () => peek({ type: 'url', value: link.url }));
+      links.append(row);
+    }
+    const content = [links];
+    if (search.summary) { const summary = tvEl('div', 'tv-md msg-body'); summary.append(buildMessageBody(search.summary)); content.push(summary); }
+    return tvFrame({ left: [tvLabel(search.query ? `“${search.query}”` : 'Search'), tvLabel(plural(search.links.length, 'result'))], content, copy: `${search.links.map((link) => `${link.title}\n${link.url}`).join('\n')}\n\n${search.summary}`.trim(), wrap: true });
+  }
+
+  function viewMarkdown(text) {
+    const md = tvEl('div', 'tv-md msg-body');
+    md.append(buildMessageBody(text.trim()));
+    return tvFrame({ left: [tvLabel('Result')], content: md, copy: text.trim(), wrap: true });
+  }
+
+  // The command as typed (highlighted, under a prompt), then its output with terminal colours kept.
+  function viewShell(info, text, running, failed, big, expand) {
+    const format = window.toolFormat;
+    const { script, lang } = format.unwrapCommand(info.name, info.command);
+    const scriptLines = String(script).replace(/\r\n/g, '\n').split('\n');
+    const command = tvRows(scriptLines.map((line, index) => ({ label: index ? '' : (lang === 'powershell' ? 'PS' : '$'), text: line })), { lang });
+    command.el.classList.add('tv-cmd');
+    const painters = [command.paint];
+    const content = [command.el];
+    let outputRows = null, outputLang = '';
+    if (text.trim()) {
+      const body = format.hasAnsi(text) ? format.parseAnsi(text) : null;
+      let lines = body ? null : text.replace(/\n+$/, '').split('\n');
+      if (body) { while (body.length > 1 && !body[body.length - 1].length) body.pop(); }
+      if (body) outputRows = body.map((segments) => { const line = segments.map((seg) => seg.text).join(''); return { segments, text: line, kind: segments.some((seg) => seg.cls) ? '' : format.lineTone(line) }; }); // coloured lines keep their own colours
+      else if (format.looksLikeJson(text)) {
+        outputLang = 'json';
+        let pretty = text.trim();
+        if (!pretty.includes('\n')) { try { pretty = JSON.stringify(JSON.parse(pretty), null, 2); } catch { /* keep it as it came */ } }
+        lines = pretty.split('\n');
+        outputRows = lines.map((line) => ({ text: line }));
+      } else if (format.looksLikeDiff(text)) outputRows = lines.map((line) => ({ text: line, kind: format.diffTone(line) }));
+      else outputRows = lines.map((line) => ({ text: line, kind: format.lineTone(line) }));
+      const out = tvRows(outputRows, { lang: outputLang, gutter: false });
+      out.el.classList.add('tv-out');
+      content.push(out.el); painters.push(out.paint);
+    } else if (!running) content.push(tvEl('div', 'tv-note', 'No output'));
+    else content.push(tvEl('div', 'tv-note is-running', 'Running…'));
+    const count = outputRows ? outputRows.length : 0;
+    const left = [tvChip(lang === 'powershell' ? 'PowerShell' : 'Shell'), ...(failed ? [tvChip('Failed', 'is-error')] : []), ...(count ? [tvLabel(plural(count, 'line'))] : [])];
+    return tvFrame({ left, content, painters, copy: text.trim() ? (outputRows || []).map((row) => row.text).join('\n') : script, expand: big ? null : expand, className: 'tv-shell' });
+  }
+
+  function viewJson(text, big, expand) {
+    let pretty = text.trim();
+    try { pretty = JSON.stringify(JSON.parse(pretty), null, 2); } catch { /* shown as it came */ }
+    const rows = tvRows(pretty.split('\n').map((line, index) => ({ n: index + 1, text: line })), { lang: 'json' });
+    return tvFrame({ left: [tvChip('JSON')], content: rows.el, painters: [rows.paint], copy: pretty, expand: big ? null : expand });
+  }
+
+  // The view for one card, or null to leave its plain text. `big` is the expanded copy in the viewer.
+  function buildToolView(card, big = false) {
+    const info = toolInfo.get(card);
+    if (!info || !window.toolFormat) return null;
+    const expand = () => openToolViewer(card);
+    if (info.diffLines) return viewDiff(info, big, expand);
+    const text = window.toolFormat.normalize(rawToolOutput(card));
+    const running = card.classList.contains('is-running'), failed = card.classList.contains('is-error');
+    if (info.kind === 'shell') return viewShell(info, text, running, failed, big, expand);
+    if (!text.trim()) return null;
+    const format = window.toolFormat;
+    const display = toolDisplayName(info.name, info.kind);
+    if (info.kind === 'read') { const parsed = format.parseNumbered(text); if (parsed) return viewRead(info, parsed, big, expand); }
+    if (display === 'Grep') { const grep = format.parseGrep(text); if (grep) return viewGrep(info, grep, big, expand); }
+    if (display === 'Grep' || display === 'Glob' || info.kind === 'read') { const list = format.parseFileList(text); if (list) return viewList(list, big, expand); }
+    if (!failed && info.kind === 'web') { const search = format.parseSearch(text); return search ? viewSearch(info, search) : viewMarkdown(text); }
+    if (!failed && info.kind === 'agent') return viewMarkdown(text);
+    if (!failed && format.looksLikeJson(text)) return viewJson(text, big, expand);
+    return null;
+  }
+
+  function ensureToolView(card) {
+    if (card.dataset.view === '1') return;
+    const info = toolInfo.get(card), body = card.querySelector('.tool-body');
+    if (!info || !body) return;
+    if (card.classList.contains('is-running') && info.kind !== 'shell' && !rawToolOutput(card)) return; // nothing to show yet
+    const raw = rawToolOutput(card);
+    const view = buildToolView(card);
+    card.dataset.view = '1';
+    if (!view) return;
+    toolRawOutput.set(card, raw);
+    body.classList.add('has-view');
+    body.replaceChildren(view);
+  }
+  // A card whose output changed (a finished step, a rerun) forgets its view and draws again if it is open.
+  function resetToolView(card, text) {
+    const body = card.querySelector('.tool-body');
+    delete card.dataset.view;
+    toolRawOutput.delete(card);
+    if (!body) return;
+    body.classList.remove('has-view');
+    body.textContent = text;
+    if (card.open) ensureToolView(card);
+  }
+
+  function openToolViewer(card) {
+    const info = toolInfo.get(card);
+    const view = buildToolView(card, true);
+    if (!view || !info) return;
+    view.classList.add('is-big');
+    const isFile = (info.kind === 'read' || info.kind === 'edit') && window.toolTargets?.cardTarget(info.kind, info.command)?.type === 'file';
+    const caption = isFile ? baseName(info.command) : card.querySelector('.tool-label')?.textContent?.slice(0, 120) || toolDisplayName(info.name, info.kind);
+    openLightbox('', caption, false, isFile ? { name: caption, path: info.command } : { name: caption }, null, { viewer: { element: view, dispose() { toolViews.delete(view); } }, className: 'is-code', noDownload: true });
+  }
+
   // `host`: where the card goes (the agents viewer passes its own pane); default, the running turn.
   function appendToolCard({ name, command, output, toolId, done, error, diff, cancelled, startedAt, durationMs, host = null }) {
     if (!host) clearEmptyState();
@@ -4570,6 +5116,7 @@
     const diffLines = kind === 'edit' && diff ? diff.split('\n') : null;
     if (diffLines) output = { ...output, added: diffLines.filter((l) => l[0] === '+').length, removed: diffLines.filter((l) => l[0] === '-').length };
     const details = document.createElement('details');
+    toolInfo.set(details, { name, kind, command: command || '', diffLines });
     details.className = `tool-card tool-${kind}${done ? '' : ' is-running'}${error ? ' is-error' : ''}${cancelled ? ' is-cancelled' : ''}`;
     if (cancelled) details.title = 'Interrupted before a result was saved';
     const startMs = Number.isFinite(Number(startedAt)) && Number(startedAt) > 0 ? Number(startedAt) : Date.now();
@@ -4658,19 +5205,10 @@
       full.textContent = command;
       details.appendChild(full);
     }
-    if (diffLines) {
-      details.dataset.diff = '1';
-      body.classList.add('is-diff');
-      for (const line of diffLines) {
-        const row = document.createElement('div');
-        row.className = line[0] === '+' ? 'diff-line diff-add' : line[0] === '-' ? 'diff-line diff-del' : 'diff-line';
-        row.textContent = line;
-        body.appendChild(row);
-      }
-    } else {
-      body.textContent = (output && output.text) || '';
-    }
+    if (diffLines) details.dataset.diff = '1'; // the diff is drawn when the card opens (ensureToolView)
+    else body.textContent = (output && output.text) || '';
     details.appendChild(body);
+    details.addEventListener('toggle', () => { if (details.open) ensureToolView(details); });
     // A picture shows itself when the card opens, so you see what the agent saw without another click.
     if (target?.type === 'image') {
       details.addEventListener('toggle', () => {
@@ -4687,10 +5225,7 @@
         });
       });
     }
-    if (/^(Grep|Glob)$/.test(toolDisplayName(name, kind))) {
-      details.dataset.results = '1';
-      if (done && !diffLines && output?.text) linkifyResults(body, output.text); // a chat restored from disk
-    }
+    if (/^(Grep|Glob)$/.test(toolDisplayName(name, kind))) details.dataset.results = '1';
     if (host) { host.appendChild(details); return details; }
     turnHost().appendChild(details);
     if (toolId) toolCards.set(toolId, details);
@@ -4709,8 +5244,8 @@
     card.classList.toggle('is-error', Boolean(error));
     const body = card.querySelector('.tool-body');
     // A diff card keeps its diff; only a failure replaces it with the reason.
-    if (body && (!card.dataset.diff || (error && output))) body.textContent = output || '';
-    if (body && card.dataset.results && typeof output === 'string') linkifyResults(body, output);
+    if (error && output && toolInfo.get(card)) toolInfo.get(card).diffLines = null;
+    if (body && (!card.dataset.diff || (error && output))) resetToolView(card, output || '');
     // What came back, at a glance: lines read, results found.
     const meta = card.querySelector('.tool-meta');
     const lines = typeof output === 'string' && output.trim() && !/^No (matches|files) found/i.test(output.trim()) ? output.trim().split('\n').length : 0;
@@ -4719,6 +5254,7 @@
     }
     // Errors stay open so the reason is visible; successes fold away.
     card.open = Boolean(error && output);
+    if (card.open) ensureToolView(card);
   }
 
 
@@ -5519,12 +6055,16 @@
       if (!all.length) reusableHistoryCards.clear();
       return;
     }
-    if (sort !== 'recent') historyModal.body.append(historySection(HISTORY_SORTS.find(([key]) => key === sort)[1], list));
+    // Pinned chats stand on top whatever the sort, in the order they were pinned; each chat shows once.
+    const pinned = list.filter((session) => session.pinned).sort((a, b) => a.pinOrder - b.pinOrder);
+    if (pinned.length) historyModal.body.append(historySection('Pinned', pinned));
+    const unpinned = list.filter((session) => !session.pinned);
+    if (sort !== 'recent') { if (unpinned.length) historyModal.body.append(historySection(HISTORY_SORTS.find(([key]) => key === sort)[1], unpinned)); }
     else {
-      const active = list.filter((session) => session.active);
+      const active = unpinned.filter((session) => session.active);
       if (active.length) historyModal.body.append(historySection('Active Chats', active));
       const groups = [];
-      for (const session of list.filter((entry) => !entry.active)) {
+      for (const session of unpinned.filter((entry) => !entry.active)) {
         const label = window.chatTime.chatDayGroup(session.updatedAt, timeOptions());
         if (groups.at(-1)?.label === label) groups.at(-1).sessions.push(session); else groups.push({ label, sessions: [session] });
       }
@@ -5536,6 +6076,7 @@
 
   const CHAT_ICONS = {
     stop: '<svg viewBox="0 0 16 16" fill="none" aria-hidden="true"><rect x="4.5" y="4.5" width="7" height="7" rx="1.5" fill="currentColor"/></svg>',
+    pin: PIN_SVG, // the project pin's pushpin
     rename: PENCIL_SVG,
     // The Source Control mark: one trunk, one branch splitting off, a node on each end.
     fork: '<svg viewBox="0 0 16 16" fill="none" aria-hidden="true"><circle cx="4.5" cy="3.5" r="1.6" stroke="currentColor" stroke-width="1.3"/><circle cx="4.5" cy="12.5" r="1.6" stroke="currentColor" stroke-width="1.3"/><circle cx="11.5" cy="4.5" r="1.6" stroke="currentColor" stroke-width="1.3"/><path d="M4.5 5.1v5.8M11.5 6.1c0 2.6-2 3.4-4.3 3.9-1.5.3-2.7.7-2.7 1" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>',
@@ -5652,8 +6193,13 @@
         btn.setAttribute('aria-label', label);
         btn.addEventListener('click', (event) => { event.stopPropagation(); handler(); });
         actions.append(btn);
+        return btn;
       };
       if (session.state) action('stop', 'Stop', () => vscode.postMessage({ type: 'stopChat', id: session.id }));
+      // Pin keeps the chat at the top of Manage Chats and of the rail's Recent list; it is also the mark of a pinned chat.
+      const pin = action('pin', `${session.pinned ? 'Unpin' : 'Pin'} chat`, () => vscode.postMessage({ type: 'pinChat', id: session.id, pinned: !session.pinned }), 'is-pin');
+      pin.setAttribute('aria-pressed', String(Boolean(session.pinned)));
+      card.classList.toggle('is-pinned', Boolean(session.pinned));
       action('rename', 'Rename', () => editTitle(titleEl, session.title || session.preview || '', (title) => vscode.postMessage({ type: 'renameChat', id: session.id, title })));
       action('rename', 'Choose work category', () => vscode.postMessage({ type: 'setChatCategory', id: session.id }));
       action('fork', 'Fork into a new chat', () => { vscode.postMessage({ type: 'forkChat', id: session.id }); closeModal(historyModal.el); });
@@ -5760,6 +6306,8 @@
         projectBtn.classList.toggle('needs-project', Boolean(message.required));
         break;
       }
+      // Settings changed how many projects and chats the rail lists.
+      case 'railLimits': window.RAIL_LIMITS = message.value; renderProjectList(); window.dispatchEvent(new Event('rail-limits')); break;
       case 'editorTheme': editorTheme = message.theme; void applyEditorTheme().catch(() => {}); break;
       // A chat switch has started: the old thread goes, shimmering placeholders stand in until chatLoaded renders the new one.
       case 'chatLoading': {
@@ -6120,7 +6668,7 @@
         for (const [id, card] of pendingCards) { if (card.dataset.deferred === 'true') continue; settleCard(card, 'Turn ended', 'denied'); pendingCards.delete(id); }
         if (!completedCompaction) {
           document.querySelectorAll('.tool-card.is-running').forEach((card) => {
-            finishToolCard(card, { output: card.querySelector('.tool-body')?.textContent || '' });
+            finishToolCard(card, { output: rawToolOutput(card) });
             if (message.interrupted) card.classList.add('is-cancelled');
           });
           foldThought();
@@ -6169,7 +6717,8 @@
         }
         break;
       case 'routingMode': setRoutingMode(message.mode, message.connected); break;
-      case 'fleet': chatSettings.fleet(message); break;
+      case 'fleet': chatSettings.fleet(message); receivePermission({ mode: message.services?.permissionMode }); break;
+      case 'permission': receivePermission(message); break;
       case 'apiValue': chatSettings.apiValue(message); break;
       case 'voice': chatSettings.voice(message.voice); break;
       case 'micDevices': chatSettings.micDevices(message.devices, message.automatic); break;
@@ -6179,7 +6728,7 @@
       case 'routingResult': chatSettings.routingResult(message); break;
       case 'openLoops': openLoops(); break;
       case 'investigationsResult': case 'investigationsState': investigations.message(message); break;
-      case 'cliStatus': chatSettings.cliStatus(message); break;
+      case 'cliStatus': chatSettings.cliStatus(message); receivePermission({ models: message.modelSettings || {} }); break;
       case 'cliConnections':
         chatSettings.cliConnections(message);
         cliSetup.update(message);
