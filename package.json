@@ -1,6 +1,7 @@
 {
   "name": "clanker-controller",
   "private": true,
+  "license": "MPL-2.0",
   "bin": { "router": "scripts/router.cjs" },
   "type": "module",
   "description": "Clanker Controller, native voice routing, and CLI usage status.",

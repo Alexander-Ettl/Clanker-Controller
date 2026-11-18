@@ -2,6 +2,7 @@
   "name": "voice-router",
   "version": "0.1.0",
   "private": true,
+  "license": "MPL-2.0",
   "type": "module",
   "description": "Voice-to-LLM quota-aware router prototype (docs/voice-quota-router-spec.md).",
   "main": "router.mjs",
