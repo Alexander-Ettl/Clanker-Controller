@@ -19,6 +19,8 @@
 
   const svg = (paths) => `<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${paths}</svg>`;
   const ICON = {
+    globe: svg('<circle cx="8" cy="8" r="5.5"/><path d="M2.5 8h11M8 2.5c1.7 1.6 2.5 3.4 2.5 5.5S9.7 11.9 8 13.5M8 2.5C6.3 4.1 5.5 5.9 5.5 8s.8 3.9 2.5 5.5"/>'),
+    folder: svg('<path d="M2 5.2A1.7 1.7 0 0 1 3.7 3.5h2.2l1.4 1.6h5A1.7 1.7 0 0 1 14 6.8v4.5a1.7 1.7 0 0 1-1.7 1.7H3.7A1.7 1.7 0 0 1 2 11.3z"/>'),
     loop: svg('<path d="M3 7.5V7a2.5 2.5 0 0 1 2.5-2.5H13M10.5 2l2.5 2.5-2.5 2.5M13 8.5V9a2.5 2.5 0 0 1-2.5 2.5H3M5.5 9 3 11.5 5.5 14"/>'),
     clock: svg('<circle cx="8" cy="8" r="5.5"/><path d="M8 5v3.2l2.1 1.3"/>'),
     terminal: svg('<path d="M3 4.5 6.5 8 3 11.5M8 11.5h5"/>'),
@@ -267,6 +269,16 @@
           <button class="cs-switch" data-role="workContextIcons" role="switch" aria-checked="false" aria-label="Work-context icons" type="button"></button>
         </div>
         <div class="cs-row">
+          <span class="cs-icon">${ICON.sliders}</span>
+          <div class="cs-info"><span class="cs-title">Projects in the sidebar</span><span class="cs-desc">The chat's own project always stays, then up to two pinned favorites, then the most recent. Choose All on a very large monitor.</span></div>
+          <select class="cs-select" data-role="railProjects" aria-label="Projects in the sidebar"><option value="1">1</option><option value="2">2</option><option value="3">3 (default)</option><option value="4">4</option><option value="5">5</option><option value="6">6</option><option value="8">8</option><option value="10">10</option><option value="0">All</option></select>
+        </div>
+        <div class="cs-row">
+          <span class="cs-icon">${ICON.sliders}</span>
+          <div class="cs-info"><span class="cs-title">Recent chats in the sidebar</span><span class="cs-desc">Running and recently used chats come first. Choose All to list every chat.</span></div>
+          <select class="cs-select" data-role="railChats" aria-label="Recent chats in the sidebar"><option value="3">3</option><option value="5">5 (default)</option><option value="8">8</option><option value="10">10</option><option value="15">15</option><option value="20">20</option><option value="0">All</option></select>
+        </div>
+        <div class="cs-row">
           <span class="cs-icon">${ICON.clock}</span>
           <div class="cs-info"><span class="cs-title">Start usage windows early</span><span class="cs-desc" data-role="sessionWarmupDesc">Every 5 hours, sends "respond with 1" to the cheapest model of each connected CLI in the background, so a 5-hour window is nearly always already under way when you start. Subscription sign-ins only: a CLI billed per token through an API key is skipped.</span></div>
           <button class="cs-switch" data-role="sessionWarmup" role="switch" aria-checked="true" aria-label="Start usage windows early" type="button"></button>
@@ -385,23 +397,27 @@
       <section class="cs-card cs-dict" data-role="dictionary">
         <div class="cs-row">
           <span class="cs-icon">${ICON.book}</span>
-          <div class="cs-info"><span class="cs-title">Dictionary</span><span class="cs-desc" data-role="dictDesc">Names, tools and jargon dictation should spell your way.</span></div>
+          <div class="cs-info"><span class="cs-title">Dictionary</span><span class="cs-desc" data-role="dictDesc">Every project has its own words, plus a few shared ones.</span></div>
           <span class="cs-tag" data-role="dictTag">0 words</span>
         </div>
         <div class="cs-dict-tools">
+          <select class="cs-select cs-dict-scope" data-role="dictScope" aria-label="Whose words to show"></select>
           <label class="cs-model-search">${ICON.search}<input data-role="dictSearch" type="search" placeholder="Search words" aria-label="Search the dictionary" autocomplete="off" spellcheck="false"></label>
           <div class="cs-dict-add">
             <input class="cs-field" data-role="dictNew" type="text" maxlength="60" placeholder="Add a word or name…" aria-label="New dictionary word" autocomplete="off" spellcheck="false">
             <button class="cs-btn is-primary is-small" data-role="dictAdd" type="button">${ICON.plus}<span>Add</span></button>
           </div>
         </div>
+        <div class="cs-dict-suggest" data-role="dictSuggest" hidden></div>
         <div class="cs-dict-list" data-role="dictList" role="list" aria-label="Dictionary words"></div>
         <p class="cs-status" data-role="dictStatus" role="status"></p>
         <div class="cs-row cs-dict-scan">
           <span class="cs-icon">${ICON.search}</span>
-          <div class="cs-info"><span class="cs-title">Scan a project</span><span class="cs-desc">Adds the class, function and package names a project uses, a limited number per scan. It runs on this computer and only reads files.</span></div>
+          <div class="cs-info"><span class="cs-title">Scan your projects</span><span class="cs-desc">Finds the class, product and tool names each project uses and gives every project its own words. It runs on this computer, needs no AI and only reads files. Scanning again refreshes the scanned words and keeps yours.</span></div>
         </div>
-        <div class="cs-dict-projects" data-role="dictProjects"></div>
+        <div class="cs-dict-scanall"><button class="cs-btn is-primary is-small" data-role="dictScanAll" type="button">${ICON.search}<span>Scan all projects</span></button></div>
+        <div class="cs-dict-projects" data-role="dictProjects" aria-label="Scan one project again"></div>
+        <div class="cs-dict-report" data-role="dictReport" role="list" aria-label="What the last scan found" hidden></div>
         <div class="cs-actions cs-dict-actions">
           <button class="cs-btn is-small" data-role="dictAI" type="button" title="Have a chat model edit the dictionary file for you">${ICON.bolt}<span>Edit with AI</span></button>
           <button class="cs-btn is-small is-quiet" data-role="dictClearScanned" type="button" hidden>Remove scanned words</button>
@@ -798,6 +814,15 @@
     }
     // The same live picker visits onboarding Step 2, keeping its listeners, state and host updates intact.
     const modelPickerCard = body.querySelector('[data-role="modelList"]').closest('.cs-card');
+    // A number typed into settings.json that the list lacks (say 7) still shows up as itself.
+    const setRailSelect = (select, value) => {
+      if (!select || !Number.isInteger(value)) return;
+      if (![...select.options].some(option => Number(option.value) === value)) {
+        const option = new Option(String(value), String(value));
+        select.insertBefore(option, [...select.options].find(item => Number(item.value) > value || Number(item.value) === 0) || null);
+      }
+      select.value = String(value);
+    };
     const $ = (role) => body.querySelector(`[data-role="${role}"]`) || modelPickerCard.querySelector(`[data-role="${role}"]`);
     // Setup belongs to General; Models contains only the favorite editors.
     const general = body.querySelector('[data-pane="general"]');
@@ -1408,6 +1433,7 @@
       $('autoUpdateClis').setAttribute('aria-checked', String(services.autoUpdateClis !== false));
       $('completionSound').setAttribute('aria-checked', String(services.completionSound !== false));
       $('workContextIcons').setAttribute('aria-checked', String(services.workContextIcons === true));
+      if (services.rail) for (const [key, value] of [['railProjects', services.rail.projects], ['railChats', services.rail.chats]]) setRailSelect($(key), value);
       renderWarmup(services.sessionWarmup);
       renderCloudWarmup(services.cloudWarmup);
       renderLoops(services.compliance);
@@ -1487,6 +1513,7 @@
       $('completionSound').setAttribute('aria-checked', String(enabled));
       vscode.postMessage({ type: 'setCompletionSound', enabled });
     });
+    for (const key of ['railProjects', 'railChats']) $(key).addEventListener('change', () => vscode.postMessage({ type: 'setRailLimit', key, value: Number($(key).value) }));
     $('workContextIcons').addEventListener('click', () => {
       const enabled = $('workContextIcons').getAttribute('aria-checked') !== 'true';
       $('workContextIcons').setAttribute('aria-checked', String(enabled));
@@ -1795,33 +1822,48 @@
     function voice(state) { voiceState = state; renderVoice(); }
     function micDevices(devices, automatic = '') { micList = devices; micAuto = automatic; renderMics(); }
 
-    // Dictionary: a searchable list of the words Whisper is biased toward. The host owns the file and answers every
-    // action with the whole list, so what an AI wrote into it shows up the same way. The limits arrive with the data.
+    // Dictionary: every project has its own words and a few shared ones work in all of them. The list shows one dictionary
+    // at a time (or all), searchable. The host owns the file and answers every action with the whole list, so what an AI
+    // wrote into it shows up the same way. The limits and the project list arrive with the data.
     const dictStatus = (text, state = '') => { $('dictStatus').className = `cs-status${state ? ` is-${state}` : ''}`; $('dictStatus').textContent = text; };
+    const SCOPE_ALL = '*';
     let dictEntries = [];
     let dictUsage = null;
-    let dictProjects = [];
+    let dictProjects = [];        // the project list (projectIcons)
+    let dictKnown = [];           // the dictionary's own view of it: { id, name, hasFolder }
+    let dictCurrent = '';         // the project of the chat window in front
+    let dictScope = null;         // SCOPE_ALL, '' (the shared words) or a project id; chosen when the first list arrives
+    let dictSuggestions = { add: [], share: [] };
+    let dictReport = [];
     let dictEditing = null;
     let dictReveal = '';
     let dictScanning = false;
     const DICT_ROWS = 300; // a long dictionary is searched, not scrolled: drawing thousands of rows would only slow the window
 
-    function dictRow(entry) {
+    const dictProjectList = () => (dictKnown.length ? dictKnown : dictProjects.map((project) => ({ id: project.id, name: project.name, hasFolder: Boolean(project.root) })));
+    const dictName = (id) => (id ? dictProjectList().find((project) => project.id === id)?.name || 'Removed project' : 'Shared');
+    const dictEditKey = (entry) => `${entry.projectId || ''}|${entry.term}`;
+    const dictInScope = (entry) => dictScope === SCOPE_ALL || (entry.projectId || '') === dictScope;
+    /** Where a new word goes: the dictionary on show, or, when showing everything, the project in front. */
+    const dictTarget = () => (dictScope === SCOPE_ALL ? (dictProjectList().some((project) => project.id === dictCurrent) ? dictCurrent : '') : dictScope);
+
+    function dictRow(entry, showScope) {
       const row = document.createElement('div');
       row.className = 'cs-dict-row';
       row.setAttribute('role', 'listitem');
       row.classList.toggle('is-off', !entry.enabled);
-      const startEdit = () => { dictEditing = entry.term; renderDictionary(); };
+      const owner = entry.projectId || '';
+      const startEdit = () => { dictEditing = dictEditKey(entry); renderDictionary(); };
       let label;
-      if (dictEditing === entry.term) {
+      if (dictEditing === dictEditKey(entry)) {
         label = document.createElement('input');
         label.className = 'cs-field cs-dict-edit'; label.type = 'text'; label.maxLength = 60; label.value = entry.term;
         label.spellcheck = false; label.setAttribute('aria-label', `Rename ${entry.term}`);
         const finish = (save) => {
-          if (dictEditing !== entry.term) return;
+          if (dictEditing !== dictEditKey(entry)) return;
           dictEditing = null;
           const next = label.value.trim();
-          if (save && next && next !== entry.term) vscode.postMessage({ type: 'voiceDictionaryEdit', term: entry.term, next });
+          if (save && next && next !== entry.term) vscode.postMessage({ type: 'voiceDictionaryEdit', term: entry.term, projectId: owner, next });
           else renderDictionary();
         };
         label.addEventListener('keydown', (event) => {
@@ -1835,18 +1877,26 @@
         label.className = 'cs-dict-term'; label.textContent = entry.term; label.title = entry.term;
         label.addEventListener('dblclick', startEdit);
       }
-      row.append(label);
-      if (entry.source === 'scan' || entry.source === 'ai') {
-        const tag = document.createElement('span');
-        tag.className = 'cs-dict-source'; tag.textContent = entry.source === 'scan' ? 'scan' : 'AI';
-        tag.title = entry.source === 'scan' ? `Found by scanning ${entry.project || 'a project'}` : 'Added by an AI';
-        row.append(tag);
-      }
+      const main = document.createElement('div');
+      main.className = 'cs-dict-main';
+      const tags = document.createElement('div');
+      tags.className = 'cs-dict-tags';
+      main.append(label, tags);
+      row.append(main);
+      const tag = (text, title, className = '') => {
+        const node = document.createElement('span');
+        node.className = `cs-dict-source${className ? ` ${className}` : ''}`; node.textContent = text; node.title = title;
+        tags.append(node);
+      };
+      if (showScope) tag(owner ? dictName(owner) : 'Shared', owner ? `Only used when dictating in ${dictName(owner)}` : 'Used in every project', owner ? 'is-project' : 'is-shared');
+      if (entry.source === 'scan') tag('scan', `Found by scanning ${entry.project || 'a project'}`);
+      else if (entry.source === 'ai') tag('AI', 'Added by an AI');
+      tags.hidden = !tags.children.length;
       const toggle = document.createElement('button');
       toggle.type = 'button'; toggle.className = 'cs-switch is-small'; toggle.setAttribute('role', 'switch');
       toggle.setAttribute('aria-checked', String(entry.enabled)); toggle.setAttribute('aria-label', `Use ${entry.term} in dictation`);
       toggle.title = entry.enabled ? 'On: used in dictation' : 'Off: kept, but not used';
-      toggle.addEventListener('click', () => vscode.postMessage({ type: 'voiceDictionaryEdit', term: entry.term, enabled: !entry.enabled }));
+      toggle.addEventListener('click', () => vscode.postMessage({ type: 'voiceDictionaryEdit', term: entry.term, projectId: owner, enabled: !entry.enabled }));
       const iconButton = (icon, title, className, onClick) => {
         const button = document.createElement('button');
         button.type = 'button'; button.className = `cs-icon-btn ${className}`; button.innerHTML = icon; button.title = title;
@@ -1854,24 +1904,74 @@
         button.addEventListener('click', onClick);
         return button;
       };
-      row.append(toggle, iconButton(ICON.pencil, 'Rename', '', startEdit),
-        iconButton(ICON.trash, 'Delete', 'is-danger', () => vscode.postMessage({ type: 'voiceDictionaryRemove', term: entry.term })));
+      const buttons = [];
+      const home = owner ? '' : (dictScope !== SCOPE_ALL && dictScope ? dictScope : dictProjectList().some((project) => project.id === dictCurrent) ? dictCurrent : '');
+      if (owner) buttons.push(iconButton(ICON.globe, 'Share with every project:', '', () => vscode.postMessage({ type: 'voiceDictionaryMove', term: entry.term, projectId: owner, to: '' })));
+      else if (home) buttons.push(iconButton(ICON.folder, `Use only in ${dictName(home)}:`, '', () => vscode.postMessage({ type: 'voiceDictionaryMove', term: entry.term, projectId: '', to: home })));
+      const acts = document.createElement('div');
+      acts.className = 'cs-dict-acts';
+      acts.append(...buttons, iconButton(ICON.pencil, 'Rename', '', startEdit),
+        iconButton(ICON.trash, 'Delete', 'is-danger', () => vscode.postMessage({ type: 'voiceDictionaryRemove', term: entry.term, projectId: owner })));
+      row.append(toggle, acts);
       if (entry.term === dictReveal) { dictReveal = ''; queueMicrotask(() => row.scrollIntoView({ block: 'nearest' })); }
       return row;
+    }
+
+    function renderDictScope() {
+      const select = $('dictScope');
+      const counts = dictUsage?.byProject || {};
+      const shared = dictUsage?.shared ?? dictEntries.filter((entry) => !entry.projectId).length;
+      const options = [[SCOPE_ALL, `All words (${dictEntries.length.toLocaleString('en')})`], ['', `Shared by every project (${shared.toLocaleString('en')})`],
+        ...dictProjectList().map((project) => [project.id, `${project.name} (${(counts[project.id] || 0).toLocaleString('en')})`])];
+      select.replaceChildren(...options.map(([value, text]) => { const option = document.createElement('option'); option.value = value; option.textContent = text; return option; }));
+      select.value = dictScope === null ? SCOPE_ALL : dictScope;
+    }
+
+    function renderDictSuggestions() {
+      const box = $('dictSuggest');
+      const items = [...dictSuggestions.share.map((item) => ({ ...item, kind: 'share' })), ...dictSuggestions.add.map((item) => ({ ...item, kind: 'add' }))];
+      box.hidden = !items.length;
+      if (!items.length) { box.replaceChildren(); return; }
+      const head = document.createElement('span');
+      head.className = 'cs-dict-suggest-head'; head.textContent = 'Suggested';
+      const rows = items.map((item) => {
+        const line = document.createElement('div');
+        line.className = 'cs-dict-hint'; line.setAttribute('role', 'listitem');
+        const text = document.createElement('span');
+        text.className = 'cs-dict-hint-text';
+        const word = document.createElement('b'); word.textContent = item.term;
+        text.append(word, item.kind === 'share' ? ` was used in ${item.projects} projects. Share it with all of them?` : ` came up in ${item.count} of your messages in ${dictName(item.projectId)}. Add it there?`);
+        const act = (accept) => vscode.postMessage({ type: 'voiceDictionarySuggestion', kind: item.kind, term: item.term, projectId: item.projectId, accept });
+        const yes = document.createElement('button');
+        yes.type = 'button'; yes.className = 'cs-btn is-small'; yes.textContent = item.kind === 'share' ? 'Share' : 'Add';
+        yes.setAttribute('aria-label', `${yes.textContent} ${item.term}`);
+        yes.addEventListener('click', () => act(true));
+        const no = document.createElement('button');
+        no.type = 'button'; no.className = 'cs-icon-btn'; no.innerHTML = ICON.close; no.title = 'Dismiss'; no.setAttribute('aria-label', `Dismiss ${item.term}`);
+        no.addEventListener('click', () => act(false));
+        line.append(text, yes, no);
+        return line;
+      });
+      box.replaceChildren(head, ...rows);
     }
 
     function renderDictionary() {
       const limits = dictUsage?.limits || {};
       const query = $('dictSearch').value.trim().toLowerCase();
-      const shown = dictEntries.filter((entry) => !query || entry.term.toLowerCase().includes(query));
+      renderDictScope();
+      const scoped = dictEntries.filter(dictInScope);
+      const shown = scoped.filter((entry) => !query || entry.term.toLowerCase().includes(query));
       const nearFull = limits.entries && dictEntries.length >= limits.entries * 0.95; // the count is only worth a number when the file is about to refuse words
-      setTag($('dictTag'), nearFull ? 'warn' : '', nearFull ? `${dictEntries.length.toLocaleString('en')} / ${limits.entries.toLocaleString('en')}` : `${dictEntries.length.toLocaleString('en')} words`);
-      $('dictDesc').textContent = dictEntries.length ? `${(dictUsage?.enabled ?? dictEntries.length).toLocaleString('en')} on. Clanker picks what each recording uses.` : 'Names, tools and jargon dictation should spell your way.';
+      setTag($('dictTag'), nearFull ? 'warn' : '', nearFull ? `${dictEntries.length.toLocaleString('en')} / ${limits.entries.toLocaleString('en')}` : `${scoped.length.toLocaleString('en')} words`);
+      const target = dictTarget();
+      $('dictNew').placeholder = target ? `Add a word for ${dictName(target)}…` : 'Add a shared word or name…';
+      $('dictDesc').textContent = dictScope === SCOPE_ALL ? 'Every project has its own words, plus a few shared ones.'
+        : dictScope ? `Used only when dictating in ${dictName(dictScope)}, with a few shared words.` : 'Used in every project, but only a few fit each recording.';
       if (shown.length) {
         const visible = shown.slice(0, DICT_ROWS);
         const fresh = shown.find((entry) => entry.term === dictReveal);
         if (fresh && !visible.includes(fresh)) visible.push(fresh); // a word just added always shows
-        const rows = visible.map(dictRow);
+        const rows = visible.map((entry) => dictRow(entry, dictScope === SCOPE_ALL));
         if (shown.length > visible.length) {
           const more = document.createElement('p');
           more.className = 'cs-dict-empty';
@@ -1883,38 +1983,63 @@
       else {
         const empty = document.createElement('p');
         empty.className = 'cs-dict-empty';
-        empty.textContent = query ? `No word matches “${$('dictSearch').value.trim()}”.` : 'No words yet. Add one above, scan a project, or correct a dictated word in the composer and Clanker offers to keep it.';
+        empty.textContent = query ? `No word matches “${$('dictSearch').value.trim()}”.`
+          : dictScope && dictScope !== SCOPE_ALL ? `No words for ${dictName(dictScope)} yet. Scan the project, add one above, or correct a dictated word in its chat.`
+            : 'No words yet. Add one above, scan your projects, or correct a dictated word in the composer and Clanker offers to keep it.';
         $('dictList').replaceChildren(empty);
       }
-      const scanned = dictEntries.filter((entry) => entry.source === 'scan').length;
+      const scanned = scoped.filter((entry) => entry.source === 'scan').length;
       $('dictClearScanned').hidden = !scanned;
       $('dictClearScanned').textContent = `Remove ${scanned} scanned word${scanned === 1 ? '' : 's'}`;
+      renderDictSuggestions();
       renderDictProjects();
+      renderDictReport();
     }
 
     function renderDictProjects() {
-      const scanButton = (label, title, id) => {
+      $('dictScanAll').disabled = dictScanning;
+      const withFolder = dictProjectList().filter((project) => project.hasFolder);
+      $('dictProjects').hidden = !withFolder.length;
+      $('dictProjects').replaceChildren(...withFolder.map((project) => {
         const button = document.createElement('button');
-        button.type = 'button'; button.className = 'cs-btn is-small'; button.textContent = label; button.title = title; button.disabled = dictScanning;
+        button.type = 'button'; button.className = 'cs-btn is-small'; button.textContent = project.name; button.title = `Scan ${project.name} again`; button.disabled = dictScanning;
         button.addEventListener('click', () => {
           dictScanning = true;
           renderDictProjects();
-          dictStatus(id ? `Scanning ${label}…` : 'Choose a folder to scan…');
-          vscode.postMessage({ type: 'voiceDictionaryScan', id });
+          dictStatus(`Scanning ${project.name}…`);
+          vscode.postMessage({ type: 'voiceDictionaryScan', id: project.id });
         });
         return button;
-      };
-      $('dictProjects').replaceChildren(
-        ...dictProjects.filter((project) => project.root).map((project) => scanButton(project.name, `Scan ${project.root}`, project.id)),
-        scanButton('Choose folder…', 'Scan any folder, such as a project you have not added yet'),
-      );
+      }));
     }
 
-    function voiceDictionary({ entries = [], usage = null, error = '', notice = '', scanning }) {
+    function renderDictReport() {
+      const box = $('dictReport');
+      box.hidden = !dictReport.length;
+      box.replaceChildren(...dictReport.map((item) => {
+        const row = document.createElement('div');
+        row.className = 'cs-dict-report-row'; row.setAttribute('role', 'listitem');
+        const name = document.createElement('span'); name.className = 'cs-dict-report-name'; name.textContent = item.name;
+        const result = document.createElement('span'); result.className = 'cs-dict-report-result';
+        result.textContent = item.status === 'no-folder' ? 'no folder' : item.status === 'error' ? 'could not read'
+          : `${item.added} new · ${item.updated} refreshed${item.removed ? ` · ${item.removed} dropped` : ''}`;
+        row.append(name, result);
+        return row;
+      }));
+    }
+
+    function voiceDictionary({ entries = [], usage = null, error = '', notice = '', progress = '', scanning, projects, current, suggestions, report }) {
       dictEntries = entries; dictUsage = usage;
+      if (Array.isArray(projects)) dictKnown = projects;
+      if (typeof current === 'string') dictCurrent = current;
+      if (suggestions) dictSuggestions = { add: suggestions.add || [], share: suggestions.share || [] };
+      if (Array.isArray(report)) dictReport = report;
       if (typeof scanning === 'boolean') dictScanning = scanning;
-      if (error) dictStatus(error, 'error'); else if (notice) dictStatus(notice, 'ok');
-      if (dictEditing && !entries.some((entry) => entry.term === dictEditing)) dictEditing = null;
+      if (error) dictStatus(error, 'error'); else if (progress) dictStatus(progress); else if (notice) dictStatus(notice, 'ok');
+      const known = dictProjectList();
+      if (dictScope === null) dictScope = known.some((project) => project.id === dictCurrent) ? dictCurrent : SCOPE_ALL; // open on the project you are working in
+      else if (dictScope && dictScope !== SCOPE_ALL && !known.some((project) => project.id === dictScope)) dictScope = SCOPE_ALL;
+      if (dictEditing && !entries.some((entry) => dictEditKey(entry) === dictEditing)) dictEditing = null;
       renderDictionary();
     }
     function addDictWord() {
@@ -1924,13 +2049,21 @@
       dictReveal = term;
       $('dictSearch').value = '';
       $('dictNew').value = '';
-      vscode.postMessage({ type: 'voiceDictionaryAdd', term });
+      vscode.postMessage({ type: 'voiceDictionaryAdd', term, projectId: dictTarget() });
     }
     $('dictAdd').addEventListener('click', addDictWord);
     $('dictNew').addEventListener('keydown', (event) => { if (event.key === 'Enter') { event.preventDefault(); addDictWord(); } });
     $('dictSearch').addEventListener('input', renderDictionary);
+    $('dictScope').addEventListener('change', () => { dictScope = $('dictScope').value; dictEditing = null; renderDictionary(); });
+    $('dictScanAll').addEventListener('click', () => {
+      dictScanning = true;
+      dictReport = [];
+      renderDictionary();
+      dictStatus('Scanning all projects…');
+      vscode.postMessage({ type: 'voiceDictionaryScan', all: true });
+    });
     $('dictAI').addEventListener('click', () => vscode.postMessage({ type: 'voiceDictionaryWithAI' }));
-    $('dictClearScanned').addEventListener('click', () => vscode.postMessage({ type: 'voiceDictionaryClearScanned' }));
+    $('dictClearScanned').addEventListener('click', () => vscode.postMessage({ type: 'voiceDictionaryClearScanned', ...(dictScope === SCOPE_ALL ? {} : { projectId: dictScope }) }));
 
     // Project icons: one row per registered project. The extension owns the storage (projects.json) and answers every
     // action with a fresh 'projectIcons' list, so a favicon an AI wrote into the file appears here too.
@@ -1940,7 +2073,7 @@
     };
     function projectIcons(projects) {
       dictProjects = projects;
-      renderDictProjects();
+      renderDictionary();
       $('projectIconCount').textContent = `${projects.length}`;
       $('projectIconCount').setAttribute('aria-label', `${projects.length} ${projects.length === 1 ? 'project' : 'projects'}`);
       if (!projects.length) {

@@ -45,10 +45,21 @@ try {
   const empty = page.locator('#transcript > .empty-state');
   await empty.locator('.clanker-rig').waitFor();
   await page.waitForFunction(() => !document.querySelector('.empty-state').classList.contains('mascot-paused'));
+  // The tint follows the IDE theme (toggled before the header snapshot: a theme change makes the glass engine rebuild its filters).
+  const bodyTint = () => page.locator('.cg-fill-a').evaluate(el => getComputedStyle(el).stopColor);
+  const darkTint = await bodyTint();
+  await page.evaluate(() => { document.body.classList.remove('vscode-dark'); document.body.classList.add('vscode-light'); });
+  assert.notEqual(await bodyTint(), darkTint);
+  await page.evaluate(() => { document.body.classList.remove('vscode-light'); document.body.classList.add('vscode-dark'); });
+  assert.equal(await bodyTint(), darkTint);
   const header = await page.locator('.topbar').innerHTML();
   const chassis = page.locator('.clanker-chassis-rig');
   assert.equal(await chassis.evaluate(el => getComputedStyle(el).transform), 'none');
   assert.equal(await page.locator('.clanker-rig').evaluate(el => Math.round(el.getBoundingClientRect().width)), 140);
+  // Liquid Glass 2.0: a glass body and a separate smoked-glass screen, no drop shadow, and colours that follow the IDE theme.
+  assert.equal(await page.locator('.clanker-rig').evaluate(el => getComputedStyle(el).filter), 'none');
+  assert.equal(await page.locator('.clanker-chassis-rig .cg-glow').count(), 1);
+  assert.equal(await page.locator('.cg-screen-depth').count(), 1);
   await page.mouse.move(999, 719);
   const gazeNear = (x, y) => page.waitForFunction(([x, y]) => {
     const m = document.querySelector('.clanker-face-rig').style.transform.match(/translate\(([-\d.]+)px, ([-\d.]+)px\)/);

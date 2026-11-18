@@ -24,6 +24,12 @@ Associated Repositories:
   - **Zero Noise:** Strictly no mouth, no nose, no physical controller buttons (no A/B/X/Y or D-pad clutter), no decorative lines.
 * **Anatomy Boundary (Critical):** Clanker is a **disembodied, self-contained floating object**. He has **no torso, no neck, no shoulders, and no limbs**.
 
+### Empty-state rendering (Liquid Glass 2.0)
+The flat monochrome rules above describe the icon assets. The empty-state rig in the chat (`media/clanker-mascot.js`) draws the same silhouette as glass, still 2D: no drop shadow, no bevel, no gloss blob.
+* **Body glass:** a slate-tinted frosted fill (a mid tone, so it holds on both dark and light IDE themes), a lit rim top left with a faint echo bottom right, a soft glow just inside the edge, and a hairline outline.
+* **Screen glass:** the visor stays dark in every theme, recessed, with one quiet diagonal reflection. Eyes and brows are pure white and are never tinted.
+* **Tokens:** `--cg-*` on `.empty-mark .clanker-rig` in `style.css`; `vscode-light` retunes them, and high contrast gets an opaque body with a hard outline.
+
 ---
 
 ## 2. Technical Asset Catalog & Contracts

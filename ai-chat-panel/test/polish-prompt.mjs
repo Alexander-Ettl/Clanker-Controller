@@ -1,6 +1,6 @@
 ﻿// The composer's Polish button, in the real HTML with the real main.js and style.css:
 //   node test/polish-prompt.mjs             asserts the behaviour
-//   SHOT=<dir> node test/polish-prompt.mjs  also writes polish-*.png there (hover, working, result)
+//   SHOT=<dir> node test/polish-prompt.mjs  also writes polish-*.png there (rest, working, result)
 import assert from 'node:assert/strict';
 import Module, { createRequire } from 'node:module';
 import fs from 'node:fs';
@@ -48,46 +48,35 @@ try {
   const mic = page.locator('#micBtn');
   const visible = async () => Number(await polish.evaluate(el => getComputedStyle(el).opacity)) > 0.99 && await polish.evaluate(el => getComputedStyle(el).visibility) === 'visible';
 
-  // Empty box: the alternate action is discoverable but cannot polish an empty draft.
-  await mic.hover();
-  await page.waitForTimeout(400);
-  assert.equal(await visible(), true, 'hover offers polish even without a draft');
-  assert.equal(await polish.isDisabled(), true, 'empty drafts cannot be polished');
+  // Layout: format is its own button, directly left of dictate, in the bar. There is no hover menu.
+  const [m0, p0] = await Promise.all([mic.boundingBox(), polish.boundingBox()]);
+  assert.ok(p0.x + p0.width <= m0.x + 1 && m0.x - (p0.x + p0.width) < 12, 'format sits directly left of dictate');
+  assert.ok(Math.abs(p0.y - m0.y) < 1 && p0.width === m0.width && p0.height === m0.height, 'format and dictate are one row of equal buttons');
+  assert.equal(await visible(), true, 'format is always shown');
+  assert.equal(await page.locator('#micWrap').evaluate(el => getComputedStyle(el).display), 'contents', 'no wrapper box or pill around the two');
 
-  // A draft: hovering the mic brings the button up above it.
+  // Empty box: nothing to format.
+  assert.equal(await polish.isDisabled(), true, 'empty drafts cannot be formatted');
+
+  // A draft enables it.
   const draft = 'so basically i want the settings page to like have a dictionary tab and also it should be searchable, and um the scan thing needs limits. also dont forget tests';
   await input.fill(draft);
-  await page.mouse.move(2, 2);
-  await page.waitForTimeout(400);
-  assert.equal(await visible(), false, 'hidden until hovered');
-  await mic.hover();
-  await page.waitForTimeout(450);
-  assert.equal(await visible(), true, 'hovering the mic shows polish');
-  const [m, p] = await Promise.all([mic.boundingBox(), polish.boundingBox()]);
-  assert.equal(p.width, m.width, 'both actions have the same width');
-  assert.equal(p.height, m.height, 'both actions have the same height');
-  assert.ok(p.y + p.height <= m.y + 3, `the button sits above the mic ${JSON.stringify({ m, p })}`);
-  assert.ok(Math.abs(p.x + p.width / 2 - (m.x + m.width / 2)) < 1.5, 'and is centred on it');
-  // The pointer can travel from the mic to the button without it closing.
-  await page.mouse.move(p.x + p.width / 2, p.y + p.height + 1);
-  await page.waitForTimeout(150);
-  assert.equal(await visible(), true, 'moving up keeps it open');
-  if (shot('hover')) await page.screenshot({ path: shot('hover'), clip: { x: 0, y: 360, width: 520, height: 200 } });
+  assert.equal(await polish.isDisabled(), false, 'a draft can be formatted');
+  await page.waitForTimeout(500); // the send button takes its slot
+  const ready = await polish.boundingBox();
+  if (shot('rest')) await page.screenshot({ path: shot('rest'), clip: { x: 0, y: 360, width: 520, height: 200 } });
 
   // Click: the text goes out once, the box is locked and Enter does not send the old draft.
   await polish.click();
   assert.deepEqual(await polishRequests(), [{ type: 'polishPrompt', text: draft, requestId: 1 }]);
   await page.waitForTimeout(450);
   const primary = await polish.boundingBox();
-  assert.ok(Math.abs(primary.y - m.y) < 1, 'polish swaps into the default position');
+  assert.ok(Math.abs(primary.x + primary.width / 2 - ready.x - ready.width / 2) < 1 && Math.abs(primary.y + primary.height / 2 - ready.y - ready.height / 2) < 1, 'format stays where it was while working');
   assert.equal(await input.evaluate(el => el.readOnly), true, 'locked while working');
   await input.press('Enter');
   assert.equal((await page.evaluate(() => window.sent.filter(m => m.type === 'sendPrompt' || m.type === 'prompt'))).length, 0, 'Enter does not send mid-polish');
   await polish.click({ force: true }).catch(() => {});
   assert.equal((await polishRequests()).length, 1, 'no second request while one runs');
-  await page.mouse.move(2, 2);
-  await page.waitForTimeout(300);
-  assert.equal(await visible(), true, 'the button stays up while it works');
   if (shot('working')) await page.screenshot({ path: shot('working'), clip: { x: 0, y: 360, width: 520, height: 200 } });
 
   // A stale answer is ignored; the right one replaces the text and Ctrl+Z gets the original back.
@@ -98,53 +87,30 @@ try {
   assert.equal(await input.inputValue(), polished);
   assert.equal(await input.evaluate(el => el.readOnly), false, 'unlocked again');
   assert.equal(await page.evaluate(() => document.querySelector('.toast')?.textContent), 'Prompt polished. Ctrl+Z restores what you wrote.');
-  await page.mouse.move(2, 2);
-  await page.waitForTimeout(450);
-  assert.equal(await visible(), true, 'polish remains the default after completion');
-  assert.equal(await mic.evaluate(el => getComputedStyle(el).visibility), 'hidden', 'dictate retracts');
+  assert.equal(await visible(), true, 'format remains after completion');
+  assert.equal(await mic.evaluate(el => getComputedStyle(el).visibility), 'visible', 'dictate is never hidden by format');
   if (shot('result')) await page.screenshot({ path: shot('result'), clip: { x: 0, y: 300, width: 520, height: 260 } });
   await input.press('Control+z');
   assert.equal(await input.inputValue(), draft, 'Ctrl+Z restores the original');
 
   // A failure keeps the draft and says why.
-  await polish.hover();
   await polish.click();
   await send({ type: 'polishResult', requestId: 2, error: 'Could not polish the prompt: offline' });
   assert.equal(await input.inputValue(), draft);
   assert.equal(await input.evaluate(el => el.readOnly), false);
   assert.match(await page.evaluate(() => [...document.querySelectorAll('.toast')].pop().textContent), /offline/);
 
-  // The choice survives panel reload; hovering the new default offers dictate at the top.
-  await page.reload();
-  assert.equal(await page.locator('#micWrap').evaluate(el => el.classList.contains('polish-default')), true);
-  await page.mouse.move(2, 2);
-  await page.waitForTimeout(450);
-  assert.equal(await page.locator('#micWrap').evaluate(el => getComputedStyle(el, '::before').opacity), '0', 'resting polish has no circle outline');
-  if (shot('default-rest')) await page.screenshot({ path: shot('default-rest'), clip: { x: 0, y: 360, width: 520, height: 200 } });
-  await polish.hover();
-  await page.waitForTimeout(450);
-  const [polishDefault, dictateAlternate] = await Promise.all([polish.boundingBox(), mic.boundingBox()]);
-  assert.equal(dictateAlternate.y + dictateAlternate.height, polishDefault.y, 'dictate appears directly above polish');
+  // Dictate is one click away, untouched by format.
+  const dictateSlot = await mic.evaluate(el => el.offsetLeft);
   await mic.click();
-  await page.mouse.move(2, 2);
-  await page.waitForTimeout(450);
-  assert.equal(await page.locator('#micWrap').evaluate(el => el.classList.contains('polish-default')), false, 'dictate restores the default');
-  assert.equal(await visible(), false, 'polish retracts after restoring dictate');
   assert.equal(await page.evaluate(() => window.sent.filter(m => m.type === 'micToggle').length), 1);
   await send({ type: 'micState', state: 'idle' }); // the click shows "opening the microphone" until the host answers; this harness has no host
-  assert.ok(Math.abs((await mic.boundingBox()).y - polishDefault.y) < 1, 'dictate returns to the original position');
+  assert.equal(await mic.evaluate(el => el.offsetLeft), dictateSlot, 'dictate returns to the same slot');
 
-  // Keyboard users can reveal the same pill, and external recording keeps the mic accessible.
-  await page.keyboard.press('Tab');
-  await mic.focus();
-  await page.waitForTimeout(450);
-  assert.equal(await visible(), true, 'keyboard focus reveals the alternate action');
-  await input.fill(draft);
-  await mic.hover();
-  await polish.click();
-  await send({ type: 'polishResult', requestId: 1, text: draft });
+  // External (hotkey) recording takes the composer over; format steps aside, dictate stays reachable.
   await send({ type: 'micState', state: 'recording' });
-  assert.equal(await mic.evaluate(el => getComputedStyle(el).visibility), 'visible', 'hotkey recording exposes the mic even with polish selected');
+  assert.equal(await mic.evaluate(el => getComputedStyle(el).visibility), 'visible', 'recording exposes the mic');
+  assert.equal(await polish.evaluate(el => getComputedStyle(el).display), 'none', 'format steps aside while recording');
   await send({ type: 'micState', state: 'idle' });
 
   assert.deepEqual(errors, []);

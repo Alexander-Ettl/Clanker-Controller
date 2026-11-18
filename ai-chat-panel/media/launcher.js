@@ -533,17 +533,21 @@
 
   // Every row is a provider mark with a small work icon, so a long history is still a wall of look-alikes: the rail shows the live chats
   // and the latest few, and a "9+" chip opens Manage Chats (which also renames and deletes) for the rest.
-  const RAIL_CHATS = 5;
+  // Settings sets how many (window.RAIL_LIMITS.chats, 0 = all); 5 is the default.
+  const railChats = () => window.RAIL_LIMITS?.chats || Infinity;
   let recentTimer;
 
   let lastSessions;
   // The project list arrives separately from the chats (main.js); the previews pick up its icons when it does.
   window.addEventListener('rail-projects', () => lastSessions && renderHistory(lastSessions));
+  window.addEventListener('rail-limits', () => lastSessions && renderHistory(lastSessions));
 
   function renderHistory(sessions) {
     historyList.removeAttribute('aria-busy');
     lastSessions = sessions;
     clearTimeout(recentTimer);
+    // Where each chat's tile was, so the ones that move (a clicked chat rises to the top, the old first one steps down) glide there.
+    const before = new Map([...historyList.querySelectorAll('.history-item[data-id]')].map((el) => [el.dataset.id, el.getBoundingClientRect().top]));
     historyList.replaceChildren();
     if (!sessions || !sessions.length) {
       const empty = document.createElement('div');
@@ -557,13 +561,17 @@
     const nextExpiry = Math.min(...sessions.map((session) => Number(session.recentUntil)).filter((until) => until > now));
     if (Number.isFinite(nextExpiry)) recentTimer = setTimeout(() => vscode.postMessage({ type: 'requestHistory' }), nextExpiry - now + 20);
     // Keep the selected chat and recently selected or running chats visible before the older ones.
+    // Pinned chats come first, in pin order, even if they fill more than the configured slots.
+    const pinned = sessions.filter((s) => s.pinned).sort((a, b) => a.pinOrder - b.pinOrder);
+    const rest = sessions.filter((s) => !s.pinned);
     const ordered = [
-      ...sessions.filter((s) => s.selected),
-      ...sessions.filter((s) => !s.selected && (isRecent(s) || s.state === 'running')),
-      ...sessions.filter((s) => !s.selected && !isRecent(s) && s.state !== 'running'),
+      ...pinned,
+      ...rest.filter((s) => s.selected),
+      ...rest.filter((s) => !s.selected && (isRecent(s) || s.state === 'running')),
+      ...rest.filter((s) => !s.selected && !isRecent(s) && s.state !== 'running'),
     ];
     // Past the latest few, the Chats button above is the one way into the rest (no second "+N" door).
-    for (const session of ordered.slice(0, RAIL_CHATS)) {
+    for (const session of ordered.slice(0, Math.max(railChats(), pinned.length))) {
       // A plain div, not a button: it hosts its own nested delete <button>,
       // and a <button> may not contain another <button> (HTML would silently
       // reparent it, breaking the click target).
@@ -578,7 +586,7 @@
       const title = session.title || session.preview || 'New chat';
       const lastText = session.lastMessage?.text ? ` · "${session.lastMessage.text.slice(0, 60)}…"` : '';
       // The hover preview shows all of this; the label is for screen readers.
-      row.setAttribute('aria-label', `${title}${lastText} · ${session.projectName ? `${session.projectName} · ` : ''}${agent ? `${names[agent] || agent} · ` : ''}${context ? `${context.label} · ` : ''}${window.chatTime.chatTime(session.updatedAt, { locale: TIME_PREFS.locale, hourCycle: HOUR_CYCLE })}${session.state === 'waiting' ? ' · Needs input' : ''}`);
+      row.setAttribute('aria-label', `${session.pinned ? 'Pinned · ' : ''}${title}${lastText} · ${session.projectName ? `${session.projectName} · ` : ''}${agent ? `${names[agent] || agent} · ` : ''}${context ? `${context.label} · ` : ''}${window.chatTime.chatTime(session.updatedAt, { locale: TIME_PREFS.locale, hourCycle: HOUR_CYCLE })}${session.state === 'waiting' ? ' · Needs input' : ''}`);
 
       const lead = document.createElement('span');
       lead.className = 'history-lead';
@@ -591,6 +599,7 @@
       const item = document.createElement('div');
       item.className = 'history-item';
       item.tabIndex = 0;
+      item.dataset.id = session.id;
       item.setAttribute('role', 'button');
       item.setAttribute('aria-label', row.getAttribute('aria-label'));
       if (session.selected) item.setAttribute('aria-current', 'true');
@@ -608,6 +617,14 @@
         badge.innerHTML = context.svg;
         item.append(badge);
       }
+      if (session.pinned) {
+        // A pushpin on the tile's top-left corner (the same glyph as the project pins); pinned chats lead the list.
+        const pin = document.createElement('span');
+        pin.className = 'history-pin';
+        pin.setAttribute('aria-hidden', 'true');
+        pin.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path class="pin-head" d="M9.2 3.5h5.6l-.5 6 3.2 3.6H6.5l3.2-3.6z"/><path d="M12 13.1v7.4"/></svg>';
+        item.append(pin);
+      }
       if (session.state === 'running') {
         // The same orb as the chat's "Thinking" pill (.pending-orb, style.css).
         const orb = document.createElement('span');
@@ -616,6 +633,31 @@
         item.append(orb);
       }
       historyList.appendChild(item);
+    }
+    glideHistory(before);
+  }
+
+  // A short, soft slide (FLIP): each tile that kept its chat but changed place starts at its old spot and eases to the new one.
+  // The one travelling furthest up (the chat just opened) passes over the others. Skipped for reduced motion.
+  const HISTORY_GLIDE_MS = 260;
+  function glideHistory(before) {
+    if (!before.size || window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+    let rising = null;
+    for (const item of historyList.querySelectorAll('.history-item[data-id]')) {
+      const from = before.get(item.dataset.id);
+      if (from === undefined) continue;
+      const dy = from - item.getBoundingClientRect().top;
+      if (Math.abs(dy) < 1) continue;
+      // A tile stepping down dips a little in opacity while the rising one crosses it, so the two never read as overlapping.
+      const frames = dy > 0 ? [{ transform: `translateY(${dy}px)` }, { transform: 'translateY(0)' }] : [{ transform: `translateY(${dy}px)`, opacity: 0.55 }, { transform: 'translateY(0)', opacity: 1 }];
+      const glide = item.animate(frames, { duration: HISTORY_GLIDE_MS, easing: 'cubic-bezier(0.22, 1, 0.36, 1)' });
+      if (dy > 0 && (!rising || dy > rising.dy)) rising = { item, glide, dy };
+    }
+    if (rising) {
+      rising.item.style.zIndex = '2';
+      const done = () => { rising.item.style.zIndex = ''; };
+      rising.glide.addEventListener('finish', done);
+      rising.glide.addEventListener('cancel', done);
     }
   }
 

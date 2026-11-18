@@ -116,6 +116,8 @@
     { sel: '.round-btn', bezel: 22, depth: 20, chroma: 0.15, spec: 0.9, blur: 0.4, saturate: 1.7, brightness: 1.1 },
     { sel: '.project-pill, .api-value-figure', bezel: 22, depth: 18, chroma: 0, spec: 0.7, blur: 0.6, saturate: 1.7, brightness: 1.08 },
     { sel: '.image-context-menu', bezel: 20, depth: 12, chroma: 0, spec: 0.6, blur: 2, saturate: 1.6, brightness: 1.06 },
+    // "Show more" on a long prompt: a small clear pill over the faded text, so the lines under it bend through its rim.
+    { sel: '.msg-clamp-toggle', bezel: 13, depth: 9, chroma: 0.15, spec: 0.85, frost: 1.5, blur: 0, saturate: 1.5, brightness: 1.08 },
     { sel: '.history-list', bezel: 24, depth: 8, chroma: 0, spec: 0.5, blur: 0.6, saturate: 1.7, brightness: 1.08 },
     // Floating popup bars and pills (glass-ui.css): frosted interior before the lens, crisp curved rim and specular edge.
     { sel: '.cs-settings-search, .history-tools .history-search, .history-filter-btn, .project-gallery-search, .project-gallery-quota, .inv-bar, .cs-route-status', bezel: 18, depth: 16, chroma: 0, spec: 0.85, frost: 2.2, blur: 0, saturate: 1.55, brightness: 1.04 },
@@ -328,8 +330,10 @@
     // Only a new or removed surface matters. The transcript (every streamed word adds nodes) and the island's own layers
     // never hold one, so they must not wake the scan.
     const quiet = (node) => !!node.closest && !!node.closest('#transcript, .island-glass');
+    // A "Show more" toggle is added inside the transcript once a prompt has been measured, so it is the one node that may wake it.
+    const isToggle = (node) => !!node.classList && node.classList.contains('msg-clamp-toggle');
     const mutations = new MutationObserver((list) => {
-      if (scanTimer || !list.some((m) => (m.addedNodes.length || m.removedNodes.length) && !quiet(m.target))) return;
+      if (scanTimer || !list.some((m) => (m.addedNodes.length || m.removedNodes.length) && (!quiet(m.target) || [...m.addedNodes].some(isToggle)))) return;
       scanTimer = setTimeout(() => { scanTimer = 0; scan(); }, 200);
     });
     mutations.observe(doc.body, { childList: true, subtree: true });
@@ -445,17 +449,25 @@
     };
     const layerMask = (url, x, y, w, h) => `${url} ${x}px ${y}px / ${w} ${h} no-repeat`;
     row.parentNode.insertBefore(glass, row);
-    let last = '', busy = false, watched = false, silhouette = 'none', lastDockH = '';
+    let last = '', busy = false, silhouette = 'none', lastDockH = '';
 
     // The textarea rewrites its own height on every keystroke; if that changes the dock's size the ResizeObserver says so.
     const watch = new MutationObserver((list) => { if (list.some((m) => !(m.type === 'attributes' && m.target.tagName === 'TEXTAREA'))) kick(); });
-    const menuOf = () => doc.querySelector('.model-menu');
+    // Every .model-menu (model picker, permissions, the @ and / lists) rests on the composer and shares the upper slab; only an open one
+    // has any opacity, so the silhouette is the composer plus whichever is showing.
+    const menusOf = () => [...doc.querySelectorAll('.model-menu')];
+    const watchedMenus = new WeakSet();
+    const menuResize = new ResizeObserver(() => kick()); // a list's height follows what is typed, with no class change to say so
     function draw() {
       const rr = row.getBoundingClientRect();
       const rects = []; // [element, flat]
       for (const el of row.children) if (!upper || el.matches('.composer')) rects.push([el, false]);
-      const menu = upper ? menuOf() : null;
-      if (menu) { rects.push([menu, true]); if (!watched) { watched = true; watch.observe(menu, { attributes: true, attributeFilter: ['class'] }); } }
+      if (upper) {
+        for (const menu of menusOf()) {
+          rects.push([menu, true]);
+          if (!watchedMenus.has(menu)) { watchedMenus.add(menu); watch.observe(menu, { attributes: true, attributeFilter: ['class'] }); menuResize.observe(menu); }
+        }
+      }
       const found = [];
       for (const [el, flat] of rects) {
         if (!(el.offsetWidth > 0 && el.offsetHeight > 0)) continue;
@@ -615,7 +627,7 @@
         const el = doc.createElement('div');
         el.className = 'ig-rim';
         el.style.cssText = `left:${bx}px;top:${by}px;width:${bw}px;height:${bh}px;`;
-        const bd = `url(#${id}) saturate(190%) brightness(1.06)`;
+        const bd = `url(#${id}) brightness(1.06)`; // no saturate(): it turned a navy theme's dock a much bluer navy (see --ig-blur)
         el.style.webkitBackdropFilter = bd; el.style.backdropFilter = bd;
         setMask(el, `${layerMask(solidUrl, -bx, -by, `${w}px`, `${h}px`)}, ${layerMask(silhouette, -bx, -by, `${w}px`, `${h}px`)}`, ['source-in', 'intersect']);
         glass.insertBefore(el, frost); // below the frost, so it bends the sharp backdrop, not the blurred one
@@ -644,7 +656,7 @@
     function follow() {
       if (!row.isConnected) { clearTimeout(settle); busy = false; return; }
       draw();
-      if (ticks++ % ANIM_CHECK_EVERY === 0) moving = [row, ...row.children, menuOf()].filter(Boolean).some(el => el.getAnimations().some(a => a.playState === 'running'));
+      if (ticks++ % ANIM_CHECK_EVERY === 0) moving = [row, ...row.children, ...menusOf()].some(el => el.getAnimations().some(a => a.playState === 'running'));
       if (moving) requestAnimationFrame(follow);
       else { busy = false; ticks = 0; moving = true; }
     }

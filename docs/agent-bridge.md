@@ -48,6 +48,10 @@ agent (any vendor) --shell--> clanker-agent start --to "<model>" ... --> detache
   | `result.md` | The answer. After a failure, a stop or a vanished worker it begins `> INCOMPLETE: <reason>` and keeps the partial text |
   | `log.jsonl` | The CLI's raw output |
 
+- **Agents button.** A task started from a chat (`CLANKER_CHAT_ID`, set by the extension for every engine) also leaves a
+  pointer `~/.clanker/jobs/<chat>/<task>.json` (`{ "dir": ... }`). The chat's agents viewer follows its own `_work/clanker`
+  plus these pointers, because `--cwd` can name any folder (a Codex chat once used a research folder outside the project,
+  and the robot button never appeared). Tasks started before the pointers existed are not listed.
 - **Rules sent with every task.** One reply, no questions back; findings, then `Sources`, then `Blocked or not found`; every
   source tagged `[READ]` (original page opened), `[SNIPPET]` (search excerpt only) or `[BLOCKED]` (with the reason).
   An answer with URLs and no tags gets a `warning` in `status.json`.

@@ -205,6 +205,20 @@
                     "default": "agent",
                     "markdownDescription": "Who names a new chat. `agent` takes the title the agent wrote itself once its first turn is under way, and falls back to Groq when there is none. `groq` always asks Groq (needs a Groq key in Settings > Routing; without one, chats are named from their first words)."
                 },
+                "aiChatPanel.railProjects": {
+                    "type": "number",
+                    "default": 3,
+                    "minimum": 0,
+                    "maximum": 50,
+                    "markdownDescription": "How many projects the sidebar rail shows. The chat's own project always stays visible, then your pinned favorites (at most 2), then the most recent. `0` shows every project, for very large monitors. Chat Settings > General has the picker."
+                },
+                "aiChatPanel.railChats": {
+                    "type": "number",
+                    "default": 5,
+                    "minimum": 0,
+                    "maximum": 100,
+                    "markdownDescription": "How many recent chats the sidebar rail lists. Running and recently used chats come first. `0` lists every chat, for very large monitors. Chat Settings > General has the picker."
+                },
                 "aiChatPanel.completionSound": {
                     "type": "boolean",
                     "default": true,
