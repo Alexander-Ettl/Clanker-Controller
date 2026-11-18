@@ -16,6 +16,7 @@
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
+const { createHash } = require('node:crypto');
 const { spawn, spawnSync } = require('node:child_process');
 
 const HEARTBEAT_MS = 5000;
@@ -111,6 +112,39 @@ function publish({ models = [], home = homeDir(), script = __filename } = {}) {
 
 const jobsRoot = (cwd) => path.join(cwd, '_work', 'clanker');
 
+// A job lives under whatever --cwd it was started with, which is not always the chat's folder. So a job started from a chat
+// (CLANKER_CHAT_ID) also leaves a pointer at <home>/jobs/<chat>/<id>.json; the chat's agents viewer follows these.
+const chatKey = (chatId) => String(chatId).replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 80);
+function indexJob(chatId, dir, home = homeDir()) {
+  if (!chatId) return;
+  try {
+    const folder = path.join(home, 'jobs', chatKey(chatId));
+    fs.mkdirSync(folder, { recursive: true });
+    const key = createHash('sha256').update(dir).digest('hex');
+    writeJson(path.join(folder, `${key}.json`), { dir });
+  } catch { /* the viewer is a convenience; the job itself already exists */ }
+}
+/** The job folders this chat started, wherever they are. */
+function indexedJobs(chatId, home = homeDir()) {
+  if (!chatId) return [];
+  const folder = path.join(home, 'jobs', chatKey(chatId));
+  let names;
+  try { names = fs.readdirSync(folder); } catch { return []; }
+  return names.filter((name) => name.endsWith('.json'))
+    .map((name) => readJobMetadata(path.join(folder, name))?.dir)
+    .filter((dir) => typeof dir === 'string' && path.isAbsolute(dir))
+    .map((dir) => path.resolve(dir))
+    .filter((dir) => path.basename(path.dirname(dir)) === 'clanker' && path.basename(path.dirname(path.dirname(dir))) === '_work');
+}
+
+function readJobMetadata(file) {
+  try {
+    const stat = fs.lstatSync(file);
+    if (stat.isFile() && stat.size <= 64 * 1024) return readJson(file);
+  } catch { /* missing or being replaced */ }
+  return null;
+}
+
 function jobDir(task, cwd) {
   if (!task) throw new Error('Name the task (the --task you started it with) or give its folder.');
   const direct = path.resolve(cwd, task);
@@ -161,6 +195,7 @@ async function start(options, deps = {}) {
   writeJson(path.join(dir, 'request.json'), request);
   fs.writeFileSync(path.join(dir, 'prompt.md'), wrapPrompt({ id, mode, text }));
   writeJson(path.join(dir, 'status.json'), { id, state: 'queued', agent: target.agent, model: target.model, effort: target.effort, label: target.label, mode, createdAt: request.createdAt, updatedAt: request.createdAt });
+  indexJob(request.from, dir, deps.home);
   if (deps.inline) return { id, dir, target, request };
   try {
     const { nodeCommand } = require('./loop-exec');
@@ -216,14 +251,16 @@ async function runJob(dir, deps = {}) {
 }
 
 /** status.json, corrected for a worker that is gone: a PC restart, a closed session or a sandbox that killed it must not look like "still running". */
-function readStatus(dir) {
-  let status = readJson(path.join(dir, 'status.json'));
+function readStatus(dir, { readOnly = false } = {}) {
+  const file = path.join(dir, 'status.json');
+  let status = readOnly ? readJobMetadata(file) : readJson(file);
   if (!status) throw new Error(`${dir} has no status.json.`);
   if (!TERMINAL.has(status.state)) {
     const gone = status.pid ? !alive(status.pid) : seconds(status.createdAt) * 1000 > NEVER_STARTED_MS;
     if (gone) {
-      const partial = (() => { try { return fs.readFileSync(path.join(dir, 'result.partial.md'), 'utf8').trim(); } catch { return ''; } })();
       const reason = status.pid ? 'The worker process ended without finishing (PC restart, closed session or a sandbox that kills background processes).' : 'The worker never started.';
+      if (readOnly) return { ...status, state: 'failed', error: reason };
+      const partial = (() => { try { return fs.readFileSync(path.join(dir, 'result.partial.md'), 'utf8').trim(); } catch { return ''; } })();
       if (!fs.existsSync(path.join(dir, 'result.md'))) fs.writeFileSync(path.join(dir, 'result.md'), `> INCOMPLETE: ${reason}\n${partial ? `\n${partial}\n` : '\n(nothing was written before it stopped)\n'}`);
       status = patchStatus(dir, { state: 'failed', error: reason, hint: 'Run it again with `run` (foreground), or start it from a normal terminal.', finishedAt: now(), resultFile: 'result.md', partialChars: partial.length });
     }
@@ -355,6 +392,6 @@ async function main(argv, io = {}) {
   }
 }
 
-module.exports = { main, start, runJob, readStatus, cancel, resolveTarget, readCatalog, publish, wrapPrompt, parseArgs, jobDir, describe };
+module.exports = { indexedJobs, readJobMetadata, main, start, runJob, readStatus, cancel, resolveTarget, readCatalog, publish, wrapPrompt, parseArgs, jobDir, describe };
 
 if (require.main === module) main(process.argv.slice(2)).then((code) => { process.exitCode = code; });

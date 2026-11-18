@@ -671,8 +671,13 @@ summary:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; 
 .cs-dict-term { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font: 500 13px ui-monospace, 'Cascadia Mono', Consolas, monospace; color: var(--text-primary); cursor: text; }
 .cs-dict-row.is-off .cs-dict-term { color: var(--text-tertiary); text-decoration: line-through; text-decoration-color: rgb(var(--ink) / 0.25); }
 .cs-dict-edit { flex: 1; height: 28px; border-radius: 9px; font: 500 13px ui-monospace, 'Cascadia Mono', Consolas, monospace; }
+.cs-dict-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+.cs-dict-main .cs-dict-term { flex: none; white-space: normal; overflow-wrap: anywhere; } /* a long identifier wraps instead of hiding its end */
+.cs-dict-main .cs-dict-edit { flex: none; width: 100%; box-sizing: border-box; }
+.cs-dict-tags { display: flex; flex-wrap: wrap; gap: 4px; }
+.cs-dict-acts { flex: none; display: flex; align-items: center; }
 .cs-dict-source { flex: none; padding: 1px 7px; border-radius: var(--pill); background: rgb(var(--ink) / 0.07); font: 600 10px var(--font-text); letter-spacing: 0.02em; color: var(--text-secondary); }
-.cs-dict-row .cs-icon-btn { width: 26px; height: 26px; border-color: transparent; background: transparent; opacity: 0.55; }
+.cs-dict-row .cs-icon-btn { width: 24px; height: 24px; border-color: transparent; background: transparent; opacity: 0.55; }
 .cs-dict-row:hover .cs-icon-btn, .cs-dict-row:focus-within .cs-icon-btn { opacity: 1; }
 .cs-dict-empty { margin: 0; padding: 18px 10px; text-align: center; font: 400 12px/1.5 var(--font-text); color: var(--text-secondary); }
 .cs-switch.is-small { width: 32px; height: 20px; }
@@ -680,8 +685,23 @@ summary:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; 
 .cs-switch.is-small[aria-checked='true']::after { transform: translateX(12px); }
 .cs-dict .cs-status { padding: 4px 14px 10px; }
 .cs-dict-scan { border-top: 1px solid rgb(var(--ink) / 0.06); }
-.cs-dict-projects { display: flex; flex-wrap: wrap; gap: 6px; padding: 0 14px 12px 60px; }
+.cs-dict-projects { display: flex; flex-wrap: wrap; gap: 6px; padding: 0 14px 10px 60px; }
 .cs-dict-actions { padding-left: 14px; padding-bottom: 14px; }
+.cs-dict-scope { width: 100%; max-width: none; box-sizing: border-box; height: 32px; padding: 0 10px; border-radius: var(--pill); }
+.cs-dict-suggest { display: flex; flex-direction: column; gap: 4px; margin: 0 14px 8px; padding: 8px 8px 8px 12px; border-radius: 12px; background: rgb(var(--ink) / 0.05); }
+.cs-dict-suggest-head { font: 600 10px var(--font-text); letter-spacing: 0.04em; text-transform: uppercase; color: var(--text-secondary); }
+.cs-dict-hint { display: flex; align-items: center; gap: 6px; min-height: 30px; }
+.cs-dict-hint-text { flex: 1; min-width: 0; font: 400 12px/1.4 var(--font-text); color: var(--text-secondary); overflow-wrap: anywhere; }
+.cs-dict-hint-text b { font: 600 12px ui-monospace, 'Cascadia Mono', Consolas, monospace; color: var(--text-primary); }
+.cs-dict-hint .cs-btn { flex: none; }
+.cs-dict-hint .cs-icon-btn { flex: none; width: 26px; height: 26px; border-color: transparent; background: transparent; }
+.cs-dict-source.is-project { background: color-mix(in srgb, var(--accent) 16%, transparent); color: var(--text-primary); max-width: 96px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cs-dict-scanall { padding: 0 14px 8px 60px; }
+.cs-dict-report { display: flex; flex-direction: column; gap: 6px; padding: 0 14px 10px 60px; }
+.cs-dict-report-row { display: flex; flex-direction: column; font: 400 12px/1.4 var(--font-text); }
+.cs-dict-report-name { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-primary); }
+.cs-dict-report-result { color: var(--text-secondary); font-variant-numeric: tabular-nums; }
+.cs-dict [hidden] { display: none !important; }
 .cs-api-value-body { padding: 0 16px 16px; }
 .cs-api-value-total { margin: 8px 0 4px; font: 600 28px var(--font-text); color: var(--text-primary); font-variant-numeric: tabular-nums; }
 .cs-api-value-rows .cs-row { padding: 10px 0; justify-content: space-between; }

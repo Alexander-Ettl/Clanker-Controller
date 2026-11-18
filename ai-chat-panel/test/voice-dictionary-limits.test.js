@@ -32,28 +32,29 @@ test('a hand-edited or AI-edited file is read forgivingly', () => withDictionary
   assert.deepEqual(dictionary.listTerms(paths), [], 'a broken file never blocks dictation');
 }));
 
-test('scanned words stay inside the batch, scanned-share and total limits, and deleted ones do not come back', () => withDictionary((paths) => {
+test('a scan stays inside its per-scan, per-project and total limits, and deleted words do not come back', () => withDictionary((paths) => {
   const { LIMITS } = dictionary;
-  const many = Array.from({ length: LIMITS.scanned + 200 }, (_, index) => `Word${index}x`);
-  const first = dictionary.addScanned(paths, many, 'Demo');
-  assert.equal(first.added, LIMITS.scanBatch);
+  const many = Array.from({ length: LIMITS.scannedPerProject + 200 }, (_, index) => ({ term: `Word${index}x`, weight: 3 - index / 1000 }));
+  const first = dictionary.applyScan(paths, 'p1', many, { projectName: 'Demo' });
+  assert.equal(first.added, LIMITS.perScan);
   assert.equal(first.full, true);
-  assert.equal(dictionary.addScanned(paths, many, 'Demo').added, LIMITS.scanBatch, 'a second scan adds the next batch, never the same words');
-  let total = 2 * LIMITS.scanBatch;
-  for (let added; (added = dictionary.addScanned(paths, many, 'Demo').added); ) total += added;
-  assert.equal(total, LIMITS.scanned, 'scans stop at the scanned share');
-  assert.equal(dictionary.addScanned(paths, many, 'Demo').added, 0, 'the scanned share is full');
-  dictionary.addTerm(paths, 'Hand picked');
-  dictionary.removeTerm(paths, 'Word0x');
-  assert.equal(dictionary.removeScanned(paths), LIMITS.scanned - 1);
-  assert.deepEqual(dictionary.listEnabledTerms(paths), ['Hand picked']);
-  assert.equal(dictionary.addScanned(paths, ['Word0x'], 'Demo').added, 0, 'a deleted scanned word is not re-added');
+  assert.equal(dictionary.applyScan(paths, 'p1', many.slice(0, LIMITS.perScan), { projectName: 'Demo' }).added, 0, 'a rescan finds the same words and adds none twice');
+  assert.equal(dictionary.applyScan(paths, 'p1', many, { projectName: 'Demo' }).added, LIMITS.scannedPerProject - LIMITS.perScan, 'a project holds at most its own share of scanned words');
+  assert.equal(dictionary.applyScan(paths, 'p1', many, { projectName: 'Demo' }).added, 0, 'and then no more');
+  assert.equal(dictionary.listTerms(paths).length, LIMITS.scannedPerProject);
+  dictionary.addTerm(paths, 'Hand picked', { projectId: 'p1' });
+  dictionary.removeTerm(paths, 'Word0x', { projectId: 'p1' });
+  assert.equal(dictionary.applyScan(paths, 'p1', many, { projectName: 'Demo' }).added, 1, 'the freed place goes to the next best word, not the deleted one');
+  assert.ok(!dictionary.listEnabledTerms(paths, 'p1').includes('Word0x'), 'a deleted scanned word is not re-added');
+  assert.equal(dictionary.removeScanned(paths, { projectId: 'p2' }), 0, 'another project is left alone');
+  assert.equal(dictionary.removeScanned(paths, { projectId: 'p1' }), LIMITS.scannedPerProject);
+  assert.deepEqual(dictionary.listEnabledTerms(paths, 'p1'), ['Hand picked']);
 }));
 
 test('the dictionary refuses to grow past its limit', () => withDictionary((paths) => {
   fs.writeFileSync(paths.dictionaryFile, JSON.stringify({ terms: Array.from({ length: dictionary.LIMITS.entries }, (_, index) => `term${index}`) }));
   assert.throws(() => dictionary.addTerm(paths, 'one more'), /full/);
-  assert.equal(dictionary.addScanned(paths, ['Another'], 'Demo').added, 0);
+  assert.equal(dictionary.applyScan(paths, 'p1', [{ term: 'Another' }]).added, 0);
 }));
 
 test('the dictionary keeps well over a thousand words', () => withDictionary((paths) => {
@@ -65,43 +66,39 @@ test('the dictionary keeps well over a thousand words', () => withDictionary((pa
 }));
 
 test('the words sent to the models are ranked per recording and capped', () => withDictionary(async (paths, noDatabase) => {
-  dictionary.addScanned(paths, Array.from({ length: 50 }, (_, index) => `Scanned${index}`), 'Demo');
-  dictionary.addTerm(paths, 'Mine');
-  const words = await dictionary.vocabulary(paths, noDatabase);
+  dictionary.applyScan(paths, 'p1', Array.from({ length: 50 }, (_, index) => ({ term: `Scanned${index}`, weight: 2 })), { projectName: 'Demo' });
+  dictionary.addTerm(paths, 'Mine', { projectId: 'p1' });
+  const words = await dictionary.vocabulary(paths, noDatabase, { projectId: 'p1' });
   assert.equal(words[0], 'Mine', 'a word someone chose beats scanned words nobody has used');
   const prompt = dictionary.promptTerms(words);
   assert.ok(prompt.length <= dictionary.LIMITS.promptTerms);
   assert.ok(prompt.join(', ').length <= dictionary.LIMITS.promptChars);
   assert.deepEqual(dictionary.promptTerms(['a'.repeat(500), 'b']), [], 'a long term cannot push the prompt past its budget');
-  assert.deepEqual(Object.keys(await dictionary.usage(paths)).sort(), ['enabled', 'limits', 'scanned', 'total'], 'nothing about the selection is exposed');
+  assert.deepEqual(Object.keys(await dictionary.usage(paths)).sort(), ['byProject', 'enabled', 'limits', 'scanned', 'shared', 'total'], 'nothing about the selection is exposed');
   assert.equal(dictionary.usage(paths).total, 51);
 }));
 
-test('recent and project words win, and unused words take turns', () => withDictionary(async (paths, noDatabase) => {
+test('recent and used words win, and the order is the same every time', () => withDictionary(async (paths, noDatabase) => {
   const now = Date.UTC(2026, 9, 13);
   const day = 86400000;
   const entry = (term, extra = {}) => ({ term, enabled: true, addedAt: now - 400 * day, ...extra });
-  fs.writeFileSync(paths.dictionaryFile, JSON.stringify({ terms: [
-    ...Array.from({ length: 300 }, (_, index) => entry(`Idle${index}`)),
-    entry('ChatGPT', { uses: 9, lastUsedAt: now - 2 * day, usedIn: { other: 9 } }),
-    entry('Tecnomatix', { uses: 4, lastUsedAt: now - 20 * day, usedIn: { plant: 4 } }),
-    entry('Ancient', { uses: 1, lastUsedAt: now - 365 * day }),
-    entry('VisorBridge', { source: 'scan', project: 'Visor' }),
+  fs.writeFileSync(paths.dictionaryFile, JSON.stringify({ version: 2, terms: [
+    ...Array.from({ length: 300 }, (_, index) => entry(`Idle${index}`, { projectId: 'plant', source: 'scan', weight: 0.6 })),
+    entry('ChatGPT', { uses: 9, lastUsedAt: now - 2 * day, usedIn: { plant: 9, other: 9 } }),
+    entry('Tecnomatix', { projectId: 'plant', uses: 4, lastUsedAt: now - 20 * day, usedIn: { plant: 4 } }),
+    entry('Ancient', { projectId: 'plant', uses: 1, lastUsedAt: now - 365 * day }),
+    entry('PlantBridge', { projectId: 'plant', source: 'scan', weight: 3 }),
+    entry('VisorBridge', { projectId: 'visor', source: 'scan', weight: 3 }),
   ] }));
-  const rank = (context) => dictionary.vocabulary(paths, noDatabase, { now, random: () => 0, ...context });
-  const elsewhere = await rank({ projectId: 'none' });
-  assert.equal(elsewhere[0], 'ChatGPT', 'a word used two days ago leads');
-  assert.ok(elsewhere.indexOf('Ancient') > elsewhere.indexOf('Tecnomatix'), 'a word untouched for a year falls behind');
-  const plant = await rank({ projectId: 'plant', projectName: 'Plant' });
-  assert.ok(plant.indexOf('Tecnomatix') < plant.indexOf('Ancient') && plant.indexOf('Tecnomatix') < 3, 'the project own words rise');
-  const visor = await rank({ projectId: 'v', projectName: 'visor' });
-  assert.ok(visor.indexOf('VisorBridge') < 5, 'a scanned word rises in the project it came from');
-  assert.ok(elsewhere.indexOf('VisorBridge') > 5, 'and stays low elsewhere');
-  // Words with no history rotate: over many recordings most idle words get a turn in the prompt-sized head.
-  const seen = new Set();
-  for (let recording = 0; recording < 60; recording++) for (const term of (await dictionary.vocabulary(paths, noDatabase, { now })).slice(0, dictionary.LIMITS.promptTerms)) seen.add(term);
-  assert.ok(seen.size > 200, `idle words take turns (saw ${seen.size})`);
-  assert.ok((await dictionary.vocabulary(paths, noDatabase, { now })).slice(0, 3).includes('ChatGPT'), 'a recently used word keeps its place');
+  const rank = (context) => dictionary.vocabulary(paths, noDatabase, { now, ...context });
+  const plant = await rank({ projectId: 'plant' });
+  assert.equal(plant[0], 'ChatGPT', 'a word used two days ago leads');
+  assert.ok(plant.indexOf('Tecnomatix') < plant.indexOf('Ancient'), 'a word untouched for a year falls behind');
+  assert.ok(plant.indexOf('PlantBridge') < plant.indexOf('Idle0'), 'a heavier scan word beats a lighter one');
+  assert.ok(!plant.includes('VisorBridge'), 'another project own words never appear');
+  assert.deepEqual(await rank({ projectId: 'plant' }), plant, 'no randomness: the same input gives the same list');
+  assert.deepEqual(await rank({ projectId: 'plant' }), await rank({ projectId: 'plant' }));
+  assert.deepEqual(await rank({}), ['ChatGPT'], 'with no project only shared words are offered');
 }));
 
 test('dictated and sent words are remembered per project', () => withDictionary((paths) => {

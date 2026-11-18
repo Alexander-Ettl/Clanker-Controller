@@ -1,8 +1,6 @@
 /* The composer clock's scheduling modes (schedule-timer.js). Clicking the clock steps through Usage reset, Timer and
-   Calendar (then off); the clock wears the icon of the mode it is in, and its value. Hovering it grows one tall pill out
-   of it with that mode's picker. The pill is a bud of the composer, in the compose row's goo, and is placed from the
-   clock's own position, so it stays wrapped around it when the composer turns from a pill into a squircle. Surfaces are
-   the row's --island. */
+   Calendar (then off); the clock wears the icon of the mode it is in, and its value. Clicking or hovering it opens that mode's
+   picker as a menu above the composer. */
 
 /* The clock: the icon of the mode, and the value beside it once there is one (a time, a delay, the live countdown). */
 .schedule-toggle svg.sc-ico { display: none; }
@@ -22,45 +20,27 @@
   white-space: nowrap;
 }
 /* --time-w: the widest label this mode can show (schedule-timer.js), so dragging the bar from "15 min" to "1.5 hours"
-   never changes the clock's width, and the pill grown from it stays one size. Centred, so a short label sits evenly. */
+   never changes the clock's width. Centred, so a short label sits evenly. */
 .schedule-toggle.has-time .schedule-time { display: inline-block; min-width: var(--time-w, 0); text-align: center; }
 .schedule-probe { position: absolute; visibility: hidden; pointer-events: none; white-space: nowrap; font: 600 11.5px var(--font-text); font-variant-numeric: tabular-nums; }
-/* Open: the clock sits on top of the pill, as its foot. */
-.schedule-toggle.is-timer-open { position: relative; z-index: 7; }
-
-.timer-bud {
-  position: absolute; /* right and bottom are set from the clock's position */
-  z-index: 6;
-  width: 0;
-  height: 0;
-}
-.timer-bud[hidden], .timer-bud [hidden] { display: none; }
-
-/* One card for every mode, so the margins never differ: 10px above, left and right of the content; the clock's own corner
-   (4px) is the only tighter edge, because the pill wraps the clock like a bud. */
-.timer-pill {
-  --bw: 36px; /* the clock's width */
-  position: absolute;
-  right: 0;
-  bottom: 0;
+/* The picker is a menu on the composer's upper glass slab, the same surface as the model and permission menus (.model-menu,
+   main.js createIslandMenu; the slab and its fillets are drawn by liquid-glass.js). This card is its only content; the menu
+   supplies the material, the corners and the open/close motion. */
+.model-menu.schedule-menu { width: 248px; overflow: visible; max-height: none; }
+.timer-card [hidden] { display: none; }
+.timer-card {
   box-sizing: border-box;
-  width: 236px;
-  padding: 10px 4px 4px 10px;
-  border-radius: 28px;
+  width: 100%;
+  padding: 6px 6px 10px 10px;
   display: flex;
   flex-direction: column;
   gap: 8px;
-  background: var(--island-surface);
-  box-shadow: inset 0 0 0 1px rgb(var(--ink) / 0.07), inset 0 1px 0 rgb(var(--sheen) / 0.06);
   color: var(--text-primary);
   font: 500 12px var(--font-text);
   font-variant-numeric: tabular-nums;
-  transform-origin: 100% 100%;
-  animation: island-bud 0.32s cubic-bezier(0.34, 1.36, 0.64, 1) both;
 }
-.timer-pill.is-leaving { animation: island-bud-out 0.28s cubic-bezier(0.5, 0, 0.75, 0) both; }
 
-.timer-head, .timer-body { padding-right: 6px; } /* 4px of the pill's own + 6px = the 10px of the left side */
+.timer-head, .timer-body { padding-right: 4px; }
 .timer-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
 .timer-title { font-weight: 600; font-size: 12.5px; white-space: nowrap; }
 .timer-off {
@@ -114,8 +94,7 @@
 .timer-chip.is-sel:focus-visible { box-shadow: inset 0 0 0 1px rgba(100, 210, 255, 0.5), 0 0 0 1.5px rgba(100, 210, 255, 0.7); }
 
 /* Foot: a line about what is chosen at the left, the clock's own slot at the right. */
-.timer-foot { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
-.timer-slot { width: var(--bw); height: 36px; flex-shrink: 0; }
+.timer-foot { display: flex; align-items: center; min-height: 0; }
 .timer-note { color: var(--text-secondary); font-size: 11.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .timer-note:empty { display: none; }
 
@@ -183,6 +162,5 @@
 .timer-weekdays { margin-bottom: -4px; font-size: 10px; color: var(--text-tertiary); }
 
 @media (prefers-reduced-motion: reduce) {
-  .timer-pill, .timer-pill.is-leaving { animation: none; }
   .timer-chip, .timer-window { transition: none; }
 }
