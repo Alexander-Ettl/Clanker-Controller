@@ -22,6 +22,7 @@ const { SlashCommandCatalog } = require('../lib/slash-commands.js');
 require('./model-fixture').seedModels();
 
 let failures = 0;
+let queue = Promise.resolve(); // see test() below
 
 test('Claude and Gemini native requests point to every original image and request inspection',()=>{
   const {StreamEngine}=require('../lib/stream-engine');
@@ -42,23 +43,15 @@ test('Claude and Gemini native requests point to every original image and reques
   }finally{fs.unlinkSync(original);fs.unlinkSync(second);}
 });
 
-const pendingTests = [];
+// Tests run one after another: several share process-wide state (process.env,
+// the recorder's temp folder, module caches), so running async tests side by
+// side made them fail at random.
 function test(name, fn) {
-  try {
-    const result = fn();
-    if (result && typeof result.then === 'function') {
-      // P17-U: silent on success; only failures print.
-      pendingTests.push(result.catch((error) => {
-        failures += 1;
-        console.error(`FAIL  ${name}`);
-        console.error(`      ${error.message}`);
-      }));
-    }
-  } catch (error) {
+  queue = queue.then(fn).catch((error) => {
     failures += 1;
     console.error(`FAIL  ${name}`);
     console.error(`      ${error.message}`);
-  }
+  });
 }
 
 test('P12-D: writeMicroHandoff persists a round-trippable, hard-capped-size summary', () => {
@@ -644,7 +637,10 @@ test('package.json declares the webview view, the injectPrompt command, and the 
 
 test('P16-I: binary-locator finds the newest bundled CLI across IDE extension dirs and reports every path checked', () => {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'locator-'));
-  const make = (rel) => { const file = path.join(home, rel); fs.mkdirSync(path.dirname(file), { recursive: true }); fs.writeFileSync(file, ''); return file; };
+  // Off Windows the locator looks for executable files without `.exe`, and Codex ships a linux-* folder.
+  const win = process.platform === 'win32';
+  const native = (rel) => (win ? rel : rel.replace(/\.exe$/, '').replace('windows-x86_64', `linux-${process.arch === 'arm64' ? 'aarch64' : 'x86_64'}`));
+  const make = (rel) => { const file = path.join(home, native(rel)); fs.mkdirSync(path.dirname(file), { recursive: true }); fs.writeFileSync(file, '', { mode: 0o755 }); return file; };
   make('.antigravity/extensions/anthropic.claude-code-2.1.99-win32-x64/resources/native-binary/claude.exe');
   const newest = make('.antigravity-ide/extensions/anthropic.claude-code-2.1.280-win32-x64/resources/native-binary/claude.exe');
   const codex = make('.vscode/extensions/openai.chatgpt-26.7.1-win32-x64/bin/windows-x86_64/codex.exe');
@@ -658,8 +654,8 @@ test('P16-I: binary-locator finds the newest bundled CLI across IDE extension di
     assert.equal(locator.locate('codex').path, codex);
     const gemini = locator.locate('gemini');
     assert.equal(gemini.path, null);
-    assert.ok(gemini.checked.some((file) => file.endsWith(path.join('agy', 'bin', 'agy.exe'))));
-    assert.equal(locator.terminalCommand('claude'), `& "${newest}"`);
+    assert.ok(gemini.checked.some((file) => file.endsWith(path.join('agy', 'bin', native('agy.exe')))));
+    assert.equal(locator.terminalCommand('claude'), win ? `& "${newest}"` : `'${newest}'`);
   } finally {
     for (const [key, value] of Object.entries(saved)) { if (value === undefined) delete process.env[key]; else process.env[key] = value; }
     delete require.cache[resolved];
@@ -1271,9 +1267,11 @@ test('edit tool starts carry a diff; Gemini reads are not edits', () => {
 });
 
 // Summarize only after every test in this file has registered (setImmediate
-// runs after the module body), so async tests defined further down are
-// awaited too.
-setImmediate(() => Promise.all(pendingTests).then(() => {
+// runs after the module body) and the queue has run them all.
+// Some code under test unref()s its timers, so hold the event loop open until the queue is done.
+const keepAlive = setInterval(() => {}, 60_000);
+setImmediate(() => queue.then(() => {
+  clearInterval(keepAlive);
   if (failures > 0) {
     console.error(`\n${failures} test(s) failed.`);
     process.exitCode = 1;

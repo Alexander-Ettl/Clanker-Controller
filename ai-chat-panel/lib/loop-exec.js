@@ -23,8 +23,19 @@ function npmCommand() {
   const node = nodeCommand();
   const beside = path.join(path.dirname(node.command), 'node_modules', 'npm', 'bin', 'npm-cli.js');
   if (fs.existsSync(beside)) return { command: node.command, args: [beside], env: node.env };
+  // Unix installs keep npm in <prefix>/lib/node_modules next to <prefix>/bin/node.
+  const unix = path.join(path.dirname(node.command), '..', 'lib', 'node_modules', 'npm', 'bin', 'npm-cli.js');
+  if (process.platform !== 'win32' && fs.existsSync(unix)) return { command: node.command, args: [unix], env: node.env };
   for (const dir of (process.env.PATH || process.env.Path || '').split(path.delimiter)) {
-    const shim = path.join(dir.trim().replace(/^"|"$/g, ''), 'npm.cmd');
+    const clean = dir.trim().replace(/^"|"$/g, '');
+    if (!clean) continue;
+    if (process.platform !== 'win32') {
+      // Version managers (Volta, nvm, asdf) put an executable `npm` on PATH; it runs without a shell.
+      const bin = path.join(clean, 'npm');
+      try { fs.accessSync(bin, fs.constants.X_OK); if (fs.statSync(bin).isFile()) return { command: bin, args: [], env: node.env }; } catch { /* not here */ }
+      continue;
+    }
+    const shim = path.join(clean, 'npm.cmd');
     if (fs.existsSync(shim)) { const resolved = resolveShim(shim); if (resolved) return { ...resolved, env: node.env }; }
   }
   return null;
