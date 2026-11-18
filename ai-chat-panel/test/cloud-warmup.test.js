@@ -261,7 +261,7 @@ test('a timezone change updates the timer, and a cloud refresh adopts the saved 
   await h.handle({ action: 'save', schedule: next });
   assert.ok(steps[0].includes('--time-zone=Asia/Kathmandu'));
   assert.equal(steps[1], 'config');
-  const remote = config(); remote.schedule.timezone = 'America/New_York';
+  const remote = config(); remote.schedule.timezone = 'America/New_York'; remote.expiresAt = Date.now() + 30 * 24 * HOUR; // the status line compares with the real clock, so a fixed date would expire
   h.store = () => store({ 'config.json': remote });
   h.api = async () => ({ state: 'PAUSED' });
   await h.handle({ action: 'refresh' });
