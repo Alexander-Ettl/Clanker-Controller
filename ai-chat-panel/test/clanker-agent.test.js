@@ -141,9 +141,13 @@ test('cancel stops a running task, keeps its partial answer and a dead worker is
   try {
     await run(['start', '--to', 'codex:gpt-6.1-sol', '--task', 'hang', '--prompt', 'MODE:hang', '--cwd', cwd]);
     const dir = path.join(cwd, '_work', 'clanker', 'hang');
-    for (let i = 0; i < 40 && !fs.existsSync(path.join(dir, 'result.partial.md')); i++) await new Promise((resolve) => setTimeout(resolve, 250));
-    const running = await run(['status', 'hang', '--cwd', cwd]);
-    assert.match(running.text, /^RUNNING[\s\S]*progress\s+\d+ chars so far/);
+    const progress = /^RUNNING[\s\S]*progress\s+\d+ chars so far/;
+    let running = await run(['status', 'hang', '--cwd', cwd]);
+    for (let i = 0; i < 40 && !progress.test(running.text); i++) {
+      await new Promise((resolve) => setTimeout(resolve, 250));
+      running = await run(['status', 'hang', '--cwd', cwd]);
+    }
+    assert.match(running.text, progress);
     const timedOut = await run(['wait', 'hang', '--cwd', cwd, '--timeout', '1']);
     assert.equal(timedOut.code, 2, 'still running is its own exit code');
     const cancelled = await run(['cancel', 'hang', '--cwd', cwd]);
