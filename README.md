@@ -109,3 +109,7 @@ On Windows you can also run `ai-chat-panel/install-into-antigravity.ps1 -Link`. 
 | [`docs/`](docs/README.md) | Guides, specifications and proposals |
 
 Working on the code? Start with the [development guide](docs/development.md), [AGENTS.md](AGENTS.md) and the backlog in [TODO.md](TODO.md).
+
+## License
+
+[Mozilla Public License 2.0](LICENSE). You can use Clanker Controller in any project, including closed-source ones. If you change one of its files and distribute the result, that file stays under MPL-2.0 and its source must stay available.
