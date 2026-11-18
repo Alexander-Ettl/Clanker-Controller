@@ -8,6 +8,7 @@ Start at the [root README](../README.md). For remaining work, use [TODO.md](../T
 |---|---|
 | [Agent instructions](../AGENTS.md) | Before edits or commands |
 | [Development guide](development.md) | Repository map, install, checks, usage windows and CLI maintenance |
+| [Publishing](publishing.md) | Marketplace and Open VSX packages, publisher setup and release steps |
 | [Chat extension](../ai-chat-panel/README.md) | Architecture, installation, voice input and local checks |
 | [Projects and storage](../ai-chat-panel/PROJECTS.md) | Project selection, chat ownership and repository boundaries |
 | [Voice router](../voice-router/README.md) | CLI/daemon setup, capture, routing and batch commands |

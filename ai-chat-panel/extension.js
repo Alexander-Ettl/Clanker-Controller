@@ -3744,7 +3744,8 @@ function activate(context) {
   SESSION_DIR = resolveSessionDir({
     storageDir: context.globalStorageUri.fsPath,
     // Earlier versions kept this in a site's `.astro/session`; copied over once, never read again.
-    legacyDirs: [process.env.ASTRO_CONTENT_EDITOR_SESSION_DIR, path.join(workspaceDir, 'site', '.astro', 'session'), path.join(workspaceDir, '.astro', 'session')],
+    // The Marketplace build has its own publisher ID; chats saved by the unpublished `local.ai-chat-panel` copy come along once.
+    legacyDirs: [path.join(path.dirname(context.globalStorageUri.fsPath), 'local.ai-chat-panel', 'session'), process.env.ASTRO_CONTENT_EDITOR_SESSION_DIR, path.join(workspaceDir, 'site', '.astro', 'session'), path.join(workspaceDir, '.astro', 'session')],
   });
   const chatStore = new ChatStore(SESSION_DIR);
   const projects = new ProjectRegistry(SESSION_DIR);
