@@ -3,7 +3,7 @@
 //   reset     when the usage resets (the default: a pill that shows what it is waiting for)
 //   timer     after a delay, set on a vertical bar
 //   calendar  at a chosen day and time
-// Clicking or hovering the clock grows a tall pill out of it, with the picker for the current mode. The mode the last scheduled
+// Clicking or hovering the clock opens a menu above the composer, fused to it like the model picker's, with the picker for the current mode. The mode the last scheduled
 // prompt used is the one the next click starts with (main.js saves it). Everything is mouse-driven and live: every
 // change applies at once, leaving the pill closes it. Loaded before main.js, which owns arming and the task itself.
 (() => {
@@ -51,9 +51,9 @@
   }
 
   /**
-   * @param {{ button: HTMLElement, composer: HTMLElement, preferred?: string, usage: () => { windows: { key: string, name: string, remaining: number|null, resetsAt: number|null }[] }, onChange: () => void }} options
+   * @param {{ button: HTMLElement, composer: HTMLElement, menu: HTMLElement (a .model-menu on the upper glass slab), placeMenu: (centerX: number) => void, setMenuOpen: (open: boolean) => void, preferred?: string, usage: () => { windows: { key: string, name: string, remaining: number|null, resetsAt: number|null }[] }, onChange: () => void }} options
    */
-  window.initScheduleTimer = ({ button, composer, preferred = 'reset', usage, onChange }) => {
+  window.initScheduleTimer = ({ button, composer, menu, placeMenu, setMenuOpen, preferred = 'reset', usage, onChange }) => {
     let mode = null; // null: off (the prompt just sends)
     let base = MODES.includes(preferred) ? preferred : 'reset'; // the mode a click from "off" starts with
     let resetKey = '5h'; // which limit the reset mode waits for
@@ -65,10 +65,8 @@
     let leaveTimer;
     let ticker;
 
-    // ---- markup: one pill: a title (wide modes), the picker, and the clock itself as the foot
-    const bud = el('div', 'timer-bud');
-    bud.hidden = true;
-    const pill = el('div', 'timer-pill');
+    // ---- markup: one card in the composer's upper menu (the host owns the menu and its glass): a title (wide modes), the picker, a note
+    const pill = el('div', 'timer-card');
     const head = el('div', 'timer-head');
     const title = el('div', 'timer-title');
     const offBtn = btn('timer-off', 'Off', 'Turn off scheduling');
@@ -107,13 +105,11 @@
     monthBar.append(prev, monthTitle, next);
     calendar.append(monthBar, weekdays, days, calTime.row);
 
-    const slot = el('span', 'timer-slot'); // where the clock button sits
     const foot = el('div', 'timer-foot');
-    foot.append(note, slot);
+    foot.append(note);
     body.append(chips, windowsView, calendar);
     pill.append(head, body, foot);
-    bud.append(pill);
-    composer.append(bud);
+    menu.append(pill);
 
     /** ‹ 14 › : ‹ 35 › — the wheel over a number steps it too. */
     function timeRow() {
@@ -289,20 +285,11 @@
     const startTicker = () => { stopTicker(); ticker = setInterval(() => { if (mode === 'reset') renderWindows(); }, 1000); };
     const stopTicker = () => { clearInterval(ticker); ticker = null; };
 
-    // ---- placement: the pill wraps the clock wherever the composer puts it (a pill, or the bottom row of the squircle)
-    // The clock's layout box inside the composer, not its drawn rectangle: the hover scale and a size transition in
-    // progress would move the pill off the clock by a few pixels, a different few each time.
-    function boxIn(el, ancestor) {
-      let x = 0; let y = 0;
-      for (let node = el; node && node !== ancestor; node = node.offsetParent) { x += node.offsetLeft; y += node.offsetTop; }
-      return { x, y, w: el.offsetWidth, h: el.offsetHeight };
-    }
+    // ---- placement: the menu rests on the composer's top edge, centred over the clock (the host clamps it into the column)
     function place() {
-      if (bud.hidden) return;
-      const box = boxIn(button, composer);
-      bud.style.right = `${composer.clientWidth - (box.x + box.w) - 4}px`;
-      bud.style.bottom = `${composer.clientHeight - (box.y + box.h) - 4}px`;
-      pill.style.setProperty('--bw', `${box.w}px`);
+      if (!open) return;
+      const box = button.getBoundingClientRect();
+      placeMenu(box.left + box.width / 2);
     }
     const resizeObserver = new ResizeObserver(place);
     for (const target of [composer, button]) resizeObserver.observe(target);
@@ -311,26 +298,26 @@
       clearTimeout(leaveTimer);
       if (open || mode === null) return; // off: nothing to pick
       open = true;
-      bud.hidden = false;
       button.classList.add('is-timer-open');
-      pill.classList.remove('is-leaving');
       place();
       render();
+      setMenuOpen(true);
       if (mode === 'reset') startTicker();
     }
     function hide() {
       if (!open) return;
       open = false;
       stopTicker();
-      pill.classList.add('is-leaving');
-      setTimeout(() => { if (!open) { bud.hidden = true; pill.classList.remove('is-leaving'); button.classList.remove('is-timer-open'); } }, 280);
+      button.classList.remove('is-timer-open');
+      setMenuOpen(false);
     }
     button.addEventListener('mouseenter', show);
-    button.addEventListener('mouseleave', () => { leaveTimer = setTimeout(hide, 260); });
-    bud.addEventListener('mouseenter', () => clearTimeout(leaveTimer));
-    bud.addEventListener('mouseleave', () => { leaveTimer = setTimeout(hide, 260); });
+    // The menu sits a composer's height above the clock, so the pointer needs a moment to get there.
+    button.addEventListener('mouseleave', () => { leaveTimer = setTimeout(hide, 450); });
+    menu.addEventListener('mouseenter', () => clearTimeout(leaveTimer));
+    menu.addEventListener('mouseleave', () => { leaveTimer = setTimeout(hide, 350); });
     button.addEventListener('keydown', (event) => { if (event.key === 'ArrowUp' && mode === 'timer') { event.preventDefault(); show(); chipButtons[index].focus(); } });
-    bud.addEventListener('keydown', (event) => { if (event.key === 'Escape') { event.stopPropagation(); hide(); button.focus(); } });
+    menu.addEventListener('keydown', (event) => { if (event.key === 'Escape') { event.stopPropagation(); hide(); button.focus(); } });
 
     /** Back to off, and forget the chosen moment (the bar keeps its step). */
     function clear() {
@@ -339,9 +326,7 @@
       at = null;
       stopTicker();
       render();
-      open = false;
-      bud.hidden = true;
-      button.classList.remove('is-timer-open');
+      hide();
     }
 
     render();

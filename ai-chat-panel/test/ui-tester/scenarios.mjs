@@ -272,7 +272,7 @@ export const scenarios = [
     assert.ok(immediate, 'preview is inserted before image preparation finishes');
     await page.waitForTimeout(700);
   } },
-  ...['light', 'dark'].map(theme => ({ id: `glass-schedule-${theme}`, scope: '.timer-pill', setup: async page => {
+  ...['light', 'dark'].map(theme => ({ id: `glass-schedule-${theme}`, scope: '.schedule-menu', setup: async page => {
     await page.evaluate(theme => {
       document.body.classList.toggle('vscode-light', theme === 'light');
       document.body.classList.toggle('vscode-dark', theme === 'dark');
@@ -281,11 +281,11 @@ export const scenarios = [
     await page.locator('#scheduleBtn').click();
     await page.locator('#scheduleBtn').click();
     await page.locator('#scheduleBtn').hover();
-    await page.locator('.timer-pill').waitFor({ state: 'visible' });
+    await page.locator('.schedule-menu.is-open').waitFor({ state: 'visible' });
     await page.waitForTimeout(700);
-    const material = await page.locator('.timer-pill').evaluate(el => ({ background: getComputedStyle(el).backgroundImage, shadow: getComputedStyle(el).boxShadow }));
-    assert.match(material.background, /linear-gradient/);
-    assert.match(material.shadow, /inset/);
+    // The picker is a menu on the composer's upper slab (like the model menu): it rests on the composer's top edge.
+    const [menu, composer] = await Promise.all([page.locator('.schedule-menu').boundingBox(), page.locator('.composer').boundingBox()]);
+    assert.ok(Math.abs(menu.y + menu.height - composer.y) < 4, 'the schedule menu rests on the composer top edge');
     assert.equal(await page.locator('.timer-chip[aria-checked="true"]').count(), 1, 'the selected timer remains visible');
   } })),
   { id: 'attachment-markup', focus: '.markup-editor', setup: async page => {
@@ -370,12 +370,12 @@ export const scenarios = [
     await post({ type: 'quotas', quotas: { claude: { remaining: 80 } } });
     await post({ type: 'schedulerQueue', queue: tasks });
     assert.equal(await page.locator('.turn-queue-clock').count(), 3);
-    assert.equal(await page.locator('.turn-queue-item .turn-queue-grip svg').count(), 3, 'scheduled rows keep their drag handles');
+    assert.equal(await page.locator('.turn-queue-item .turn-queue-rank').count(), 3, 'scheduled rows show their place in the order');
     assert.equal(await page.locator('.turn-queue-when > :first-child').first().evaluate(el => el.classList.contains('turn-queue-clock')), true, 'the clock sits before the time'); 
     await page.clock.fastForward(2000);
-    assert.equal(await page.locator('.turn-queue-clock').count(), 1, 'elapsed tasks drop the clock; every row keeps its grip');
+    assert.equal(await page.locator('.turn-queue-clock').count(), 1, 'elapsed tasks drop the clock; every row keeps its number');
     await page.waitForFunction(() => !document.querySelector('.turn-queue-item.is-entering') && document.querySelector('.turn-queue-strip').getAnimations().every(a => a.playState !== 'running'));
-    const first = page.locator('[data-task-id="ready-one"] .turn-queue-grip');
+    const first = page.locator('[data-task-id="ready-one"] .turn-queue-text');
     const target = page.locator('[data-task-id="ready-two"]');
     const from = await first.boundingBox(), to = await target.boundingBox();
     await page.mouse.move(from.x + from.width / 2, from.y + from.height / 2);
@@ -407,7 +407,7 @@ export const scenarios = [
     assert.match(await page.locator('.turn-queue-head > span').innerText(), /^3 queued .* 1 scheduled$/, 'the due prompt counts as queued');
     await page.waitForFunction(() => !document.querySelector('.turn-queue-item.is-entering') && document.querySelector('.turn-queue-strip').getAnimations().every(a => a.playState !== 'running'));
     // a queued turn dragged above both scheduled prompts
-    const grip = page.locator('[data-queue-key="turn:q2"] .turn-queue-grip');
+    const grip = page.locator('[data-queue-key="turn:q2"] .turn-queue-text');
     const from = await grip.boundingBox(), top = await page.locator('[data-queue-key="scheduled:due"]').boundingBox();
     await page.mouse.move(from.x + from.width / 2, from.y + from.height / 2);
     await page.mouse.down();
@@ -427,7 +427,7 @@ export const scenarios = [
     assert.deepEqual(await keys(), ['turn:q2', 'scheduled:due', 'scheduled:later', 'turn:q1']);
     // and a scheduled prompt dragged below the last queued one
     await page.waitForTimeout(450); // the dropped row is still gliding into its slot
-    const g2 = page.locator('[data-queue-key="scheduled:later"] .turn-queue-grip');
+    const g2 = page.locator('[data-queue-key="scheduled:later"] .turn-queue-text');
     const f2 = await g2.boundingBox(), bottom = await page.locator('[data-queue-key="turn:q1"]').boundingBox();
     await page.mouse.move(f2.x + f2.width / 2, f2.y + f2.height / 2);
     await page.mouse.down();
@@ -989,17 +989,15 @@ export const scenarios = [
     });
     await page.waitForFunction(() => document.querySelector('.schedule-time').textContent !== '');
     await page.waitForTimeout(200);
-    const state = await page.evaluate(() => ({
-      width: window.innerWidth,
-      multiline: document.querySelector('.composer').classList.contains('is-multiline'),
-      inputWidth: document.querySelector('#promptInput').getBoundingClientRect().width,
-    }));
-    if (state.width <= 420) {
-      assert.equal(state.multiline, true, 'narrow composer starts out as a squircle');
-      assert.ok(state.inputWidth >= 250, `expected roomy input row, got ${state.inputWidth}px`);
-    } else {
-      assert.equal(state.multiline, false, 'wide composer stays a one-line pill');
-    }
+    // The squircle is the only shape, at every width: the text row spans the composer and the bar sits below it.
+    const state = await page.evaluate(() => {
+      const box = selector => document.querySelector(selector).getBoundingClientRect();
+      const composer = box('.composer'), input = box('#promptInput');
+      return { width: window.innerWidth, composer: composer.width, inputWidth: input.width, inputBottom: input.bottom, barTop: box('#attachBtn').top, sendRight: box('#stopBtn').right, composerRight: composer.right };
+    });
+    assert.ok(state.inputWidth >= state.composer - 32, `expected a full-width input row, got ${state.inputWidth}px of ${state.composer}px`);
+    assert.ok(state.barTop >= state.inputBottom - 2, 'the button bar sits below the text, never beside it');
+    assert.ok(state.sendRight <= state.composerRight, 'the stop/send slot stays inside the composer');
   } },
   { id: 'queue-edit-stability', focus: '.compose-row', setup: queueStability },
   { id: 'queue-reset-wait', focus: '.compose-row', setup: queueReset },
@@ -1498,9 +1496,9 @@ export const scenarios = [
     await send({ type: 'schedulerQueue', queue: [{ id: 's1', chatId: 'pill-chat', model: 'gemini', modelId: hyd, prompt: 'Scheduled turn', status: 'pending', dispatchTrigger: 'fixed-time', dispatchTime: new Date(now + 600000).toISOString(), attachments: [] }] });
     await page.waitForTimeout(650);
     assert.equal(await page.locator('.turn-queue-item button[aria-label*="Change model"]').count(), 0, 'the robot button is gone');
-    // The handle is as tall as its row, which is two lines tall at this width.
-    const heights = await page.locator('.turn-queue-item').evaluateAll(rows => rows.map(row => ({ row: Math.round(row.getBoundingClientRect().height), grip: Math.round(row.querySelector('.turn-queue-grip').getBoundingClientRect().height) })));
-    for (const h of heights) assert.equal(h.grip, h.row, 'handle spans the whole row');
+    // The number column is as tall as its row; a row is always two lines tall.
+    const heights = await page.locator('.turn-queue-item').evaluateAll(rows => rows.map(row => ({ row: Math.round(row.getBoundingClientRect().height), grip: Math.round(row.querySelector('.turn-queue-rank').getBoundingClientRect().height) })));
+    for (const h of heights) assert.equal(h.grip, h.row, 'the number column spans the whole row');
     // Clicking the scheduled row's model asks the host to take the task back with the model menu open.
     await page.locator('[data-task-id="s1"] .model-pill').click();
     assert.deepEqual(await page.evaluate(() => { const m = window.sent.findLast(x => x.type === 'unscheduleToComposer'); return m && { taskId: m.taskId, chooseModel: m.chooseModel }; }), { taskId: 's1', chooseModel: true });
