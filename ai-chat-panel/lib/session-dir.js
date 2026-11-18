@@ -20,7 +20,7 @@ function resolveSessionDir({ storageDir, legacyDirs = [], override = process.env
   if (fs.existsSync(path.join(dir, MIGRATED))) return dir;
   try {
     fs.mkdirSync(dir, { recursive: true });
-    for (const legacy of legacyDirs.filter((candidate) => candidate && fs.existsSync(candidate))) {
+    for (const legacy of legacyDirs.filter((candidate) => candidate && path.resolve(candidate) !== path.resolve(dir) && fs.existsSync(candidate))) {
       for (const entry of OWN_ENTRIES) {
         const from = path.join(legacy, entry);
         if (fs.existsSync(from)) fs.cpSync(from, path.join(dir, entry), { recursive: true, force: false, errorOnExist: false });
