@@ -4,6 +4,8 @@ This folder is its own Git repository, branch `main`. It owns `ai-chat-panel/`, 
 
 Use native Windows PowerShell with an explicit working directory, quoted paths, `-LiteralPath`, and `npm.cmd`/`npx.cmd`. Don't introduce WSL or project Codex configuration. Prefer `rg`, focused reads, the existing helpers, and short working diffs. Preserve Liquid Glass styling, responsive motion, and the Dynamic Island rules in `docs/dynamic-island-composer-spec.md`.
 
+Before merging or enabling auto-merge, check the PR's current draft status, labels, and title. Leave draft PRs and PRs marked **Work in Progress** or **WIP** open until the author marks them ready, even if they have approvals and passing checks.
+
 Start with `README.md`. For remaining work, read the root `TODO.md`; it is the single backlog. Use `docs/README.md` to distinguish current guides, linked proposals and historical material. Don't treat archived checklists as open tasks. Update the backlog when completing or deferring work. Project registration and chat histories belong to the extension's user storage; see `ai-chat-panel/PROJECTS.md` and `ai-chat-panel/lib/projects.js`. A chat currently has one primary project. Its project root must remain explicit across queued turns and scheduling.
 
 Checks from this root: `npm.cmd run check`, `npm.cmd test`, `npm.cmd run verify:models`. `npm.cmd run verify:bridge` also needs the compiled Visor extension; set `VISOR_DIR` if it isn't at `../Visor`. Scope verification to the change and don't send test prompts to real CLIs.

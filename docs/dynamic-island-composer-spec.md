@@ -19,7 +19,7 @@ Put the filter on the **container** that holds the control and its buds, never o
 - **Opaque, identical fill.** Every fused shape uses the same charcoal (`rgb(26, 28, 34)`: message bubbles, model menu, the composer dock). The threshold works on alpha, so translucent glass breaks it, and a `backdrop-filter` can't see through a filtered ancestor anyway.
 - **Small gaps.** Shapes 4 to 8px apart fuse through a neck; wider than about 12px and they separate.
 - **Shadows go after the goo:** `filter: url(#msg-goo) drop-shadow(...)`. A shape's own outer `box-shadow` inside the goo smears into a halo, so fused shapes use inset hairlines only.
-- **Stay inside the filter region.** The filter clips to its region (`x/y -10%`, `130%` tall). Anything that sticks far out of the container (a tall menu) lives outside it in its own filtered stage (the model menu's `.model-menu-stage`) or unfiltered (`.mention-menu`, fixed-positioned).
+- **Stay inside the filter region.** The filter clips to its region (`x/y -10%`, `130%` tall). Anything that sticks far out of the container (a tall menu) lives outside it in its own filtered stage (the model menu's `.model-menu-stage`) or, since 2026-11-18, every menu that rests on the composer (model picker, permissions, the @ and / lists) is a `.model-menu` in its own `.model-menu-stage`.
 - **Containing block.** A filtered element becomes the containing block for `position: fixed` descendants; keep fixed popovers out of it.
 
 ## Motion
@@ -65,13 +65,20 @@ Paint order, back to front:
 - **Morph, don't swap:** when a bud changes state, animate the existing shape's size and content rather than removing it and spawning another.
 - `prefers-reduced-motion`: no emerge or retract motion; shapes still fuse.
 
+### One shape, one slot, menus on the upper slab (2026-11-18)
+
+The composer is the squircle at every width; there is no pill state. The text spans the width on top and `.composer-bar` runs below it: `+`, model, agents and the permission chip on the left; the clock, dictate and the single stop/send slot on the right. Stop and send never show together and share the slot, so the bar does not reshuffle when a turn starts. While dictating, send is disabled until the recording is finished or cancelled (Esc).
+
+Every menu that rests on the composer (model picker, permission picker, the @ file list, the / command list) is a `.model-menu` in its own `.model-menu-stage`, built by `createIslandMenu` in `media/main.js`. They share the upper slab (z 3 in the paint-order table above): the menu sits on the composer's top edge over any queued or scheduled prompts, fused to it by two fillets, blurring the queue beneath. `liquid-glass.js` draws the silhouette from the composer plus whichever `.model-menu` is open and re-measures when a list changes height. Only one is open at a time. The @ and / lists run nearly the composer's width (`placeListMenu`); the others centre on their button.
+
 ## Where it's applied (AI chat panel)
 
 | Element | How |
 |---|---|
 | Your message + its time/copy/revert dock | `.msg-group-user`, the original |
 | Model menu + the composer | `.model-menu-stage`: the menu rests on the composer's top edge, two concave fillets (`.model-menu-fillets`) plus a clipped root below the seam |
-| Composer dock: queued turns, attachments tray, @-mention chips, context warning, all fused to the pill | `.compose-row` carries the goo; buds have `.island-bud` (`media/style.css`, "The dock is a Dynamic Island") |
+| Composer dock: queued turns, attachments tray, @-mention chips, context warning, all fused to the composer | `.compose-row` carries the goo; buds have `.island-bud` (`media/style.css`, "The dock is a Dynamic Island") |
+| @ file list, / command list, permission menu | `.model-menu` with `.list-menu` / `.perm-menu`, same stage and upper slab as the model menu |
 
 ## Next candidates
 
@@ -79,7 +86,7 @@ Secondary glass surfaces (2026-11-17): scheduling pickers, preview/markup contro
 
 Sidebar hover motion (2026-11-17): queue previews open even for one chat. Hover cards use 240ms reveals with a 40ms label delay; project and Recent cards keep their final SVG dimensions and reveal through a rounded clip, avoiding path redraws during motion. Their material is 86% opaque, with fully opaque labels/icons; no new backdrop filters are added. Reduced-motion and high-contrast fallbacks remain in place.
 
-Scrollbar treatment (2026-11-17): transcript and queued/scheduled prompts share a 12px native drag gutter with a 6px pill thumb, transparent track, subtle inset highlight and stronger hover/drag contrast. Tracks stop 18px before either end so they sit inside rounded shoulders rather than touching the glass rim or composer neck. Scrollbars are surface details, above their own slab and below any overlaid menu; they add no backdrop filters, SVG maps or animation loops. High contrast retains native styling.
+Scrollbar treatment (2026-11-17): transcript and queued/scheduled prompts share a 12px native drag gutter with a 6px pill thumb, transparent track, subtle inset highlight and stronger hover/drag contrast. Tracks stop 18px before either end so they sit inside rounded shoulders rather than touching the glass rim or composer neck. The transcript runs under the dock, so under glass its track also stops 18px above the dock's top edge (`--dock-h`, the whole row including queued and scheduled prompts): the thumb follows the queue as it grows, up to the strip's own 34vh cap, and never ends up behind the frost, while the text still scrolls on beneath it. Scrollbars are surface details, above their own slab and below any overlaid menu; they add no backdrop filters, SVG maps or animation loops. High contrast retains native styling.
 
-- In the chat panel: the @-mention menu as a bud of the dock (needs its own stage like the model menu); the Thinking pill's context gauge; the voice recording state morphing the pill itself; the scheduled-prompt countdown; "Compacting…" as the context warning's next state; retract animations for the dock buds.
+- In the chat panel: the Thinking pill's context gauge; the voice recording state morphing the pill itself; the scheduled-prompt countdown; "Compacting…" as the context warning's next state; retract animations for the dock buds.
 - In the editor studio (`astro-integration/client/src/`): `LiquidGlassDefs.tsx` already defines a matching goo filter (`#liquid-gooey-meniscus`) that nothing uses yet. First targets: the Edit Mode dock and its menus, the text format toolbar with its dropdowns, the Done bar. The editor's top-layer law still applies (`z-index: 2147483647`).

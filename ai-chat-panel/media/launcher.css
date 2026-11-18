@@ -136,7 +136,7 @@ body.vscode-light:not(.vscode-high-contrast-light) .rail::before {
 .project-gallery-quota { flex: none; display: inline-flex; align-items: center; gap: 5px; height: 34px; padding: 0 12px 0 10px; border: 1px solid var(--eo-border); border-radius: var(--pill); background: rgb(var(--ink) / 0.04); color: var(--text-secondary); font: 600 11.5px var(--font-text); font-variant-numeric: tabular-nums; transition: color .15s var(--eo-ease), background .15s var(--eo-ease), border-color .15s var(--eo-ease); }
 .project-gallery-quota svg { width: 14px; height: 14px; }
 .project-gallery-quota.is-full { color: var(--fg-cyan); border-color: rgba(100, 210, 255, 0.3); background: rgba(100, 210, 255, 0.1); }
-.project-gallery-note { margin: 10px 2px 14px; color: var(--text-tertiary); font: 400 11.5px/1.5 var(--font-text); }
+.project-gallery-note { margin: 18px 18px 16px; color: var(--text-tertiary); font: 400 11.5px/1.5 var(--font-text); }
 .project-gallery { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(220px, 100%), 1fr)); gap: 8px; }
 .project-gallery-card { position: relative; min-width: 0; }
 .project-gallery-open { width: 100%; min-height: 68px; padding: 12px 48px 12px 12px; display: flex; align-items: center; gap: 12px; border: 1px solid var(--eo-border); border-radius: 16px; color: var(--text-primary); background: var(--rail-tile); box-shadow: inset 0 1px 0 rgb(var(--sheen) / 0.05); text-align: left; cursor: pointer; transition: background .15s var(--eo-ease), border-color .15s var(--eo-ease), transform .25s var(--eo-ease); }
@@ -612,18 +612,21 @@ body.lg-on:not(.vscode-light, .vscode-high-contrast, .vscode-high-contrast-light
   padding: 0 14px 0 12px;
   border: 1px solid color-mix(in srgb, var(--burn) 42%, transparent);
   border-radius: 999px;
-  /* A faint wash of the agent colour that fades toward the right, a lit top edge, and a soft glow under the value. */
-  background: linear-gradient(100deg, color-mix(in srgb, var(--burn) 22%, transparent), color-mix(in srgb, var(--burn) 7%, transparent));
+  /* A faint wash of the agent colour that fades toward the right, a lit top edge, and a soft glow under the value. The wash sits on
+     a mostly solid layer of the panel colour: only the background is translucent, and the transcript no longer ghosts behind the words. */
+  background: linear-gradient(100deg, color-mix(in srgb, var(--burn) 22%, transparent), color-mix(in srgb, var(--burn) 7%, transparent)),
+    color-mix(in srgb, var(--charcoal) 88%, transparent);
   box-shadow: inset 0 1px 0 rgb(var(--sheen) / 0.09), 0 0 14px -4px color-mix(in srgb, var(--burn) 45%, transparent);
   color: var(--text-primary);
   white-space: nowrap;
   line-height: 1;
 }
-.ring-burn-val { font: 700 15px var(--font-text); letter-spacing: -0.015em; font-variant-numeric: tabular-nums; color: color-mix(in srgb, var(--burn) 35%, white); }
-.ring-burn-label { font: 500 10px var(--font-text); letter-spacing: 0.005em; color: var(--text-secondary); }
+/* Opaque text in the theme's own text colour with a touch of the agent colour: mixing with literal white vanished on light themes. */
+.ring-burn-val { font: 700 15px var(--font-text); letter-spacing: -0.015em; font-variant-numeric: tabular-nums; color: color-mix(in srgb, var(--burn) 30%, var(--text-primary)); opacity: 1; }
+.ring-burn-label { font: 500 10px var(--font-text); letter-spacing: 0.005em; color: var(--text-primary); opacity: 1; }
 .ring-burn.is-spent .ring-burn-label { display: none; }
 .ring-burn.is-low { --burn: var(--usage-low); }
-.ring-burn.is-low .ring-burn-val { color: color-mix(in srgb, var(--burn) 70%, white); }
+.ring-burn.is-low .ring-burn-val { color: color-mix(in srgb, var(--burn) 55%, var(--text-primary)); }
 .ring-rows { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 6px; }
 .ring-row {
   display: grid;
@@ -947,6 +950,29 @@ body.lg-on:not(.vscode-light, .vscode-high-contrast, .vscode-high-contrast-light
   /* Hover: stays until the preview (opacity 0.1s) is opaque over it, then fades out under it and is dropped. */
   transition: transform 0.25s var(--eo-ease), box-shadow 0.25s var(--eo-ease), opacity 0.1s var(--eo-ease) 0.06s, visibility 0s 0.16s;
 }
+
+/* A pinned chat: a small glass disc with a filled pushpin on the tile's top-left corner, in the blue the project pins use.
+   Like the work icon it sits on the item, and gives way to the hover preview. */
+.history-pin {
+  position: absolute;
+  z-index: 2;
+  left: -5px;
+  top: -4px;
+  box-sizing: border-box;
+  display: grid;
+  place-items: center;
+  width: 17px;
+  height: 17px;
+  border-radius: 50%;
+  background: var(--charcoal);
+  box-shadow: 0 0 0 1px rgba(100, 210, 255, 0.5), 0 2px 5px rgb(0 0 0 / calc(0.4 * var(--shadow-k)));
+  color: var(--fg-cyan);
+  pointer-events: none;
+  transition: transform 0.25s var(--eo-ease), opacity 0.12s var(--eo-ease);
+}
+.history-pin svg { width: 11px; height: 11px; display: block; }
+.history-pin .pin-head { fill: currentColor; fill-opacity: .85; }
+.history-item:is(:hover, :focus-within) .history-pin { transform: scale(0.85); opacity: 0; visibility: hidden; transition: transform 0.25s var(--eo-ease), opacity 0.1s var(--eo-ease) 0.06s, visibility 0s 0.16s; }
 
 .history-lead { position: relative; z-index: 2; display: flex; }
 .agent-mark { display: inline-grid; place-items: center; vertical-align: middle; }

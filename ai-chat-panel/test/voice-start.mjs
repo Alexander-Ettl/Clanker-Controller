@@ -51,7 +51,7 @@ try {
   const bars = () => page.evaluate(() => [...document.querySelectorAll('.waveform-bar')].map(bar => ({ h: parseFloat(bar.style.height) || 0, rot: Math.round(Number((bar.style.transform.match(/rotate\(([\d.]+)deg/) || [0, 0])[1])) })));
 
   // Click: answered before the host says anything.
-  await page.locator('.mic-wrap').hover();
+  await mic.hover();
   await mic.click();
   assert.equal(await composer.evaluate(el => el.classList.contains('is-voice-starting')), true, 'the composer shows the loading state on the click itself');
   assert.equal(await mic.evaluate(el => el.classList.contains('is-starting') && el.disabled), true, 'the mic breathes and cannot be double-clicked');

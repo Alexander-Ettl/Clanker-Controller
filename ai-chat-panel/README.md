@@ -179,7 +179,10 @@ Tests: `test/clanker-agent.test.js`.
    auto-routes every message and stays selected across turns — type, Enter
    to send.
 4. The launcher's **Recent** list reopens (or reveals, if already open) a
-   past thread in its own window; `[ × ]` deletes it from disk.
+   past thread in its own window; `[ × ]` deletes it from disk. When the list
+   reorders (a chat you open rises to the top, the old first steps down), the
+   tiles glide to their new places in 260 ms (`glideHistory` in
+   `media/launcher.js`; not with reduced motion). Test: `test/rail-glide.mjs`.
 
 Auto chooses one available favorite for each task, keeping its exact model and
 reasoning effort. It uses the existing Groq classifier to compare the live favorites,
@@ -221,6 +224,8 @@ Then run **Developer: Reload Window** (`Ctrl+Shift+P`) in Antigravity.
 
 The launcher is a 64px rail (new chat, Manage chats, the Scheduled timer pill, Settings, usage rings, recent chats) down the far right edge of the chat in the **secondary sidebar** (`aiChatPanel.chatView`), inside the chat's own webview, split from the chat by a full-height divider (popups such as Settings cover the chat only, not the rail): `railMarkup()` in `extension.js`, styled by `media/launcher.css`, driven by `media/launcher.js`. The chat is wide anyway, so the IDE's minimum sidebar width no longer matters and nothing in the IDE is patched. Chats opened as editor tabs have no rail.
 
+**Pinned chats.** The pushpin on a card in Manage chats pins that chat: it moves to a **Pinned** section on top of Manage chats (above Active, whatever the sort) and to the top of the rail's **Recent** list, where its tile wears a small pin. Pinned chats keep the order they were pinned in and always fit in the rail (the "chats in the rail" limit counts the rest). The ids are kept in the extension's global state (`pinnedChatIds`, `ChatWindowManager.pinChat`/`chatPins`), not in the chat files, so a running chat's window cannot overwrite them; a deleted chat's pin is dropped on the next change. Browser check: `node ai-chat-panel/test/chat-pins.mjs` (`SHOT_DIR=<folder>` saves screenshots in dark and light).
+
 The Activity Bar icon (`aiChatPanel.mainView`) is only a doorway: showing that view focuses the chat view and closes the primary sidebar again, so the left sidebar flashes briefly.
 
 ### Legacy: `patch-sidebar-width.ps1`
@@ -240,12 +245,16 @@ configured in
 `voice-router/lib/groq-client.mjs`'s transcription and cleanup functions
 (dynamically imported — this extension is CommonJS, that library is ESM).
 Whisper Large v3 Turbo transcribes; GPT-OSS 120B cleans the text without
-classifying intent. The cleaned prompt waits in the composer for review.
+classifying intent. The cleaned prompt waits in the composer for review. It
+lands on a new line after what you already wrote, which stays on screen the whole
+time: a row opens under it for the meter, then for two ghost lines (no placeholder
+text) that the new words wipe in over. The dictation goes in through the editing
+stack, so one Ctrl+Z takes all of it back.
 Dictation preserves Auto or your manual model selection. When you send,
 the current chat router handles model selection; the microphone has no
 separate routing rules.
-Hovering the mic with a draft in the composer raises a small **Polish** button
-(also on keyboard focus). It runs what you typed through the same cleanup model
+The **Format** button (sparkle list icon) sits directly left of the mic in the bar and
+is enabled once there is a draft. It runs what you typed through the same cleanup model
 in a typed-text mode (no spoken-form rules; it restructures, never adds
 requirements) and replaces the draft in place, so Ctrl+Z brings your original
 back. Drafts over 12,000 characters are refused, and a failure keeps your text.
@@ -292,10 +301,12 @@ Correct a misheard word in the composer. After a typing pause, a visible
 **Adding “word” to dictionary** notice starts a ten-second countdown. Click
 its trash button to cancel; otherwise the spelling saves automatically and
 a confirmation appears. The countdown pauses while the chat is hidden.
-**Settings → Voice → Dictionary** is the full list: search, add, rename, switch off or delete words, scan a
-project (or any folder) for its technical terms, or have a chat model edit it. The dictionary keeps thousands of words;
-Clanker picks the ones that go to the models for each recording (recent use, the chat's project) and there is
-nothing to pin. See the
+**Settings → Voice → Dictionary** is the full list. Every project has its own words, and a few shared ones work in
+all of them; the picker switches between them. **Scan all projects** sets everything up in one go (project names,
+packages, classes, glossary and doc terms, read locally with no AI), and each project can be scanned again. Add, rename,
+switch off, share or delete words, or have a chat model edit the file. Clanker learns per project: accepted corrections go
+to the project, words you use rank higher there, and it suggests terms you keep typing or words worth sharing. For each
+recording it picks the project's best words plus a few shared ones, the same way every time; there is nothing to pin. See the
 [microphone review and walkthrough](../docs/microphone-dictionary-review.md)
 for routing, storage, behavior and verification details.
 

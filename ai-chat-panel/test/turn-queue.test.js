@@ -21,13 +21,13 @@ class Engine extends EventEmitter {
   complete(interrupted = false) { this.running = false; this.emit('event', { type: 'turn_complete', interrupted }); }
   dispose() { this.disposed = true; }
 }
-let quotaHook, chatNames; // chatNames: the aiChatPanel.chatNames setting a test wants (default 'agent')
+let quotaHook, chatNames, railChats;
 const agentTitles = {}; // what Antigravity "wrote" per conversation id
 const quotas ={ claude: { remaining: 100 }, codex: { remaining: 100 }, gemini: { remaining: 100 } };
 const load = Module._load;
 const vscodeStub = {
   env: { language: 'en' },
-  workspace: { getConfiguration: () => ({ get: (key, fallback) => key === 'verifyCommand' ? 'npm run check' : key === 'chatNames' && chatNames ? chatNames : fallback }) },
+  workspace: { getConfiguration: () => ({ get: (key, fallback) => ({ verifyCommand: 'npm run check', chatNames, railChats })[key] ?? fallback }) },
   Uri: { file: file => ({ fsPath: file, toString: () => file }), joinPath: (base, ...parts) => ({ fsPath: path.join(String(base), ...parts), toString: () => path.join(String(base), ...parts) }) },
 };
 Module._load = function (request, parent, isMain) {
@@ -56,10 +56,11 @@ test('queued edit acknowledgements identify the exact saved text revision', asyn
   assert.equal(f.deps.chatStore.load(run.chat.id).turnQueue.turns[0].text, text);
 });
 
-test('mixed strip dispatches top to bottom and a future first row holds later prompts', async t => {
-  const f = fixture(t), run = f.chat(), modelId = 'gpt-6.1-sol-high';
+test('mixed strip dispatches top to bottom once scheduled Claude work is due, even with 13% left', async t => {
+  const f = fixture(t), run = f.chat(), modelId = 'claude-sonnet-5-5-high';
+  quotaHook = () => ({ claude: { remaining: 13, secondary: { remaining: 16 } } });
   const queue = run.deps.schedulerQueue = f.deps.schedulerQueue = new SchedulerQueue({ workspaceDir: f.deps.workspaceDir, sessionDir: f.deps.sessionDir });
-  const task = await queue.enqueue({ model: 'codex', modelId, chatId: run.chat.id, prompt: 'Scheduled middle', dispatchTrigger: 'fixed-time', dispatchTime: '2099-01-01T00:00:00Z' });
+  const task = await queue.enqueue({ model: 'claude', modelId, chatId: run.chat.id, prompt: 'Scheduled middle', dispatchTrigger: 'fixed-time', dispatchTime: '2099-01-01T00:00:00Z' });
   run.queuePaused = true;
   run.enqueue({ id: 'last', text: 'Queued last', modelId, attachments: [], queued: true });
   run.enqueue({ id: 'first', text: 'Queued first', modelId, attachments: [], queued: true });
@@ -88,17 +89,18 @@ test('mixed strip dispatches top to bottom and a future first row holds later pr
 test('an exhausted first model holds later rows in its chat but not another chat', async t => {
   const f = fixture(t);
   const queue = new SchedulerQueue({ workspaceDir: f.deps.workspaceDir, sessionDir: f.deps.sessionDir });
-  quotaHook = () => ({ codex: { remaining: 0 }, claude: { remaining: 100 } });
+  quotaHook = () => ({ codex: { remaining: 0 }, claude: { remaining: 100, secondary: { remaining: 0 } }, gemini: { remaining: 100 } });
   const base = { dispatchTrigger: 'fixed-time', dispatchTime: new Date(0).toISOString() };
   await queue.enqueue({ ...base, chatId: 'blocked-chat', model: 'codex', prompt: 'First blocked' });
   await queue.enqueue({ ...base, chatId: 'blocked-chat', model: 'claude', prompt: 'Second must wait' });
-  await queue.enqueue({ ...base, chatId: 'other-chat', model: 'claude', prompt: 'Independent' });
+  await queue.enqueue({ ...base, chatId: 'weekly-blocked-chat', model: 'claude', prompt: 'Weekly quota exhausted' });
+  await queue.enqueue({ ...base, chatId: 'other-chat', model: 'gemini', prompt: 'Independent' });
   const sent = [];
   const watchdog = new SchedulerWatchdog({ queue, workspaceDir: f.deps.workspaceDir, getModels: () => ({}), resumeInChat: task => { sent.push(task.prompt); return true; } });
   t.after(() => watchdog.engine.dispose());
   await watchdog.tick();
   assert.deepEqual(sent, ['Independent']);
-  assert.deepEqual((await queue.getQueue()).filter(task => task.status === 'pending').map(task => task.prompt), ['First blocked', 'Second must wait']);
+  assert.deepEqual((await queue.getQueue()).filter(task => task.status === 'pending').map(task => task.prompt), ['First blocked', 'Second must wait', 'Weekly quota exhausted']);
 });
 
 test('scheduled queue snapshots include viewable staged images without changing attachment dispatch paths', async t => {
@@ -1238,20 +1240,52 @@ test('a draft is retained in slot five and removed with its backup when a sixth 
   assert.equal(store.list().length, 5, 'sent conversations survive cleanup');
 });
 
-test('sidebar switches apply the same recent-five ordering as the rail', async t => {
+test('pinned chats lead the list in pin order and their pins are dropped when the chat is deleted', async t => {
+  const f = fixture(t), store = f.deps.chatStore;
+  let saved;
+  f.manager.deps.chatPinStore = { get: () => saved, set: async ids => { saved = ids; } };
+  let notified = 0;
+  f.manager.deps.notifyHistory = () => { notified++; };
+  const make = (i, at) => store.save({ ...store.create(), updatedAt: at, messages: [{ role: 'user', text: `Sent ${i}` }] });
+  const [oldest, middle, newest] = [make(0, '2026-01-01T00:00:00Z'), make(1, '2026-01-02T00:00:00Z'), make(2, '2026-01-03T00:00:00Z')];
+  // save() stamps the time itself; put the dates back so the unpinned order is known.
+  for (const [chat, at] of [[oldest, '2026-01-01T00:00:00Z'], [middle, '2026-01-02T00:00:00Z'], [newest, '2026-01-03T00:00:00Z']]) fs.writeFileSync(store.fileFor(chat.id), JSON.stringify({ ...store.load(chat.id), updatedAt: at }));
+  assert.deepEqual(f.manager.listChats().map(chat => chat.id), [newest.id, middle.id, oldest.id]);
+  assert.ok(f.manager.listChats().every(chat => chat.pinned === false));
+  await f.manager.pinChat(oldest.id, true);
+  await f.manager.pinChat(middle.id, true);
+  assert.deepEqual(saved, [oldest.id, middle.id]);
+  assert.equal(notified, 2, 'the lists are told');
+  assert.deepEqual(f.manager.listChats().map(chat => [chat.id, chat.pinned]), [[oldest.id, true], [middle.id, true], [newest.id, false]]);
+  await f.manager.pinChat(oldest.id, true); // pinning twice keeps one pin
+  assert.deepEqual(saved, [middle.id, oldest.id]);
+  await f.manager.pinChat('missing-chat', true);
+  await f.manager.pinChat(newest.id, 'yes');
+  assert.deepEqual(saved, [middle.id, oldest.id], 'unknown chats and non-boolean values are ignored');
+  await f.manager.pinChat(middle.id, false);
+  assert.deepEqual(f.manager.listChats().map(chat => chat.id), [oldest.id, newest.id, middle.id]);
+  f.manager.deleteChat(oldest.id);
+  assert.ok(!f.manager.listChats().some(chat => chat.id === oldest.id));
+  await f.manager.pinChat(newest.id, true);
+  assert.deepEqual(saved, [newest.id], 'a deleted chat\'s pin is dropped on the next change');
+});
+
+test('sidebar switches preserve drafts across the configured recent rail slots', async t => {
+  railChats = 6;
+  t.after(() => { railChats = undefined; });
   const f = fixture(t), host = f.host(f.chat());
   host.panel.sidebar = true;
   f.manager.sidebar = host;
   f.manager.deps.sidebarState = { update() {} };
   const drafts = [];
-  for (let i = 0; i < 6; i++) {
+  for (let i = 0; i < 7; i++) {
     drafts.push(host.chat.id);
     await host.handleMessage({ type: 'saveDraft', chatId: host.chat.id, text: `Draft ${i}` });
     host.attach(f.chat());
   }
   assert.equal(f.deps.chatStore.load(drafts[0]), null);
-  for (const id of drafts.slice(-4)) assert.ok(f.deps.chatStore.load(id));
-  assert.equal(f.manager.listChats().slice(0, 5)[0].id, host.chat.id);
+  for (const id of drafts.slice(-5)) assert.ok(f.deps.chatStore.load(id));
+  assert.equal(f.manager.listChats()[0].id, host.chat.id);
 });
 
 test('late draft updates cannot write into the newly selected chat', async t => {

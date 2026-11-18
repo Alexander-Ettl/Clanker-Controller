@@ -296,7 +296,7 @@ body.lg-on:not(.vscode-high-contrast, .vscode-high-contrast-light) {
     background: var(--gc-sheen-soft), var(--charcoal);
     box-shadow: 0 18px 40px rgb(0 0 0 / calc(0.5 * var(--shadow-k))), var(--gc-hair), var(--gc-lit);
   }
-  & :is(.mention-menu, .history-filter-panel) {
+  & .history-filter-panel {
     background: var(--gc-sheen-soft), var(--eo-surface-raised);
     box-shadow: 0 18px 40px rgb(0 0 0 / calc(0.4 * var(--shadow-k))), var(--gc-hair), var(--gc-lit);
   }
@@ -313,7 +313,7 @@ body.lg-on:not(.vscode-high-contrast, .vscode-high-contrast-light) {
   --user-bubble-rim: rgb(var(--ink) / 0.18);
   --user-bubble-sheen: 0.08;
 
-  & :is(.timer-pill, .markup-bar, .inv-bar) {
+  & :is(.markup-bar, .inv-bar) {
     border-color: transparent;
     background: var(--gc-sheen), rgb(var(--panel) / 0.9);
     box-shadow: var(--shadow-panel), var(--gc-hair), var(--gc-lit), var(--gc-glow);
@@ -345,11 +345,11 @@ body.lg-on:not(.vscode-high-contrast, .vscode-high-contrast-light) {
   & :is(.image-lightbox-open, .image-lightbox-markup, .image-lightbox-close, .image-lightbox-download):hover {
     background: var(--gc-sheen), rgb(var(--panel-raised) / 0.96);
   }
-  & :is(.attachment-doc:not(.has-frame), .attachment-chip button) {
+  & .attachment-doc:not(.has-frame) {
     background: var(--gc-sheen-soft), rgb(var(--ink) / 0.045);
     box-shadow: var(--gc-hair), var(--gc-lit-soft);
   }
-  & :is(.markup-bar button, .timer-pill button):focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  & :is(.markup-bar button, .timer-card button):focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
   & :is(.approval-card, .question-card):not(.resolved) {
     border-color: transparent;
     background: var(--gc-sheen-soft), rgb(var(--panel) / 0.88);
