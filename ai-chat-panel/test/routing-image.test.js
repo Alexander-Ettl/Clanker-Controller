@@ -27,7 +27,7 @@ try {
   $bitmap.Save($Source, [System.Drawing.Imaging.ImageFormat]::Png)
 } finally { $bitmap.Dispose() }
 `);
-  const run = (script, args) => execFileSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-File', script, ...args], { windowsHide: true, timeout: 4500, encoding: 'utf8' }).trim();
+  const run = (script, args) => execFileSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-File', script, ...args], { windowsHide: true, timeout: 30000, encoding: 'utf8' }).trim(); // cold PowerShell + System.Drawing takes seconds on a CI runner
   run(fixture, ['-Source', source]);
   const original = fs.readFileSync(source);
   const converter = path.join(__dirname, '../lib/routing-image.ps1');

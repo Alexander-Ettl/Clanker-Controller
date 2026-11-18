@@ -221,6 +221,8 @@ function gitSnapshot(cwd) {
   try { return git(['stash', 'create'], cwd).trim() || git(['rev-parse', 'HEAD'], cwd).trim(); } catch { return ''; }
 }
 const gitRoot = (dir) => { try { return path.resolve(git(['rev-parse', '--show-toplevel'], dir).trim()); } catch { return ''; } };
+/** `file` as the filesystem spells it (git reports real paths; 8.3 short names and junctions would break path.relative against them). Works for a file that is gone. */
+const realFile = (file) => { try { return fs.realpathSync.native(file); } catch { try { return path.join(fs.realpathSync.native(path.dirname(file)), path.basename(file)); } catch { return file; } } };
 const readText = (file) => { try { return fs.readFileSync(file, 'utf8'); } catch { return ''; } };
 const diffBody = (text) => String(text).split('\n').filter((l) => /^[-+ ]/.test(l) && !/^(---|\+\+\+) /.test(l));
 /**
@@ -1474,7 +1476,7 @@ class StreamEngine extends EventEmitter {
     if (before === undefined) {
       const root = gitRoot(path.dirname(file));
       const base = root && (this.codexBases.get(root) || 'HEAD');
-      try { before = root ? git(['show', `${base}:${path.relative(root, file).split(path.sep).join('/')}`], root) : ''; } catch { before = ''; }
+      try { before = root ? git(['show', `${base}:${path.relative(root, realFile(file)).split(path.sep).join('/')}`], root) : ''; } catch { before = ''; }
     }
     this.editCache?.set(file, after);
     return editDiff({ old_string: before, new_string: after });

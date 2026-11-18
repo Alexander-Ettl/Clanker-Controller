@@ -66,6 +66,17 @@ function findIcon(root) {
 }
 
 const canonical = folder => fs.realpathSync.native(path.resolve(folder));
+/** `file` with its nearest existing parent resolved to the real path, so a file that does not exist yet still matches. */
+function realPath(file) {
+  let current = path.resolve(file), tail = '';
+  for (;;) {
+    try { return path.join(fs.realpathSync.native(current), tail); } catch {
+      const parent = path.dirname(current);
+      if (parent === current) return path.resolve(file);
+      tail = path.join(path.basename(current), tail); current = parent;
+    }
+  }
+}
 const key = folder => process.platform === 'win32' ? folder.toLowerCase() : folder;
 
 // User-local identities survive folder moves. No project code or history is stored in this registry.
@@ -122,11 +133,16 @@ class ProjectRegistry {
     const [project] = items.splice(at, 1);
     this.write(items); return project;
   }
+  /** The project whose folder holds `file`. Roots are stored resolved, so a path that reaches them another way (8.3 short names, junctions, a subst drive) is resolved once if the plain match fails. */
   forFile(file) {
     if (!file) return null;
-    const target = key(path.resolve(file));
-    return this.list().filter(item => item.root && (target === key(item.root) || target.startsWith(key(item.root + path.sep))))
-      .sort((a, b) => b.root.length - a.root.length)[0] || null;
+    const items = this.list().filter(item => item.root);
+    const find = path_ => {
+      const target = key(path_);
+      return items.filter(item => target === key(item.root) || target.startsWith(key(item.root + path.sep)))
+        .sort((a, b) => b.root.length - a.root.length)[0] || null;
+    };
+    return find(path.resolve(file)) || find(realPath(file));
   }
   /** A file-to-project-id lookup over one snapshot of the registry, for classifying many files at once. */
   resolver() {
@@ -171,4 +187,4 @@ async function projectFiles(root, limit = 5000) {
   return files.sort();
 }
 
-module.exports = { ProjectRegistry, projectFiles, describe, findIcon };
+module.exports = { ProjectRegistry, projectFiles, describe, findIcon, realPath };

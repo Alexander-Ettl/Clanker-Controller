@@ -71,7 +71,7 @@ const { CloudWarmup } = require('./lib/cloud-warmup');
 const { subscriptionBilled } = require('./lib/billing-mode');
 const { installInvestigations } = require('./lib/investigation-commands.js');
 const { createInvestigationBridge, investigationOptions } = require('./lib/investigation-bridge.js');
-const { ProjectRegistry, projectFiles, describe: describeProject, findIcon } = require('./lib/projects.js');
+const { ProjectRegistry, projectFiles, describe: describeProject, findIcon, realPath } = require('./lib/projects.js');
 const { resolveFileRef } = require('./lib/file-links.js');
 const { TelegramBridge, DOCK_KEYBOARD, escapeHtml, markdownToTelegramHtml } = require('./lib/telegram-bridge.js');
 const { configureTelegram: setupTelegram, TOKEN_KEY, CHAT_KEY, OWNER_KEY } = require('./lib/telegram-setup.js');
@@ -3166,9 +3166,9 @@ class ChatWindowManager {
     const projectContext = this.deps.projects ? this.projectDeps(projectId) : this.deps;
     const imageSources = [...new Set(Array.isArray(attachments) ? attachments : [])].map(f => {
       if (typeof f !== 'string' || !f.trim()) throw new Error('An attached image has no valid file path. Attach it again before sending.');
-      const source = path.resolve(projectRoot || projectContext.workspaceDir, f);
-      const workspaceRoot = path.resolve(projectContext.workspaceDir) + path.sep;
-      const attachmentRoot = path.resolve(projectContext.attachmentsDir) + path.sep;
+      const source = realPath(path.resolve(projectRoot || projectContext.workspaceDir, f)); // real paths on both sides: a symlink out of the project, or a short/junction spelling of it, is judged by where it lands
+      const workspaceRoot = realPath(projectContext.workspaceDir) + path.sep;
+      const attachmentRoot = realPath(projectContext.attachmentsDir) + path.sep;
       if (!source.startsWith(workspaceRoot) && !source.startsWith(attachmentRoot)) throw new Error(`Attached image is outside the selected project: ${f}`);
       if (!/\.(png|jpe?g|webp|gif)$/i.test(source)) throw new Error(`Unsupported attached image: ${f}`);
       if (!fs.existsSync(source) || !fs.statSync(source).isFile()) throw new Error(`Attached image was not found: ${source}`);
