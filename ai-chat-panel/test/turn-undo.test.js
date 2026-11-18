@@ -32,6 +32,9 @@ test('undo: puts back what the turn changed and leaves the rest alone', async ()
     await sleep(60);
     const startedAt = Date.now();
     const snapshot = run(['stash', 'create'], root);
+    // File times come from a coarser clock than Date.now() (a few ms on Linux, up to ~16 ms on NTFS), so a file written
+    // right after startedAt can look older than the turn. A real agent never writes that fast.
+    await sleep(60);
 
     fs.writeFileSync(path.join(root, 'a.txt'), 'a-agent\n'); // edited
     fs.rmSync(path.join(root, 'b.txt')); // deleted

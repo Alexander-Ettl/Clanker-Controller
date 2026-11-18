@@ -16,7 +16,8 @@ function fixture(saved, existingUser = false) {
       const terminal = { options, show() {}, dispose() { terminals.splice(terminals.indexOf(terminal), 1); } };
       terminals.push(terminal); return terminal;
     } } },
-    find: agent => ({ path: paths[agent] }), reset() {}, broadcast: message => messages.push(message),
+    find: agent => ({ path: paths[agent] }), reset() {}, spec: (agent, file) => terminalSpec(agent, file, 'win32'), // these flows are the Windows ones
+    broadcast: message => messages.push(message),
     run: async (file, args) => { checks.push({ file, args }); return { ok: true, stdout: file.includes('agy') ? 'gemini-flash\tGemini Flash' : '{"loggedIn":true,"secret":"never sent"}' }; },
   });
   return { accounts, terminals, messages, checks, paths, saved: () => value };
