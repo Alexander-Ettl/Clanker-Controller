@@ -4,7 +4,7 @@
 
 **Clanker Controller** is an IDE extension that puts your coding agents in one chat window. Claude Code, Codex, Antigravity (Gemini) and GitHub Copilot sit side by side. You pick a model per message. It drives the official CLIs you already have installed, so you keep your sign-ins, your plans and your setup. You give nothing up.
 
-It runs in **Antigravity** and **VS Code**.
+It runs in **VS Code** and **Antigravity IDE**.
 
 <p align="center">
   <img src="docs/images/hero-chat.png" alt="One chat where Claude Opus writes a fix, GPT-6.1-Sol reviews it and Gemini writes the changelog. The usage rings for all three sit on the right." width="900">
@@ -86,11 +86,11 @@ You can see your own number under **Chat Settings > General > API value**.
 
 ## Install
 
-You need Antigravity or VS Code and at least one CLI: Claude Code, Codex, Antigravity or GitHub Copilot.
+You need VS Code or Antigravity IDE and at least one CLI: Claude Code, Codex, Antigravity or GitHub Copilot.
 
 **Platform:** Windows 10 or 11. Hotkeys, notifications, microphone handling and some process cleanup call PowerShell and `taskkill`. Linux and macOS are untested; the chat and scheduler may work there, but expect rough edges and no voice dictation.
 
-**From the Marketplace:** search for **Clanker Controller** in the Extensions view (VS Code), or install it from Open VSX (Antigravity). The optional **Gemini, Claude & Codex Usage** extension adds the quota gauges to Antigravity's status bar.
+**From the Marketplace:** search for **Clanker Controller** in the Extensions view (VS Code), or install it from Open VSX (Antigravity IDE). The optional **Gemini, Claude & Codex Usage** extension adds the quota gauges to the Antigravity IDE status bar.
 
 **From source** (needs Node.js):
 

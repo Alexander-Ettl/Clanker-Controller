@@ -1,7 +1,7 @@
 {
   "name": "antigravity-usage-statusbar",
   "displayName": "Gemini, Claude & Codex Usage",
-  "description": "Shows Gemini (Antigravity), Claude Code, and Codex rate-limit usage in Antigravity's native status bar.",
+  "description": "Shows Gemini (Antigravity), Claude Code, and Codex rate-limit usage in the Antigravity IDE status bar.",
   "version": "0.2.0",
   "publisher": "local",
   "license": "MPL-2.0",

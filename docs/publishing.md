@@ -19,7 +19,7 @@ Two extensions ship from this repo: **Clanker Controller** (`ai-chat-panel/`) an
    node scripts/package-marketplace.mjs --publisher <publisher>
    ```
 
-   The `.vsix` files land in `C:\Dev\clanker-publish\out`. Add `--target win32-x64` to mark them Windows-only. The code relies on PowerShell and `taskkill`, so that is the honest setting, but it hides the extension from Linux and macOS users. `--only chat` or `--only usage` builds one.
+   The `.vsix` files land in `C:\Dev\clanker-publish\out`. Add `--target win32-x64` to mark them Windows-only. The code relies on PowerShell and `taskkill`, so that is the honest setting, but it hides the extension from Linux and macOS users. `--only chat`, `--only usage` or `--only theme` builds one (`theme` is the Clanker Paper & Ink colour themes in `clanker-theme/`).
 4. Look inside before publishing: `cd C:\Dev\clanker-publish\ai-chat-panel; npx.cmd @vscode/vsce ls --tree`. No `test/`, `.env*`, `types/` or dev `.ps1` scripts should be listed.
 5. Publish:
 

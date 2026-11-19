@@ -1,0 +1,81 @@
+name: Release
+
+# Push a tag `v<version>` that matches ai-chat-panel/package.json to publish all three
+# extensions (chat, usage, theme) to Open VSX and, when VSCE_PAT is set, the VS Code Marketplace.
+# workflow_dispatch only builds the packages and uploads them as an artifact.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  PUBLISHER: clanker-controller
+
+jobs:
+  check:
+    # The extensions are Windows-only, so test on Windows, like CI.
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm ci
+        env:
+          PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: "1"
+      - run: npm run check
+      - run: npm test
+
+  publish:
+    needs: check
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # attach the .vsix files to the GitHub release
+    env:
+      VSCE_PAT: ${{ secrets.VSCE_PAT }}
+      OVSX_PAT: ${{ secrets.OVSX_PAT }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Tag must match the extension version
+        if: github.ref_type == 'tag'
+        run: |
+          version=$(node -p "require('./ai-chat-panel/package.json').version")
+          if [ "${GITHUB_REF_NAME}" != "v${version}" ]; then
+            echo "::error::Tag ${GITHUB_REF_NAME} does not match ai-chat-panel/package.json version ${version}. Bump the version, commit, then tag."
+            exit 1
+          fi
+
+      - name: Build the packages
+        run: node scripts/package-marketplace.mjs --publisher "$PUBLISHER" --stage "$RUNNER_TEMP/clanker-publish"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: vsix
+          path: ${{ runner.temp }}/clanker-publish/out/*.vsix
+
+      - name: Publish to Open VSX
+        if: github.ref_type == 'tag'
+        run: |
+          for f in "$RUNNER_TEMP"/clanker-publish/out/*.vsix; do
+            npx --yes ovsx publish "$f" --skip-duplicate
+          done
+
+      - name: Publish to the VS Code Marketplace
+        if: github.ref_type == 'tag' && env.VSCE_PAT != ''
+        run: |
+          for f in "$RUNNER_TEMP"/clanker-publish/out/*.vsix; do
+            npx --yes @vscode/vsce publish --packagePath "$f" --skip-duplicate
+          done
+
+      - name: Attach to the GitHub release
+        if: github.ref_type == 'tag'
+        run: gh release create "$GITHUB_REF_NAME" "$RUNNER_TEMP"/clanker-publish/out/*.vsix --title "$GITHUB_REF_NAME" --generate-notes
+        env:
+          GH_TOKEN: ${{ github.token }}

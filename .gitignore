@@ -32,3 +32,7 @@ desktop.ini
 /ai-chat-panel/mic-select.png
 /ai-chat-panel/project-rail.png
 /ai-chat-panel/project-icons-settings.png
+
+# legal pages carry a private address and phone number: deployed from this machine, never committed
+site/public/impressum/
+site/public/datenschutz/

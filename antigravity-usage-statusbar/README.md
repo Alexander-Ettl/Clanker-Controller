@@ -1,7 +1,7 @@
-# Gemini, Claude & Codex Usage for Antigravity
+# Gemini, Claude & Codex Usage for Antigravity IDE
 
 A small local VS Code extension that adds three adjacent, right-aligned visual
-gauges to Antigravity's native status bar:
+gauges to the Antigravity IDE status bar:
 
 - **Gemini** reads live quota (5-hour limit and weekly limit) directly from
   Antigravity's local Language Server Connect-RPC endpoint
@@ -32,11 +32,11 @@ shows placeholder values (`--%`); errors are not surfaced as IDE notifications.
 
 ## Requirements
 
-Windows with Antigravity. Each gauge appears once its source exists: Antigravity's language server for Gemini, a Claude Code sign-in for Claude, and Codex rollout files for Codex. It is part of [Clanker Controller](https://github.com/Alexander-Ettl/Clanker-Controller) and works on its own.
+Windows with Antigravity IDE. Each gauge appears once its source exists: Antigravity's language server for Gemini, a Claude Code sign-in for Claude, and Codex rollout files for Codex. It is part of [Clanker Controller](https://github.com/Alexander-Ettl/Clanker-Controller) and works on its own.
 
 ## Installation
 
-Install it from Open VSX (Antigravity) or the Marketplace, then restart the IDE. To run it from source, copy this directory to `%USERPROFILE%\.antigravity-ide\extensions\<publisher>.antigravity-usage-statusbar-<version>`.
+Install it from Open VSX (Antigravity IDE) or the Marketplace, then restart the IDE. To run it from source, copy this directory to `%USERPROFILE%\.antigravity-ide\extensions\<publisher>.antigravity-usage-statusbar-<version>`.
 
 ## Test
 

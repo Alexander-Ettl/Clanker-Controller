@@ -74,6 +74,14 @@ Built 2026-11-11 (see [agent-bridge](docs/agent-bridge.md)): `lib/clanker-agent.
 
 **Done when:** a Claude chat starts a Codex and an Antigravity task, sees both finish with tagged sources, and a deliberately signed-out CLI ends as `failed` with a hint, with no manual file hunting.
 
+### STORE-01 · Ship the new icon, banner and theme to the stores
+
+Done 2026-11-19 (uncommitted): `ai-chat-panel/media/icon.png` is now white on black with a squircle (superellipse) outline instead of the orange tile with circular corners; `galleryBanner` is `#000000`/dark; `docs/images/*.png` re-rendered from the current Liquid Glass 2.0 UI (`node scripts/readme-shots.mjs`, `node scripts/render-store-assets.mjs`); `clanker-theme/` (Clanker Paper and Clanker Ink, generated from the site's colours by `clanker-theme/build.mjs`) is rendered in real VS Code with `node scripts/theme-shots.mjs`, built by `package-marketplace.mjs --only theme`, and live at https://clankercontroller.com/theme/ with the `.vsix` for download. The Marketplace page cannot follow the viewer's colour theme, so the page is fixed dark.
+
+- [x] 2026-11-19: version bumped to 0.1.1, `.github/workflows/release.yml` restored (tag `v*` publishes chat, usage and theme to Open VSX, and to the Marketplace when `VSCE_PAT` is set), attachment grid and sidebar divider shipped, "Antigravity IDE" used for the host editor.
+- [ ] Add the `VSCE_PAT` Actions secret (Azure DevOps token, scope Marketplace > Manage). Without it the Marketplace keeps 0.1.0 and only Open VSX updates. Never found in the repo's secrets; `OVSX_PAT` is set.
+- [ ] The Impressum and Datenschutz pages hold a private address and phone number, so `site/public/impressum/` and `datenschutz/` are gitignored and deploy only from this machine (`site/deploy.ps1`).
+
 ## Deferred
 
 ### TS-01 Â· Adopt TypeScript incrementally

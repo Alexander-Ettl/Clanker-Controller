@@ -42,6 +42,13 @@ Module._load = load;
 
 const tick = () => new Promise(resolve => setImmediate(resolve));
 const settle = async () => { await tick(); await tick(); };
+// Background saves land off the host thread; poll for them instead of sleeping a fixed time (slow CI runners miss fixed sleeps).
+const until = async (read, ok, ms = 5000) => {
+  const end = Date.now() + ms;
+  let value = read();
+  while (!ok(value) && Date.now() < end) { await new Promise(r => setTimeout(r, 25)); value = read(); }
+  return value;
+};
 
 test('queued edit acknowledgements identify the exact saved text revision', async t => {
   const f = fixture(t), run = f.chat(), host = f.host(run);
@@ -1759,19 +1766,19 @@ test('resumed sessions receive only missed turns; fresh sessions also receive th
 
 test('streaming without a window saves text, tool steps and session IDs before turn completion', async t => {
   const f = fixture(t), run = f.chat();
+  const saved = () => f.deps.chatStore.load(run.chat.id);
   await run.startTurn({ text: 'Long task', modelId: 'gpt-6.1-sol-high' });
-  run.handleStreamEvent({ type: 'session', agent: 'codex', sessionId: 'durable-thread' });
-  await new Promise(resolve => setTimeout(resolve, 80)); // written off the host thread now, straight away rather than synchronously
-  assert.equal(f.deps.chatStore.load(run.chat.id).sessions.codex.id, 'durable-thread');
+  run.handleStreamEvent({ type: 'session', agent: 'codex', sessionId: 'durable-thread' }); // written off the host thread, straight away
+  assert.equal((await until(saved, c => c.sessions?.codex?.id === 'durable-thread')).sessions.codex.id, 'durable-thread');
   run.handleStreamEvent({ type: 'delta', agent: 'codex', text: 'Saved progress' });
-  await new Promise(resolve => setTimeout(resolve, 300));
-  assert.equal(f.deps.chatStore.load(run.chat.id).messages.at(-1).text, 'Saved progress');
-  assert.equal(f.deps.chatStore.load(run.chat.id).messages.at(-1).inProgress, true);
-  run.handleStreamEvent({ type: 'tool_start', name: 'shell', toolId: 'step' });
-  await new Promise(resolve => setTimeout(resolve, 320)); // tool boundaries share the checkpoint's off-thread write
-  assert.equal(f.deps.chatStore.load(run.chat.id).messages.at(-1).offset, 'Saved progress'.length);
+  const progress = await until(saved, c => c.messages.at(-1).text === 'Saved progress');
+  assert.equal(progress.messages.at(-1).text, 'Saved progress');
+  assert.equal(progress.messages.at(-1).inProgress, true);
+  run.handleStreamEvent({ type: 'tool_start', name: 'shell', toolId: 'step' }); // tool boundaries share the checkpoint's off-thread write
+  const stepped = await until(saved, c => c.messages.at(-1).offset === 'Saved progress'.length);
+  assert.equal(stepped.messages.at(-1).offset, 'Saved progress'.length);
   run.streamEngine.complete();
-  assert.equal(f.deps.chatStore.load(run.chat.id).messages.at(-2).inProgress, undefined);
+  assert.equal(saved().messages.at(-2).inProgress, undefined);
 });
 
 test('restoring a killed host keeps partial replies and pauses its remaining queue', async t => {
@@ -1853,8 +1860,8 @@ test('headless scheduled work checkpoints its response and marks an IDE shutdown
   await watcher.dispatch({ id: 'scheduled-recovery', model: 'codex', prompt: 'Background task', attachments: [] });
   const id = watcher.chat.id;
   await watcher.handleEvent({ type: 'delta', text: 'Scheduled progress' });
-  await new Promise(resolve => setTimeout(resolve, 300));
-  assert.equal(f.deps.chatStore.load(id).messages.at(-1).text, 'Scheduled progress');
+  const saved = await until(() => f.deps.chatStore.load(id), c => c.messages.at(-1)?.text === 'Scheduled progress');
+  assert.equal(saved.messages.at(-1).text, 'Scheduled progress');
   watcher.stop();
   const reply = f.deps.chatStore.load(id).messages.at(-1);
   assert.equal(reply.interruptionReason, 'host_shutdown');

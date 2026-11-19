@@ -1,0 +1,12 @@
+{
+  // Static one-pager served by Cloudflare Workers Static Assets. No Worker code needed.
+  "name": "clanker-controller",
+  "compatibility_date": "2026-11-01",
+  "assets": {
+    "directory": "./public"
+  },
+  "routes": [
+    { "pattern": "clankercontroller.com", "custom_domain": true },
+    { "pattern": "www.clankercontroller.com", "custom_domain": true }
+  ]
+}

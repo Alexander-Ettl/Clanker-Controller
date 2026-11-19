@@ -71,7 +71,7 @@ const span = async (page, first, last) => {
 const SHOTS = [
   { id: 'hero-chat', width: 1000, height: 880, sidebar: true, setup: async page => { await providers(page); await quotas(page); await rail(page); await conversation(page); } },
   // Prompts waiting for a usage reset, a clock time, or their turn.
-  { id: 'scheduler', width: 620, height: 640, setup: async page => {
+  { id: 'scheduler', width: 620, height: 780, setup: async page => {
     await providers(page);
     const now = await page.evaluate(() => Date.now()); // the page clock is pinned, not the wall clock
     const base = { chatId: 'demo', model: 'claude', modelId: 'claude-opus-5-5-medium', status: 'pending', attachments: [] };

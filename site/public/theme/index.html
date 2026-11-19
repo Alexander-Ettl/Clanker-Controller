@@ -1,0 +1,110 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Clanker Paper &amp; Ink: an editor theme from this site | Clanker Controller</title>
+<meta name="description" content="Two colour themes for VS Code and Antigravity IDE, cut from the colours of clankercontroller.com. Clanker Paper is the light one, Clanker Ink the dark one.">
+<meta name="color-scheme" content="light">
+<meta name="theme-color" content="#eeebe3">
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="canonical" href="https://clankercontroller.com/theme/">
+<link rel="preload" href="/fonts/display.woff2" as="font" type="font/woff2" crossorigin>
+<meta property="og:type" content="website">
+<meta property="og:title" content="Clanker Paper &amp; Ink">
+<meta property="og:description" content="Two editor themes cut from the colours of clankercontroller.com.">
+<meta property="og:url" content="https://clankercontroller.com/theme/">
+<meta property="og:image" content="https://clankercontroller.com/og.png">
+<link rel="stylesheet" href="/site.css">
+</head>
+<body>
+<header>
+  <div class="wrap">
+    <a class="brand" href="/"><img src="/logo-ink.svg" alt="" width="36" height="29">Clanker Controller</a>
+    <nav class="nav mono" aria-label="Main">
+      <a class="opt" href="/">Home</a>
+      <a class="opt" href="#preview">Preview</a>
+      <a href="#install">Install</a>
+      <a href="https://github.com/Alexander-Ettl/Clanker-Controller">GitHub</a>
+    </nav>
+  </div>
+</header>
+
+<main>
+  <div class="wrap theme-hero">
+    <h1>An editor theme that looks like <mark>this page.</mark></h1>
+    <p class="lede">Clanker Paper and Clanker Ink are two colour themes for VS Code and Antigravity IDE, cut from the colours of this site. Paper is the light one. Ink is the same page after dark.</p>
+    <div class="cta">
+      <a class="btn primary" href="/downloads/clanker-theme-0.1.0.vsix" download>Download the .vsix</a>
+      <a class="btn" href="https://github.com/Alexander-Ettl/Clanker-Controller/tree/main/clanker-theme">View the source</a>
+    </div>
+  </div>
+
+  <section class="sec" id="preview">
+    <div class="wrap">
+      <div class="label mono"><i>01</i>Preview</div>
+      <div class="shots">
+        <figure>
+          <div class="frame"><img src="/img/theme-paper.png" width="2800" height="1800" alt="VS Code with Clanker Paper: a TypeScript file on warm paper with ink text, orange keywords, and an ink title bar and status bar."></div>
+          <figcaption><b>Clanker Paper</b>Paper background, ink text, hard ink rules. The title bar and status bar are ink, like the dark band on this site.</figcaption>
+        </figure>
+        <figure>
+          <div class="frame"><img src="/img/theme-ink.png" width="2800" height="1800" alt="VS Code with Clanker Ink: the same TypeScript file on near-black with paper-coloured text and the site's orange, violet and blue." loading="lazy"></div>
+          <figcaption><b>Clanker Ink</b>The same file on ink, in the site's own colours. Both pictures are real VS Code windows with the packaged extension installed.</figcaption>
+        </figure>
+      </div>
+    </div>
+  </section>
+
+  <section class="sec" id="install">
+    <div class="wrap">
+      <div class="label mono"><i>02</i>Install</div>
+      <div>
+        <h2>Install</h2>
+        <ol class="steps">
+          <li>Download <a href="/downloads/clanker-theme-0.1.0.vsix" download>clanker-theme-0.1.0.vsix</a>.</li>
+          <li>In VS Code or Antigravity IDE, open the Extensions view, choose the <b>…</b> menu and pick <b>Install from VSIX…</b>.</li>
+          <li>Press <kbd>Ctrl</kbd>+<kbd>K</kbd> <kbd>Ctrl</kbd>+<kbd>T</kbd> and choose Clanker Paper or Clanker Ink.</li>
+        </ol>
+        <p class="note">From a terminal in VS Code: <code>code --install-extension clanker-theme-0.1.0.vsix</code>. The theme is not on the Marketplace yet, so it does not update itself.</p>
+      </div>
+    </div>
+  </section>
+
+  <section class="sec" id="colours">
+    <div class="wrap">
+      <div class="label mono"><i>03</i>Colours</div>
+      <div>
+        <h2>Same colours as the site</h2>
+        <p class="note">Backgrounds, text, rules, the orange accent and the selection come straight from the site's stylesheet. Code text needs a contrast ratio of 4.5:1 on its background. The site's orange, violet and blue are too light for that on paper, so Paper darkens them until they pass. Ink needs no change. The build fails if any code colour falls below 4.5:1.</p>
+        <table class="palette">
+          <thead><tr><th scope="col">Role</th><th scope="col">Paper</th><th scope="col">Ink</th></tr></thead>
+          <tbody>
+            <tr><th scope="row">Background</th><td><i style="--c:#eeebe3"></i><code>#eeebe3</code></td><td><i style="--c:#121212"></i><code>#121212</code></td></tr>
+            <tr><th scope="row">Text</th><td><i style="--c:#121212"></i><code>#121212</code></td><td><i style="--c:#eeebe3"></i><code>#eeebe3</code></td></tr>
+            <tr><th scope="row">Accent</th><td><i style="--c:#ff5a1f"></i><code>#ff5a1f</code></td><td><i style="--c:#ff5a1f"></i><code>#ff5a1f</code></td></tr>
+            <tr><th scope="row">Keywords</th><td><i style="--c:#b3431b"></i><code>#b3431b</code></td><td><i style="--c:#ff5a1f"></i><code>#ff5a1f</code></td></tr>
+            <tr><th scope="row">Strings</th><td><i style="--c:#995741"></i><code>#995741</code></td><td><i style="--c:#d97757"></i><code>#d97757</code></td></tr>
+            <tr><th scope="row">Functions</th><td><i style="--c:#655ac4"></i><code>#655ac4</code></td><td><i style="--c:#7a6cf0"></i><code>#7a6cf0</code></td></tr>
+            <tr><th scope="row">Types</th><td><i style="--c:#256c9a"></i><code>#256c9a</code></td><td><i style="--c:#2f9be0"></i><code>#2f9be0</code></td></tr>
+          </tbody>
+        </table>
+        <p class="note" style="margin-top:24px">A theme cannot change the editor font. This site uses JetBrains Mono for code; to match it, install that font and set <code>editor.fontFamily</code>.</p>
+      </div>
+    </div>
+  </section>
+</main>
+
+<footer>
+  <div class="wrap">
+    <p>Clanker Controller is an independent project. It is not affiliated with, endorsed by or sponsored by Anthropic, OpenAI, Google or GitHub. All product names belong to their owners.</p>
+    <nav aria-label="Footer">
+      <a href="https://github.com/Alexander-Ettl/Clanker-Controller">GitHub</a>
+      <a href="/theme/">Theme</a>
+      <a href="/impressum/">Impressum</a>
+      <a href="/datenschutz/">Datenschutz</a>
+    </nav>
+  </div>
+</footer>
+</body>
+</html>

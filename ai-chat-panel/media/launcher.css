@@ -20,6 +20,20 @@ body.has-rail > .transcript { grid-area: 1 / 1; }
 body.has-rail > .compose-row { grid-area: 2 / 1; }
 body.has-rail > .rail { grid-area: 1 / 2 / -1 / 3; }
 
+/* The sidebar's left edge: one 1px full-height line between the editor and the chat, like the line the IDE draws between the
+   Explorer and the editor. It takes the IDE's own sideBar.border, so it follows the colour theme (Clanker Paper's ink rule,
+   a light or dark default); themes that set no border get the divider tokens, then a hairline of the foreground colour.
+   The webview draws it itself because the IDE doesn't draw one for a chat in the secondary side bar. */
+body.has-rail::after {
+  content: '';
+  position: fixed;
+  inset: 0 auto 0 0;
+  width: 1px;
+  z-index: 60;
+  pointer-events: none;
+  background: var(--vscode-sideBar-border, var(--vscode-panel-border, var(--vscode-editorGroup-border, rgb(var(--ink) / 0.2))));
+}
+
 /* Popups (Settings, Scheduled, Manage Chats) cover the chat only: the rail is a menu of its own. */
 body.has-rail > .fs-modal { right: 85px; }
 

@@ -1,0 +1,26 @@
+{
+    "name": "clanker-theme",
+    "displayName": "Clanker Paper & Ink",
+    "description": "Two colour themes taken from clankercontroller.com: Clanker Paper (warm paper, ink rules, orange accent) and Clanker Ink (the same page after dark).",
+    "version": "0.1.0",
+    "publisher": "local",
+    "license": "MPL-2.0",
+    "repository": {
+        "type": "git",
+        "url": "https://github.com/Alexander-Ettl/Clanker-Controller.git",
+        "directory": "clanker-theme"
+    },
+    "bugs": { "url": "https://github.com/Alexander-Ettl/Clanker-Controller/issues" },
+    "homepage": "https://clankercontroller.com/theme/",
+    "icon": "icon.png",
+    "galleryBanner": { "color": "#eeebe3", "theme": "light" },
+    "keywords": ["theme", "color-theme", "light", "dark", "paper", "clanker"],
+    "engines": { "vscode": "^1.60.0" },
+    "categories": ["Themes"],
+    "contributes": {
+        "themes": [
+            { "label": "Clanker Paper", "uiTheme": "vs", "path": "./themes/clanker-paper-color-theme.json" },
+            { "label": "Clanker Ink", "uiTheme": "vs-dark", "path": "./themes/clanker-ink-color-theme.json" }
+        ]
+    }
+}
