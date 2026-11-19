@@ -1,0 +1,148 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Clanker Controller: one chat for all your coding agents</title>
+<meta name="description" content="Claude Code, Codex, Antigravity and GitHub Copilot in one IDE chat. Pick a model per message and keep your flat-rate subscriptions.">
+<meta name="color-scheme" content="light">
+<meta name="theme-color" content="#eeebe3">
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="canonical" href="https://clankercontroller.com/">
+<link rel="preload" href="/fonts/display.woff2" as="font" type="font/woff2" crossorigin>
+<meta property="og:type" content="website">
+<meta property="og:title" content="Clanker Controller">
+<meta property="og:description" content="One chat for all your coding agents, built on flat-rate subscriptions.">
+<meta property="og:url" content="https://clankercontroller.com/">
+<meta property="og:image" content="https://clankercontroller.com/og.png">
+<meta name="twitter:card" content="summary_large_image">
+<link rel="stylesheet" href="/site.css">
+</head>
+<body>
+<header>
+  <div class="wrap">
+    <a class="brand" href="/"><img src="/logo-ink.svg" alt="" width="36" height="29">Clanker Controller</a>
+    <nav class="nav mono" aria-label="Main">
+      <a class="opt" href="#features">Features</a>
+      <a class="opt" href="#cost">Cost</a>
+      <a href="#install">Install</a>
+      <a class="opt" href="/theme/">Theme</a>
+      <a href="https://github.com/Alexander-Ettl/Clanker-Controller">GitHub</a>
+    </nav>
+  </div>
+</header>
+
+<main>
+  <div class="wrap hero">
+    <h1>One chat for all your <mark>coding agents.</mark></h1>
+    <div class="hero-body">
+      <div>
+        <p class="lede">Clanker Controller puts Claude Code, Codex, Antigravity and GitHub Copilot in one IDE window. You pick a model per message. It drives the CLIs you already have, so your sign-ins and flat-rate plans stay as they are.</p>
+        <div class="cta">
+          <a class="btn primary" href="https://github.com/Alexander-Ettl/Clanker-Controller">
+            <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82a7.5 7.5 0 0 1 4 0c1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8z"/></svg>
+            View on GitHub
+          </a>
+          <a class="btn" href="#install">Install</a>
+        </div>
+        <ul class="agents" aria-label="Supported agents">
+          <li style="--c: var(--claude)">Claude Code <span>Anthropic</span></li>
+          <li style="--c: var(--codex)">Codex <span>OpenAI</span></li>
+          <li style="--c: var(--agy)">Antigravity <span>Google</span></li>
+          <li style="--c: var(--copilot)">GitHub Copilot <span>GitHub</span></li>
+        </ul>
+      </div>
+      <figure>
+        <div class="frame"><img src="/img/hero-chat.png" width="2000" height="1760" alt="One chat where Claude Opus writes a fix, GPT-6.1-Sol reviews it and Gemini writes the changelog. The usage rings for all three sit on the right."></div>
+        <figcaption><b>Fig. 1</b>Claude writes the fix, Codex reviews it, Gemini writes the changelog. One thread, three models. The rings on the right show what is left in each plan.</figcaption>
+      </figure>
+    </div>
+  </div>
+
+  <section class="sec" id="features">
+    <div class="wrap">
+      <div class="label mono"><i>01</i>Features</div>
+      <div>
+        <h2>Use every agent where you already work</h2>
+        <div class="rows">
+          <div class="row"><h3>Every agent in one place</h3><p>One conversation can go from Claude to Codex to Gemini. Each agent gets a short briefing of what the others did, with a pointer to the full transcript.</p></div>
+          <div class="row"><h3>Usage you can read at a glance</h3><p>Each provider gets a ring with the percentage left in its 5-hour window and the time until it resets.</p></div>
+          <div class="row"><h3>Your setup stays yours</h3><p>Clanker uses your own CLI sign-ins and plans. It needs no API key for the coding agents and never bills you.</p></div>
+          <div class="row"><h3>And more</h3><p>Voice dictation with a personal dictionary, one project root per chat, loops for unattended review runs, and a Telegram link for checking in from your phone. It runs in VS Code and Antigravity IDE.</p></div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="sec">
+    <div class="wrap">
+      <div class="label mono"><i>02</i>Scheduler</div>
+      <div class="split">
+        <div>
+          <h2>A scheduler that works while you sleep</h2>
+          <p>Hit a usage limit at 2 a.m.? The next prompt waits for the reset and runs by itself, in the same chat, model and project.</p>
+          <p>You can also schedule any prompt for a clock time, queue it behind the running task and reorder the queue by dragging.</p>
+          <p class="small">The IDE has to stay open for scheduled prompts to run.</p>
+        </div>
+        <figure>
+          <div class="frame"><img src="/img/scheduler.png" width="1240" height="1560" loading="lazy" alt="Three scheduled prompts waiting in the composer: two for the Claude reset in one and a half hours, one for a clock time."></div>
+        </figure>
+      </div>
+    </div>
+  </section>
+
+  <section class="sec band" id="cost">
+    <div class="wrap">
+      <div class="label mono"><i>03</i>Cost</div>
+      <div>
+        <p class="big"><em>22×</em><br>cheaper</p>
+        <p class="lead">In October, the maintainer's work would have cost $989 at pay-per-token API prices. Three subscriptions cover it for $45 a month.</p>
+        <div class="bars" role="img" aria-label="Bar chart: $989 at API prices versus $45 for three subscriptions.">
+          <div class="bar"><span class="name">API prices</span><div class="track"><div class="fill" style="--w:100%">$989</div></div></div>
+          <div class="bar low"><span class="name">3 subscriptions</span><div class="track"><div class="fill" style="--w:4.6%">$45</div></div></div>
+        </div>
+        <small>Clanker's API value meter prices every turn at published rates. It is an estimate with a ±20% band, based on one person's usage.</small>
+      </div>
+    </div>
+  </section>
+
+  <section class="sec" id="install" style="border-top:0;padding-top:clamp(64px,9vw,120px)">
+    <div class="wrap">
+      <div class="label mono"><i>04</i>Install</div>
+      <div>
+        <h2>Install</h2>
+        <div class="cta">
+          <a class="btn primary" href="https://marketplace.visualstudio.com/items?itemName=clanker-controller.ai-chat-panel">Install from VS Code Marketplace</a>
+          <a class="btn" href="https://open-vsx.org/extension/clanker-controller/ai-chat-panel">Install from Open VSX</a>
+        </div>
+        <ul class="reqs">
+          <li>Windows 10 or 11. Linux and macOS are untested.</li>
+          <li>VS Code or Antigravity IDE.</li>
+          <li>At least one CLI: Claude Code, Codex, Antigravity or GitHub Copilot.</li>
+        </ul>
+        <p class="small">Or build it from source:</p>
+<pre><code><span class="p">$</span> git clone https://github.com/Alexander-Ettl/Clanker-Controller.git
+<span class="p">$</span> cd Clanker-Controller
+<span class="p">$</span> npm install
+<span class="p">$</span> node scripts/install-extension.mjs</code></pre>
+        <a class="btn" href="https://github.com/Alexander-Ettl/Clanker-Controller#install">Full install guide</a>
+      </div>
+    </div>
+  </section>
+</main>
+
+<footer>
+  <div class="wrap">
+    <p>Clanker Controller is an independent project. It is not affiliated with, endorsed by or sponsored by Anthropic, OpenAI, Google or GitHub. All product names belong to their owners.</p>
+    <nav aria-label="Footer">
+      <a href="https://github.com/Alexander-Ettl/Clanker-Controller">GitHub</a>
+      <a href="https://github.com/Alexander-Ettl/Clanker-Controller/issues">Support</a>
+      <a href="https://github.com/Alexander-Ettl/Clanker-Controller/blob/main/LICENSE">MPL-2.0</a>
+      <a href="/theme/">Theme</a>
+      <a href="/impressum/">Impressum</a>
+      <a href="/datenschutz/">Datenschutz</a>
+    </nav>
+  </div>
+</footer>
+</body>
+</html>

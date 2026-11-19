@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // Builds the Marketplace / Open VSX packages for both extensions. See docs/publishing.md.
-//   node scripts/package-marketplace.mjs --publisher <id> [--target win32-x64] [--stage <dir>] [--only chat|usage]
+//   node scripts/package-marketplace.mjs --publisher <id> [--target win32-x64] [--stage <dir>] [--only chat|usage|theme]
 //
 // Why a staging copy: the repo keeps `publisher: "local"` so the installed dev junctions keep their extension ID
 // and chat storage. The published build needs a real publisher, the shared voice-router/lib bundled in, and the
@@ -57,6 +57,7 @@ const EXTENSIONS = [
     },
   },
   { key: 'usage', dir: 'antigravity-usage-statusbar', prepare() {} },
+  { key: 'theme', dir: 'clanker-theme', prepare() {} },
 ];
 
 const npx = process.platform === 'win32' ? 'npx.cmd' : 'npx';

@@ -230,7 +230,7 @@
   } else if (topbar) topbar.prepend(projectBar); else transcriptEl.before(projectBar);
 
   const attachmentStrip = document.createElement('div');
-  attachmentStrip.className = 'attachment-strip island-bud';
+  attachmentStrip.className = 'attachment-strip attachment-grid island-bud';
   document.querySelector('.compose-row').insertBefore(attachmentStrip, document.querySelector('.composer'));
   const attachBtn = document.createElement('button');
   attachBtn.type = 'button'; attachBtn.id = 'attachBtn'; attachBtn.className = 'composer-icon-btn'; attachBtn.title = 'Attach files';
@@ -1297,7 +1297,7 @@
     const docKind = !isImage && !isPdf ? window.attachmentDocs?.kind(attachment) : null;
     // Only still, drawable images can be marked up, and only before they are sent.
     const canMark = Boolean(onRemove && isImage && !isSvg && attachment.mime !== 'image/gif' && attachment.path && window.attachmentMarkup);
-    const label = document.createElement('span');
+    const label = document.createElement('span'); label.className = 'attachment-label';
     const name = document.createElement('span'); name.className = 'attachment-name'; name.textContent = shownName(attachment.name);
     const meta = document.createElement('span'); meta.className = 'attachment-meta';
     const withPx = (dims) => (dims ? `${dims} px` : '');

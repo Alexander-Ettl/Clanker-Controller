@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 520" width="1280" height="520" role="img" aria-label="October 2026 at pay-per-token API prices: 989 dollars. The same work on subscriptions at 45 dollars a month.">
-  <rect width="1280" height="520" rx="28" fill="#101218"/>
-  <rect x="0.5" y="0.5" width="1279" height="519" rx="27.5" fill="none" stroke="#ffffff" stroke-opacity="0.10"/>
+  <rect width="1280" height="520" rx="28" fill="#000000"/>
+  <rect x="0.5" y="0.5" width="1279" height="519" rx="27.5" fill="none" stroke="#ffffff" stroke-opacity="0.16"/>
   <g font-family="'Segoe UI','SF Pro Display','Helvetica Neue',Arial,sans-serif">
     <text x="64" y="84" font-size="22" font-weight="600" fill="#8b90a0" letter-spacing="2">SAME WORK, TWO WAYS TO PAY</text>
     <text x="64" y="132" font-size="40" font-weight="700" fill="#ffffff" letter-spacing="-0.8">October 2026: what Clanker ran through the CLIs</text>

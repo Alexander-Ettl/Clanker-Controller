@@ -1,8 +1,8 @@
 {
     "name": "ai-chat-panel",
     "displayName": "Clanker Controller",
-    "description": "Unified Liquid Glass launcher for headless Claude Code, Codex, and Gemini 3.8 chat sessions, opened as movable floating windows alongside the File Explorer.",
-    "version": "0.1.0",
+    "description": "One chat for Claude Code, Codex, Gemini and GitHub Copilot in VS Code and Antigravity IDE.",
+    "version": "0.1.1",
     "publisher": "local",
     "license": "MPL-2.0",
     "repository": {
@@ -13,7 +13,7 @@
     "bugs": { "url": "https://github.com/Alexander-Ettl/Clanker-Controller/issues" },
     "homepage": "https://github.com/Alexander-Ettl/Clanker-Controller#readme",
     "icon": "media/icon.png",
-    "galleryBanner": { "color": "#14161d", "theme": "dark" },
+    "galleryBanner": { "color": "#000000", "theme": "dark" },
     "keywords": ["claude", "codex", "gemini", "antigravity", "copilot", "ai", "chat", "agent", "scheduler", "usage"],
     "engines": {
         "vscode": "^1.85.0"
@@ -308,7 +308,7 @@
                         "scout": { "type": "string", "markdownDescription": "Model for the scouts, verifiers and fix judges. `auto` (or unset) picks Gemini Flash, then Claude, then Codex, whichever is installed." },
                         "editor": { "type": "string", "markdownDescription": "Model that makes backend fixes. `auto` picks Codex, then Claude. Gemini edits only when you choose it here, or when nothing else is installed." },
                         "visualEditor": { "type": "string", "markdownDescription": "Model that makes layout and styling fixes. `auto` picks Claude, then Codex. Gemini edits only when you choose it here, or when nothing else is installed." },
-                        "vision": { "type": "string", "markdownDescription": "Model that looks at screenshots. Needs an Antigravity model." }
+                        "vision": { "type": "string", "markdownDescription": "Model that looks at screenshots. Needs an Antigravity (Gemini) model." }
                     },
                     "markdownDescription": "Which model does which job in a loop. Each value is a model id (for example `gemini-3.8-flash-high`), an agent name (`gemini`, `claude`, `codex`) or `auto`. The Loops window changes this too."
                 },
