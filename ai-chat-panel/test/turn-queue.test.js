@@ -1860,8 +1860,8 @@ test('headless scheduled work checkpoints its response and marks an IDE shutdown
   await watcher.dispatch({ id: 'scheduled-recovery', model: 'codex', prompt: 'Background task', attachments: [] });
   const id = watcher.chat.id;
   await watcher.handleEvent({ type: 'delta', text: 'Scheduled progress' });
-  await new Promise(resolve => setTimeout(resolve, 300));
-  assert.equal(f.deps.chatStore.load(id).messages.at(-1).text, 'Scheduled progress');
+  const saved = await until(() => f.deps.chatStore.load(id), c => c.messages.at(-1)?.text === 'Scheduled progress');
+  assert.equal(saved.messages.at(-1).text, 'Scheduled progress');
   watcher.stop();
   const reply = f.deps.chatStore.load(id).messages.at(-1);
   assert.equal(reply.interruptionReason, 'host_shutdown');
