@@ -4,7 +4,7 @@ import { chromium } from 'playwright';
 import { openChat } from './ui-tester/boot.mjs';
 
 const { DEFAULTS } = createRequire(import.meta.url)('../lib/routing');
-const browser = await chromium.launch({ headless: true, channel: 'msedge' });
+const browser = await chromium.launch({ headless: true, channel: process.platform === 'win32' ? 'msedge' : undefined });
 try {
   const { page, problems } = await openChat(browser, { width: 420, height: 900 });
   const send = data => page.evaluate(data => window.dispatchEvent(new MessageEvent('message', { data })), data);

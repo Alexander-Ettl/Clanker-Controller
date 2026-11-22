@@ -12,7 +12,12 @@ function terminalSpec(agent, file, platform = process.platform) {
   const provider = providers.get(agent);
   if (!provider) throw new Error('Unknown CLI');
   if (!file) {
-    if (platform !== 'win32') throw new Error('Install this CLI from its official website, then check connections.');
+    if (platform !== 'win32') {
+      if (!provider.installPosix) throw new Error('Install this CLI from its official website, then check connections.');
+      // The terminal stays open afterwards, like -NoExit does for PowerShell.
+      const shell = process.env.SHELL || '/bin/sh';
+      return { shellPath: shell, shellArgs: ['-c', `${provider.installPosix}; exec "${shell}"`] };
+    }
     return { shellPath: 'powershell.exe', shellArgs: ['-NoLogo', '-NoProfile', '-NoExit', '-Command', provider.install] };
   }
   const shim = /\.cmd$/i.test(file) ? resolveShim(file) : null;

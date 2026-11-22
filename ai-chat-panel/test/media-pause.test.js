@@ -46,7 +46,7 @@ test('unavailable media control and unsupported platforms leave dictation usable
   h.child.emit('error', new Error('unavailable'));
   await ready;
   assert.equal(h.media.child, null);
-  const unsupported = harness({ platform: 'linux' });
+  const unsupported = harness({ platform: 'darwin' });
   await unsupported.media.pause();
   assert.equal(unsupported.spawned(), 0);
   const missing = harness({ spawnImpl: () => { throw new Error('missing'); } });
@@ -60,4 +60,47 @@ test('stopping during helper startup closes stdin so delayed pauses still restor
   h.child.stdout.emit('data', Buffer.from('ready\n'));
   await ready;
   assert.equal(h.ended(), 1);
+});
+
+// A fake session bus: three MPRIS players, two playing. `calls` records every Pause/Play.
+function fakeBus(statuses) {
+  const calls = [];
+  const spawnImpl = (command, args) => {
+    assert.equal(command, 'busctl');
+    const proc = new EventEmitter();
+    proc.stdout = new EventEmitter();
+    proc.kill = () => {};
+    const rest = args.filter(arg => !arg.startsWith('--'));
+    let out = '';
+    if (rest[0] === 'list') out = ['org.freedesktop.DBus 1 dbus-daemon', ...Object.keys(statuses).map(name => `${name} 99 app`), ':1.5 5 x'].join('\n');
+    else if (rest[0] === 'get-property') out = `s "${statuses[rest[1]]}"\n`;
+    else if (rest[0] === 'call') calls.push(`${rest[4]} ${rest[1].replace('org.mpris.MediaPlayer2.', '')}`);
+    setTimeout(() => { proc.stdout.emit('data', Buffer.from(out)); proc.emit('close', 0); }, 1);
+    return proc;
+  };
+  return { spawnImpl, calls };
+}
+
+test('Linux pauses only the MPRIS players that are playing and resumes exactly those', async () => {
+  const { spawnImpl, calls } = fakeBus({ 'org.mpris.MediaPlayer2.spotify': 'Playing', 'org.mpris.MediaPlayer2.firefox.instance1': 'Playing', 'org.mpris.MediaPlayer2.vlc': 'Paused' });
+  const media = new MediaPause({ platform: 'linux', spawnImpl });
+  await media.pause();
+  assert.deepEqual(calls.sort(), ['Pause firefox.instance1', 'Pause spotify']);
+  await media.pause(); // already holding: no second round
+  assert.equal(calls.length, 2);
+  media.resume(); media.resume();
+  await new Promise(resolve => setTimeout(resolve, 20));
+  assert.deepEqual(calls.sort(), ['Pause firefox.instance1', 'Pause spotify', 'Play firefox.instance1', 'Play spotify']);
+});
+
+test('Linux media pause does nothing without busctl, and a resume during the pause undoes it', async () => {
+  const missing = new MediaPause({ platform: 'linux', spawnImpl: () => { const proc = new EventEmitter(); proc.stdout = new EventEmitter(); setTimeout(() => proc.emit('error', new Error('ENOENT')), 1); return proc; } });
+  await missing.pause(); missing.resume();
+  const { spawnImpl, calls } = fakeBus({ 'org.mpris.MediaPlayer2.spotify': 'Playing' });
+  const media = new MediaPause({ platform: 'linux', spawnImpl });
+  const pausing = media.pause();
+  media.resume(); // the microphone failed to open while the players were still being asked
+  await pausing;
+  await new Promise(resolve => setTimeout(resolve, 20));
+  assert.deepEqual(calls, ['Pause spotify', 'Play spotify']);
 });

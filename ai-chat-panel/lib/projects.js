@@ -81,11 +81,13 @@ const key = folder => process.platform === 'win32' ? folder.toLowerCase() : fold
 
 // User-local identities survive folder moves. No project code or history is stored in this registry.
 class ProjectRegistry {
-  constructor(sessionDir) {
+  constructor(sessionDir, recovery) {
     this.sessionDir = sessionDir;
     this.file = path.join(sessionDir, 'projects.json');
+    this.recovery = recovery;
   }
   list() {
+    if (this.recovery) return this.recovery.readProjects(this.file);
     if (!fs.existsSync(this.file)) return [];
     const items = JSON.parse(fs.readFileSync(this.file, 'utf8'));
     if (!Array.isArray(items)) throw new Error('Clanker project registry is invalid.');
@@ -98,6 +100,7 @@ class ProjectRegistry {
     if (fs.existsSync(this.file)) fs.copyFileSync(this.file, `${this.file}.bak`);
     fs.writeFileSync(temporary, JSON.stringify(items, null, 2), 'utf8');
     JSON.parse(fs.readFileSync(temporary, 'utf8'));
+    this.recovery?.saveProjects(items);
     fs.renameSync(temporary, this.file);
   }
   add(name, folder = null) {

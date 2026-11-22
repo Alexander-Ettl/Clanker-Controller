@@ -6,7 +6,7 @@ import { openChat } from './ui-tester/boot.mjs';
 // bring it back in the reverse order as the panel widens:
 //   bar:  permission text, then the model's name, then the clock's time, then the buttons shrink to a plain row of icons
 //   row:  "at reset", then the time (the clock stays, its tooltip says it), then the model's name
-const browser = await chromium.launch({ headless: true, channel: 'msedge' });
+const browser = await chromium.launch({ headless: true, channel: process.platform === 'win32' ? 'msedge' : undefined });
 try {
   const WIDTHS = [700, 560, 480, 440, 400, 360, 340, 320, 300, 280, 260, 240, 230];
   const seen = [];

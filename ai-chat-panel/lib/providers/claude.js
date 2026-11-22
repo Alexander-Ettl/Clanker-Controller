@@ -45,6 +45,7 @@ module.exports = {
   login: ['auth', 'login'],
   authStatus: { args: ['auth', 'status'], interpret: (result) => (result.ok ? 'connected' : 'signin') },
   entitlement,
+  installPosix: 'curl -fsSL https://claude.ai/install.sh | bash && "$HOME/.local/bin/claude" auth login',
   install: 'Invoke-RestMethod https://claude.ai/install.ps1 | Invoke-Expression; & "$env:USERPROFILE\\.local\\bin\\claude.exe" auth login',
   discoverModels: async ({ file, runCli }) => {
     const init = JSON.stringify({ type: 'control_request', request_id: 'model-discovery', request: { subtype: 'initialize' } }) + '\n';

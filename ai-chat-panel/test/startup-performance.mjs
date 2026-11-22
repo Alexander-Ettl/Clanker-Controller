@@ -5,7 +5,7 @@ import { chromium } from 'playwright';
 import { openChat } from './ui-tester/boot.mjs';
 const out = path.resolve(process.argv.find(arg => arg.startsWith('--out='))?.slice(6) || 'C:/Dev/clanker-glass/startup');
 fs.mkdirSync(out, { recursive: true });
-const browser = await chromium.launch({ channel: 'msedge', headless: false });
+const browser = await chromium.launch({ channel: process.platform === 'win32' ? 'msedge' : undefined, headless: false });
 const results = [];
 try {
   for (const sidebar of [false, true]) for (let run = 0; run < 3; run++) {

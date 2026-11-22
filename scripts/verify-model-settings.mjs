@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import { chromium } from 'playwright';
 
 const read = name => fs.readFileSync(new URL(`../ai-chat-panel/media/${name}`, import.meta.url), 'utf8');
-const browser = await chromium.launch({ headless: true, channel: 'msedge' });
+const browser = await chromium.launch({ headless: true, channel: process.platform === 'win32' ? 'msedge' : undefined });
 try {
   const page = await browser.newPage({ viewport: { width: 560, height: 900 } });
   const errors = [];

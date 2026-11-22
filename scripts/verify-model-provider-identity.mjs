@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import { chromium } from 'playwright';
 
-const browser = await chromium.launch({ headless: true, channel: 'msedge' });
+const browser = await chromium.launch({ headless: true, channel: process.platform === 'win32' ? 'msedge' : undefined });
 try {
   const page = await browser.newPage();
   const errors = [];

@@ -249,3 +249,20 @@ test('a window past its reset time reads as refilled, its unexpired 7d window is
     assert.equal(refilled(null, now), null);
   } finally { Module._load = orig; }
 });
+
+test('Linux: antigravity-usage-statusbar discovers language server and ports from /proc and ss', async () => {
+  const { discoverLinux } = require('../antigravity.js');
+  const found = await discoverLinux({
+    readdir: () => ['1', '42', '99', 'self'],
+    readFile: (file) => {
+      if (file === '/proc/42/cmdline') return '/opt/antigravity/language_server_linux_x64\0--enable_lsp\0--csrf_token=dead-beef\0';
+      if (file === '/proc/99/cmdline') return '/usr/bin/node\0server.js\0';
+      throw new Error('EACCES');
+    },
+    exec: async () => 'LISTEN 0 128 127.0.0.1:41234 0.0.0.0:* users:(("language_server",pid=42,fd=7))\nLISTEN 0 128 127.0.0.1:8080 0.0.0.0:* users:(("node",pid=99,fd=5))\n',
+  });
+  assert.deepEqual(found, {
+    procs: [{ ProcessId: 42, CommandLine: '/opt/antigravity/language_server_linux_x64 --enable_lsp --csrf_token=dead-beef' }],
+    ports: [41234],
+  });
+});

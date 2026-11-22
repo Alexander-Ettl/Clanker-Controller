@@ -126,7 +126,7 @@ export async function queueStability(page) {
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) {
-  const browser = await chromium.launch({ channel: 'msedge', headless: true });
+  const browser = await chromium.launch({ channel: process.platform === 'win32' ? 'msedge' : undefined, headless: true });
   try {
     for (const reducedMotion of ['no-preference', 'reduce']) {
       const { page, problems } = await openChat(browser, { width: 900, height: 900 });

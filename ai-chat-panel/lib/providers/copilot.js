@@ -140,6 +140,7 @@ module.exports = {
       return result.ok ? 'ready' : 'signin';
     },
   },
+  installPosix: 'npm install -g @github/copilot@latest && copilot login',
   install: 'npm.cmd install -g @github/copilot@latest; if ($LASTEXITCODE -eq 0) { & "$env:APPDATA\\npm\\copilot.cmd" login }',
 
   // Only the account's own list counts: no built-in or hard-coded fallback. A failure throws, and Settings shows the reason.

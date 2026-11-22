@@ -19,7 +19,7 @@ const theme = option('theme', 'dark');
 const repeats = Number(option('repeat', '1'));
 if (!Number.isInteger(repeats) || repeats < 1 || repeats > 10) throw new Error('--repeat must be 1..10');
 fs.mkdirSync(out, { recursive: true });
-const browser = await chromium.launch({ channel: 'msedge', headless: false, args: ['--enable-gpu-rasterization', '--ignore-gpu-blocklist'] });
+const browser = await chromium.launch({ channel: process.platform === 'win32' ? 'msedge' : undefined, headless: false, args: ['--enable-gpu-rasterization', '--ignore-gpu-blocklist'] });
 const results = [];
 const round = n => Math.round(n * 10) / 10;
 const distribution = values => {

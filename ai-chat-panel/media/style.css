@@ -378,7 +378,7 @@ body:not(.vscode-high-contrast, .vscode-high-contrast-light) .agent-logo path[fi
   color: var(--fg-cyan);
 }
 
-.round-btn-loop { transition: color .2s var(--eo-ease), padding .3s var(--eo-ease), border-radius .3s var(--eo-ease); }
+.round-btn-loop { color: var(--text-secondary); /* idle matches the other rail icons; round-btn-queue would tint it cyan */ transition: color .2s var(--eo-ease), padding .3s var(--eo-ease), border-radius .3s var(--eo-ease); }
 .round-btn-loop.is-running { color: var(--fg-cyan); }
 .round-btn-loop.is-finished { color: var(--fg-mint-alt); }
 #loopsModal .fs-modal-count:empty { display: none; }
@@ -3489,6 +3489,7 @@ body:not(.vscode-high-contrast, .vscode-high-contrast-light) :is(.transcript, .t
    at any panel width. The chip stretches, the text does not: the name takes the free room and ellipsizes only when it must,
    and the remove button is always the last thing in the cell. Columns are at least 200px wide, so a ~440px strip shows two. */
 .compose-row > .attachment-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 200px), 1fr)); gap: 6px; align-items: stretch; }
+.compose-row > .attachment-grid:empty { display: none; } /* an empty tray keeps its padding otherwise, and the glass draws it as a floating shell */
 .attachment-grid .attachment-chip { box-sizing: border-box; width: 100%; min-width: 0; max-width: none; }
 .attachment-grid .attachment-label { flex: 1 1 0; min-width: 0; }
 .attachment-grid .attachment-name { max-width: none; }

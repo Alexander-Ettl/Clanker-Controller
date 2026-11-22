@@ -27,7 +27,7 @@ const host = Object.assign(Object.create(ChatWindowHost.prototype), { extensionU
 const html = host.renderHtml({ cspSource: origin, asWebviewUri: value => origin + '/' + path.relative('/panel/media', value.fsPath).replaceAll('\\', '/') });
 const OLD = 'Fix the scan limit in the voice dictionary and make the settings tab searchable.';
 const NEW = 'Also add tests for the project scan.\n\n- Cover the limit\n- Cover the dedupe';
-const browser = await chromium.launch({ headless: true, channel: 'msedge' });
+const browser = await chromium.launch({ headless: true, channel: process.platform === 'win32' ? 'msedge' : undefined });
 try {
   for (const [mode, theme] of [['dark', 'vscode-dark'], ['light', 'vscode-light']]) {
     const page = await browser.newPage({ viewport: { width: 520, height: 420 }, deviceScaleFactor: 2 });

@@ -29,7 +29,7 @@ const shots = fs.mkdtempSync(path.join(os.tmpdir(), 'clanker-loops-'));
 
 import { installFakeHost } from './ui-tester/fake-host.mjs';
 
-const browser = await chromium.launch({ headless: true, channel: 'msedge' });
+const browser = await chromium.launch({ headless: true, channel: process.platform === 'win32' ? 'msedge' : undefined });
 const results = [];
 try {
   async function open(width, stateName, sidebar = false) {

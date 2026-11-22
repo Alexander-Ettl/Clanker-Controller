@@ -1,7 +1,49 @@
 'use strict';
 
 const { execFile } = require('node:child_process');
+const fs = require('node:fs');
 const http = require('node:http');
+
+const SERVER_NAME = /^(language_server|agy$)/;
+
+function parseSsListeners(text) {
+  const byPid = new Map();
+  for (const line of String(text).split('\n')) {
+    const local = /^\S+\s+\d+\s+\d+\s+(\S+)\s/.exec(line.trim());
+    const port = Number(local?.[1].split(':').pop());
+    if (!Number.isFinite(port) || port <= 0) continue;
+    for (const match of line.matchAll(/pid=(\d+)/g)) {
+      const pid = Number(match[1]);
+      byPid.set(pid, [...(byPid.get(pid) || []), port]);
+    }
+  }
+  return byPid;
+}
+
+function readLinuxProcs({ readdir = fs.readdirSync, readFile = fs.readFileSync } = {}) {
+  const procs = [];
+  let names = [];
+  try { names = readdir('/proc'); } catch { return procs; }
+  for (const name of names) {
+    if (!/^\d+$/.test(name)) continue;
+    try {
+      const args = String(readFile(`/proc/${name}/cmdline`, 'utf8')).split('\0').filter(Boolean);
+      const base = (args[0] || '').split('/').pop();
+      const commandLine = args.join(' ');
+      if (SERVER_NAME.test(base) && /csrf_token/.test(commandLine)) procs.push({ ProcessId: Number(name), CommandLine: commandLine });
+    } catch { /* process ended or owned by another user */ }
+  }
+  return procs;
+}
+
+async function discoverLinux({ exec, ...io } = {}) {
+  const procs = readLinuxProcs(io);
+  if (!procs.length) return { procs, ports: [] };
+  const runSs = exec || ((file, args) => new Promise((resolve) => execFile(file, args, { encoding: 'utf8', timeout: 4000 }, (err, out) => resolve(err ? '' : String(out || '')))));
+  const owned = parseSsListeners(await runSs('ss', ['-ltnpH']));
+  const ports = procs.flatMap((proc) => owned.get(proc.ProcessId) || []);
+  return { procs, ports: [...new Set(ports)] };
+}
 
 const DISCOVERY_RETRY_MS = 30_000;
 let cachedConnection = null;
@@ -55,7 +97,7 @@ function postConnectRpc(port, path, csrfToken, postData = '{}', timeoutMs = 1200
 }
 
 async function discoverLanguageServer() {
-  if (process.platform !== 'win32') return null;
+  if (process.platform !== 'win32' && process.platform !== 'linux') return null;
   try {
     const psScript = [
       '$procs = @(Get-CimInstance Win32_Process -Filter "name like \'language_server%\' or name = \'agy.exe\'" | Where-Object { $_.CommandLine -match \'csrf_token\' } | Select-Object ProcessId, CommandLine)',
@@ -73,7 +115,7 @@ async function discoverLanguageServer() {
       'ConvertTo-Json @{ procs = $procs; ports = $ports }',
     ].join('\n');
     const encoded = Buffer.from(psScript, 'utf16le').toString('base64');
-    const stdout = await new Promise((resolve) => {
+    const stdout = process.platform === 'linux' ? JSON.stringify(await discoverLinux()) : await new Promise((resolve) => {
       execFile(
         'powershell.exe',
         ['-NoProfile', '-NonInteractive', '-EncodedCommand', encoded],
@@ -197,6 +239,9 @@ function clearCachedConnection() {
 module.exports = {
   clearCachedConnection,
   discoverLanguageServer,
+  discoverLinux,
   fetchQuotaSummary,
+  parseSsListeners,
   postConnectRpc,
+  readLinuxProcs,
 };

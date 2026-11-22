@@ -85,7 +85,7 @@ const media = path.resolve(fileURLToPath(new URL('../media/', import.meta.url)))
 const origin = 'http://127.0.0.1';
 const page_host = Object.assign(Object.create(ChatWindowHost.prototype), { extensionUri: '/panel', panel: { sidebar: true }, deps: { getModels: () => ({}) }, run: null, activeModelId: 'auto', activeAgent: 'auto', lastRoutedAgent: 'codex' });
 const html = page_host.renderHtml({ cspSource: origin, asWebviewUri: value => origin + '/' + path.relative('/panel/media', value.fsPath).replaceAll('\\', '/') });
-const browser = await chromium.launch({ headless: true, channel: 'msedge' });
+const browser = await chromium.launch({ headless: true, channel: process.platform === 'win32' ? 'msedge' : undefined });
 try {
   const open = async () => {
     const page = await browser.newPage({ viewport: { width: 520, height: 360 }, deviceScaleFactor: 2 });

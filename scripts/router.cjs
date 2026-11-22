@@ -2,7 +2,10 @@
 'use strict';
 const net=require('node:net');const fs=require('node:fs');const path=require('node:path');
 const args=process.argv.slice(2),command=args.shift()||'benchmark';
-let n=10,storage=process.env.AI_CHAT_PANEL_SESSION_DIR||path.join(process.env.APPDATA||'','Antigravity IDE','User','globalStorage','local.ai-chat-panel','session');
+const { DATA_FOLDER } = require('../ai-chat-panel/lib/session-dir.js');
+const globalStorage = path.join(process.env.APPDATA || '', 'Antigravity IDE', 'User', 'globalStorage');
+const sharedSession = path.join(globalStorage, DATA_FOLDER, 'session');
+let n=10,storage=process.env.AI_CHAT_PANEL_SESSION_DIR||(fs.existsSync(sharedSession) ? sharedSession : path.join(globalStorage,'local.ai-chat-panel','session'));
 let feedbackFile;
 for(let i=0;i<args.length;i++) { if(args[i]==='--n')n=Number(args[++i]);else if(args[i]==='--storage')storage=args[++i];else if(args[i]==='--feedback')feedbackFile=path.resolve(args[++i]);else {console.error(`Unknown option ${args[i]}`);process.exit(1);} }
 if(!['benchmark','confirm-smoke'].includes(command)||!Number.isInteger(n)||n<1||n>500){console.error('Usage: router benchmark [--n 10] [--storage <session folder>] | router confirm-smoke');process.exit(1);}

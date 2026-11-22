@@ -27,7 +27,7 @@ const reply = [
   '',
   'Not a link: `npm run dev` and `<img src="x" onerror="alert(1)">`.',
 ].join('\n');
-const browser = await chromium.launch({ headless: true, channel: 'msedge' });
+const browser = await chromium.launch({ headless: true, channel: process.platform === 'win32' ? 'msedge' : undefined });
 try {
   const page = await browser.newPage({ viewport: { width: 420, height: 520 } });
   const errors = [];

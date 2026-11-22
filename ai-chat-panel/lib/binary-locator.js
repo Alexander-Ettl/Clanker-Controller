@@ -48,7 +48,15 @@ function candidates(agent) {
   if (!provider) return [];
   const local = process.env.LOCALAPPDATA || path.join(os.homedir(), 'AppData', 'Local');
   const npmGlobal = path.join(process.env.APPDATA || path.join(os.homedir(), 'AppData', 'Roaming'), 'npm');
-  return provider.locate({ onPath, inExtensions, join: path.join, home: os.homedir(), local, npmGlobal }).flatMap(forPlatform);
+  const found = provider.locate({ onPath, inExtensions, join: path.join, home: os.homedir(), local, npmGlobal }).flatMap(forPlatform);
+  // An IDE started from the desktop launcher does not read the shell's profile, so ~/.local/bin and npm's prefix are often not on its PATH.
+  return WIN ? found : [...found, ...unixBinDirs().map((dir) => path.join(dir, provider.cli))];
+}
+
+/** Where install scripts and `npm install -g` put executables on Linux and macOS, besides PATH. */
+function unixBinDirs(home = os.homedir(), env = process.env) {
+  return [path.join(home, '.local', 'bin'), path.join(home, '.npm-global', 'bin'), env.NPM_CONFIG_PREFIX && path.join(env.NPM_CONFIG_PREFIX, 'bin'),
+    path.join(home, '.volta', 'bin'), path.join(home, '.bun', 'bin'), '/usr/local/bin', '/opt/homebrew/bin', '/usr/bin', '/snap/bin'].filter(Boolean);
 }
 
 const cache = new Map();
@@ -109,4 +117,4 @@ const headlessEnv = (file) => {
   return {};
 };
 
-module.exports = { locate, refresh, resolveShim, terminalCommand, candidates, headlessEnv, BinaryNotFoundError };
+module.exports = { unixBinDirs, locate, refresh, resolveShim, terminalCommand, candidates, headlessEnv, BinaryNotFoundError };

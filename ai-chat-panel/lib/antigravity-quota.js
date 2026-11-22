@@ -5,6 +5,7 @@
 
 const { execFile } = require('node:child_process');
 const http = require('node:http');
+const { discoverLinux } = require('./process-scan');
 
 const QUOTA_RPC = '/exa.language_server_pb.LanguageServerService/RetrieveUserQuotaSummary';
 // Discovery shells out (PowerShell + netstat), so a miss (Antigravity closed) is not retried on every poll.
@@ -68,7 +69,7 @@ function pickLanguageServer(procs) {
 }
 
 async function discoverLanguageServer() {
-  if (process.platform !== 'win32') return null;
+  if (process.platform !== 'win32' && process.platform !== 'linux') return null;
   try {
     const psScript = [
       '$procs = @(Get-CimInstance Win32_Process -Filter "name like \'language_server%\' or name = \'agy.exe\'" | Where-Object { $_.CommandLine -match \'csrf_token\' } | Select-Object ProcessId, CommandLine)',
@@ -83,7 +84,7 @@ async function discoverLanguageServer() {
       'ConvertTo-Json @{ procs = $procs; ports = $ports }',
     ].join('\n');
     const encoded = Buffer.from(psScript, 'utf16le').toString('base64');
-    const stdout = await new Promise((resolve) => {
+    const stdout = process.platform === 'linux' ? JSON.stringify(await discoverLinux()) : await new Promise((resolve) => {
       execFile(
         'powershell.exe',
         ['-NoProfile', '-NonInteractive', '-EncodedCommand', encoded],

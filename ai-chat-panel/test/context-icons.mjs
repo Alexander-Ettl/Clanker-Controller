@@ -37,7 +37,7 @@ figcaption{color:var(--mute);margin-top:4px}figcaption b{color:inherit}</style>
 ${theme('dark', '#14161b', '#e8eaf0', '#9aa1b0')}${theme('light', '#f6f7f9', '#1b1e25', '#5d6472')}`;
 fs.writeFileSync(sheetFile, html);
 
-const browser = await chromium.launch({ headless: true, channel: 'msedge' });
+const browser = await chromium.launch({ headless: true, channel: process.platform === 'win32' ? 'msedge' : undefined });
 try {
   const page = await browser.newPage({ viewport: { width: 1200, height: 640 }, deviceScaleFactor: 2 });
   await page.setContent(html);

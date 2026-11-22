@@ -360,7 +360,7 @@
 
     <div class="cs-pane" data-pane="voice" role="tabpanel" hidden>
       <section class="cs-card">
-        <div class="cs-row">
+        <div class="cs-row cs-row-wrap">
           <span class="cs-icon">${ICON.mic}</span>
           <div class="cs-info"><span class="cs-title">Dictation hotkey</span><span class="cs-desc" data-role="hotkeyDesc">Dictate from anywhere, without the mic button.</span></div>
           <button class="cs-btn is-quiet" data-role="hotkeyClear" type="button" hidden>Clear</button>
@@ -381,7 +381,7 @@
         </div>
         <div class="cs-row">
           <span class="cs-icon">${ICON.sound}</span>
-          <div class="cs-info"><span class="cs-title">Pause background media</span><span class="cs-desc">Pause music and videos while you talk, then resume when recording ends. Works with Windows media controls.</span></div>
+          <div class="cs-info"><span class="cs-title">Pause background media</span><span class="cs-desc">Pause music and videos while you talk, then resume when recording ends. Works with Windows media controls and Linux MPRIS players.</span></div>
           <button class="cs-switch" data-role="voicePauseMedia" role="switch" aria-checked="true" aria-label="Pause background media" type="button"></button>
         </div>
         <div class="cs-row">
@@ -1732,10 +1732,11 @@
     function renderVoice() {
       const state = voiceState;
       if (!state) return;
+      hotkeyBtn.hidden = !state.supported;
       hotkeyBtn.textContent = capturing ? 'Press keys…' : state.hotkey || 'Set hotkey';
-      $('hotkeyClear').hidden = !state.hotkey || capturing;
+      $('hotkeyClear').hidden = !state.supported || !state.hotkey || capturing;
       $('hotkeyDesc').textContent = capturing ? HOTKEY_HINT
-        : !state.supported ? 'Global hotkeys need Windows.'
+        : !state.supported ? 'A system-wide hotkey is only available on Windows (Linux desktops do not let apps listen globally). Bind “Clanker Controller: Dictate” in Keyboard Shortcuts instead.'
           : !state.hotkey ? 'Start and stop dictation from anywhere, without the mic button.'
             : state.hotkeyActive ? 'Works in any app. Pick keys the app in front does not use.'
               : 'Saved, but not listening. Reload the window to retry.';

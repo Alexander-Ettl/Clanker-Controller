@@ -44,5 +44,20 @@ test('missing acknowledgement retries, and release cancels retries', async () =>
   assert.equal(errors.length, 1); assert.equal(children[0].killed, true);
   hold.release(); await new Promise(resolve => setTimeout(resolve, 65));
   assert.equal(children.length, 1);
-  assert.equal(keepAwake({ platform: 'linux' }), null);
+  assert.equal(keepAwake({ platform: 'aix' }), null);
+});
+
+test('Linux holds a sleep inhibitor that ends with the IDE, and macOS asks caffeinate; other systems skip', () => {
+  const run = (platform) => { let command; const child = helper(); const hold = keepAwake({ platform, spawnImpl: (cmd, args) => { command = { cmd, args }; return child; } }); return { hold, command, child }; };
+  const linux = run('linux');
+  assert.equal(linux.command.cmd, 'systemd-inhibit');
+  assert.ok(linux.command.args.includes('--what=sleep') && linux.command.args.includes('--mode=block'));
+  assert.match(linux.command.args.at(-1), new RegExp(`kill -0 ${process.pid}`));
+  linux.child.stdout.emit('data', 'awake\n');
+  assert.equal(linux.hold.active, true);
+  linux.hold.release(); assert.equal(linux.child.killed, true);
+  const mac = run('darwin');
+  assert.equal(mac.command.cmd, 'caffeinate'); assert.ok(mac.command.args.includes(String(process.pid)));
+  mac.hold.release();
+  assert.equal(keepAwake({ platform: 'freebsd', spawnImpl: () => { throw new Error('unused'); } }), null);
 });

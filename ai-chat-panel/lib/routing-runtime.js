@@ -5,10 +5,11 @@ const { execFile } = require('node:child_process');
 const { Router, config, redact, windowOf, privateProject } = require('./routing');
 const { NeuronLedger, WorkContextClassifier } = require('./work-context');
 
-// Native Windows image copy. The destination receives the original attachment.
+// Native image copy (PowerShell on Windows, ffmpeg elsewhere). The destination receives the original attachment.
 function imageCopy(state, c) {
   const file=(state.attachments||[]).find(f=>/\.(png|jpe?g|webp)$/i.test(f) && fs.existsSync(f));
   if (!file || !/\.(png|jpe?g)$/i.test(file)) return Promise.resolve(null);
+  if (process.platform!=='win32') return require('./image-shrink').shrinkImage(file,{width:c.image_width,maxBytes:c.image_bytes});
   return new Promise(resolve=>execFile('powershell.exe',['-NoProfile','-NonInteractive','-File',path.join(__dirname,'routing-image.ps1'),'-Source',file,'-Width',String(c.image_width),'-MaxBytes',String(c.image_bytes)],{windowsHide:true,timeout:4500,maxBuffer:300000},(err,out)=>resolve(err?null:out.trim())));
 }
 function compactSource(chat) {

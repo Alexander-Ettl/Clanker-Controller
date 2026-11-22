@@ -35,7 +35,7 @@ const antigravity = { type: 'authHold', chatId: 'auth-chat', held: 3, ...await n
 noLogin.dispose();
 assert.equal(expired.action, 'fixCli');
 
-const browser = await chromium.launch({ headless: true, channel: 'msedge' });
+const browser = await chromium.launch({ headless: true, channel: process.platform === 'win32' ? 'msedge' : undefined });
 try {
   const errors = [];
   for (const width of [900, 420, 320]) {

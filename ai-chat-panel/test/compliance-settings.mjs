@@ -15,7 +15,7 @@ const html = `<!doctype html><meta charset="utf-8"><style>${['style.css', 'launc
 <script>${read('agent-icons.js')}</script><script>${read('model-prompts.js')}</script><script>${read('voice-hotkey.js')}</script><script>${read('settings.js')}</script>
 <script>window.api = window.initChatSettings({ vscode: window.acquireVsCodeApi(), body: document.getElementById('csBody') }); window.api.showTab('loops');</script>`;
 const out = fs.mkdtempSync(path.join(os.tmpdir(), 'clanker-compliance-'));
-const browser = await chromium.launch({ headless: true, channel: 'msedge' });
+const browser = await chromium.launch({ headless: true, channel: process.platform === 'win32' ? 'msedge' : undefined });
 try {
   const errors = [];
   for (const width of [364, 560]) {

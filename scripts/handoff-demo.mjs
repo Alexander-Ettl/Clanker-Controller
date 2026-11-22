@@ -13,6 +13,7 @@ import { createRequire } from 'node:module';
 const require = createRequire(import.meta.url);
 const { ChatStore } = require('../ai-chat-panel/lib/chat-store.js');
 const { buildHandoff, turnsOf } = require('../ai-chat-panel/lib/chat-handoff.js');
+const { DATA_FOLDER } = require('../ai-chat-panel/lib/session-dir.js');
 
 const args = process.argv.slice(2);
 const option = (name, fallback) => (args.includes(`--${name}`) ? args[args.indexOf(`--${name}`) + 1] : fallback);
@@ -20,13 +21,15 @@ const option = (name, fallback) => (args.includes(`--${name}`) ? args[args.index
 function findSessionDir() {
   const appData = process.env.APPDATA || path.join(os.homedir(), 'AppData', 'Roaming');
   for (const editor of ['Antigravity IDE', 'Antigravity', 'Code']) {
-    const dir = path.join(appData, editor, 'User', 'globalStorage', 'local.ai-chat-panel', 'session');
-    if (fs.existsSync(path.join(dir, 'chats'))) return dir;
+    for (const folder of [DATA_FOLDER, 'local.ai-chat-panel']) {
+      const dir = path.join(appData, editor, 'User', 'globalStorage', folder, 'session');
+      if (fs.existsSync(path.join(dir, 'chats'))) return dir;
+    }
   }
   throw new Error('No Clanker session folder found; pass --session-dir.');
 }
 
-const sessionDir = option('session-dir', findSessionDir());
+const sessionDir = option('session-dir', process.env.AI_CHAT_PANEL_SESSION_DIR) || findSessionDir();
 const chatsDir = path.join(sessionDir, 'chats');
 const wanted = option('chat', '');
 const candidates = fs.readdirSync(chatsDir).filter(name => name.endsWith('.json')).map(name => ({ name, size: fs.statSync(path.join(chatsDir, name)).size }));

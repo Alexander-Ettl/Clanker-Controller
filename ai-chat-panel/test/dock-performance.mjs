@@ -13,7 +13,7 @@ const flag = (name) => args.includes(`--${name}`);
 const phases = (args.find((a) => a.startsWith('--phases='))?.slice(9) || 'typing,menu,stream,scroll').split(',');
 
 const browser = flag('gpu')
-  ? await chromium.launch({ channel: 'msedge', headless: false, args: ['--enable-gpu-rasterization', '--ignore-gpu-blocklist', '--window-size=1000,1000'] })
+  ? await chromium.launch({ channel: process.platform === 'win32' ? 'msedge' : undefined, headless: false, args: ['--enable-gpu-rasterization', '--ignore-gpu-blocklist', '--window-size=1000,1000'] })
   : await chromium.launch({ args: ['--enable-gpu-rasterization'] });
 const { page, problems } = await openChat(browser, { width: 900, height: 900, scale: 2, sidebar: flag('sidebar') });
 if (flag('no-glass')) {

@@ -5,7 +5,7 @@ import path from 'node:path';
 import { chromium } from 'playwright';
 import { openChat } from './ui-tester/boot.mjs';
 import { scenarios } from './ui-tester/scenarios.mjs';
-const browser = await chromium.launch({ channel: 'msedge', headless: false });
+const browser = await chromium.launch({ channel: process.platform === 'win32' ? 'msedge' : undefined, headless: false });
 try {
   for (const theme of ['light', 'dark']) {
     const { page, problems } = await openChat(browser, { width: 900, height: 1000, sidebar: true, scale: 2 });

@@ -10,6 +10,9 @@
 // button stayed locked in "processing". Now the device is checked against
 // what this machine actually has, a startup exit rejects start(), and stop()
 // settles immediately for a process that is already gone.
+//
+// Platforms: Windows records through DirectShow, Linux through PulseAudio/PipeWire (`-f pulse`, devices from `pactl`,
+// which PipeWire answers too), macOS through AVFoundation. Only the device list and the ffmpeg input arguments differ.
 
 const { spawn } = require('node:child_process');
 const fs = require('node:fs');
@@ -49,6 +52,27 @@ function loadVoiceRouterConfig() {
 function parseDshowAudioDevices(output) {
   const devices = [];
   for (const match of String(output).matchAll(/"([^"]+)"\s+\(audio\)/g)) devices.push(match[1]);
+  return devices;
+}
+
+/** Capture sources from `pactl --format=json list sources`; the monitors of speakers are not microphones. */
+function parsePulseSources(json) {
+  let list;
+  try { list = JSON.parse(String(json)); } catch { return []; }
+  if (!Array.isArray(list)) return [];
+  return list.filter((source) => source && source.name && !String(source.name).endsWith('.monitor') && !source.monitor_of_sink)
+    .map((source) => ({ id: String(source.name), label: String(source.description || source.name) }));
+}
+
+/** `[1] Name` lines under "AVFoundation audio devices:" from `ffmpeg -f avfoundation -list_devices true -i ""`. */
+function parseAvfoundationAudioDevices(output) {
+  const devices = [];
+  let audio = false;
+  for (const line of String(output).split(/\r?\n/)) {
+    if (/AVFoundation video devices/i.test(line)) audio = false;
+    else if (/AVFoundation audio devices/i.test(line)) audio = true;
+    else if (audio) { const match = line.match(/\[(\d+)\]\s+(.+?)\s*$/); if (match) devices.push({ id: match[1], label: match[2] }); }
+  }
   return devices;
 }
 
@@ -98,6 +122,8 @@ function perceptualMicLevel({ rms = 0, peak = 0 } = {}) {
 }
 
 const VOLUME_INTERVAL_MS = 40;
+// With no device list (pactl missing) ffmpeg's own default input is still worth a try.
+const SYSTEM_DEFAULT = 'default';
 
 /** The finished-or-playable segments of a recording folder, in order. 44 bytes is a WAV header with no samples. */
 function listSegments(dir) {
@@ -118,7 +144,11 @@ class AudioCaptureError extends Error {
 }
 
 class VoiceCapture {
-  constructor({ config, spawnImpl, onVolume, mediaControl, defaultMicImpl } = {}) {
+  constructor({ config, spawnImpl, onVolume, mediaControl, defaultMicImpl, platform = process.platform, stopGraceMs = 5000, killGraceMs = 2000 } = {}) {
+    this.platform = platform;
+    this.stopGraceMs = stopGraceMs; // 'q' gets this long before SIGTERM, which gets killGraceMs before SIGKILL
+    this.killGraceMs = killGraceMs;
+    this.ids = new Map(); // label shown to the user -> the id ffmpeg opens (Linux and macOS only)
     this.config = config || loadVoiceRouterConfig();
     this.spawn = spawnImpl || spawn;
     this.onVolume = onVolume || null; // ({ rms, peak }) about every 40ms while recording
@@ -131,8 +161,8 @@ class VoiceCapture {
     this.resolving = null; // the device probe in flight, if any
     this.preferred = ''; // the microphone chosen in Settings > Voice; empty falls back to daemon.config.json, then the first device
     this.exit = null; // { code, stderr } once the current ffmpeg process has exited
-    this.media = mediaControl || new MediaPause();
-    this.readDefaultMic = defaultMicImpl || (spawnImpl ? async () => '' : readWindowsDefaultMic); // a faked ffmpeg means no real Windows to ask
+    this.media = mediaControl || new MediaPause({ platform });
+    this.readDefaultMic = defaultMicImpl || (platform === 'linux' ? () => this.readPulseDefault() : spawnImpl ? async () => '' : readWindowsDefaultMic); // pactl goes through the injected spawn; a faked ffmpeg means no real Windows to ask
   }
 
   isRecording() {
@@ -141,17 +171,36 @@ class VoiceCapture {
 
   ffmpeg() { return this.config.ffmpegPath || 'ffmpeg'; }
 
-  listAudioDevices() {
+  /** Runs a command and resolves with its stdout and stderr; never rejects (a missing tool is just empty output). */
+  capture(command, args) {
     return new Promise((resolve) => {
-      let output = '';
+      let out = '';
+      let err = '';
       let child;
-      try {
-        child = this.spawn(this.ffmpeg(), ['-hide_banner', '-list_devices', 'true', '-f', 'dshow', '-i', 'dummy'], { stdio: ['ignore', 'ignore', 'pipe'], windowsHide: true });
-      } catch { resolve([]); return; }
-      child.stderr?.on('data', (chunk) => { output += chunk.toString('utf8'); });
-      child.once('error', () => resolve([]));
-      child.once('close', () => resolve(parseDshowAudioDevices(output)));
+      try { child = this.spawn(command, args, { stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true }); } catch { resolve({ out, err }); return; }
+      const timer = setTimeout(() => { try { child.kill(); } catch { /* gone */ } resolve({ out, err }); }, 6000);
+      child.stdout?.on('data', (chunk) => { out += chunk.toString('utf8'); });
+      child.stderr?.on('data', (chunk) => { err += chunk.toString('utf8'); });
+      child.once('error', () => { clearTimeout(timer); resolve({ out, err }); });
+      child.once('close', () => { clearTimeout(timer); resolve({ out, err }); });
     });
+  }
+
+  /** Display names of the capture devices. On Linux and macOS this also remembers the id ffmpeg needs for each. */
+  async listAudioDevices() {
+    if (this.platform === 'win32') return parseDshowAudioDevices((await this.capture(this.ffmpeg(), ['-hide_banner', '-list_devices', 'true', '-f', 'dshow', '-i', 'dummy'])).err);
+    const found = this.platform === 'darwin'
+      ? parseAvfoundationAudioDevices((await this.capture(this.ffmpeg(), ['-hide_banner', '-f', 'avfoundation', '-list_devices', 'true', '-i', ''])).err)
+      : parsePulseSources((await this.capture('pactl', ['--format=json', 'list', 'sources'])).out);
+    this.ids = new Map();
+    for (const { id, label } of found) this.ids.set(this.ids.has(label) ? `${label} (${id})` : label, id); // two identical names stay apart
+    return [...this.ids.keys()];
+  }
+
+  /** The label of the PulseAudio/PipeWire default input, or '' when it can't be read. */
+  async readPulseDefault() {
+    const name = (await this.capture('pactl', ['get-default-source'])).out.trim();
+    return name ? [...this.ids].find(([, id]) => id === name)?.[0] || '' : '';
   }
 
   /** Choose the microphone for the next recording (empty: automatic). */
@@ -162,7 +211,10 @@ class VoiceCapture {
 
   /** The chosen mic if this machine has it. Automatic: the Windows default input, else the configured one, else the first capture device (cached). */
   async resolveDevice(refresh = false) {
-    if (this.device && !refresh) return this.device;
+    // Linux asks pactl (cheap), so Automatic notices a headset plugged in or switched to since the last recording.
+    // Windows lists devices through an ffmpeg launch, so it keeps the cached answer.
+    const followsSystem = this.platform === 'linux' && !this.preferred;
+    if (this.device && !refresh && !followsSystem) return this.device;
     this.resolving ||= this.probe().finally(() => { this.resolving = null; }); // a warm-up and a start share one probe
     const { devices, automatic } = await this.resolving;
     this.devices = devices;
@@ -172,15 +224,25 @@ class VoiceCapture {
 
   /** The capture devices, and which one Automatic means: the Windows default, else daemon.config.json's, else the first. */
   async probe() {
-    const [devices, windowsDefault] = await Promise.all([this.listAudioDevices(), Promise.resolve(this.readDefaultMic()).catch(() => '')]);
+    const devices = await this.listAudioDevices(); // first: on Linux the system default is looked up among these
+    const windowsDefault = await Promise.resolve(this.readDefaultMic()).catch(() => '');
     const name = String(windowsDefault || '').trim(); // DirectShow cuts long names, so one starting the other counts
     const system = devices.find((device) => device === name) || (name && devices.find((device) => name.startsWith(device) || device.startsWith(name)));
+    if (this.platform !== 'win32') return { devices, automatic: system || devices[0] || SYSTEM_DEFAULT }; // daemon.config.json's micDevice is a Windows name
     return { devices, automatic: system || (devices.includes(this.config.micDevice) ? this.config.micDevice : devices[0] || this.config.micDevice || null) };
   }
 
   /** Looks the microphone up ahead of the first click, so starting does not pay for the device probe. */
   warm() {
     return this.resolveDevice().catch(() => null);
+  }
+
+  /** ffmpeg's input half of the command line for `device` (a name from listAudioDevices). */
+  inputArgs(device) {
+    if (this.platform === 'win32') return ['-f', 'dshow', '-audio_buffer_size', String(DSHOW_BUFFER_MS), '-i', `audio=${device}`];
+    const id = this.ids.get(device);
+    if (this.platform === 'darwin') return ['-f', 'avfoundation', '-i', `:${id ?? 'default'}`];
+    return ['-f', 'pulse', '-i', id || SYSTEM_DEFAULT];
   }
 
   /** Resolves once ffmpeg is really recording; rejects with AudioCaptureError if it can't. */
@@ -210,7 +272,7 @@ class VoiceCapture {
     const proc = this.spawn(
       this.ffmpeg(),
       // P17-ZA: a second output taps raw PCM to stdout for the composer's level meter.
-      ['-y', '-loglevel', 'error', '-f', 'dshow', '-audio_buffer_size', String(DSHOW_BUFFER_MS), '-i', `audio=${device}`, '-ar', '16000', '-ac', '1', '-f', 'segment', '-segment_time', String(SEGMENT_SECONDS), '-segment_format', 'wav', path.join(this.dir, 'seg-%03d.wav'), '-f', 's16le', '-ar', '16000', '-ac', '1', 'pipe:1'],
+      ['-y', '-loglevel', 'error', ...this.inputArgs(device), '-ar', '16000', '-ac', '1', '-f', 'segment', '-segment_time', String(SEGMENT_SECONDS), '-segment_format', 'wav', path.join(this.dir, 'seg-%03d.wav'), '-f', 's16le', '-ar', '16000', '-ac', '1', 'pipe:1'],
       { stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true },
     );
     this.process = proc;
@@ -273,9 +335,15 @@ class VoiceCapture {
       // Already dead (crashed mid-recording): its 'close' has fired and will not fire again.
       if (proc.exitCode !== null || proc.signalCode !== null || this.exit) { settle(); return; }
 
-      const killTimer = setTimeout(() => { if (proc.exitCode === null) proc.kill(); }, 5000);
-      proc.once('close', () => { clearTimeout(killTimer); settle(); });
-      proc.once('error', (error) => { clearTimeout(killTimer); reject(error); });
+      // A capture stuck waiting for samples (a dead sound-card driver) ignores 'q' and SIGTERM, so escalate to SIGKILL.
+      const killTimer = setTimeout(() => {
+        if (proc.exitCode !== null) return;
+        proc.kill();
+        hardKill = setTimeout(() => { if (proc.exitCode === null) proc.kill('SIGKILL'); }, this.killGraceMs);
+      }, this.stopGraceMs);
+      let hardKill = null;
+      proc.once('close', () => { clearTimeout(killTimer); clearTimeout(hardKill); settle(); });
+      proc.once('error', (error) => { clearTimeout(killTimer); clearTimeout(hardKill); reject(error); });
       try {
         proc.stdin.write('q');
         proc.stdin.end();
@@ -298,4 +366,4 @@ class VoiceCapture {
   }
 }
 
-module.exports = { VoiceCapture, AudioCaptureError, SEGMENT_SECONDS, listSegments, parseDshowAudioDevices, pcmLevels, perceptualMicLevel };
+module.exports = { VoiceCapture, AudioCaptureError, SEGMENT_SECONDS, listSegments, parseDshowAudioDevices, parsePulseSources, parseAvfoundationAudioDevices, pcmLevels, perceptualMicLevel };

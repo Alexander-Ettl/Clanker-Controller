@@ -216,7 +216,7 @@ test('the Windows popup passes its text through the environment and maps the exi
     spawned.push({ cmd, args, options, child });
     return child;
   };
-  assert.equal(showAuthPrompt({ title: 'x' }, { platform: 'linux' }), null);
+  assert.equal(showAuthPrompt({ title: 'x' }, { platform: 'darwin' }), null); // Linux has its own notification popup: test/linux-integration.test.js
   const prompt = showAuthPrompt({ title: 'Codex is signed out', message: 'it is `$(calc)` "quoted"', steps: ['one', 'two'], button: 'Sign in to Codex' }, { platform: 'win32', spawnImpl });
   const { cmd, args, options } = spawned[0];
   assert.equal(cmd, 'powershell.exe');

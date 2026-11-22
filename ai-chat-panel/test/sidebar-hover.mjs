@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { chromium } from 'playwright';
 import { openChat } from './ui-tester/boot.mjs';
 import { scenarios } from './ui-tester/scenarios.mjs';
-const browser = await chromium.launch({ channel: 'msedge', headless: false });
+const browser = await chromium.launch({ channel: process.platform === 'win32' ? 'msedge' : undefined, headless: false });
 try {
   const { page } = await openChat(browser, { width: 900, height: 1100, sidebar: true });
   await scenarios.find(s => s.id === 'recent-context-hover').setup(page);

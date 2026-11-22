@@ -1626,11 +1626,32 @@ class StreamEngine extends EventEmitter {
  * pipe \x03 is just a byte (Windows only raises CTRL_C_EVENT for a console),
  * and interactive Claude would read it as a malformed stream-json line.
  */
-function killTree(child, execFileImpl = execFile) {
+function killTree(child, execFileImpl = execFile, { platform = process.platform, descendants = descendantPids, signal = process.kill.bind(process) } = {}) {
   if (!child || child.exitCode !== null || child.signalCode !== null) return;
-  if (process.platform === 'win32' && child.pid) {
+  if (platform === 'win32' && child.pid) {
     execFileImpl('taskkill', ['/PID', String(child.pid), '/T', '/F'], { windowsHide: true }, (error) => { if (error) child.kill(); });
-  } else child.kill();
+    return;
+  }
+  // Linux and macOS: SIGTERM reaches only the CLI itself, and a tool it started (a build, a dev server) would carry on
+  // with nobody listening. Collect the tree first, since children are re-parented once their parent is gone.
+  const children = child.pid ? descendants(child.pid) : [];
+  child.kill();
+  for (const pid of children.reverse()) { try { signal(pid, 'SIGTERM'); } catch { /* already gone */ } }
+}
+
+/** Every process below `pid`, found with pgrep (which exits 1 when a process has no children). */
+function descendantPids(pid) {
+  const found = [];
+  const walk = (parent) => {
+    let out = '';
+    try { out = execFileSync('pgrep', ['-P', String(parent)], { encoding: 'utf8', timeout: 1500, stdio: ['ignore', 'pipe', 'ignore'] }); } catch { return; }
+    for (const line of out.split('\n')) {
+      const child = Number(line);
+      if (child > 1 && !found.includes(child)) { found.push(child); walk(child); }
+    }
+  };
+  walk(pid);
+  return found;
 }
 
 module.exports = { StreamEngine, normalizeEvent, killTree, contextTokensOf, contextGrowthOf, toolTarget, geminiToolTarget, editDiff };

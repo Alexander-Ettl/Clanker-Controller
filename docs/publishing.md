@@ -39,9 +39,9 @@ Two extensions ship from this repo: **Clanker Controller** (`ai-chat-panel/`) an
 
 ## Chats after the publisher change
 
-User storage is tied to the extension ID, so the published `<publisher>.ai-chat-panel` starts with an empty storage folder. On first start it copies the chats, attachments and queue from `local.ai-chat-panel` once (`lib/session-dir.js`, `legacyDirs`). Remove the dev junction before installing the published build; both register the same commands and views.
+Clanker stores session data in `User/globalStorage/clanker-controller-data/session` within the editor's user data. On first start it copies the previous extension's session once, including chats, project icons, attachments and the queue. Start the updated development build once before replacing it to migrate its data before the editor can remove the old extension directory. Remove the dev junction before using the published build because both builds register the same commands and views.
 
-`scripts/router.cjs` and `scripts/handoff-demo.mjs` still read `local.ai-chat-panel`. Set `AI_CHAT_PANEL_SESSION_DIR` if you use them against the published build.
+`scripts/router.cjs` and `scripts/handoff-demo.mjs` look for the shared session folder. Set `AI_CHAT_PANEL_SESSION_DIR` to use a custom location.
 
 ## Still open
 

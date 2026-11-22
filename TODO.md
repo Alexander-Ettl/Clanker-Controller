@@ -179,6 +179,10 @@ Consider providers beyond the main coding CLIs, including **Groq**. Keep **Groq*
 
 ## Recently closed / reconciled
 
+- 2026-11-22 · LINUX: every Windows-only code path now has a Linux counterpart (see README, Platform), including `antigravity-usage-statusbar` `/proc` + `ss` discovery, and is verified on an Ubuntu 24.04 QEMU VM (VS Code 1.147 installed via `install-extension.mjs`, full unit suite 785/785 pass + 1 Windows-only skip, `npm run check`, `verify:models`, 11 real-tool X11/PulseAudio/MPRIS/dunst/systemd-inhibit/proc/killTree/ffmpeg checks, and 6 Wayland Sway `wl-copy`/`wl-paste`, statusbar RPC, `StreamEngine` turn/cancel, and XDG recovery checks). Fixed `image-shrink.js` nested `min()`, `keep-awake.js` `--what=sleep`, `antigravity-usage-statusbar/antigravity.js` Linux discovery, and Voice Settings narrow-sidebar wrapping / unsupported hotkey button hiding. **Open (physical hardware only):** sign in to real CLIs and dictate with a real physical microphone on a Linux desktop.
+
+- 2026-11-19 · CHAT-RECOVERY: Antigravity package cleanup coincided with loss of chat history and project icon settings. The live store moved outside the extension-ID directory. Signed chat snapshots and independent local backups recover overwritten and missing history and preserve deliberate deletion. [Storage and recovery](docs/chat-recovery.md).
+
 | Date | Item | Evidence |
 |---|---|---|
 | 2026-11-17 | Copilot chat output: turns ran `copilot -p` in text mode and the provider's `normalizeEvent` had only placeholder mappings, so every stdout line became a delta with its line break stripped. Tool-call log lines and the reply ran together in one paragraph. Turns now run with `--output-format json --stream off`; `session.start`, `assistant.message`, `assistant.reasoning`, `tool.execution_start`/`_complete` (edit/create with diffs, `report_intent` hidden, subagent-internal steps skipped), `session.error`/`warning` and the final `result` record map to session, text blocks, thoughts, tool cards, notices and turn completion. | `lib/providers/copilot.js` (`commandFor`, `normalizeEvent`); tests in `test/providers.test.js`. |

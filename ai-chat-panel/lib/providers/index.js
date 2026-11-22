@@ -15,6 +15,7 @@
 //   npmPackage    latest version comes from the npm registry   latestVersion(fetch)  or from here (null = unknown)
 //   updateArgs    default ['update']                      versionArgs   default ['--version']
 //   login         args that start sign-in                 install       PowerShell line that installs the CLI and signs in
+//   installPosix  optional: the same for sh on Linux/macOS (omit when there is no official one; the UI then points to the website)
 //   authStatus    { args, interpret(result) -> 'connected' | 'ready' | 'signin' | 'broken' (CLI cannot start) }
 //   entitlement   optional ({ result, home, env, languageServer }) -> null | { kind: 'plan', reason, detail } (may be async; null = fine, undefined = cannot tell, the last verdict stands); run after each sign-in check
 //                 that says connected. Say so here when the CLI stays "signed in" after the plan that unlocks it ends.

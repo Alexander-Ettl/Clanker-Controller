@@ -737,7 +737,7 @@ test('quota-sources: a usage_limit_exceeded turn after a 99% reading means the w
 });
 
 test('session dir: Clanker keeps its own storage and copies a legacy session folder once', () => {
-  const { resolveSessionDir } = require('../lib/session-dir.js');
+  const { resolveSessionDir, DATA_FOLDER } = require('../lib/session-dir.js');
   const base = fs.mkdtempSync(path.join(os.tmpdir(), 'ai-chat-panel-session-'));
   const legacy = path.join(base, 'legacy');
   fs.mkdirSync(path.join(legacy, 'chats'), { recursive: true });
@@ -746,7 +746,7 @@ test('session dir: Clanker keeps its own storage and copies a legacy session fol
   const storageDir = path.join(base, 'storage');
 
   const dir = resolveSessionDir({ storageDir, legacyDirs: [legacy, undefined], override: '' });
-  assert.equal(dir, path.join(storageDir, 'session'));
+  assert.equal(dir, path.join(base, DATA_FOLDER, 'session'));
   assert.ok(fs.existsSync(path.join(dir, 'chats', 'a.json')), 'chats are carried over');
   assert.ok(!fs.existsSync(path.join(dir, 'batch-tasks.json')), 'only Clanker\'s own files are copied');
 
@@ -755,11 +755,23 @@ test('session dir: Clanker keeps its own storage and copies a legacy session fol
   assert.ok(!fs.existsSync(path.join(dir, 'chats', 'b.json')), 'the legacy folder is never read a second time');
   assert.equal(resolveSessionDir({ storageDir, override: '/somewhere/else' }), '/somewhere/else');
 
-  // A legacy folder that is the session folder itself (the unpublished build's ID) is not copied onto itself.
-  const same = path.join(base, 'same');
-  fs.mkdirSync(path.join(same, 'session', 'chats'), { recursive: true });
-  resolveSessionDir({ storageDir: same, legacyDirs: [path.join(same, 'session')], override: '' });
-  assert.ok(fs.existsSync(path.join(same, 'session', '.migrated')), 'migration completes without copying onto itself');
+  const profile = path.join(base, 'another-profile');
+  const localStorage = path.join(profile, 'local.ai-chat-panel');
+  const source = path.join(localStorage, 'session');
+  const published = path.join(profile, 'publisher.ai-chat-panel');
+  const attachment = path.join(source, 'projects', 'p', 'attachments', 'test.png');
+  fs.mkdirSync(path.dirname(attachment), { recursive: true });
+  fs.mkdirSync(path.join(source, 'chats'));
+  fs.writeFileSync(attachment, 'image data');
+  fs.writeFileSync(path.join(source, 'chats', 'snapshot.json'), JSON.stringify({ messages: [{ text: attachment, attachments: [attachment] }] }));
+  fs.writeFileSync(path.join(source, 'projects.json'), JSON.stringify([{ id: 'p', icon: attachment }]));
+  const migrated = resolveSessionDir({ storageDir: published, legacyDirs: [legacy], override: '' });
+  fs.renameSync(localStorage, path.join(base, 'simulated-uninstall'));
+  assert.equal(resolveSessionDir({ storageDir: published, override: '' }), migrated);
+  const icon = path.join(migrated, path.relative(source, attachment));
+  assert.equal(fs.readFileSync(icon, 'utf8'), 'image data');
+  assert.equal(JSON.parse(fs.readFileSync(path.join(migrated, 'projects.json'), 'utf8'))[0].icon, icon);
+  assert.deepEqual(JSON.parse(fs.readFileSync(path.join(migrated, 'chats', 'snapshot.json'), 'utf8')).messages[0], { text: attachment, attachments: [icon] });
 });
 
 test('voice dictionary: terms are added once, listed when enabled, and merged without repeats', async () => {
@@ -994,7 +1006,7 @@ test('P16-L: parseDshowAudioDevices keeps audio devices only', () => {
 test('P16-L: a configured mic missing on this workstation falls back to the first real device', async () => {
   const { VoiceCapture } = require('../lib/voice-capture.js');
   const { spawnImpl, spawned } = fakeFfmpeg({ devices: ['Microphone (Anker PowerConf C200)', 'Headset Microphone (HyperX)'], recording: 'ok' });
-  const capture = new VoiceCapture({ config: { micDevice: 'Mikrofonarray (Realtek(R) Audio)', ffmpegPath: 'ffmpeg' }, spawnImpl });
+  const capture = new VoiceCapture({ platform: 'win32', config: { micDevice: 'Mikrofonarray (Realtek(R) Audio)', ffmpegPath: 'ffmpeg' }, spawnImpl });
   assert.equal(await capture.start(), 'Microphone (Anker PowerConf C200)');
   assert.ok(spawned.some((args) => args.includes('audio=Microphone (Anker PowerConf C200)')));
   const files = await capture.stop();
@@ -1008,7 +1020,7 @@ test('P16-L: a configured mic missing on this workstation falls back to the firs
 test('Automatic follows the Windows default input, ahead of the configured mic, and a chosen mic still wins', async () => {
   const { VoiceCapture } = require('../lib/voice-capture.js');
   const devices = ['Mikrofon (2- Wireless microphone)', 'Mikrofonarray (Realtek(R) Audio)'];
-  const make = (defaultMic, micDevice = 'Mikrofonarray (Realtek(R) Audio)') => new VoiceCapture({ config: { micDevice }, spawnImpl: fakeFfmpeg({ devices, recording: 'ok' }).spawnImpl, defaultMicImpl: async () => defaultMic });
+  const make = (defaultMic, micDevice = 'Mikrofonarray (Realtek(R) Audio)') => new VoiceCapture({ platform: 'win32', config: { micDevice }, spawnImpl: fakeFfmpeg({ devices, recording: 'ok' }).spawnImpl, defaultMicImpl: async () => defaultMic });
   const windows = make('Mikrofon (2- Wireless microphone)');
   assert.equal((await windows.probe()).automatic, 'Mikrofon (2- Wireless microphone)');
   assert.equal(await windows.resolveDevice(), 'Mikrofon (2- Wireless microphone)', 'the configured Realtek no longer beats the Windows default');
@@ -1022,7 +1034,7 @@ test('Automatic follows the Windows default input, ahead of the configured mic, 
 test('P16-L: ffmpeg dying at startup rejects start() instead of reporting "recording"', async () => {
   const { VoiceCapture } = require('../lib/voice-capture.js');
   const { spawnImpl } = fakeFfmpeg({ devices: ['Mic A'], recording: 'exit-now' });
-  const capture = new VoiceCapture({ config: { micDevice: 'Mic A' }, spawnImpl });
+  const capture = new VoiceCapture({ platform: 'win32', config: { micDevice: 'Mic A' }, spawnImpl });
   await assert.rejects(capture.start(), (error) => error.code === 'AUDIO_CAPTURE_FAILED' && error.device === 'Mic A' && /Could not open microphone "Mic A"/.test(error.message) && error.devices.includes('Mic A'));
   assert.equal(capture.isRecording(), false);
   await assert.rejects(capture.stop(), /Not currently recording/);
@@ -1031,7 +1043,7 @@ test('P16-L: ffmpeg dying at startup rejects start() instead of reporting "recor
 test('P16-L: stop() settles immediately when ffmpeg already crashed mid-recording (no dead-close deadlock)', async () => {
   const { VoiceCapture } = require('../lib/voice-capture.js');
   const { spawnImpl } = fakeFfmpeg({ devices: ['Mic A'], recording: 'crash' });
-  const capture = new VoiceCapture({ config: { micDevice: 'Mic A' }, spawnImpl });
+  const capture = new VoiceCapture({ platform: 'win32', config: { micDevice: 'Mic A' }, spawnImpl });
   await capture.start();
   await new Promise((r) => setTimeout(r, 120)); // crash happens during "recording"
   const settled = await Promise.race([capture.stop().then(() => 'resolved', () => 'rejected'), new Promise((r) => setTimeout(() => r('hung'), 300))]);
@@ -1041,7 +1053,7 @@ test('P16-L: stop() settles immediately when ffmpeg already crashed mid-recordin
 test('P16-L: no microphone at all is a clear error', async () => {
   const { VoiceCapture } = require('../lib/voice-capture.js');
   const { spawnImpl } = fakeFfmpeg({ devices: [], recording: 'ok' });
-  const capture = new VoiceCapture({ config: { micDevice: '' }, spawnImpl });
+  const capture = new VoiceCapture({ platform: 'win32', config: { micDevice: '' }, spawnImpl });
   await assert.rejects(capture.start(), /No microphone found/);
 });
 
@@ -1051,7 +1063,7 @@ test('dictation pauses media only when enabled and restores on stop, disposal an
     let paused = false, pauses = 0;
     const mediaControl = { pause: async () => { paused = true; pauses++; }, resume: () => { paused = false; } };
     const { spawnImpl } = fakeFfmpeg({ devices: mode === 'no-mic' ? [] : ['Mic A'], recording: mode === 'exit-now' || mode === 'crash' ? mode : 'ok' });
-    const capture = new VoiceCapture({ config: { micDevice: '' }, spawnImpl, mediaControl });
+    const capture = new VoiceCapture({ platform: 'win32', config: { micDevice: '' }, spawnImpl, mediaControl });
     if (mode === 'exit-now' || mode === 'no-mic') {
       await assert.rejects(capture.start({ pauseMedia: true }));
     } else {
@@ -1072,7 +1084,7 @@ test('dictation pauses media only when enabled and restores on stop, disposal an
 test('dictation is "recording" when the first audio arrives, not after a fixed wait, so the start cue never beats the microphone', async () => {
   const { VoiceCapture } = require('../lib/voice-capture.js');
   const { spawnImpl, spawned } = fakeFfmpeg({ devices: ['Mic A'], recording: 'ok', audioAfterMs: 150 });
-  const capture = new VoiceCapture({ config: { micDevice: '' }, spawnImpl });
+  const capture = new VoiceCapture({ platform: 'win32', config: { micDevice: '' }, spawnImpl });
   await capture.warm();
   const begun = Date.now();
   await capture.start();
@@ -1087,7 +1099,7 @@ test('dictation is "recording" when the first audio arrives, not after a fixed w
 test('dictation never reports recording for a device that opens but stays silent forever (falls through after the timeout)', async () => {
   const { VoiceCapture } = require('../lib/voice-capture.js');
   const { spawnImpl } = fakeFfmpeg({ devices: ['Mic A'], recording: 'ok', audioAfterMs: null });
-  const capture = new VoiceCapture({ config: { micDevice: '' }, spawnImpl });
+  const capture = new VoiceCapture({ platform: 'win32', config: { micDevice: '' }, spawnImpl });
   const settled = await Promise.race([capture.start().then(() => 'resolved'), new Promise((r) => setTimeout(() => r('pending'), 1000))]);
   assert.equal(settled, 'pending', 'no audio yet means not recording yet');
   await capture.dispose();
@@ -1099,7 +1111,7 @@ test('the media pause runs beside opening the microphone, not before it', async 
   const mediaControl = { pause: () => { events.push('pause'); return new Promise((resolve) => setTimeout(() => { events.push('paused'); resolve(); }, 60)); }, resume: () => {} };
   const base = fakeFfmpeg({ devices: ['Mic A'], recording: 'ok', audioAfterMs: 10 });
   const spawnImpl = (cmd, args, opts) => { if (!args.includes('-list_devices')) events.push('ffmpeg'); return base.spawnImpl(cmd, args, opts); };
-  const capture = new VoiceCapture({ config: { micDevice: '' }, spawnImpl, mediaControl });
+  const capture = new VoiceCapture({ platform: 'win32', config: { micDevice: '' }, spawnImpl, mediaControl });
   await capture.warm();
   await capture.start({ pauseMedia: true });
   assert.deepEqual(events.slice(0, 2), ['pause', 'ffmpeg'], 'ffmpeg does not wait for the pause helper');
@@ -1109,12 +1121,97 @@ test('the media pause runs beside opening the microphone, not before it', async 
 test('warm() probes the microphone once and a start right after reuses it', async () => {
   const { VoiceCapture } = require('../lib/voice-capture.js');
   const { spawnImpl, spawned } = fakeFfmpeg({ devices: ['Mic A'], recording: 'ok' });
-  const capture = new VoiceCapture({ config: { micDevice: '' }, spawnImpl });
+  const capture = new VoiceCapture({ platform: 'win32', config: { micDevice: '' }, spawnImpl });
   const warm = capture.warm();
   await capture.start();
   await warm;
   assert.equal(spawned.filter((args) => args.includes('-list_devices')).length, 1);
   await capture.stop(); fs.rmSync(capture.dir, { recursive: true, force: true });
+});
+
+// A fake `pactl` + `ffmpeg` pair for the Linux path. `state.sources` and `state.defaultSource` can change between recordings.
+function fakePulse(state, { stuck = false, killed = [] } = {}) {
+  const { EventEmitter } = require('node:events');
+  const spawned = [];
+  const spawnImpl = (cmd, args) => {
+    const proc = new EventEmitter();
+    proc.stderr = new EventEmitter(); proc.stdout = new EventEmitter();
+    proc.stdin = { write() {}, end() { if (!stuck && proc.exitCode === null) setTimeout(() => { proc.exitCode = 0; proc.emit('close', 0); }, 5); }, on() {} };
+    proc.exitCode = null; proc.signalCode = null;
+    proc.kill = (signal = 'SIGTERM') => { killed.push(signal); if (stuck && signal !== 'SIGKILL') return; proc.exitCode = 1; proc.emit('close', 1); };
+    spawned.push({ cmd, args });
+    if (cmd === 'pactl') {
+      const out = args[0] === 'get-default-source' ? `${state.defaultSource}\n` : JSON.stringify(state.sources);
+      setTimeout(() => { proc.stdout.emit('data', Buffer.from(out)); proc.emit('close', 0); }, 1);
+      return proc;
+    }
+    fs.writeFileSync(args.find((a) => typeof a === 'string' && a.endsWith('.wav')).replace('%03d', '000'), Buffer.alloc(2000));
+    if (!stuck) setTimeout(() => proc.stdout.emit('data', Buffer.alloc(3200)), 10);
+    return proc;
+  };
+  return { spawnImpl, spawned };
+}
+
+test('Linux: pactl sources become microphones, speaker monitors do not, and ffmpeg records through pulse', async () => {
+  const { VoiceCapture, parsePulseSources } = require('../lib/voice-capture.js');
+  const sources = [
+    { name: 'alsa_output.pci.analog-stereo.monitor', description: 'Monitor of Built-in Audio', monitor_of_sink: 'alsa_output.pci.analog-stereo' },
+    { name: 'alsa_input.usb-Anker.mono', description: 'Anker PowerConf C200' },
+    { name: 'bluez_input.AA', description: 'Headset' },
+  ];
+  assert.deepEqual(parsePulseSources(JSON.stringify(sources)).map((s) => s.label), ['Anker PowerConf C200', 'Headset']);
+  assert.deepEqual(parsePulseSources('not json'), []);
+  const state = { sources, defaultSource: 'bluez_input.AA' };
+  const { spawnImpl, spawned } = fakePulse(state);
+  const capture = new VoiceCapture({ platform: 'linux', config: {}, spawnImpl, defaultMicImpl: undefined });
+  assert.equal(await capture.start(), 'Headset', 'Automatic is the PipeWire default input');
+  const record = spawned.find((call) => call.cmd === 'ffmpeg');
+  assert.deepEqual(record.args.slice(3, 7), ['-f', 'pulse', '-i', 'bluez_input.AA']);
+  assert.ok(!record.args.includes('dshow') && !record.args.some((arg) => String(arg).startsWith('audio=')));
+  await capture.stop();
+  fs.rmSync(capture.dir, { recursive: true, force: true });
+  // The headset is unplugged and the system default changes: the next recording follows it without a reload.
+  state.sources = sources.slice(0, 2); state.defaultSource = 'alsa_input.usb-Anker.mono';
+  assert.equal(await capture.start(), 'Anker PowerConf C200');
+  await capture.stop();
+  fs.rmSync(capture.dir, { recursive: true, force: true });
+  // A mic chosen in Settings still wins over the system default.
+  capture.setPreferred('Headset'); state.sources = sources; state.defaultSource = 'alsa_input.usb-Anker.mono';
+  assert.equal(await capture.start(), 'Headset');
+  await capture.stop();
+  fs.rmSync(capture.dir, { recursive: true, force: true });
+});
+
+test('Linux without pactl still records from the system default input', async () => {
+  const { VoiceCapture } = require('../lib/voice-capture.js');
+  const { spawnImpl, spawned } = fakePulse({ sources: [], defaultSource: '' });
+  const capture = new VoiceCapture({ platform: 'linux', config: {}, spawnImpl });
+  assert.equal(await capture.start(), 'default');
+  assert.deepEqual(spawned.find((call) => call.cmd === 'ffmpeg').args.slice(3, 7), ['-f', 'pulse', '-i', 'default']);
+  await capture.stop();
+  fs.rmSync(capture.dir, { recursive: true, force: true });
+});
+
+test('macOS: AVFoundation devices are listed and opened by index', async () => {
+  const { parseAvfoundationAudioDevices, VoiceCapture } = require('../lib/voice-capture.js');
+  const output = '[AVFoundation indev @ 0x1] AVFoundation video devices:\n[AVFoundation indev @ 0x1] [0] FaceTime HD Camera\n[AVFoundation indev @ 0x1] AVFoundation audio devices:\n[AVFoundation indev @ 0x1] [0] MacBook Pro Microphone\n[AVFoundation indev @ 0x1] [1] Anker PowerConf\n';
+  assert.deepEqual(parseAvfoundationAudioDevices(output), [{ id: '0', label: 'MacBook Pro Microphone' }, { id: '1', label: 'Anker PowerConf' }]);
+  const capture = new VoiceCapture({ platform: 'darwin', config: {}, spawnImpl: () => { throw new Error('unused'); } });
+  capture.ids = new Map([['Anker PowerConf', '1']]);
+  assert.deepEqual(capture.inputArgs('Anker PowerConf'), ['-f', 'avfoundation', '-i', ':1']);
+});
+
+test('stop() escalates to SIGKILL when ffmpeg is stuck waiting for samples and ignores both "q" and SIGTERM', async () => {
+  const { VoiceCapture } = require('../lib/voice-capture.js');
+  const killed = [];
+  const state = { sources: [{ name: 'alsa_input.x', description: 'Mic' }], defaultSource: 'alsa_input.x' };
+  const { spawnImpl } = fakePulse(state, { stuck: true, killed });
+  const capture = new VoiceCapture({ platform: 'linux', config: {}, spawnImpl, stopGraceMs: 30, killGraceMs: 30 });
+  await capture.start(); // no audio ever arrives: start() falls through after its own timeout
+  const settled = await Promise.race([capture.stop().then(() => 'resolved', () => 'rejected'), new Promise((r) => setTimeout(() => r('hung'), 1000))]);
+  assert.notEqual(settled, 'hung');
+  assert.deepEqual(killed, ['SIGTERM', 'SIGKILL']);
+  fs.rmSync(capture.dir, { recursive: true, force: true });
 });
 
 test('CLI command lines use only flags the real CLIs accept, and stdin payloads they parse', () => {
@@ -1393,6 +1490,11 @@ test('P17-F: interrupt() ends the turn visibly, kills the whole process tree, an
   calls.length = 0;
   killTree({ ...child, exitCode: 0 }, (file, args) => calls.push([file, ...args]));
   assert.equal(calls.length, 0, 'an exited process is left alone');
+  // Linux/macOS: the CLI's own subprocesses go too, deepest first, after the CLI itself.
+  const signalled = [];
+  killTree(child, () => {}, { platform: 'linux', descendants: () => [10, 11, 12], signal: (pid, name) => signalled.push(`${name} ${pid}`) });
+  assert.deepEqual(calls, [['kill']]);
+  assert.deepEqual(signalled, ['SIGTERM 12', 'SIGTERM 11', 'SIGTERM 10']);
 
   const e = new StreamEngine({});
   const events = [];

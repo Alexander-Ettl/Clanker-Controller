@@ -30,6 +30,7 @@ const { GroqAccount } = require('./lib/groq-account.js');
 const voiceDictionary = require('./lib/voice-dictionary.js');
 const { scanProjects } = require('./lib/voice-scan-projects.js');
 const { resolveSessionDir } = require('./lib/session-dir.js');
+const { ChatRecovery } = require('./lib/chat-recovery.js');
 const { writeMicroHandoff, formatMicroHandoffPrompt } = require('./lib/handoff.js');
 
 // The Routing tab's setup guides link here by key, so the webview can't open arbitrary addresses.
@@ -391,6 +392,7 @@ const BRIDGE_CAPABILITIES = ['routePrompt', 'injectPrompt', 'runBatch', 'favorit
 // Clanker's own state (chats, attachments, scheduler queue, handoff, voice dictionary): its per-user storage,
 // resolved in activate() by lib/session-dir.js. Nothing here belongs to a project or to another extension.
 let SESSION_DIR;
+let stopChatStorage;
 
 // P16-I: resolved per workstation by lib/binary-locator.js at activation.
 function agentList() {
@@ -2375,7 +2377,7 @@ class ChatWindowHost {
       reply({ uri: `data:${mime};base64,${bytes.toString('base64')}`, name: path.basename(resolved), size: stat.size, path: resolved });
     } catch (error) { reply({ error: error.message || 'Could not read the file' }); }
   }
-  /** Right-click on a file badge: its full path as text, or the file itself so Explorer can paste it (Windows). */
+  /** Right-click on a file badge: its full path as text, or the file itself so the file manager can paste it. */
   async copyFileRef(file, mode) {
     if (typeof file !== 'string' || !file) return;
     const resolved = await resolveFileRef(file, this.deps.workspaceDir);
@@ -2383,10 +2385,7 @@ class ChatWindowHost {
     if (!resolved) { notify(`File not found: ${file}`, true); return; }
     try {
       if (mode === 'file') {
-        if (process.platform !== 'win32') throw new Error('Copying the file itself is only supported on Windows.');
-        await new Promise((resolve, reject) => {
-          execFile('powershell.exe', ['-NoProfile', '-NonInteractive', '-STA', '-Command', 'Set-Clipboard -LiteralPath $env:CLANKER_CLIP_FILE'], { env: { ...process.env, CLANKER_CLIP_FILE: resolved }, windowsHide: true, timeout: 8000 }, (error) => error ? reject(error) : resolve());
-        });
+        await require('./lib/clipboard-image.js').copyFileToClipboard(resolved);
         notify(`Copied file ${path.basename(resolved)}.`);
       } else {
         await vscode.env.clipboard.writeText(resolved);
@@ -2542,13 +2541,8 @@ class ChatWindowHost {
     try {
       if (this.deps.copyImageToClipboard) {
         await this.deps.copyImageToClipboard(safe);
-      } else if (process.platform === 'win32') {
-        const script = 'Add-Type -AssemblyName System.Windows.Forms,System.Drawing; $img = [System.Drawing.Image]::FromFile($env:CLANKER_CLIP_FILE); try { [System.Windows.Forms.Clipboard]::SetImage($img) } finally { $img.Dispose() }';
-        await new Promise((resolve, reject) => {
-          execFile('powershell.exe', ['-NoProfile', '-NonInteractive', '-STA', '-Command', script], { env: { ...process.env, CLANKER_CLIP_FILE: safe }, windowsHide: true, timeout: 8000 }, (error) => error ? reject(error) : resolve());
-        });
       } else {
-        throw new Error('Image clipboard copy is only supported on Windows.');
+        await require('./lib/clipboard-image.js').copyImageToClipboard(safe);
       }
       if (!silent) this.panel?.webview.postMessage({ type: 'attachmentCopied', ok: true, name: cleanAttachmentName(safe) });
       return true;
@@ -3626,7 +3620,7 @@ class LauncherViewProvider {
       case 'projectIconWithAI': {
         const project = this.deps.chatWindowManager.deps.projects?.get(message.id);
         if (!project?.root) break;
-        this.showInChat('prefillPrompt', { closeSettings: true, text: `Find the best favicon or logo for my project "${project.name}" in ${project.root}. Look for favicon files and brand logos, pick a square-ish PNG, SVG or ICO under 256 KB, and set its absolute path as the "icon" field of this project's entry (id ${project.id}) in ${this.deps.chatWindowManager.deps.projects.file}. The file is a JSON array: keep every other field and entry as they are. The chat rail then shows the icon instead of the initials. If nothing suitable exists, say so rather than guessing.` });
+        this.showInChat('prefillPrompt', { closeSettings: true, text: `Find the best favicon or logo for my project "${project.name}" in ${project.root}. Pick a square-ish PNG, SVG or ICO under 256 KB and give me its path so I can select it in Clanker Controller's project icon settings. If nothing suitable exists, say so.` });
         break;
       }
       // Settings > Voice > Dictionary. The file in the session directory is the storage; an AI editing it shows up here too.
@@ -3822,12 +3816,12 @@ function activate(context) {
   const workspaceDir = (vscode.workspace.workspaceFolders?.[0]?.uri.fsPath || process.cwd()).replace(/^[a-z]:/, (drive) => drive.toUpperCase());
   SESSION_DIR = resolveSessionDir({
     storageDir: context.globalStorageUri.fsPath,
-    // Earlier versions kept this in a site's `.astro/session`; copied over once, never read again.
-    // The Marketplace build has its own publisher ID; chats saved by the unpublished `local.ai-chat-panel` copy come along once.
-    legacyDirs: [path.join(path.dirname(context.globalStorageUri.fsPath), 'local.ai-chat-panel', 'session'), process.env.ASTRO_CONTENT_EDITOR_SESSION_DIR, path.join(workspaceDir, 'site', '.astro', 'session'), path.join(workspaceDir, '.astro', 'session')],
+    legacyDirs: [process.env.ASTRO_CONTENT_EDITOR_SESSION_DIR, path.join(workspaceDir, 'site', '.astro', 'session'), path.join(workspaceDir, '.astro', 'session')],
   });
-  const chatStore = new ChatStore(SESSION_DIR);
-  const projects = new ProjectRegistry(SESSION_DIR);
+  const recovery = new ChatRecovery(SESSION_DIR);
+  const chatStore = new ChatStore(SESSION_DIR, recovery);
+  chatStore.seedRecovery();
+  const projects = new ProjectRegistry(SESSION_DIR, recovery);
   voiceProjectList = () => projects.list();
   const workspaceProjects = (vscode.workspace.workspaceFolders || []).filter(folder => fs.existsSync(folder.uri.fsPath)).map(folder => projects.add(folder.name, folder.uri.fsPath));
   const rememberedProject = context.workspaceState.get('selectedProjectId');
@@ -4356,7 +4350,7 @@ function activate(context) {
   };
   launcher = new LauncherViewProvider(context.extensionUri, launcherDeps);
   chatWindowManager.launcherDeps = launcherDeps; // the chat windows' Chat Settings popup runs on the same handlers
-  // An icon set from Settings, by hand or by an AI editing projects.json, shows up in every rail without a reload.
+  // Refresh project and dictionary settings across IDE windows.
   try {
     let refreshTimer;
     const watcher = fs.watch(SESSION_DIR, (_event, name) => {
@@ -4487,7 +4481,14 @@ function activate(context) {
     );
   }
 
-  context.subscriptions.push({ dispose: () => sessionManager.dispose() }, { dispose: () => chatWindowManager.dispose() }, { dispose: () => watchdog.stop() }, { dispose: () => { void telegram?.stop(); } }, tunnel, tunnelStatus);
+  let chatManagerDisposed = false;
+  const disposeChatManager = () => {
+    if (chatManagerDisposed) return;
+    chatManagerDisposed = true;
+    chatWindowManager.dispose();
+  };
+  stopChatStorage = () => { disposeChatManager(); return recovery.flush(); };
+  context.subscriptions.push({ dispose: () => sessionManager.dispose() }, { dispose: disposeChatManager }, { dispose: () => watchdog.stop() }, { dispose: () => { void telegram?.stop(); } }, tunnel, tunnelStatus);
 }
 
 /**
@@ -4529,6 +4530,6 @@ function installLog(context, manager) {
   log.info('extension', `Clanker Controller activated (${vscode.env.appName} ${vscode.version}, ${process.platform})`);
 }
 
-function deactivate() {}
+function deactivate() { return stopChatStorage?.(); }
 
 module.exports = { activate, deactivate, agentList, injectTarget, opusTerminalCommand, ChatWindowHost, ChatWindowManager, LauncherViewProvider, SchedulerWatchdog, TunnelManager, quotaAvailable, cleanAttachmentName };

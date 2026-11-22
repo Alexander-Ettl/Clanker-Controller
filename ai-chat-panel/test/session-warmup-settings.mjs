@@ -22,7 +22,7 @@ const last = {
   codex: { status: 'running', at: Date.now() - 60000, label: 'GPT 5.5 Mini Low' },
   gemini: { status: 'failed', at: Date.now() - 60000, label: 'Gemini 3.8 Flash Low', error: 'exit 1' },
 };
-const browser = await chromium.launch({ headless: true, channel: 'msedge' });
+const browser = await chromium.launch({ headless: true, channel: process.platform === 'win32' ? 'msedge' : undefined });
 try {
   const errors = [];
   for (const width of [364, 560]) {

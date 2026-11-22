@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { chromium } from 'playwright';
 import { openChat } from './ui-tester/boot.mjs';
 
-const browser = await chromium.launch({ headless: true, channel: 'msedge' });
+const browser = await chromium.launch({ headless: true, channel: process.platform === 'win32' ? 'msedge' : undefined });
 try {
   const { page, problems } = await openChat(browser, { width: 900, height: 1000, sidebar: true });
   const send = data => page.evaluate(data => window.dispatchEvent(new MessageEvent('message', { data })), data);

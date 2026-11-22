@@ -80,7 +80,7 @@ const sessions = [
   { id: 'c4', projectId: 'home', title: 'Find the Alexa skill setup docs', projectName: 'Home', models: ['gemini'], latestAgent: 'gemini', workContext: context('research'), updatedAt: ago(180), state: null },
   { id: 'c5', projectId: 'cc', title: 'Fresh chat, nothing classified yet', projectName: 'Clanker Controller', models: ['claude'], latestAgent: 'claude', workContext: null, updatedAt: ago(1500), state: null },
 ];
-const browser = await chromium.launch({ headless: true, channel: 'msedge' });
+const browser = await chromium.launch({ headless: true, channel: process.platform === 'win32' ? 'msedge' : undefined });
 try {
   const page = await browser.newPage({ viewport: { width: 560, height: 1300 }, deviceScaleFactor: 3 });
   const errors = [];

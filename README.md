@@ -88,7 +88,7 @@ You can see your own number under **Chat Settings > General > API value**.
 
 You need VS Code or Antigravity IDE and at least one CLI: Claude Code, Codex, Antigravity or GitHub Copilot.
 
-**Platform:** Windows 10 or 11. Hotkeys, notifications, microphone handling and some process cleanup call PowerShell and `taskkill`. Linux and macOS are untested; the chat and scheduler may work there, but expect rough edges and no voice dictation.
+**Platform:** Windows 10 or 11 is the primary platform. Linux is supported and verified on Ubuntu 24.04 (VS Code 1.147, X11 and Wayland): notifications (`notify-send`), the reply chime (`paplay`, `pw-play` or `ffplay`), keep-awake (`systemd-inhibit`), image and file clipboard (`wl-copy` on Wayland, `xclip` on X11), image shrinking (`ffmpeg`), microphone dictation through PulseAudio/PipeWire (`ffmpeg`, `pactl`), pausing media over MPRIS (`busctl`), process-tree cleanup, and Antigravity quota discovery (`/proc`, `ss`) in both extensions. The system-wide dictation hotkey is Windows-only; on Linux bind **Clanker Controller: Dictate** in Keyboard Shortcuts. macOS is untested.
 
 **From the Marketplace:** search for **Clanker Controller** in the Extensions view (VS Code), or install it from Open VSX (Antigravity IDE). The optional **Gemini, Claude & Codex Usage** extension adds the quota gauges to the Antigravity IDE status bar.
 

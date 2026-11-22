@@ -12,7 +12,7 @@ const { readStored } = require('./work-context');
 /** @typedef {import('../types/chat').Chat} Chat */
 /** @typedef {import('../types/chat').ChatMessage} ChatMessage */
 /** @typedef {import('../types/chat').ChatSummary} ChatSummary */
-/** @typedef {{ trusted?: string | null }} CommitOptions */
+/** @typedef {{ trusted?: string | null, recovery?: import('./chat-recovery').ChatRecovery }} CommitOptions */
 /** @typedef {{ chat: Chat, settled: number, due: number, timer: ReturnType<typeof setTimeout> | null }} PendingCheckpoint */
 /** @typedef {{ chat: Chat, promise?: Promise<void>, error?: unknown }} ChatWrite */
 /** @typedef {{ count: number, first: ChatMessage | undefined, last: ChatMessage | undefined, at: number, bytes: Buffer }} SettledHead */
@@ -69,11 +69,26 @@ function recoverInterruptedChat(chat) {
   return recovered;
 }
 
-/** @param {string} file @returns {Chat} */
-function readChat(file) {
-  const chat = JSON.parse(fs.readFileSync(file, 'utf8'));
+/** @param {string | Buffer} bytes @returns {Chat} */
+function parseChat(bytes) {
+  const chat = JSON.parse(bytes.toString());
   if (!chat?.id || !Array.isArray(chat.messages)) throw new Error('Invalid chat snapshot');
+  delete chat._clankerSeal;
   return chat;
+}
+
+/** @param {string} file @param {import('./chat-recovery').ChatRecovery} [recovery] */
+function readChat(file, recovery) {
+  return recovery ? recovery.read(file, validateChat(file)) : parseChat(fs.readFileSync(file));
+}
+
+/** @param {string} file */
+function validateChat(file) {
+  return (/** @type {Buffer} */ bytes) => {
+    const chat = parseChat(bytes);
+    if (!path.basename(file).replace(/\.bak$/, '').endsWith(`_${chat.id}.json`)) throw new Error('Chat snapshot ID does not match its filename');
+    return chat;
+  };
 }
 
 // A checkpoint of a long chat used to re-read and parse the whole existing file just to see whether another IDE window owned
@@ -87,14 +102,16 @@ const SUMMARY_SCHEMA = 1; // bump when the shape of a cached summary changes, so
 const INDEX_WRITE_DELAY_MS = 2000;
 const MESSAGES_TOKEN = `__clanker_messages_${crypto.randomUUID()}__`;
 /** @param {string} file @param {string} temporary @param {CommitOptions} [options] */
-function commitChat(file, temporary, { trusted = null } = {}) {
+function commitChat(file, temporary, { trusted = null, recovery } = {}) {
+  if (recovery?.deleted(file)) throw new Error('This chat was deleted in another IDE window.');
   /** @type {Chat | undefined} */
   let previous;
   let exists = false;
   if (trusted && snapshotStamp(file) === trusted) exists = true;
   else {
-    try { previous = readChat(file); exists = true; } catch (error) {
-      if (codeOf(error) !== 'ENOENT' && !(error instanceof SyntaxError) && messageOf(error) !== 'Invalid chat snapshot') throw error;
+    try { previous = readChat(file, recovery); exists = true; } catch (error) {
+      const damaged = ['Invalid chat snapshot', 'Invalid Clanker snapshot seal', 'Unverified change to protected Clanker snapshot', 'Chat snapshot ID does not match its filename'].includes(messageOf(error));
+      if (codeOf(error) !== 'ENOENT' && !(error instanceof SyntaxError) && !damaged) throw error;
     }
     if (previous && ownedByAnotherHost(previous)) throw new Error('This chat is running in another IDE window. Continue it in that window.');
   }
@@ -107,14 +124,14 @@ function commitChat(file, temporary, { trusted = null } = {}) {
   fs.renameSync(temporary, file);
 }
 
-/** @param {string} file @param {unknown} chat */
-function writeChat(file, chat) {
+/** @param {string} file @param {unknown} chat @param {import('./chat-recovery').ChatRecovery} [recovery] */
+function writeChat(file, chat, recovery) {
   const text = JSON.stringify(chat);
   const temporary = `${file}.${crypto.randomUUID()}.tmp`;
   try {
     const fd = fs.openSync(temporary, 'wx');
-    try { fs.writeFileSync(fd, text, 'utf8'); fs.fsyncSync(fd); } finally { fs.closeSync(fd); }
-    commitChat(file, temporary);
+    try { fs.writeFileSync(fd, recovery ? recovery.signed(text) : text, 'utf8'); fs.fsyncSync(fd); } finally { fs.closeSync(fd); }
+    commitChat(file, temporary, { recovery });
   } finally { if (fs.existsSync(temporary)) fs.unlinkSync(temporary); }
 }
 
@@ -127,10 +144,14 @@ function writeChat(file, chat) {
  */
 async function writeChatAsync(file, chat, isCurrent, options) {
   const text = typeof chat === 'string' || Buffer.isBuffer(chat) ? chat : JSON.stringify(chat);
+  const parts = options?.recovery ? await options.recovery.signCheckpoint(text) : [text];
   const temporary = `${file}.${crypto.randomUUID()}.tmp`;
   try {
     const fd = await fs.promises.open(temporary, 'wx');
-    try { await fd.writeFile(text, 'utf8'); await fd.sync(); } finally { await fd.close(); }
+    try {
+      for (const part of parts) await fd.writeFile(part, 'utf8');
+      await fd.sync();
+    } finally { await fd.close(); }
     // The commit is synchronous and guarded: an intervening final save, delete or
     // shutdown flush invalidates this checkpoint before it can replace newer data.
     if (!isCurrent()) return false;
@@ -201,9 +222,10 @@ function snapshotStamp(file) {
 }
 
 class ChatStore {
-  /** @param {string} sessionDir */
-  constructor(sessionDir) {
+  /** @param {string} sessionDir @param {import('./chat-recovery').ChatRecovery} [recovery] */
+  constructor(sessionDir, recovery) {
     this.dir = path.join(sessionDir, 'chats');
+    this.recovery = recovery;
     /** @type {Map<string, PendingCheckpoint>} */
     this.checkpoints = new Map();
     /** @type {Map<string, ChatWrite>} */
@@ -302,9 +324,39 @@ class ChatStore {
   /** @param {string} id */
   fileFor(id) {
     const clean = safeId(id);
+    if (!fs.existsSync(this.dir)) fs.mkdirSync(this.dir, { recursive: true });
     const names = fs.readdirSync(this.dir);
-    const match = names.find((name) => name.endsWith(`_${clean}.json`)) || names.find((name) => name.endsWith(`_${clean}.json.bak`))?.slice(0, -4);
+    const match = this.recovery?.list().find(name => name.endsWith(`_${clean}.json`)) || names.find((name) => name.endsWith(`_${clean}.json`)) || names.find((name) => name.endsWith(`_${clean}.json.bak`))?.slice(0, -4);
     return match ? path.join(this.dir, match) : path.join(this.dir, `${Date.now()}_${clean}.json`);
+  }
+
+  /** Seed only existing files. Subsequent backups come from a verified Clanker commit. */
+  seedRecovery() {
+    if (!this.recovery) return;
+    for (const name of fs.readdirSync(this.dir).filter(name => /\.json(?:\.bak)?$/.test(name)).sort().reverse()) {
+      const file = path.join(this.dir, name);
+      if (name.endsWith('.bak') && fs.existsSync(file.slice(0, -4))) continue;
+      this.recovery.enqueue(file, validateChat(file), { seed: true });
+    }
+  }
+
+  /** @param {string} file */
+  readSnapshot(file) {
+    if (this.recovery?.deleted(file)) return null;
+    try { return readChat(file, this.recovery); } catch {
+      if (this.recovery) {
+        try {
+          const restored = this.recovery.restore(file, validateChat(file));
+          if (restored) {
+            require('./log.js').info('chat recovery', 'Restored chat snapshot', path.basename(file));
+            return restored;
+          }
+        } catch (error) {
+          if (codeOf(error) !== 'ENOENT') require('./log.js').error('chat recovery', 'Could not restore chat:', error);
+        }
+      }
+      try { return readChat(file + '.bak', this.recovery); } catch { return null; }
+    }
   }
 
   /** @param {Chat} chat @returns {Chat} */
@@ -312,7 +364,8 @@ class ChatStore {
     /** @type {Chat} */
     const clean = { ...chat, id: safeId(chat.id), updatedAt: stamp(), messages: Array.isArray(chat.messages) ? chat.messages : [] };
     const file = this.fileFor(clean.id);
-    writeChat(file, this.outputs.encode(clean));
+    writeChat(file, this.outputs.encode(clean), this.recovery);
+    this.recovery?.enqueue(file, validateChat(file));
     this.cancelCheckpoint(chat.id);
     this.outputs.release(clean);
     this.cacheSummary(file, clean);
@@ -360,8 +413,9 @@ class ChatStore {
       const file = this.cachedFile(id);
       const trusted = this.stamps.get(file) || null;
       const text = this.serialise(clean, settled);
-      if (await writeChatAsync(file, text, () => this.writes.get(id) === write, { trusted })) {
+      if (await writeChatAsync(file, text, () => this.writes.get(id) === write, { trusted, recovery: this.recovery })) {
         this.stamps.set(file, snapshotStamp(file));
+        this.recovery?.enqueue(file, validateChat(file), { checkpoint: true });
         this.outputs.release(clean); this.summaries.delete(file);
         this.writeCost.set(id, Math.min(2000, Math.round((Date.now() - started) * 1.5)));
       }
@@ -454,19 +508,21 @@ class ChatStore {
    */
   list(projectOf = null) {
     this.loadIndex();
-    const names = [...new Set(fs.readdirSync(this.dir).filter((name) => /\.json(?:\.bak)?$/.test(name)).map((name) => name.replace(/\.bak$/, '')))];
+    if (!fs.existsSync(this.dir)) fs.mkdirSync(this.dir, { recursive: true });
+    const live = fs.readdirSync(this.dir).filter((name) => /\.json(?:\.bak)?$/.test(name)).map((name) => name.replace(/\.bak$/, ''));
+    const names = [...new Set([...live, ...(this.recovery?.list() || [])])];
     const present = new Set(names.map(name => path.join(this.dir, name)));
     for (const file of this.summaries.keys()) if (!present.has(file)) { this.summaries.delete(file); this.indexDirty = true; }
     const listed = names.map((name) => {
       try {
         const file = path.join(this.dir, name);
+        if (this.recovery?.deleted(file)) return null;
         const stamp = snapshotStamp(file);
         let cached = this.summaries.get(file);
         if (!cached || cached.stamp !== stamp) {
-          /** @type {Chat} */
-          let chat;
-          try { chat = readChat(file); } catch { chat = readChat(file + '.bak'); }
-          cached = this.cacheSummary(file, chat, stamp);
+          const chat = this.readSnapshot(file);
+          if (!chat) return null;
+          cached = this.cacheSummary(file, chat, snapshotStamp(file));
         }
         const { summary, files } = cached;
         return { ...summary, lastMessage: summary.lastMessage && { ...summary.lastMessage }, models: [...summary.models], workContext: summary.workContext && { ...summary.workContext },
@@ -480,9 +536,12 @@ class ChatStore {
   /** @param {string} id @returns {Chat | null} */
   load(id) {
     const file = this.fileFor(id);
-    try { return this.outputs.decode(readChat(file)); } catch {
-      try { return this.outputs.decode(readChat(file + '.bak')); } catch { return null; }
-    }
+    try {
+      const chat = this.readSnapshot(file);
+      if (!chat) return null;
+      this.recovery?.restoreAssets(chat);
+      return this.outputs.decode(chat);
+    } catch { return null; }
   }
 
   /**
@@ -501,7 +560,8 @@ class ChatStore {
       delete chat.customTitle;
     }
     const file = this.fileFor(chat.id);
-    writeChat(file, this.outputs.encode(chat));
+    writeChat(file, this.outputs.encode(chat), this.recovery);
+    this.recovery?.enqueue(file, validateChat(file));
     this.cancelCheckpoint(chat.id);
     this.outputs.release(chat);
     this.cacheSummary(file, chat);
@@ -514,6 +574,7 @@ class ChatStore {
     if (ownedByAnotherHost(this.load(id) || {})) throw new Error('This chat is running in another IDE window. Stop it there before deleting it.');
     this.cancelCheckpoint(id);
     const exists = fs.existsSync(file) || fs.existsSync(file + '.bak');
+    if (exists) this.recovery?.delete(file);
     for (const target of [file, file + '.bak', this.transcriptFile(id)]) if (fs.existsSync(target)) fs.unlinkSync(target);
     this.summaries.delete(file);
     this.transcripts.delete(id);

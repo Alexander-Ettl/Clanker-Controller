@@ -27,7 +27,7 @@ export async function queueLoadingBoot(browser) {
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) {
-  const browser = await chromium.launch({ channel: 'msedge', headless: true });
+  const browser = await chromium.launch({ channel: process.platform === 'win32' ? 'msedge' : undefined, headless: true });
   try {
     await queueLoadingBoot(browser);
     console.log('Queue loading boot: null, counted and zero initial queue states start cleanly and clear their skeleton.');

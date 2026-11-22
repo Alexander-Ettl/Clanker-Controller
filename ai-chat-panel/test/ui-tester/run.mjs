@@ -85,7 +85,7 @@ export async function openUrl(browser, url, { width, height }) {
   return { page, problems };
 }
 
-export async function runTester({ scenarios, outDir, baselineDir, only = null, update = false, accept = false, widths = WIDTHS, channel = 'msedge', log = () => {} }) {
+export async function runTester({ scenarios, outDir, baselineDir, only = null, update = false, accept = false, widths = WIDTHS, channel = process.platform === 'win32' ? 'msedge' : undefined, log = () => {} }) {
   fs.mkdirSync(path.join(outDir, 'shots'), { recursive: true }); fs.mkdirSync(path.join(outDir, 'crops'), { recursive: true }); fs.mkdirSync(baselineDir, { recursive: true });
   // --accept stages the next baseline in the output folder; the caller adopts it once it has finished with the report.
   const writeDir = accept ? path.join(outDir, "next-baseline") : baselineDir; fs.mkdirSync(writeDir, { recursive: true });

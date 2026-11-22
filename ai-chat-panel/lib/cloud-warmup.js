@@ -16,7 +16,9 @@ const RISK = 'Google Cloud can charge you if configured incorrectly, if retries 
 function findGcloud(env = process.env) {
   const dirs = [...(env.PATH || env.Path || '').split(path.delimiter),
     path.join(env.LOCALAPPDATA || '', 'Google', 'Cloud SDK', 'google-cloud-sdk', 'bin'),
-    path.join(env['ProgramFiles(x86)'] || '', 'Google', 'Cloud SDK', 'google-cloud-sdk', 'bin')];
+    path.join(env['ProgramFiles(x86)'] || '', 'Google', 'Cloud SDK', 'google-cloud-sdk', 'bin'),
+    // Linux and macOS: the SDK's tarball installer, the apt package and snap, which a desktop-launched IDE may not have on PATH.
+    ...(process.platform === 'win32' ? [] : [path.join(os.homedir(), 'google-cloud-sdk', 'bin'), '/usr/lib/google-cloud-sdk/bin', '/snap/bin', '/usr/local/bin'])];
   return dirs.map(d => path.join(d.replace(/^"|"$/g, ''), process.platform === 'win32' ? 'gcloud.cmd' : 'gcloud')).find(f => fs.existsSync(f)) || '';
 }
 

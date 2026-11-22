@@ -53,6 +53,7 @@ module.exports = {
   login: ['login'],
   authStatus: { args: ['login', 'status'], interpret: (result) => (result.ok ? 'connected' : launchFailure(result.stderr || result.stdout) ? 'broken' : 'signin') },
   entitlement,
+  installPosix: 'npm install -g @openai/codex@latest && codex login',
   // Also the repair for a damaged install: an interrupted npm update leaves a `.codex-*` folder behind and drops the platform binary.
   install: 'Remove-Item -Path "$env:APPDATA\\npm\\node_modules\\@openai\\.codex-*" -Recurse -Force -ErrorAction SilentlyContinue; npm.cmd install -g @openai/codex@latest; if ($LASTEXITCODE -eq 0) { & "$env:APPDATA\\npm\\codex.cmd" login }',
   discoverModels: async ({ file, runCli }) => {

@@ -25,7 +25,7 @@ const PALETTES = {
   dark: { kind: 'vscode-dark', background: '#172437', panel: '#213149', foreground: '#e4edf7', accent: '#8acbff' },
   light: { kind: 'vscode-light', background: '#e6e7ee', panel: '#d9dbe5', foreground: '#38405e', accent: '#365cb0' },
 };
-const browser = await chromium.launch({ headless: true, channel: 'msedge' });
+const browser = await chromium.launch({ headless: true, channel: process.platform === 'win32' ? 'msedge' : undefined });
 try {
   const page = await browser.newPage({ viewport: { width: 760, height: 900 }, deviceScaleFactor: 2 });
   const errors = [];

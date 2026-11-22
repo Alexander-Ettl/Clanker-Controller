@@ -16,3 +16,5 @@ Choose **New planning project…** if you don't have a folder yet. Attach one la
 Older conversations ask you to choose their project once. Select the folder those conversations actually belonged to. Clanker keeps their messages and available attachments, and starts fresh CLI sessions for that folder.
 
 Projects are stored locally for each extension user. Names and paths come from their choices; no shared parent directory or cloud account is required. Registration and separate histories aren't a filesystem sandbox: CLI access still follows the permission mode you select.
+
+See [Chat storage and recovery](../docs/chat-recovery.md) for automatic backup and restoration of chat history and project settings.

@@ -16,7 +16,7 @@ const html = `<!doctype html><meta charset="utf-8"><style>${['style.css', 'launc
 <script>window.api = window.initChatSettings({ vscode: window.acquireVsCodeApi(), body: document.getElementById('csBody') }); window.api.showTab('voice');</script>`;
 const limits = { entries: 5000, scanned: 1500, perScan: 80, promptTerms: 40, promptChars: 480, cleanupTerms: 150 };
 const word = (term, extra = {}) => ({ term, enabled: true, addedAt: 1, ...extra });
-const browser = await chromium.launch({ headless: true, channel: 'msedge' });
+const browser = await chromium.launch({ headless: true, channel: process.platform === 'win32' ? 'msedge' : undefined });
 try {
   const page = await browser.newPage({ viewport: { width: 364, height: 900 } });
   const errors = [];

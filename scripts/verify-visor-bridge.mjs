@@ -16,7 +16,7 @@ Module._load = function (request, parent, isMain) {
 const { buildHtml } = require(resolve(process.env.VISOR_DIR || fileURLToPath(new URL('../../Visor/', import.meta.url)), 'vscode-extension/out/webviewPanel.js'));
 Module._load = originalLoad;
 
-const browser = await chromium.launch({ headless: true, channel: 'msedge' });
+const browser = await chromium.launch({ headless: true, channel: process.platform === 'win32' ? 'msedge' : undefined });
 try {
   const page = await browser.newPage();
   const errors = [];

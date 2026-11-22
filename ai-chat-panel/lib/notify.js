@@ -44,10 +44,40 @@ function textAfterLastTool(reply, messages) {
   return text.slice(cut).trim() ? text.slice(cut) : text;
 }
 
+/** Players tried in order for the chime on Linux: PulseAudio/PipeWire's own first, ffplay (ffmpeg is already required for dictation) last. */
+const LINUX_PLAYERS = (file) => [['paplay', [file]], ['pw-play', [file]], ['ffplay', ['-nodisp', '-autoexit', '-loglevel', 'quiet', file]]];
+const LINUX_FALLBACK_SOUND = '/usr/share/sounds/freedesktop/stereo/complete.oga';
+
+/** Runs the first command that exists; `spawnImpl` reports a missing one as an 'error' event. */
+function playFirst(candidates, spawnImpl) {
+  const [next, ...rest] = candidates;
+  if (!next) return;
+  try {
+    const child = spawnImpl(next[0], next[1], { stdio: 'ignore' });
+    child.on('error', () => playFirst(rest, spawnImpl));
+    child.on('exit', (code) => { if (code) playFirst(rest, spawnImpl); }); // present but could not play this file
+    child.unref?.();
+  } catch { playFirst(rest, spawnImpl); }
+}
+
+function notifyLinux({ toast, chime, appName, spawnImpl, existsImpl }) {
+  if (toast) {
+    const title = `${NAMES[toast.agent] || 'Your AI'} replied${toast.chatTitle ? ` · ${toast.chatTitle}` : ''}`;
+    try {
+      const child = spawnImpl('notify-send', ['--app-name', appName || 'Clanker Controller', '--icon', TOAST_ICON, '--', title, firstSentence(toast.text) || 'Your response is ready.'], { stdio: 'ignore' });
+      child.on('error', () => {});
+      child.unref?.();
+    } catch { /* no notification daemon is fine */ }
+  }
+  if (chime) playFirst(LINUX_PLAYERS([SOUND, LINUX_FALLBACK_SOUND].find((file) => existsImpl(file)) || SOUND), spawnImpl);
+}
+
 /** Fire and forget; never throws. `toast` is { agent, text, chatTitle } or null; `chime: false` makes it a silent toast (or nothing). */
-function notifyReply({ toast = null, appName = '', chime = true } = {}) {
+function notifyReply({ toast = null, appName = '', chime = true, platform = process.platform, spawnImpl = spawn, existsImpl = require('node:fs').existsSync } = {}) {
   if (process.env.NO_CHIME === '1' || process.env.AI_CHAT_PANEL_COMPACT === '1') chime = false;
-  if (process.platform !== 'win32' || (!chime && !toast)) return;
+  if (!chime && !toast) return;
+  if (platform === 'linux') { notifyLinux({ toast, chime, appName, spawnImpl, existsImpl }); return; }
+  if (platform !== 'win32') return;
   const env = { ...process.env, CHAT_SOUND: chime ? SOUND : '', CHAT_APP_NAME: appName, CHAT_TOAST_ICON: TOAST_ICON };
   if (toast) {
     env.CHAT_TOAST_TITLE = `${NAMES[toast.agent] || 'Your AI'} replied${toast.chatTitle ? ` · ${toast.chatTitle}` : ''}`;
@@ -55,7 +85,7 @@ function notifyReply({ toast = null, appName = '', chime = true } = {}) {
   }
   try {
     // P17-O: no `detached` -- on Windows that gives the child its own console window, which flashes.
-    const child = spawn('powershell.exe', ['-NoProfile', '-NonInteractive', '-WindowStyle', 'Hidden', '-ExecutionPolicy', 'Bypass', '-File', path.join(__dirname, 'notify.ps1')], { env, windowsHide: true, stdio: 'ignore' });
+    const child = spawnImpl('powershell.exe', ['-NoProfile', '-NonInteractive', '-WindowStyle', 'Hidden', '-ExecutionPolicy', 'Bypass', '-File', path.join(__dirname, 'notify.ps1')], { env, windowsHide: true, stdio: 'ignore' });
     child.on('error', () => {});
     child.unref();
   } catch { /* a chime is never worth an error */ }

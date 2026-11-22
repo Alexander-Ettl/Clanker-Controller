@@ -6,7 +6,7 @@ import { openChat } from './ui-tester/boot.mjs';
 
 const out = path.resolve('out/ui-review');
 fs.mkdirSync(out, { recursive: true });
-const browser = await chromium.launch({ headless: true, channel: 'msedge' });
+const browser = await chromium.launch({ headless: true, channel: process.platform === 'win32' ? 'msedge' : undefined });
 try {
   for (const width of [320, 900]) {
     const { page, problems } = await openChat(browser, { width, height: 1400 });

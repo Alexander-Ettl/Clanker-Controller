@@ -4,7 +4,7 @@ import { openChat } from './ui-tester/boot.mjs';
 
 // The composer is one squircle; the bar's order is fixed; stop and send share one slot; dictation locks send; the permission chip
 // switches Ask / Auto / Full Access; the @ and / lists are menus on the composer's upper slab, above the queue.
-const browser = await chromium.launch({ headless: true, channel: 'msedge' });
+const browser = await chromium.launch({ headless: true, channel: process.platform === 'win32' ? 'msedge' : undefined });
 try {
   for (const width of [900, 420, 300]) {
     const { page, problems } = await openChat(browser, { width, height: 760 });

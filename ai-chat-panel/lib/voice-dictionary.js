@@ -16,6 +16,7 @@
 // keep typing (`pending`) and words that turned out useful in several projects, and offers them as suggestions.
 
 const fs = require('node:fs');
+const os = require('node:os');
 const path = require('node:path');
 const { looksLikeTerm } = require('./voice-scan');
 
@@ -218,7 +219,7 @@ function applyScan(paths, projectId, entries, { projectName = '', partial = fals
   return result;
 }
 
-const openWhisprDatabasePath = () => process.env.OPENWHISPR_DB_PATH || path.join(process.env.APPDATA || '', 'open-whispr', 'transcriptions.db');
+const openWhisprDatabasePath = () => process.env.OPENWHISPR_DB_PATH || path.join(process.platform === 'win32' ? process.env.APPDATA || '' : process.platform === 'darwin' ? path.join(os.homedir(), 'Library', 'Application Support') : process.env.XDG_CONFIG_HOME || path.join(os.homedir(), '.config'), 'open-whispr', 'transcriptions.db');
 
 /** OpenWhispr's words through Node's built-in SQLite, opened read-only so a running dictation app is never touched. */
 async function readOpenWhisprTerms(databasePath = openWhisprDatabasePath()) {

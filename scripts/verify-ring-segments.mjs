@@ -10,7 +10,7 @@ const read = (name) => readFile(new URL(name, media), 'utf8');
 const out = new URL(`${(process.argv.find((arg) => arg.startsWith('--out=')) || '--out=../_work/ring-split').slice(6).replace(/\/?$/, '/')}`, import.meta.url);
 await mkdir(out, { recursive: true });
 
-const browser = await chromium.launch({ headless: true, channel: 'msedge' });
+const browser = await chromium.launch({ headless: true, channel: process.platform === 'win32' ? 'msedge' : undefined });
 try {
   const page = await browser.newPage({ viewport: { width: 420, height: 360 }, deviceScaleFactor: 4, reducedMotion: 'reduce' });
   const errors = [];

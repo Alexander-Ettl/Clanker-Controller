@@ -12,8 +12,20 @@ $parent = Get-Process -Id ${process.pid} -ErrorAction SilentlyContinue
 try { while ($parent -and -not $parent.HasExited) { Start-Sleep -Seconds 5; $parent.Refresh() } }
 finally { [void][Clanker.Power]::SetThreadExecutionState([uint32]2147483648) }`;
 
+// Linux and macOS: the OS tool holds the request while a tiny shell loop runs, and the loop ends when the IDE does,
+// which releases it. Only `sleep` is requested, like Windows' ES_SYSTEM_REQUIRED: logind refused the combined `idle:sleep` request
+// on a real Ubuntu 24.04 guest while accepting each part, and `sleep` is the one that stops suspend, idle-triggered or not. The loop prints "awake" once the lock is held, the same signal the Windows helper gives.
+const WATCH = `echo awake; while kill -0 ${process.pid} 2>/dev/null; do sleep 5; done`;
+function helperFor(platform) {
+  if (platform === 'win32') return ['powershell.exe', ['-NoLogo', '-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(SCRIPT, 'utf16le').toString('base64')]];
+  if (platform === 'linux') return ['systemd-inhibit', ['--what=sleep', '--who=Clanker Controller', '--why=A task is running', '--mode=block', 'sh', '-c', WATCH]];
+  if (platform === 'darwin') return ['caffeinate', ['-i', '-w', String(process.pid), 'sh', '-c', 'echo awake; sleep 86400']]; // not yet run on a Mac
+  return null;
+}
+
 function keepAwake({ platform = process.platform, spawnImpl = spawn, onChange = () => {}, onError = error => require('./log.js').warn('keep awake', error), retryMs = 5000, readyMs = 15000 } = {}) {
-  if (platform !== 'win32') return null;
+  const helper = helperFor(platform);
+  if (!helper) return null;
   let child, active = false, released = false, retry, timeout;
   const launch = () => {
     if (released) return;
@@ -25,8 +37,7 @@ function keepAwake({ platform = process.platform, spawnImpl = spawn, onChange = 
       retry = setTimeout(launch, retryMs); retry.unref?.();
     };
     try {
-      child = spawnImpl('powershell.exe', ['-NoLogo', '-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(SCRIPT, 'utf16le').toString('base64')],
-        { windowsHide: true, stdio: ['ignore', 'pipe', 'ignore'] });
+      child = spawnImpl(helper[0], helper[1], { windowsHide: true, stdio: ['ignore', 'pipe', 'ignore'] });
       child.stdout.on('data', data => {
         if (failed || released) return;
         output = (output + data).slice(-100);

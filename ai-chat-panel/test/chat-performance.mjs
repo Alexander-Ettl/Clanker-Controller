@@ -110,7 +110,7 @@ export async function pagedHistory(page) {
 }
 
 async function benchmark() {
-  const browser = await chromium.launch({ channel: 'msedge', headless: true });
+  const browser = await chromium.launch({ channel: process.platform === 'win32' ? 'msedge' : undefined, headless: true });
   const results = [];
   try {
     const { page, problems } = await openChat(browser, { width: 900, height: 1000 });

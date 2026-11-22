@@ -92,7 +92,7 @@ export async function messageDock(page, { expanded = false, dock = false } = {})
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) {
-  const browser = await chromium.launch({ channel: 'msedge', headless: true });
+  const browser = await chromium.launch({ channel: process.platform === 'win32' ? 'msedge' : undefined, headless: true });
   try {
     const out = path.resolve('out/ui-message-dock'); fs.mkdirSync(out, { recursive: true });
     for (const reducedMotion of ['no-preference', 'reduce']) {
