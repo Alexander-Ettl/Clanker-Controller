@@ -10,8 +10,14 @@ permissions:
 
 jobs:
   check:
-    # The extensions are Windows-only, so test on Windows.
-    runs-on: windows-latest
+    # Windows is the original host; Linux is the development host since 2026-11-24 and has its own code paths
+    # (MPRIS media pause, systemd-inhibit, wl-copy/xclip, the dictation socket), so both run on every change.
+    name: check (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4

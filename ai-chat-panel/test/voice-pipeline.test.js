@@ -137,7 +137,7 @@ test('short parts and a missing ffmpeg send the original audio', async () => {
   assert.deepEqual(await archive.trimSilence(wav, { minBytes: 0, ffmpeg: path.join(os.tmpdir(), 'no-such-ffmpeg') }), { file: wav, temp: false });
 });
 
-test('ffmpeg cuts long pauses from the upload, leaves the archived audio alone and skips pure silence', { skip: !hasFfmpeg }, async () => {
+test('ffmpeg cuts long pauses from the upload, leaves the archived audio alone and skips pure silence', { skip: !hasFfmpeg && 'ffmpeg is not installed' }, async () => {
   const dir = archive.newRecordingDir(tempRoot());
   const wav = path.join(dir, 'seg-000.wav');
   // 3 s tone, 40 s silence, 3 s tone

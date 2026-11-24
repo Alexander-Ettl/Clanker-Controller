@@ -52,8 +52,8 @@ The review called Clanker Windows-only, said rolling back a turn "needs manual G
 
 Linux support (2026-11-22) has no regression guard: `.github/workflows/ci.yml` runs only on `windows-latest`.
 
-- [ ] Add an `ubuntu-latest` job (or matrix) running `npm run check` and `npm test`; mark Windows-only suites to skip with a visible reason instead of silently.
-- [ ] Fix whatever fails on a clean runner (paths, line endings, `powershell.exe` calls that bypass the platform branches). Keep Playwright browser downloads skipped as today.
+- [x] 2026-11-25: `ci.yml` runs a `windows-latest` and `ubuntu-latest` matrix (`npm run check`, `npm test`); the Windows-only and tool-dependent tests now skip with a reason string. Every `powershell.exe`/`taskkill` call in `lib/` was read and sits behind a `win32` branch.
+- [ ] Watch the first pull request's Ubuntu run (it has not run on GitHub yet) and fix whatever a clean runner shows. Locally on Kubuntu 770 of 773 unit tests pass; the 3 failures are `loop-engine` cases that need `npm`, which this PC lacks and a runner has.
 
 **Estimate (AI-assisted):** 1-2 hours, mostly waiting for CI runs. **Done when:** pull requests run both jobs and a Linux-only break turns the check red.
 
@@ -61,12 +61,12 @@ Linux support (2026-11-22) has no regression guard: `.github/workflows/ci.yml` r
 
 The main machine moves from Windows 11 to Kubuntu 26.04 (KDE Plasma 6, Wayland). Linux was only verified on Ubuntu 24.04 GNOME, so Kubuntu is untested. Do this together with CI-01.
 
-- [ ] Replace hard-coded `C:/Dev` defaults with `os.homedir()`-based `~/dev` in `scripts/typecheck.mjs`, `scripts/theme-shots.mjs`, `tsconfig.json` and `ai-chat-panel/test/{dock,interaction,startup}-performance.mjs`; use `code`, not `Code.exe`/`code.cmd`.
-- [ ] Port the Windows-only launchers: `ai-chat-panel/install-into-antigravity.ps1` to `.sh` (`ln -s`), `site/deploy.ps1` to `.sh`, `voice-router/daemon.ps1`, `start-daemon.bat`, `router.cmd` to a `systemd --user` unit or `.sh`. Delete the stale `patch-sidebar-width.ps1`.
-- [ ] Voice on Linux: `voice-router/lib/media-pause.cjs` and `native-capture.cjs` call `powershell.exe`; use `playerctl` and `pw-record`/`ffmpeg`. The dictation hotkey (`voice-hotkey.js`) works only on `win32`; use a KDE global shortcut that calls a small command, or the GlobalShortcuts portal.
-- [ ] Rewrite `AGENTS.md` and `docs/publishing.md` for `npm`/`npx`, bash and `~/dev` instead of `npm.cmd` and PowerShell. Set `core.autocrlf input` on the new machine; new `.sh` files need `git update-index --chmod=+x`.
-- [ ] Re-add every project in Clanker (stored roots are `C:\Users\...` paths); old chats keep their Windows paths.
-- [ ] Rebuild the Linux test setup: the QEMU VM harness is no longer needed on a Linux host, but `vscode-run.sh`, `vscode-dictate.sh`, `fake-mpris.py` and `linux-system-check.cjs` are worth adopting as `scripts/linux/` (saved under the Nextcloud folder `_pre-wipe-backup-2026-11-24/C-Dev/scratch-linux-vm`).
+- [x] 2026-11-25: `C:/Dev` defaults became `~/dev` on Linux in `scripts/typecheck.mjs` (it now passes `--typeRoots`, so `tsconfig.json` needs no path), `scripts/theme-shots.mjs` (uses `code`, kills the process group instead of `taskkill`) and the three `*-performance.mjs` tests. Not run: `theme-shots.mjs` needs a display and a VS Code launch.
+- [x] 2026-11-25: `ai-chat-panel/install-into-antigravity.sh` (wraps `scripts/install-extension.mjs`), `site/deploy.sh`, `router.sh` added; `patch-sidebar-width.ps1` deleted. `voice-router/daemon.ps1` and `start-daemon.bat` stay Windows-only on purpose: it is a tray hotkey app that the in-editor dictation and `scripts/linux/clanker-dictate` replace. `deploy.sh` has not been run (it deploys the live site).
+- [x] 2026-11-25: media pause (MPRIS via `busctl`) and capture (`ffmpeg`/`pactl`) were already Linux-ready; verified on this Kubuntu/Wayland desktop with `scripts/linux/system-check.cjs` (clipboard, keep-awake, media pause, tree kill pass; notification toast is sent but cannot be read back without dunst). The dictation hotkey is now a Unix socket per editor window (`lib/dictate-socket.js`, `test/dictate-socket.test.js`) plus `scripts/linux/clanker-dictate` for a KDE shortcut. Not done: binding the shortcut in System Settings (yours), and a real end-to-end dictation (needs your Groq key in Settings > Voice).
+- [x] 2026-11-25: `AGENTS.md`, `docs/publishing.md` and `docs/development.md` now describe npm, bash and `~/dev` (Windows kept as a second path). `core.autocrlf` is unset, which on Linux already means no conversion; the `.sh` files are executable and git keeps the bit.
+- [ ] Re-add every project in Clanker (stored roots are `C:\Users\...` paths); old chats keep their Windows paths. Yours: it needs the Projects UI and your folders.
+- [x] 2026-11-25: `scripts/linux/` holds `system-check.cjs`, `fake-mpris.py`, `vscode-run.sh`, `vscode-dictate.sh`, `clanker-dictate` and a README. `vscode-run.sh` and `vscode-dictate.sh` need `xvfb xdotool imagemagick`, which this PC lacks, so they are syntax-checked only.
 
 - [x] 2026-11-25, first days in VS Code on Kubuntu: Antigravity sign-in no longer assumes the Antigravity IDE. "Sign in" opens a setup terminal with bare `agy`, presses Enter on its "Google OAuth" menu so the browser opens, watches `agy models` and closes the terminal once the account works (`autoSelectLogin`, `watchSignIn` in `lib/providers/gemini.js`, `CliAccounts.autoSelectLogin`). The Linux install line for `agy` (`antigravity.google/cli/install.sh`) is wired in. Covered by `cli-accounts.test.js`, `auth-gate.test.js`, `auth-hold-ui.mjs`; not yet run end to end with a real browser sign-in.
 - [x] 2026-11-25: the VS Code install is now a link (`node scripts/install-extension.mjs vscode --link`), not a stale `.vsix` copy; reload the window after code changes.

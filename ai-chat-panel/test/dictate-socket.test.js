@@ -24,7 +24,7 @@ test('socketPath is per user and per window, and can be overridden', () => {
   assert.match(path.basename(socketPath({ XDG_RUNTIME_DIR: os.tmpdir() })), new RegExp(`^clanker-dictate-.+-${process.pid}\\.sock$`));
 });
 
-test('a toggle line runs the command and an unknown line does not', { skip: !linux }, async () => {
+test('a toggle line runs the command and an unknown line does not', { skip: !linux && 'Linux only (Unix socket and bash script)' }, async () => {
   const dir = tmp();
   const file = path.join(dir, 'clanker-dictate-1-1.sock');
   let toggles = 0;
@@ -39,7 +39,7 @@ test('a toggle line runs the command and an unknown line does not', { skip: !lin
   assert.equal(fs.existsSync(file), false, 'closing the window removes its socket');
 });
 
-test('a failing command is reported, not thrown', { skip: !linux }, async () => {
+test('a failing command is reported, not thrown', { skip: !linux && 'Linux only (Unix socket and bash script)' }, async () => {
   const file = path.join(tmp(), 'clanker-dictate-1-2.sock');
   const errors = [];
   const socket = new DictateSocket({ file, commands: { toggle: () => Promise.reject(new Error('mic busy')) }, onError: (reason) => errors.push(reason) });
@@ -51,7 +51,7 @@ test('a failing command is reported, not thrown', { skip: !linux }, async () => 
   socket.stop();
 });
 
-test('sockets of dead windows are swept, live ones are kept', { skip: !linux }, () => {
+test('sockets of dead windows are swept, live ones are kept', { skip: !linux && 'Linux only (Unix socket and bash script)' }, () => {
   const dir = tmp();
   fs.writeFileSync(path.join(dir, 'clanker-dictate-1-999999999.sock'), '');
   fs.writeFileSync(path.join(dir, `clanker-dictate-1-${process.ppid}.sock`), '');
@@ -67,7 +67,7 @@ test('it does nothing off Linux', () => {
   assert.equal(socket.start(), false);
 });
 
-test('the shortcut script reaches the window used last and skips dead sockets', { skip: !linux }, async () => {
+test('the shortcut script reaches the window used last and skips dead sockets', { skip: !linux && 'Linux only (Unix socket and bash script)' }, async () => {
   const dir = tmp();
   const script = path.join(__dirname, '..', '..', 'scripts', 'linux', 'clanker-dictate');
   const uid = process.getuid();

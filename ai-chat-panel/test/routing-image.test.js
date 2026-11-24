@@ -6,7 +6,7 @@ const os = require('node:os');
 const path = require('node:path');
 const { execFileSync } = require('node:child_process');
 
-test('native screenshot copy shrinks only when compression cannot fit and preserves the original', { skip: process.platform !== 'win32' }, t => {
+test('native screenshot copy shrinks only when compression cannot fit and preserves the original', { skip: process.platform !== 'win32' && 'Windows only: the screenshot copy uses PowerShell' }, t => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'clanker-routing-image-'));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
   const source = path.join(root, 'original image.png');

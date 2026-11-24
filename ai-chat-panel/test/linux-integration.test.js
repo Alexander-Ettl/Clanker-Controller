@@ -148,7 +148,7 @@ test('Linux: the held-send popup is a notification whose action button answers "
   assert.equal(showAuthPrompt(block, { platform: 'freebsd' }), null);
 });
 
-test('Linux: gcloud is found in the SDK folders a desktop-launched IDE has no PATH entry for', { skip: process.platform === 'win32' }, () => {
+test('Linux: gcloud is found in the SDK folders a desktop-launched IDE has no PATH entry for', { skip: process.platform === 'win32' && 'POSIX paths: not applicable on Windows' }, () => {
   const fs = require('node:fs');
   const os = require('node:os');
   const { findGcloud } = require('../lib/cloud-warmup.js');
