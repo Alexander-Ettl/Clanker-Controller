@@ -12,6 +12,17 @@ It runs in **VS Code** and **Antigravity IDE**.
 
 > The picture above is the real chat page with invented demo data. [`scripts/readme-shots.mjs`](scripts/readme-shots.mjs) renders every screenshot in this README.
 
+## What it already does
+
+One line per capability; each links to where it lives. The full list with code locations is [docs/capabilities.md](docs/capabilities.md).
+
+- **Providers:** Claude Code, Codex, Antigravity and GitHub Copilot in one chat, with condensed handoffs between them, `/architect` (one model plans, another builds) and cross-vendor agents ([agent bridge](docs/agent-bridge.md)).
+- **Quota and scheduling:** usage rings per provider, a scheduler that continues after a limit resets, early usage windows, and an API value meter with the cost of each reply.
+- **Safety and undo:** one-click **undo turn** (a snapshot per turn, only the files the turn changed), optional **auto-verify** with your own check, permission modes and a log viewer.
+- **Voice:** Groq Whisper dictation with a personal dictionary and recoverable recordings; the system-wide hotkey on Windows, a shortcut script on Linux.
+- **Projects and loops:** registered projects with an explicit root per chat, [loops](docs/loops.md) that scan, fix in a worktree and verify, Telegram and tunnel remote control.
+- **Platforms:** Windows and Linux (both have a CI job), VS Code and Antigravity IDE; macOS is untested.
+
 ## Why you would want this
 
 - **Every agent in one place.** One conversation can go from Claude to Codex to Gemini. Each agent gets a condensed briefing of what the others did, and nothing is thrown away: every shortened part points to a full transcript it can open.
@@ -88,7 +99,7 @@ You can see your own number under **Chat Settings > General > API value**.
 
 You need VS Code or Antigravity IDE and at least one CLI: Claude Code, Codex, Antigravity or GitHub Copilot.
 
-**Platform:** Windows 10 or 11 is the primary platform. Linux is supported and verified on Ubuntu 24.04 (VS Code 1.147, X11 and Wayland): notifications (`notify-send`), the reply chime (`paplay`, `pw-play` or `ffplay`), keep-awake (`systemd-inhibit`), image and file clipboard (`wl-copy` on Wayland, `xclip` on X11), image shrinking (`ffmpeg`), microphone dictation through PulseAudio/PipeWire (`ffmpeg`, `pactl`), pausing media over MPRIS (`busctl`), process-tree cleanup, and Antigravity quota discovery (`/proc`, `ss`) in both extensions. The system-wide dictation hotkey is Windows-only; on Linux bind **Clanker Controller: Dictate** in Keyboard Shortcuts. macOS is untested.
+**Platform:** Windows 10 or 11 is the primary platform. Linux is supported, has its own CI job, and is verified on Ubuntu 24.04 (VS Code 1.147, X11 and Wayland) and on Kubuntu (KDE Plasma, Wayland): notifications (`notify-send`), the reply chime (`paplay`, `pw-play` or `ffplay`), keep-awake (`systemd-inhibit`), image and file clipboard (`wl-copy` on Wayland, `xclip` on X11), image shrinking (`ffmpeg`), microphone dictation through PulseAudio/PipeWire (`ffmpeg`, `pactl`), pausing media over MPRIS (`busctl`), process-tree cleanup, and Antigravity quota discovery (`/proc`, `ss`) in both extensions. The system-wide dictation hotkey is Windows-only; on Linux bind a desktop shortcut to [`scripts/linux/clanker-dictate`](scripts/linux/README.md), or bind **Clanker Controller: Dictate** in Keyboard Shortcuts for use inside the editor. macOS is untested.
 
 **From the Marketplace:** search for **Clanker Controller** in the Extensions view (VS Code), or install it from Open VSX (Antigravity IDE). The optional **Gemini, Claude & Codex Usage** extension adds the quota gauges to the Antigravity IDE status bar.
 

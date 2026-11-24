@@ -38,10 +38,10 @@ An outside reviewer sent a six-pillar roadmap (cross-platform, ACP adapters, wor
 
 The review called Clanker Windows-only, said rolling back a turn "needs manual Git" and called provider handling "stdout scraping". All three are wrong today, so our own pages undersell the product. `site/public/index.html` still lists "Linux and macOS are untested" (Linux is verified on Ubuntu 24.04, see the README Platform paragraph, which sits below the fold). The README never mentions undo turn, auto-verify, `/architect`, per-turn reply cost, the Agents sheet or the cross-vendor `clanker-load-agent` bridge.
 
-- [ ] Inventory what ships (README, `ai-chat-panel/README.md`, Settings, slash commands, `docs/`) and list each user-facing capability once with the place it lives. Source of truth is the code and tests, not older docs.
-- [ ] Fix stale claims: the site's platform line, the extension's Marketplace/Open VSX description, `ai-chat-panel/README.md`. Say plainly what is verified (Windows, Ubuntu 24.04), what is untested (macOS) and what is Windows-only (the system-wide dictation hotkey).
-- [ ] Add a short "What it already does" section near the top of the README: one line per capability, grouped (providers and handoffs, quota and scheduling, safety and undo, voice, projects and loops, platforms). Link to the guide for each; no marketing adjectives.
-- [ ] Mirror it on the site and re-render the real-UI screenshots for undo and the reply-cost row (`docs/images/`). Keep one source for the list so README and site can't drift again.
+- [x] 2026-11-25: inventory written as [docs/capabilities.md](docs/capabilities.md) from the command list, settings, slash commands and `lib/` (the single source the README and site copy from).
+- [x] 2026-11-25: site platform line, README platform paragraph and four Windows-only setting descriptions in `ai-chat-panel/package.json` fixed (Windows, Ubuntu 24.04 and Kubuntu verified; macOS untested; only the system-wide hotkey is Windows-only). The Marketplace page text comes from the README at the next release. Not deployed: the site change goes live with `site/deploy.sh`.
+- [x] 2026-11-25: "What it already does" added to the README, grouped as listed, linking to docs/capabilities.md.
+- [ ] Mirror the list on the site (only its platform line is fixed so far) and re-render the real-UI screenshots for undo and the reply-cost row (`docs/images/`, `node scripts/readme-shots.mjs` rewrites every screenshot, so review that diff). docs/capabilities.md is the one source.
 - [ ] Consider the in-product side: Settings > General help or the onboarding (ONBOARD-01) should show the same list, so users find features without reading the README.
 
 **Estimate (AI-assisted):** 2-4 hours (the screenshots dominate).

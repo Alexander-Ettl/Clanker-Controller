@@ -222,7 +222,7 @@
                 "aiChatPanel.completionSound": {
                     "type": "boolean",
                     "default": true,
-                    "markdownDescription": "Play the notification chime when a reply finishes and nothing you queued is left to run. Turn off for silence; the Windows toast shown while the IDE is in the background is unaffected. Chat Settings > General has the switch."
+                    "markdownDescription": "Play the notification chime when a reply finishes and nothing you queued is left to run. Turn off for silence; the desktop notification shown while the IDE is in the background is unaffected. Chat Settings > General has the switch."
                 },
                 "aiChatPanel.workContextIcons": {
                     "type": "boolean",
@@ -337,7 +337,7 @@
                 "aiChatPanel.voiceHotkey": {
                     "type": "string",
                     "default": "",
-                    "markdownDescription": "Global hotkey for dictation, e.g. `Ctrl+Alt+Space` or `F9` (Windows). Works from any app, not only this window; the keys still reach the app in front. Set it in Chat Settings > Voice. Empty: off."
+                    "markdownDescription": "Global hotkey for dictation, e.g. `Ctrl+Alt+Space` or `F9` (Windows only). Works from any app, not only this window; the keys still reach the app in front. Set it in Chat Settings > Voice. Empty: off. On Linux, bind a desktop shortcut to `scripts/linux/clanker-dictate` instead."
                 },
                 "aiChatPanel.voiceHotkeyMode": {
                     "type": "string",
@@ -353,12 +353,12 @@
                 "aiChatPanel.voicePauseMedia": {
                     "type": "boolean",
                     "default": true,
-                    "markdownDescription": "Pause background music and videos while dictating, then resume the media dictation paused when recording ends. Applies to apps supporting Windows media controls."
+                    "markdownDescription": "Pause background music and videos while dictating, then resume the media dictation paused when recording ends. Applies to apps supporting Windows media controls, and on Linux to MPRIS players (browsers, Spotify, VLC, mpv)."
                 },
                 "aiChatPanel.voiceMicDevice": {
                     "type": "string",
                     "default": "",
-                    "markdownDescription": "Microphone for dictation, by its Windows device name. Set it in Chat Settings > Voice. Empty: automatic (the microphone Windows has as its default input; Settings shows which one). A device that is not connected falls back to automatic."
+                    "markdownDescription": "Microphone for dictation, by its device name. Set it in Chat Settings > Voice. Empty: automatic (the system's default input; Settings shows which one). A device that is not connected falls back to automatic."
                 },
                 "aiChatPanel.models": {
                     "type": "object",
