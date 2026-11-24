@@ -6,29 +6,29 @@ Two extensions ship from this repo: **Clanker Controller** (`ai-chat-panel/`) an
 
 1. Create an Azure DevOps organisation and a **Personal Access Token** with scope *Marketplace > Manage* and organisation *All accessible organizations*.
 2. Create a publisher at <https://marketplace.visualstudio.com/manage>. Its ID is the value for `--publisher` below.
-3. For Open VSX (Antigravity installs from there): sign in at <https://open-vsx.org>, create a token, and run `npx.cmd ovsx create-namespace <publisher> -p <token>` once. The namespace should match the publisher ID.
+3. For Open VSX (Antigravity installs from there): sign in at <https://open-vsx.org>, create a token, and run `npx ovsx create-namespace <publisher> -p <token>` once. The namespace should match the publisher ID.
 4. The GitHub repo must be **public**. The README images and links point at `raw.githubusercontent.com/Alexander-Ettl/Clanker-Controller/main/...`, and the Marketplace page shows the repository link. On a private repo the images are broken.
 
 ## Every release
 
 1. Bump `version` in the manifest of each extension you are shipping.
-2. Check that everything is clean: `npm.cmd run check`, `npm.cmd run typecheck`, `npm.cmd test`.
+2. Check that everything is clean: `npm run check`, `npm run typecheck`, `npm test`.
 3. Build both packages:
 
-   ```powershell
+   ```bash
    node scripts/package-marketplace.mjs --publisher <publisher>
    ```
 
-   The `.vsix` files land in `C:\Dev\clanker-publish\out`. Add `--target win32-x64` to mark them Windows-only. The code relies on PowerShell and `taskkill`, so that is the honest setting, but it hides the extension from Linux and macOS users. `--only chat`, `--only usage` or `--only theme` builds one (`theme` is the Clanker Paper & Ink colour themes in `clanker-theme/`).
-4. Look inside before publishing: `cd C:\Dev\clanker-publish\ai-chat-panel; npx.cmd @vscode/vsce ls --tree`. No `test/`, `.env*`, `types/` or dev `.ps1` scripts should be listed.
+   The `.vsix` files land in `~/dev/clanker-publish/out` on Linux and `C:\Dev\clanker-publish\out` on Windows (`--stage <dir>` changes it; staging inside Nextcloud or OneDrive is refused). Don't pass `--target win32-x64`: Linux is supported, and a platform target hides the extension from Linux users. Only the system-wide dictation hotkey is Windows-only; on Linux a desktop shortcut runs `scripts/linux/clanker-dictate`. `--only chat`, `--only usage` or `--only theme` builds one (`theme` is the Clanker Paper & Ink colour themes in `clanker-theme/`).
+4. Look inside before publishing: `cd ~/dev/clanker-publish/ai-chat-panel && npx @vscode/vsce ls --tree`. No `test/`, `.env*`, `types/` or dev `.ps1`/`.sh` scripts should be listed.
 5. Publish:
 
-   ```powershell
-   npx.cmd @vscode/vsce publish --packagePath C:\Dev\clanker-publish\out\ai-chat-panel-<version>.vsix -p <PAT>
-   npx.cmd ovsx publish C:\Dev\clanker-publish\out\antigravity-usage-statusbar-<version>.vsix -p <token>
+   ```bash
+   npx @vscode/vsce publish --packagePath ~/dev/clanker-publish/out/ai-chat-panel-<version>.vsix -p <PAT>
+   npx ovsx publish ~/dev/clanker-publish/out/antigravity-usage-statusbar-<version>.vsix -p <token>
    ```
 
-   Keep tokens out of the repo and out of shell history where you can (`$env:VSCE_PAT`, `$env:OVSX_PAT`).
+   Keep tokens out of the repo and out of shell history where you can (`$VSCE_PAT`, `$OVSX_PAT`; PowerShell: `$env:VSCE_PAT`).
 
 ## What the packager changes in the staging copy
 
