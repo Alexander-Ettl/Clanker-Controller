@@ -35,6 +35,7 @@ One list, one place per capability. The README, the site and the store page copy
 ## Projects and loops
 
 - **Projects.** Register folders; a chat has one primary project root that stays explicit across queued and scheduled turns (`ai-chat-panel/PROJECTS.md`).
+- **A worktree per chat.** `/worktree new` gives a chat its own git worktree and branch so two agents in one repository can't overwrite each other; queued and scheduled turns follow it (`lib/chat-worktree.js`, `ProjectRegistry.context`; [how](../ai-chat-panel/PROJECTS.md)).
 - **Loops.** A durable scan, fix and verify pipeline over a project, fixes made in an isolated worktree, with budgets and resumption ([loops](loops.md), `lib/loop-engine.js`).
 - **Remote control.** Telegram ([setup](telegram-setup.md), [risks](telegram-security-and-risks.md)) and an optional Cloudflare tunnel.
 - **UI.** Liquid Glass chat windows, a launcher rail, pinned chats, a composer that behaves like a Dynamic Island, attachment previews, and the Clanker Paper and Ink colour themes (`clanker-theme/`).
@@ -50,4 +51,4 @@ One list, one place per capability. The README, the site and the store page copy
 
 ## Not built yet
 
-See [`TODO.md`](../TODO.md): a worktree per chat in the chat UI and provider contract tests.
+See [`TODO.md`](../TODO.md): provider contract tests against recorded CLI output, live checks of the cross-vendor agents, and the loop redo.

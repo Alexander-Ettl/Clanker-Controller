@@ -50,3 +50,23 @@ test('file mentions walk only the selected project even outside the Explorer', a
   assert.deepEqual(await projectFiles(a), ['src/index.js']);
   assert.equal((await projectFiles(a, 1)).length, 1);
 });
+
+test('a chat\'s worktree replaces the project folder as the working root and the project stays its parent', () => {
+  const sessionDir = fs.mkdtempSync(path.join(os.tmpdir(), 'projects-wt-'));
+  const projectDir = fs.mkdtempSync(path.join(os.tmpdir(), 'projects-wt-root-'));
+  const worktreeDir = fs.mkdtempSync(path.join(os.tmpdir(), 'projects-wt-tree-'));
+  const registry = new ProjectRegistry(sessionDir);
+  const project = registry.add('App', projectDir);
+  const plain = registry.context(project.id);
+  assert.equal(plain.workspaceDir, plain.projectRoot);
+  assert.equal(plain.worktree, null);
+  const isolated = registry.context(project.id, { worktree: { path: worktreeDir, branch: 'clanker/x' } });
+  assert.equal(isolated.workspaceDir, worktreeDir);
+  assert.equal(isolated.projectRoot, plain.projectRoot);
+  assert.equal(isolated.worktree.branch, 'clanker/x');
+  assert.equal(isolated.attachmentsDir, plain.attachmentsDir, 'attachments and the session folder belong to the project, not the worktree');
+  fs.rmSync(worktreeDir, { recursive: true });
+  assert.throws(() => registry.context(project.id, { worktree: { path: worktreeDir } }), /worktree for this chat .* is gone.*\/worktree remove/);
+  assert.equal(registry.context(project.id, { allowMissing: true, worktree: { path: worktreeDir } }).workspaceDir, worktreeDir, 'allowMissing keeps the root so the run can be replaced cleanly');
+  assert.equal(registry.context(null, { allowMissing: true, worktree: { path: worktreeDir } }).worktree, null, 'a planning chat without a folder has nothing to isolate');
+});

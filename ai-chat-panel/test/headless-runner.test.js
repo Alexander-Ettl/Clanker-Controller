@@ -102,6 +102,25 @@ test('a prompt for a chat resumes that chat\'s own session and adds to it', { sk
   assert.equal(w.chats.list().length, 1, 'no second chat was made');
 });
 
+test('a chat with a worktree runs its scheduled turn in the worktree, not the project folder', { skip }, async () => {
+  const w = await world();
+  const tree = fs.mkdtempSync(path.join(root, 'tree-'));
+  const chat = w.chats.save({ ...w.chats.create(), projectId: w.project.id, title: 'Isolated', worktree: { path: tree, branch: 'clanker/isolated', baseCommit: 'a'.repeat(40) },
+    messages: [{ role: 'user', text: 'work', agent: 'claude' }, { role: 'assistant', text: 'ok', agent: 'claude' }] });
+  await w.schedule({ chatId: chat.id });
+  assert.equal((await w.run()).ran[0].status, 'done');
+  assert.equal(fs.realpathSync(calls()[0].cwd), fs.realpathSync(tree));
+  assert.equal(w.chats.load(chat.id).worktree.branch, 'clanker/isolated', 'the reply did not lose the record');
+});
+
+test('a chat whose worktree folder is gone is left pending, never run in the project folder instead', { skip }, async () => {
+  const w = await world();
+  const chat = w.chats.save({ ...w.chats.create(), projectId: w.project.id, title: 'Lost', worktree: { path: path.join(root, 'no-such-tree') }, messages: [{ role: 'user', text: 'hi' }] });
+  await w.schedule({ chatId: chat.id });
+  assert.deepEqual((await w.run()).ran, []);
+  assert.equal(calls().length, 0);
+});
+
 test('with the editor open the runner stands down and touches nothing', { skip }, async () => {
   const w = await world();
   await w.schedule();

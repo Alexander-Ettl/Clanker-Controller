@@ -157,16 +157,23 @@ class ProjectRegistry {
       return roots.find(item => target === item.root || target.startsWith(item.root + path.sep))?.id || null;
     };
   }
-  context(id, { allowMissing = false } = {}) {
+  /**
+   * Where a turn for this project runs. The chat's `worktree` ({ path, ... }, WORKTREE-01) replaces the project folder as the working
+   * root for every turn, queued and scheduled ones included; `projectRoot` stays the registered folder. This is the one place that
+   * decides it, so callers just pass the chat's worktree record.
+   */
+  context(id, { allowMissing = false, worktree = null } = {}) {
     const project = this.get(id);
     if (!project && !allowMissing) throw new Error('Choose a project in the chat before sending a message.');
     const sessionDir = path.join(this.sessionDir, 'projects', project?.id || 'unassigned');
     const attachmentsDir = path.join(sessionDir, 'attachments');
     fs.mkdirSync(attachmentsDir, { recursive: true });
-    const workspaceDir = project?.root || path.join(sessionDir, 'planning');
-    if (!project?.root) fs.mkdirSync(workspaceDir, { recursive: true });
-    if (project?.root && !fs.existsSync(workspaceDir) && !allowMissing) throw new Error(`The folder for ${project.name} is unavailable. Locate it using Manage projects before running this chat.`);
-    return { project, sessionDir, attachmentsDir, workspaceDir };
+    const projectRoot = project?.root || path.join(sessionDir, 'planning');
+    if (!project?.root) fs.mkdirSync(projectRoot, { recursive: true });
+    if (project?.root && !fs.existsSync(projectRoot) && !allowMissing) throw new Error(`The folder for ${project.name} is unavailable. Locate it using Manage projects before running this chat.`);
+    const isolated = project?.root && worktree?.path ? worktree : null;
+    if (isolated && !fs.existsSync(isolated.path) && !allowMissing) throw new Error(`The worktree for this chat (${isolated.path}) is gone. Type /worktree remove to go back to the project folder.`);
+    return { project, sessionDir, attachmentsDir, workspaceDir: isolated ? isolated.path : projectRoot, projectRoot, worktree: isolated };
   }
 }
 

@@ -100,6 +100,18 @@ function worktreeStatus({ path: dir, baseCommit }) {
 }
 const isLinkedEssential = (dir, file) => { try { return fs.lstatSync(path.join(dir, file.replace(/\/$/, ''))).isSymbolicLink(); } catch { return false; } };
 
+/**
+ * Every file that differs from the commit the worktree started from: committed, staged, edited and new (untracked, not ignored).
+ * [{ status: 'M' | 'A' | 'D' | 'R', file }], sorted. Our links to .env or node_modules are not changes.
+ */
+function changesAgainstBase({ path: dir, baseCommit }) {
+  const found = new Map();
+  const parts = git(dir, ['diff', '--name-status', '-z', '--no-renames', baseCommit]).split('\0').filter(Boolean);
+  for (let i = 0; i + 1 < parts.length; i += 2) found.set(parts[i + 1], parts[i][0]);
+  for (const file of git(dir, ['ls-files', '--others', '--exclude-standard', '-z']).split('\0').filter(Boolean)) if (!found.has(file)) found.set(file, 'A');
+  return [...found].filter(([file]) => !isLinkedEssential(dir, file)).map(([file, status]) => ({ status, file })).sort((a, b) => a.file.localeCompare(b.file));
+}
+
 /** Removes our links from the tree so a delete can't follow them into the real dependencies. */
 function unlinkEssentials(dir, setup) {
   const removed = [];
@@ -152,4 +164,4 @@ function listManaged(repoRoot, env = process.env) {
 /** Forgets worktrees whose folder was deleted by hand, so `git worktree list` has no stale entry. */
 function pruneStale(repoRoot) { git(repoTopLevel(repoRoot), ['worktree', 'prune']); }
 
-module.exports = { DEFAULT_SETUP, managedRoot, slugify, createWorktree, worktreeStatus, removeWorktree, listManaged, pruneStale, dirtyFiles };
+module.exports = { DEFAULT_SETUP, managedRoot, slugify, createWorktree, worktreeStatus, changesAgainstBase, removeWorktree, listManaged, pruneStale, dirtyFiles };

@@ -113,7 +113,7 @@ async function runDue({ settings = readSettings(), sessionDir = settings?.sessio
     // The editor's model picker (discovered models, which CLIs are on) is what task.modelId refers to.
     if (enabled) setEnabledAgents([...enabled]); else setEnabledAgents(providers.ids());
     if (Array.isArray(settings?.catalog) && settings.catalog.length) setModelCatalog(settings.catalog);
-    const reachable = (task) => { try { projects.context(task.projectId || (task.chatId && chatStore.load(task.chatId)?.projectId)); return true; } catch { return false; } };
+    const reachable = (task) => { try { const chat = task.chatId && chatStore.load(task.chatId); projects.context(task.projectId || chat?.projectId, { worktree: chat?.worktree }); return true; } catch { return false; } };
 
     for (let count = 0; count < maxTasks; count++) {
       if (signal?.aborted) break;
@@ -144,7 +144,7 @@ async function runTask({ task, queue, chatStore, projects, settings, createEngin
   if (existing && ownedByAnotherHost(existing)) return 'busy';
   if (existing && task.projectId && existing.projectId !== task.projectId) { await queue.markFailed(task.id, 'Scheduled task project does not match its conversation.'); return 'failed'; }
   const projectId = task.projectId || existing?.projectId;
-  const { workspaceDir } = projects.context(projectId);
+  const { workspaceDir } = projects.context(projectId, { worktree: existing?.worktree });
   await queue.markDispatched(task.id);
 
   const chosen = modelOption(task.modelId);

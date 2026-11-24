@@ -150,3 +150,17 @@ test('a worktree folder deleted by hand shows as missing and prunes cleanly', ()
   const result = wt.removeWorktree({ ...made, env }); // the chat's delete still works afterwards
   assert.equal(result.removed, true);
 });
+
+test('changesAgainstBase lists committed, edited, new and deleted files, and none of the links', () => {
+  const { repo, env } = fixture();
+  write(repo, 'gone.txt', 'bye\n'); run(['add', '.'], repo); run(['commit', '-qm', 'more'], repo);
+  const made = wt.createWorktree({ repoRoot: repo, title: 'changes', env });
+  assert.deepEqual(wt.changesAgainstBase(made), [], 'a fresh worktree has no changes (the links do not count)');
+  write(made.path, 'committed.txt', 'c\n'); run(['add', '.'], made.path); run(['commit', '-qm', 'x'], made.path);
+  write(made.path, 'a.txt', 'one changed\n');
+  write(made.path, 'src/new.js', 'n\n');
+  fs.rmSync(path.join(made.path, 'gone.txt'));
+  assert.deepEqual(wt.changesAgainstBase(made), [
+    { status: 'M', file: 'a.txt' }, { status: 'A', file: 'committed.txt' }, { status: 'D', file: 'gone.txt' }, { status: 'A', file: 'src/new.js' },
+  ]);
+});

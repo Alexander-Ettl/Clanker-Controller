@@ -45,6 +45,12 @@
   projectBtn.setAttribute('aria-label', 'Choose project');
   projectBtn.addEventListener('click', () => { if (editingQueue) finishQueueEdit(); vscode.postMessage({ type: 'chooseProject' }); });
   projectBar.append(projectBtn);
+  // This chat's git worktree (/worktree new): its branch and how many files it has changed. Hidden for a chat in the project folder.
+  const worktreeChip = document.createElement('button');
+  worktreeChip.type = 'button'; worktreeChip.className = 'worktree-chip'; worktreeChip.hidden = true;
+  worktreeChip.innerHTML = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true"><circle cx="4.5" cy="3.5" r="1.6"/><circle cx="4.5" cy="12.5" r="1.6"/><circle cx="11.5" cy="6" r="1.6"/><path d="M4.5 5.1v5.8M11.5 7.6c0 2.6-3 2.2-7 3.6"/></svg><span></span>';
+  worktreeChip.addEventListener('click', () => vscode.postMessage({ type: 'worktreeMenu' }));
+  projectBar.append(worktreeChip);
   // The rail is one glass pill with a squircle tile per registered project, drawn like the chat tiles under it. The
   // chat's own project wears the white rim. While a turn runs, a ring glides to the project the agent's tools are
   // editing (matched by file path against the project roots), so a hop into Visor or Clanker shows itself as the
@@ -2796,6 +2802,14 @@
     const loop = /^\/loop(?:\s+([\s\S]*))?$/i.exec(text);
     if (loop) {
       vscode.postMessage({ type: 'loopCommand', args: loop[1] || '', modelId: pendingModelId || activeModelId });
+      promptInput.value = '';
+      closeSlashMenu(); autoGrow(); renderComposerState();
+      return;
+    }
+    // /worktree new|status|diff|open|remove: this chat's own git worktree (host: ChatWindowHost.worktreeCommand, lib/chat-worktree.js).
+    const worktree = /^\/worktree(?:\s+([\s\S]*))?$/i.exec(text);
+    if (worktree) {
+      vscode.postMessage({ type: 'worktreeCommand', args: worktree[1] || '' });
       promptInput.value = '';
       closeSlashMenu(); autoGrow(); renderComposerState();
       return;
@@ -6375,6 +6389,19 @@
         if (historySessions.length &&!historyModal.body.querySelector('input')) renderHistory(historySessions); // the chats' project icons follow a rename or a new icon
         projectBtn.title = message.project ? (message.project.root || 'Planning project — attach a folder through Manage projects') : 'Select a project before sending this chat';
         projectBtn.classList.toggle('needs-project', Boolean(message.required));
+        break;
+      }
+      case 'worktree': {
+        const info = message.worktree;
+        worktreeChip.hidden = !info;
+        if (!info) break;
+        const label = info.branch.replace(/^clanker\//, '');
+        worktreeChip.querySelector('span').textContent = info.missing ? 'worktree missing' : `${label}${info.dirty ? ` · ${info.dirty}` : ''}`;
+        if (info.dirty > 0 && !info.missing) worktreeChip.dataset.count = String(info.dirty); else delete worktreeChip.dataset.count;
+        worktreeChip.classList.toggle('is-dirty', info.dirty > 0);
+        worktreeChip.classList.toggle('is-missing', Boolean(info.missing));
+        worktreeChip.title = info.missing ? `The worktree folder is gone: ${info.path}\nType /worktree remove to go back to the project folder.`
+          : `This chat works in its own worktree on ${info.branch}\n${info.path}\n${info.dirty} uncommitted file${info.dirty === 1 ? '' : 's'}${info.ahead ? `, ${info.ahead} commit${info.ahead === 1 ? '' : 's'} ahead` : ''}`;
         break;
       }
       // Settings changed how many projects and chats the rail lists.

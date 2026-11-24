@@ -299,6 +299,23 @@ body:not(.vscode-high-contrast, .vscode-high-contrast-light) .agent-logo path[fi
 .project-picker:hover { background: var(--eo-surface-raised); }
 .project-picker.needs-project { color: var(--text-secondary); }
 .project-picker:focus-visible { outline: 2px solid var(--text-secondary); outline-offset: 2px; }
+.worktree-chip {
+  display: inline-flex; align-items: center; gap: 5px; min-width: 0; max-width: 100%;
+  border: 1px solid var(--eo-border); border-radius: 14px; background: var(--eo-surface); color: var(--text-secondary);
+  font: inherit; font-size: 11px; padding: 4px 9px; cursor: pointer;
+  transition: background 140ms var(--eo-ease), color 140ms var(--eo-ease);
+}
+.worktree-chip[hidden] { display: none; }
+.worktree-chip svg { width: 13px; height: 13px; flex: none; }
+.worktree-chip span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.worktree-chip:hover { background: var(--eo-surface-raised); color: var(--text-primary); }
+.worktree-chip.is-dirty { color: var(--text-primary); }
+.worktree-chip.is-missing { color: var(--warning); }
+.worktree-chip:focus-visible { outline: 2px solid var(--text-secondary); outline-offset: 2px; }
+.project-toolbar.is-rail .worktree-chip { margin-top: 8px; align-self: center; padding: 5px 10px; gap: 6px; }
+.project-toolbar.is-rail .worktree-chip span { display: none; } /* the rail is narrow: icon and count, the name is in the tooltip */
+.project-toolbar.is-rail .worktree-chip[data-count]::after { content: attr(data-count); font-variant-numeric: tabular-nums; }
+.project-toolbar.is-rail .worktree-chip.is-missing::after { content: '!'; }
 
 .round-btn {
   position: relative;

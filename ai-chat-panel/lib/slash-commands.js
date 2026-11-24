@@ -282,6 +282,7 @@ class SlashCommandCatalog {
       { name: 'undo', description: 'Put the last turn\'s file changes back (asks first)', agent: 'claude', panel: true },
       { name: 'verify', description: 'Auto-Verify on/off; /verify npm test pins the check to run', agent: 'claude', panel: true },
       { name: 'loop', description: 'Repeat a prompt in this chat: /loop 5m <prompt>, /loop stop', agent: 'claude', panel: true },
+      { name: 'worktree', description: 'Give this chat its own git worktree: /worktree new, status, diff, open, remove', agent: 'claude', panel: true },
       { name: 'architect', description: 'One model plans, another builds: /architect <task>', agent: 'claude', panel: true },
     ];
     return [

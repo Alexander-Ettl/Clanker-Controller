@@ -102,6 +102,7 @@ const voiceArchive = require('./lib/voice-archive.js');
 const { planUndo, applyUndo, fileCount, fileList } = require('./lib/turn-undo.js');
 const turnDiff = require('./lib/turn-diff.js');
 const { parseLoopCommand, USAGE: LOOP_USAGE } = require('./lib/loop-command.js');
+const chatWorktree = require('./lib/chat-worktree.js');
 const { verifyInstruction, ARCHITECT_PREFIX, buildInstruction } = require('./lib/turn-extras.js');
 
 // P17-X: clock locale + format shared by both webviews ('24h' default, 'auto' follows vscode.env.language).
@@ -218,7 +219,7 @@ class SchedulerWatchdog {
   async dispatch(task) {
     if (!this.isAgentEnabled(task.model)) throw new Error('This CLI was removed from Clanker. Add it in Settings before running this task.');
     const projectId = task.projectId || (task.chatId && this.chatStore?.load(task.chatId)?.projectId);
-    const context = this.projects?.context(projectId);
+    const context = this.projects?.context(projectId, { worktree: task.chatId ? this.chatStore?.load(task.chatId)?.worktree : null });
     if (task.chatId && task.projectId && this.chatStore?.load(task.chatId)?.projectId !== task.projectId) throw new Error('Scheduled task project does not match its conversation.');
     await this.waitForCliUpdate?.(task.model);
     await this.queue.markDispatched(task.id);
@@ -252,7 +253,8 @@ class SchedulerWatchdog {
   projectAvailable(task) {
     if (!this.projects) return true;
     try {
-      this.projects.context(task.projectId || (task.chatId && this.chatStore?.load(task.chatId)?.projectId));
+      const chat = task.chatId && this.chatStore?.load(task.chatId);
+      this.projects.context(task.projectId || chat?.projectId, { worktree: chat?.worktree });
       return true;
     } catch { return false; }
   }
@@ -686,9 +688,20 @@ class ChatRun {
   // Background agents count as running after the turn ends: the orb stays on the chat while they work.
   get waitingQuestion() { return this.chat.messages.find(entry => entry.event?.deferred && entry.event.type === 'question_required' && !entry.event.settled)?.event; }
   get state() { return this.waitingQuestion ? 'waiting' : !this.turn ? (this.externalCodexTurn || this.streamEngine.hasBackgroundAgents ? 'running' : null) : this.pending.size ? 'waiting' : 'running'; }
+  /** Once per chat: another chat is running in the same project folder, so say how to keep the two apart (WORKTREE-01). */
+  suggestWorktree() {
+    const chat = this.chat;
+    if (chat.worktree || chat.worktreeHintShown || !this.deps.projects) return;
+    const root = this.deps.projects.get(chat.projectId)?.root;
+    if (!root || !fs.existsSync(path.join(root, '.git'))) return;
+    const other = [...(this.deps.chatWindowManager?.runs.values() || [])].find((run) => run !== this && run.chat.projectId === chat.projectId && !run.chat.worktree && run.state === 'running');
+    if (!other) return;
+    chat.worktreeHintShown = true;
+    this.post({ type: 'notice', text: `Another chat${other.chat.title ? ` ("${other.chat.title}")` : ''} is working in this project right now. Two chats editing the same folder can overwrite each other. Type /worktree new to give this chat its own copy on a separate branch.` });
+  }
   requireProject() {
     if (!this.deps.projects) return;
-    const context = this.deps.projects.context(this.chat.projectId);
+    const context = this.deps.projects.context(this.chat.projectId, { worktree: this.chat.worktree });
     if (context.workspaceDir !== this.deps.workspaceDir) throw new Error('This project’s folder changed. Reopen the conversation to use its new location.');
   }
   /** The window to run a queued turn in: the one used most recently. */
@@ -806,6 +819,7 @@ class ChatRun {
     const count = summary.count;
     this.turnDiffSummary = count ? turnDiff.publicSummary(summary) : null; // posted with the undo offer
     if (count) reply.undo = { ...undo, count };
+    if (this.chat.worktree) for (const host of this.hosts) host.pushWorktreeState(); // the chip's uncommitted-file count
     return count;
   }
 
@@ -1148,6 +1162,7 @@ class ChatRun {
     if (this.externalCodexTurn) { if (!queued) this.enqueue({ ...message, text }); return false; }
     if (this.waitingQuestion) { this.enqueue({ ...message, text }); return; }
     this.requireProject();
+    if (!queued) this.suggestWorktree();
     if (!queued) noteVoiceUse(text, this.chat.projectId);
     if (this.turn?.compact) { this.afterCompact = message; return; }
     if (message.steer === false && (this.turn || this.starting)) { this.enqueue({ ...message, text }); return; }
@@ -1770,6 +1785,9 @@ class ChatWindowHost {
       case 'undoTurn': void this.undoLastTurn(); break;
       case 'openTurnDiff': void this.openTurnDiff(message.index); break;
       case 'loopCommand': void this.loopCommand(message.args, message.modelId); break;
+      case 'worktreeCommand': void this.worktreeCommand(message.args); break;
+      case 'requestWorktree': this.pushWorktreeState(); break;
+      case 'worktreeMenu': void this.worktreeMenu(); break;
       case 'requestToolOutput': {
         // The full text of one finished card's output. The index is absolute; the tool id guards against a chat that changed since.
         const entry = message.chatId === this.chat.id && Number.isSafeInteger(message.index) ? this.chat.messages[message.index] : null;
@@ -2088,10 +2106,11 @@ class ChatWindowHost {
     const project = this.deps.projects.get(this.chat.projectId);
     const projects = this.deps.projects.list().map(describeProject);
     this.panel.webview.postMessage({ type: 'project', project, projects, pinnedProjectIds: this.projectPins(), chatId: this.chat.id, required: !project });
+    this.pushWorktreeState();
   }
   focusProjectTerminal() {
     try {
-      const { project, workspaceDir } = this.deps.projects.context(this.chat.projectId);
+      const { project, workspaceDir } = this.deps.projects.context(this.chat.projectId, { worktree: this.chat.worktree });
       const agent = this.activeAgent === 'auto' ? this.lastRoutedAgent || 'claude' : this.activeAgent;
       const binary = locate(agent).path;
       if (!binary) throw new Error('Add this CLI in Settings before opening its terminal.');
@@ -2294,6 +2313,96 @@ class ChatWindowHost {
     // The first run is due now; the queue adds the next one an interval after each run ends.
     const ok = await this.scheduleTask({ task: { model, modelId: option?.id, prompt: parsed.prompt, dispatchTrigger: 'fixed-time', dispatchTime: new Date().toISOString(), recurrence, resumeHere: true }, attachments: [], run });
     if (ok) notice(`Repeating every ${parsed.everyMinutes < 1 ? `${Math.round(parsed.everyMinutes * 60)} seconds` : `${parsed.everyMinutes} minute${parsed.everyMinutes === 1 ? '' : 's'}`}${parsed.maxRuns ? `, at most ${parsed.maxRuns} times` : ''}. "/loop stop" ends it; it only runs while the editor is open.`);
+  }
+
+  /**
+   * /worktree: give this chat its own git worktree (WORKTREE-01), look at it, open it, or remove it. The chat's working root becomes
+   * the worktree for every turn, queued and scheduled ones too (ProjectRegistry.context); the project stays its parent.
+   */
+  async worktreeCommand(args) {
+    const run = this.run;
+    const chat = run.chat;
+    const notice = (text) => run.post({ type: 'notice', text });
+    const [action = '', ...flags] = String(args || '').trim().split(/\s+/).filter(Boolean);
+    const force = flags.includes('--force');
+    const busy = Boolean(run.turn || run.starting || run.externalCodexTurn || run.waitingQuestion);
+    const record = chat.worktree;
+    const usage = 'Use /worktree new (an isolated copy on its own branch), /worktree status, /worktree diff, /worktree open, or /worktree remove.';
+    try {
+      switch (action.toLowerCase()) {
+        case '': case 'status': {
+          if (!record) return notice(`This chat works in the project folder. ${usage}`);
+          const state = chatWorktree.worktreeStatus(record);
+          return notice(`Worktree ${state.branch} at ${record.path}\n${state.dirty} uncommitted file${state.dirty === 1 ? '' : 's'}${state.ahead ? `, ${state.ahead} commit${state.ahead === 1 ? '' : 's'} ahead of where it started` : ''}. The project folder is untouched until you merge the branch yourself.`);
+        }
+        case 'new': case 'create': {
+          if (record) return notice('This chat already has a worktree. Use /worktree status.');
+          if (busy) return notice('Wait for the current turn to finish, then run /worktree new.');
+          const context = this.deps.projects?.context(chat.projectId);
+          if (!context?.project?.root) return notice('This chat has no project folder to copy. Pick a project with a git repository first.');
+          const made = chatWorktree.createWorktree({ repoRoot: context.project.root, title: chat.title || deriveFallbackTitle(chat.messages) || 'chat', chatId: chat.id });
+          chat.worktree = { path: made.path, branch: made.branch, base: made.base, baseCommit: made.baseCommit, repoRoot: made.repoRoot, createdAt: new Date().toISOString() };
+          run.save();
+          const replacement = this.deps.chatWindowManager.runFor(chat.id) || run; // the working folder changed: a fresh run, the agent is briefed with this chat
+          replacement.post({ type: 'notice', text: [`This chat now works in its own worktree on ${made.branch}:\n${made.path}`, made.linked.length ? `Linked from the project, not copied: ${made.linked.join(', ')}.` : '', ...made.warnings, 'The agent starts a fresh session there and is briefed with this chat. Merge the branch in git when you are happy; /worktree diff shows what changed.'].filter(Boolean).join('\n') });
+          replacement.hosts.forEach((host) => host.postProject());
+          return;
+        }
+        case 'diff': case 'changes': {
+          if (!record) return notice('This chat has no worktree.');
+          const changes = chatWorktree.changesAgainstBase(record);
+          if (!changes.length) return notice('No changes against where the worktree started.');
+          const pick = await vscode.window.showQuickPick(changes.map((change) => ({ label: `${change.status}  ${change.file}`, change })), { title: `Changes on ${record.branch}`, placeHolder: 'Open a file as a diff against where this worktree started' });
+          if (!pick) return;
+          const { file, status } = pick.change;
+          const label = `/${file}`;
+          const before = status === 'A' ? vscode.Uri.from({ scheme: turnDiff.SCHEME, authority: 'empty', path: label }) : vscode.Uri.from({ scheme: turnDiff.SCHEME, path: label, query: turnDiff.snapshotQuery(record.path, record.baseCommit, file) });
+          const now = status === 'D' ? vscode.Uri.from({ scheme: turnDiff.SCHEME, authority: 'empty', path: label }) : vscode.Uri.file(path.join(record.path, file));
+          return void await vscode.commands.executeCommand('vscode.diff', before, now, `${file} (worktree start ↔ now)`, { preview: true });
+        }
+        case 'open': {
+          if (!record) return notice('This chat has no worktree.');
+          return void await vscode.commands.executeCommand('vscode.openFolder', vscode.Uri.file(record.path), { forceNewWindow: true });
+        }
+        case 'remove': case 'delete': {
+          if (!record) return notice('This chat has no worktree.');
+          if (busy) return notice('Wait for the current turn to finish, then remove the worktree.');
+          const result = chatWorktree.removeWorktree({ ...record, force });
+          if (!result.removed) return notice(`The worktree was kept: ${result.reason}. Commit or discard that work, or run /worktree remove --force to delete it anyway.`);
+          delete chat.worktree;
+          run.save();
+          const replacement = this.deps.chatWindowManager.runFor(chat.id) || run;
+          replacement.post({ type: 'notice', text: `Worktree removed. This chat works in the project folder again.${result.reason ? ` Note: ${result.reason}.` : ''}` });
+          replacement.hosts.forEach((host) => host.postProject());
+          return;
+        }
+        default: return notice(`Unknown /worktree option "${action}". ${usage}`);
+      }
+    } catch (error) { notice(`/worktree: ${String(error.message || error).split('\n')[0]}`); }
+  }
+
+  /** The chip's menu: what you can do with this chat's worktree. */
+  async worktreeMenu() {
+    const record = this.run.chat.worktree;
+    if (!record) return;
+    const pick = await vscode.window.showQuickPick([
+      { label: 'Show changes', detail: 'Open a changed file as a diff against where this worktree started', id: 'diff' },
+      { label: 'Open in a new window', detail: record.path, id: 'open' },
+      { label: 'Status', detail: `${record.branch}: uncommitted files and commits`, id: 'status' },
+      { label: 'Remove worktree', detail: 'Deletes it when nothing would be lost; /worktree remove --force deletes it anyway', id: 'remove' },
+    ], { title: `Worktree ${record.branch}` });
+    if (pick) await this.worktreeCommand(pick.id);
+  }
+
+  /** The chip beside the project: branch, uncommitted files and commits for this chat's worktree, read off the UI path. */
+  pushWorktreeState() {
+    const record = this.chat.worktree;
+    if (!record) { this.panel.webview.postMessage({ type: 'worktree', worktree: null, chatId: this.chat.id }); return; }
+    setImmediate(() => {
+      let state = null;
+      try { state = chatWorktree.worktreeStatus(record); } catch { /* folder gone */ }
+      this.panel.webview.postMessage({ type: 'worktree', chatId: this.chat.id, worktree: { branch: record.branch, path: record.path, missing: !state, dirty: state?.dirty ?? 0, ahead: state?.ahead ?? 0 } });
+    });
   }
 
   /**
@@ -2988,7 +3097,7 @@ class ChatWindowManager {
   runFor(chatId, projectId = this.selectedProjectId ?? this.deps.defaultProjectId) {
     if (chatId && this.runs.has(chatId)) {
       const cached = this.runs.get(chatId);
-      const context = this.deps.projects?.context(cached.chat.projectId, { allowMissing: true });
+      const context = this.deps.projects?.context(cached.chat.projectId, { allowMissing: true, worktree: cached.chat.worktree });
       if (!context || context.workspaceDir === cached.deps.workspaceDir || cached.state || cached.starting || cached.remote) return cached;
       const hosts = [...cached.hosts];
       cached.streamEngine.dispose(); cached.chat.sessions = {}; cached.save(); this.runs.delete(chatId);
@@ -3005,7 +3114,7 @@ class ChatWindowManager {
     let scoped = {};
     if (this.deps.projects) {
       if (!chatId) { chat.projectId = projectId || null; this.deps.chatStore.save(chat); }
-      scoped = this.projectDeps(chat.projectId);
+      scoped = this.projectDeps(chat.projectId, chat.worktree);
       if (chat.projectRoot !== scoped.workspaceDir) {
         chat.sessions = {};
         chat.projectRoot = scoped.workspaceDir;
@@ -3026,8 +3135,8 @@ class ChatWindowManager {
       if (restored && run && !run.chat.workContext) run.considerWorkContext({ initial: true });
     }
   }
-  projectDeps(id) {
-    const context = this.deps.projects.context(id, { allowMissing: true });
+  projectDeps(id, worktree = null) {
+    const context = this.deps.projects.context(id, { allowMissing: true, worktree });
     const config = () => vscode.workspace.getConfiguration('aiChatPanel', vscode.Uri.file(context.workspaceDir));
     return { ...context,
       getModels: () => { const models = config().get('models', {}); return Object.fromEntries(providers.ids().map(agent => [agent, models[agent] || defaultModel(agent)?.model])); },
@@ -3151,10 +3260,25 @@ class ChatWindowManager {
     this.deps.notifyHistory();
   }
 
+  /**
+   * A deleted chat takes its worktree with it when nothing would be lost. One with uncommitted work or unmerged commits stays on
+   * disk (the message says where), because the chat was the only thing that knew about it.
+   */
+  releaseWorktree(chat) {
+    const record = chat?.worktree;
+    if (!record) return;
+    try {
+      const result = chatWorktree.removeWorktree(record);
+      if (!result.removed) void vscode.window.showWarningMessage(`The chat is deleted, but its worktree was kept (${result.reason}): ${record.path} on ${record.branch}. Remove it with git when you are done.`);
+      else if (result.reason) void vscode.window.showInformationMessage(`Worktree removed; ${result.reason}.`);
+    } catch (error) { void vscode.window.showWarningMessage(`The chat is deleted. Its worktree ${record.path} could not be removed: ${String(error.message).split('\n')[0]}`); }
+  }
+
   /** A chat still running with no window on it stops too; one open in a window keeps its thread in memory. */
   deleteChat(id) {
     const run = this.runs.get(id);
     if (run && !run.host) { run.streamEngine.dispose(); this.runs.delete(id); }
+    this.releaseWorktree(run?.chat || this.deps.chatStore.load(id));
     this.deps.chatStore.delete(id);
     this.recentSelections.delete(id);
     this.deps.notifyHistory();
