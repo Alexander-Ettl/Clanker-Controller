@@ -29,8 +29,10 @@ function pickFixer({ area }, { reservePercent = 50 } = {}, { visualAgent = 'clau
 }
 
 /** The sibling Visor checkout, when there is one: its content scan names the pages of a Visor-wired Astro site. */
+// A linked install runs from a symlinked path, so the sibling folders are found from the real one.
+function realHere() { try { return fs.realpathSync(__dirname); } catch { return __dirname; } }
 function findVisor() {
-  for (const dir of [process.env.VISOR_DIR, path.resolve(__dirname, '..', '..', '..', 'Visor')].filter(Boolean)) if (fs.existsSync(path.join(dir, 'scripts', 'scan.mjs'))) return dir;
+  for (const dir of [process.env.VISOR_DIR, path.resolve(realHere(), '..', '..', '..', 'Visor')].filter(Boolean)) if (fs.existsSync(path.join(dir, 'scripts', 'scan.mjs'))) return dir;
   return null;
 }
 

@@ -374,14 +374,20 @@ class TunnelManager {
   dispose() { return this.stop(); }
 }
 function getVoiceRouterDir() {
+  // A linked install (scripts/install-extension.mjs --link) runs from a symlinked path such as ~/.vscode/extensions/…,
+  // so ".." must be resolved from the real folder or the sibling voice-router checkout is never found.
+  let realDir = __dirname;
+  try { realDir = fs.realpathSync(__dirname); } catch { /* keep the unresolved path */ }
   const candidates = [
     process.env.VOICE_ROUTER_DIR,
+    path.join(__dirname, 'voice-router'), // packaged installs bundle it (scripts/install-extension.mjs)
+    path.join(realDir, '..', 'voice-router'),
     path.join(__dirname, '..', 'voice-router'),
   ].filter(Boolean);
   for (const dir of candidates) {
-    if (fs.existsSync(dir)) return dir;
+    if (fs.existsSync(path.join(dir, 'lib', 'quota-reader.mjs'))) return dir;
   }
-  return path.join(__dirname, '..', 'voice-router');
+  return path.join(realDir, '..', 'voice-router');
 }
 const VOICE_ROUTER_DIR = getVoiceRouterDir();
 const POLISH_MAX_CHARS = 12000; // what the composer's Polish button sends to the cleanup model in one go
