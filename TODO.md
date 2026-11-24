@@ -30,6 +30,91 @@ Read this file after the root [README](README.md). Summarize **Interrupted**, **
 
 **24-category live check 2026-10-29:** 27/27 synthetic requests chose the expected category, including all eight non-coding categories; 24 cleared confidence thresholds, zero wrong applications. The three abstentions were Writing, Everyday life and a context-dependent Visual design request. Used 106.27 Neurons of the test's 160 cap. All 16 focused unit tests, the 24-icon asset check and the real-rail browser check passed. The live script now covers all 24 categories and exits unsuccessfully on missing results or misclassification.
 
+### 2026-11-24 outside review: what we take from it
+
+An outside reviewer sent a six-pillar roadmap (cross-platform, ACP adapters, worktrees, checkpoints and diff review, background daemon, contributor hardening). Reviewed against the code on 2026-11-24; several of its premises were stale (Linux support, one-click turn undo, loop worktrees and structured Claude and Codex streams already exist), which is task DOCS-01. Decision: take the safety and reliability pieces, then chat worktrees, and skip the platform-expansion and rewrite pieces for now (see Deferred: MAC-01, ACP-01, DAEMON-01, LOOP-04, and the SQLite note). Order below is a suggested sequence, not a release commitment. Estimates are focused working days with AI assistance, including verification.
+
+### DOCS-01 · Say what Clanker already does (first)
+
+The review called Clanker Windows-only, said rolling back a turn "needs manual Git" and called provider handling "stdout scraping". All three are wrong today, so our own pages undersell the product. `site/public/index.html` still lists "Linux and macOS are untested" (Linux is verified on Ubuntu 24.04, see the README Platform paragraph, which sits below the fold). The README never mentions undo turn, auto-verify, `/architect`, per-turn reply cost, the Agents sheet or the cross-vendor `clanker-load-agent` bridge.
+
+- [ ] Inventory what ships (README, `ai-chat-panel/README.md`, Settings, slash commands, `docs/`) and list each user-facing capability once with the place it lives. Source of truth is the code and tests, not older docs.
+- [ ] Fix stale claims: the site's platform line, the extension's Marketplace/Open VSX description, `ai-chat-panel/README.md`. Say plainly what is verified (Windows, Ubuntu 24.04), what is untested (macOS) and what is Windows-only (the system-wide dictation hotkey).
+- [ ] Add a short "What it already does" section near the top of the README: one line per capability, grouped (providers and handoffs, quota and scheduling, safety and undo, voice, projects and loops, platforms). Link to the guide for each; no marketing adjectives.
+- [ ] Mirror it on the site and re-render the real-UI screenshots for undo and the reply-cost row (`docs/images/`). Keep one source for the list so README and site can't drift again.
+- [ ] Consider the in-product side: Settings > General help or the onboarding (ONBOARD-01) should show the same list, so users find features without reading the README.
+
+**Estimate (AI-assisted):** 2-4 hours (the screenshots dominate).
+
+**Done when:** a first-time reader of the README, the site and the store page can name Clanker's safety, platform and scheduling features without opening the code, and none of the three pages contradicts the others or the code. Re-run the reviewer's checklist against the pages as a test.
+
+### CI-01 · Run the tests on Ubuntu too
+
+Linux support (2026-11-22) has no regression guard: `.github/workflows/ci.yml` runs only on `windows-latest`.
+
+- [ ] Add an `ubuntu-latest` job (or matrix) running `npm run check` and `npm test`; mark Windows-only suites to skip with a visible reason instead of silently.
+- [ ] Fix whatever fails on a clean runner (paths, line endings, `powershell.exe` calls that bypass the platform branches). Keep Playwright browser downloads skipped as today.
+
+**Estimate (AI-assisted):** 1-2 hours, mostly waiting for CI runs. **Done when:** pull requests run both jobs and a Linux-only break turns the check red.
+
+### LINUX-01 · Make Linux the development host (Kubuntu, from 2026-11-24)
+
+The main machine moves from Windows 11 to Kubuntu 26.04 (KDE Plasma 6, Wayland). Linux was only verified on Ubuntu 24.04 GNOME, so Kubuntu is untested. Do this together with CI-01.
+
+- [ ] Replace hard-coded `C:/Dev` defaults with `os.homedir()`-based `~/dev` in `scripts/typecheck.mjs`, `scripts/theme-shots.mjs`, `tsconfig.json` and `ai-chat-panel/test/{dock,interaction,startup}-performance.mjs`; use `code`, not `Code.exe`/`code.cmd`.
+- [ ] Port the Windows-only launchers: `ai-chat-panel/install-into-antigravity.ps1` to `.sh` (`ln -s`), `site/deploy.ps1` to `.sh`, `voice-router/daemon.ps1`, `start-daemon.bat`, `router.cmd` to a `systemd --user` unit or `.sh`. Delete the stale `patch-sidebar-width.ps1`.
+- [ ] Voice on Linux: `voice-router/lib/media-pause.cjs` and `native-capture.cjs` call `powershell.exe`; use `playerctl` and `pw-record`/`ffmpeg`. The dictation hotkey (`voice-hotkey.js`) works only on `win32`; use a KDE global shortcut that calls a small command, or the GlobalShortcuts portal.
+- [ ] Rewrite `AGENTS.md` and `docs/publishing.md` for `npm`/`npx`, bash and `~/dev` instead of `npm.cmd` and PowerShell. Set `core.autocrlf input` on the new machine; new `.sh` files need `git update-index --chmod=+x`.
+- [ ] Re-add every project in Clanker (stored roots are `C:\Users\...` paths); old chats keep their Windows paths.
+- [ ] Rebuild the Linux test setup: the QEMU VM harness is no longer needed on a Linux host, but `vscode-run.sh`, `vscode-dictate.sh`, `fake-mpris.py` and `linux-system-check.cjs` are worth adopting as `scripts/linux/` (saved under the Nextcloud folder `_pre-wipe-backup-2026-11-24/C-Dev/scratch-linux-vm`).
+
+**Estimate (AI-assisted):** 3-5 hours plus checking each item on KDE. **Done when:** a fresh clone under `~/dev` passes `npm run check` and `npm test`, and voice, notifications, clipboard and keep-awake are checked on Plasma.
+
+### PROVIDER-02 · Provider contract tests against recorded CLI output
+
+Upstream CLI releases can change flags or event shapes overnight; today only hand-written fakes guard this.
+
+- [ ] For each provider (Claude, Codex, Antigravity, Copilot) record real, anonymized output from a short turn per CLI version (text turn, tool call, error, rate limit, sign-out) as fixtures under `ai-chat-panel/test/fixtures/providers/<provider>/<version>/`. Redact tokens, paths and account names; never commit transcripts of real chats.
+- [ ] Replay each fixture through `normalizeEvent` and the stream engine and assert the normalized events. New CLI versions add fixtures; old ones stay as regression guards.
+- [ ] A scheduled (weekly) GitHub Action that installs the latest public CLI versions and checks `--version` and `--help` for the flags Clanker passes, opening an issue on drift. CI cannot sign in, so it must not claim to test turns. Don't send prompts to real CLIs from CI.
+- [ ] When a provider's output no longer parses, show the sign-in or "update CLI" hint and the raw stderr path in the chat instead of an empty reply (reuse `auth-gate.js` and the log viewer).
+
+**Estimate (AI-assisted):** 0.5-1 day including the weekly job. Recording real CLI output needs your logins and a few real prompts, so that part is yours. **Done when:** a CLI flag or event rename fails a named fixture test or the weekly job, and one broken provider never stops the others.
+
+### DIFF-01 · Show what a turn changed, and open it as a diff
+
+One-click undo exists (`lib/turn-undo.js`, snapshots from `git stash create` in `stream-engine.js`). What's missing is seeing the change before deciding.
+
+- [ ] After each turn, a collapsible line at the bottom of the reply ("3 files, +42 / -11") computed from the pre-turn snapshot against the working tree, per repo.
+- [ ] Clicking a file opens VS Code's diff editor (`vscode.diff`) with the snapshot copy on the left (a read-only virtual document provider); created and deleted files open correctly.
+- [ ] Reuse the existing undo bookkeeping, including the rule that files the turn didn't touch stay as they are; show nothing when the snapshot object has been pruned.
+- [ ] Stretch, only after the basics ship: attach selected diff lines as a review comment to the next prompt.
+
+**Estimate (AI-assisted):** 3-6 hours including the rendered light and dark check. **Done when:** a turn that edits, creates and deletes files lists all three, each opens a correct diff, and undo still restores exactly the same set. Keep Liquid Glass styling.
+
+### WORKTREE-01 · Optional git worktree per chat
+
+The loop engine already creates a worktree per fix (`lib/loop-workspace.js`); chats can't, so two agents on one repo overwrite each other.
+
+- [ ] An opt-in "Isolated worktree" choice when starting a chat: `git worktree add -b clanker/<slug>` under a managed folder outside the repo tree (not inside Nextcloud), with a setup list for ignored essentials (`.env`, dependency folders linked, not copied).
+- [ ] The chat's project root stays explicit: the worktree path becomes the chat's working root for every queued and scheduled turn, and the original project stays visible as its parent (see `ai-chat-panel/PROJECTS.md`).
+- [ ] Chat header shows branch, worktree path and a dirty-file count. Actions: open in new window, show diff against base (reuse DIFF-01), remove worktree. Merge and cherry-pick stay in git for the first version.
+- [ ] Single-root sequential chat remains the default. Suggest a worktree when a second chat starts on a repo that already has a running one.
+- [ ] Refuse or warn on repos with submodules and on a dirty base; clean up on delete chat; survive restarts and chat recovery (`chat-recovery.js`).
+
+**Estimate (AI-assisted):** 1-1.5 days; the concurrency and cleanup edge cases need real testing. **Done when:** two chats edit the same file in one repo at once with no overwrites or index-lock errors, and either worktree can be diffed or removed from the UI without leaving a stale `git worktree` entry.
+
+### SCHED-01 · Headless runner for due scheduled turns
+
+Scheduled prompts and quota-reset continuations only fire while the IDE is open (`scheduler-queue.js`). A full daemon is out of scope (DAEMON-01); a small runner covers the 2 a.m. case.
+
+- [ ] A `clanker run-due` entry (node script next to the `~/.clanker/clanker-agent.js` launcher pattern) that reads the disk-backed queue, runs due turns through the stream engine in the chat's explicit project root, and writes the result into the chat store so it shows when the IDE reopens.
+- [ ] Guard against double runs: a lock so the IDE and the runner never execute the same task, and the IDE takes over when it's open.
+- [ ] An opt-in command to register it with Task Scheduler (Windows) and `systemd --user` (Linux); nothing is installed silently.
+- [ ] Telegram or OS notification when a headless turn ends; reuse `telegram-bridge.js` and `notify.js` only if they work without the IDE, otherwise ship without and note the gap.
+
+**Estimate (AI-assisted):** 1-1.5 days; the lock and shared store access are the risk. **Done when:** with the IDE closed, a prompt scheduled for a quota reset runs on time, appears in the chat after reopening, and never runs twice. Test with fake CLIs, not real prompts.
+
 LOOP-02 is a high-priority loop feature requested on 2026-10-22. Text/code and table previews shipped on 2026-11-16. No other ordering here implies a release commitment.
 
 ### LOOP-02 Â· Headless end-to-end exploration with 10 Gemini scouts (high priority)
@@ -83,6 +168,48 @@ Done 2026-11-19 (uncommitted): `ai-chat-panel/media/icon.png` is now white on bl
 - [ ] The Impressum and Datenschutz pages hold a private address and phone number, so `site/public/impressum/` and `datenschutz/` are gitignored and deploy only from this machine (`site/deploy.ps1`).
 
 ## Deferred
+
+Decided on 2026-11-24 after the outside review (see "2026-11-24 outside review" under Ready). These are not forgotten, just not now; don't re-propose them without new information.
+
+### LOOP-04 · Loop guardrails (with the loop rewrite)
+
+Per-loop caps for wall-clock time, files touched and "stop on test regression", plus OS or per-CLI sandbox modes for unattended runs. Skipped on 2026-11-24 because the current loop setup will be replaced by a complete rewrite; building on it would be thrown away. Fold these into the rewrite's design: explicit end states, caps in the run card, and each CLI's own read-only versus workspace-write flag by mode. Anthropic's `sandbox-runtime` covers macOS and Linux only, so it doesn't help on the primary platform.
+
+- [ ] When the rewrite is planned, make the guardrail caps part of its first spec, not a later add-on.
+
+**Done when:** the rewrite's design names its caps and sandbox levels and the run card shows them.
+
+### MAC-01 · macOS and remote workspaces
+
+macOS is untested and WSL, SSH and Dev Containers are unsupported; the extension reads local `~/.codex`, Antigravity's local language server and local hotkeys, so a remote extension host breaks its premise. Estimate if revived: macOS 3-5 days plus a Mac (the Windows and Linux paths are done, the blocker is hardware), remote 1-2 weeks and uncertain. Webview `getUserMedia` for dictation isn't needed while ffmpeg and PulseAudio work, and VS Code webviews don't reliably grant microphone access (not verified here).
+
+- [ ] Revisit when someone with a Mac offers to test, or users on WSL or SSH ask.
+
+**Done when:** a go/no-go note names who tests macOS and which remote setups matter.
+
+### ACP-01 · Agent Client Protocol transports
+
+Claude and Codex already stream structured events (`codex-app-server.js`, Claude stream-json), so ACP would replace working code for little gain, at 1.5-3 weeks. Open question to settle before any work: whether `claude-agent-acp` and `codex-acp` run on a plain subscription login, which is Clanker's premise. Copilot already uses ACP for model discovery. Gemini or Antigravity is the likeliest place it would help.
+
+- [ ] After PROVIDER-02 ships, check whether drift in any provider still hurts; only then evaluate ACP for that provider.
+
+**Done when:** a note says which provider (if any) gets an ACP transport, with the subscription-login check done.
+
+### DAEMON-01 · Background daemon with an IDE client
+
+Splitting the 4.5k-line `extension.js` into a daemon and thin client (IPC, state ownership, Telegram bridge, service installers) is 4-8 weeks, doubles the failure modes, and Antigravity quota discovery needs the IDE running anyway. SCHED-01 covers the overnight case cheaply. Revisit only if SCHED-01 proves too limited or users ask for phone-only use.
+
+- [ ] Reassess after SCHED-01 has run for a few weeks.
+
+**Done when:** a note records what SCHED-01 couldn't do and whether that justifies a daemon.
+
+### HARDEN-01 · Contributor harness and diagnostics
+
+A packaged mock-CLI provider (`npm run dev:mock`: streaming, handoff, quota exhaustion, reset) and a *Clanker: Export Diagnostic Report* command that zips OS, IDE and CLI versions and logs with tokens, keys and repo contents scrubbed. 3-5 days together; the fake CLIs in `ai-chat-panel/test/` are the starting point. Worth doing once outside contributors appear. SQLite storage is rejected for now: it needs a native or experimental dependency in the extension host and solves no shown problem; atomic writes and a lock would be cheaper if chat-store corruption is ever observed.
+
+- [ ] Build the diagnostic export first; it also helps with bug reports on Linux.
+
+**Done when:** an exported bundle contains no secrets (tested with planted fake ones) and a contributor on any OS can run a chat against the mock provider.
 
 ### TS-01 Â· Adopt TypeScript incrementally
 
