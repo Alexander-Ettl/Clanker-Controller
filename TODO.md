@@ -122,37 +122,7 @@ Scheduled prompts and quota-reset continuations only fire while the IDE is open 
 
 **Estimate (AI-assisted):** 1-1.5 days; the lock and shared store access are the risk. **Done when:** with the IDE closed, a prompt scheduled for a quota reset runs on time, appears in the chat after reopening, and never runs twice. Test with fake CLIs, not real prompts.
 
-LOOP-02 is a high-priority loop feature requested on 2026-10-22. Text/code and table previews shipped on 2026-11-16. No other ordering here implies a release commitment.
-
-### LOOP-02 Â· Headless end-to-end exploration with 10 Gemini scouts (high priority)
-
-User request recorded 2026-10-22. Integrate this into the loop alongside LOOP-01; record the feature now, without starting scout runs.
-
-- [ ] Add a system of **10 Antigravity Gemini scouts** that open the target software headlessly and operate its real UI like human users, navigating controls and completing workflows rather than only inspecting source or fixed screenshots.
-- [ ] Give scouts distinct exploration goals and isolated sessions so they can discover and compare navigation paths, recommend the clearest successful routes, and identify confusing interactions, dead ends, broken layouts and functional bugs.
-- [ ] Report each scout's results, including successful journeys, snags and usability feedback. Capture reproducible action sequences, expected versus observed behavior, screenshots and relevant runtime errors; distinguish confirmed defects from subjective feedback and blocked exploration.
-- [ ] Feed deduplicated findings and their evidence into the loop's verification/repair queue, retaining the original reproduction for checks after a fix. Report coverage and failures explicitly so an incomplete run cannot appear to be a clean pass.
-
-**Next:** design the headless interaction/tool contract for Antigravity Gemini, building on the [UI tester](docs/ui-tester.md), [loop guide](docs/loops.md) and [redesign proposal](docs/plans/loop-redesign.md). Establish how scouts access the actual application and its backend, share coverage, and manage concurrency, quotas and timeouts. Existing diagnostic roles' no-tool constraints must not prevent this new interactive role from navigating the software; define its permitted tools explicitly.
-
-**Done when:** a loop run can launch all 10 scouts, exercise real user journeys through the application, compare navigation routes and produce an evidence-linked report with actionable defects and usability feedback. Replaying a reported sequence must reproduce the issue or clearly mark it inconclusive; repaired issues must be checked again through the same UI journey.
-
-**Inspiration:** the user cites similar functionality at companies such as Anthropic; review relevant computer-use approaches during design. Expected benefit: reduce manual exploration and loop review time.
-
-### LOOP-03 · Borrow ideas from Claude Code's `/loop`
-
-Comparison recorded 2026-11-17 (read from the bundled text of `claude.exe` v2.1.326; nothing built yet). The two share a name but differ: Clanker's loops are a durable scan-and-fix pipeline over a registered project (`loop-engine.js`, `investigation-manager.js`), Claude Code's `/loop` is a skill that re-runs any one prompt on a timer through `CronCreate` and `ScheduleWakeup`. Clanker is ahead on resuming after a crash, quota and token accounting, isolated worktrees and verification before anything reaches the project. What it lacks is cheap, general repetition. Extracted text for reference: `C:/Dev/loop-compare/`. The `CronCreate` internals (jitter, exact expiry) were not read.
-
-- [x] **Repeat a prompt.** 2026-11-25: `/loop 5m <prompt>` (units s, m, h; `--max N` runs, `--for 2h` expiry, defaults 24 runs and 7 days, so a forgotten loop ends) schedules the prompt in this chat, and every finished run leaves the next one an interval later (`recurrence` on the Scheduled queue, `SchedulerQueue.repeat`, `lib/loop-command.js`). `/loop stop` or cancelling the waiting row ends it; the queue row reads "repeats every 5 min, run 2 of 24". Fixed-time only, no attachments, shortest interval 1 minute, runs only while the editor is open (SCHED-01 would lift that). Tested with a real queue on a temp folder (`test/scheduler-recurrence.test.js`, `test/loop-command.test.js`); not yet run in the live editor. The Antigravity `schedule` tool is still only drawn as a card.
-- [ ] **Model-chosen delay.** Overnight loops wait a fixed 10 minutes (`intervalMinutes`) even when nothing changed. Let a cycle end with a next delay (clamped, for example 1 to 60 minutes), a one-line reason and a "nothing changed" flag, as `ScheduleWakeup` does with `delaySeconds`, `reason` and `noop`. The identical-source-hash skip already covers the unchanged-source case, so this is about quiet nights costing less, not correctness.
-- [ ] **Event wake-ups.** A loop waiting on a CI run or an editor's quota reset should wake on the event, with the timer only as a long fallback (Claude Code arms a `Monitor` and keeps a 20 to 30 minute heartbeat). Today it only polls on `nextRunAt` and watches quota.
-- [ ] **Re-arm as a decision.** Make "run another cycle?" an explicit per-cycle decision with a stated reason, instead of a default that the four-clean-cycles rule and the run cap end. Claude Code treats re-arming this way.
-- [ ] **Outcome message on stop.** A stopped loop has no next tick to explain itself. `docs/plans/loop-redesign.md` already asks for explicit end states ("Verified patch ready", "Waiting for quota", "Budget exhausted"); make the run card always show one, and state the outcome in the chat or notification.
-- [ ] **Check, don't assume:** whether a prompt sent through Clanker to the Claude CLI can use `/loop` or the `ScheduleWakeup` tool, and whether a session loop would survive the extension's headless runs. Not tested.
-
-**Next:** start with the recurrence field on the Scheduled queue; the other four reuse the same "next run" decision. Keep the loop engine's resumability, budgets and worktree isolation; none of this should weaken them.
-
-**Done when:** a scheduled prompt can repeat on an interval and be cancelled from the queue, an overnight loop can choose a shorter or longer wait and records why, and every stop shows a specific end state. Cover each with a test; don't send real prompts to CLIs.
+Text/code and table previews shipped on 2026-11-16. No ordering here implies a release commitment; loop items are parked under Deferred.
 
 ### AGENT-01 Â· Cross-vendor agents: live check and chat integration
 
@@ -177,6 +147,40 @@ Done 2026-11-19 (uncommitted): `ai-chat-panel/media/icon.png` is now white on bl
 ## Deferred
 
 Decided on 2026-11-24 after the outside review (see "2026-11-24 outside review" under Ready). These are not forgotten, just not now; don't re-propose them without new information.
+
+### LOOP-02 and LOOP-03 · Parked until the loop redo
+
+Decided 2026-11-25: skip every loop item for now; the loop feature will be redone from scratch at some point, so nothing here gets built on the current loop engine. The two sections below are kept verbatim as input for that redesign (together with LOOP-04). The one finished piece, `/loop <interval> <prompt>` on the Scheduled queue, is a scheduler feature and stays.
+
+#### LOOP-02 Â· Headless end-to-end exploration with 10 Gemini scouts (was high priority, parked)
+
+User request recorded 2026-10-22. Integrate this into the loop alongside LOOP-01; record the feature now, without starting scout runs.
+
+- [ ] Add a system of **10 Antigravity Gemini scouts** that open the target software headlessly and operate its real UI like human users, navigating controls and completing workflows rather than only inspecting source or fixed screenshots.
+- [ ] Give scouts distinct exploration goals and isolated sessions so they can discover and compare navigation paths, recommend the clearest successful routes, and identify confusing interactions, dead ends, broken layouts and functional bugs.
+- [ ] Report each scout's results, including successful journeys, snags and usability feedback. Capture reproducible action sequences, expected versus observed behavior, screenshots and relevant runtime errors; distinguish confirmed defects from subjective feedback and blocked exploration.
+- [ ] Feed deduplicated findings and their evidence into the loop's verification/repair queue, retaining the original reproduction for checks after a fix. Report coverage and failures explicitly so an incomplete run cannot appear to be a clean pass.
+
+**Next:** design the headless interaction/tool contract for Antigravity Gemini, building on the [UI tester](docs/ui-tester.md), [loop guide](docs/loops.md) and [redesign proposal](docs/plans/loop-redesign.md). Establish how scouts access the actual application and its backend, share coverage, and manage concurrency, quotas and timeouts. Existing diagnostic roles' no-tool constraints must not prevent this new interactive role from navigating the software; define its permitted tools explicitly.
+
+**Done when:** a loop run can launch all 10 scouts, exercise real user journeys through the application, compare navigation routes and produce an evidence-linked report with actionable defects and usability feedback. Replaying a reported sequence must reproduce the issue or clearly mark it inconclusive; repaired issues must be checked again through the same UI journey.
+
+**Inspiration:** the user cites similar functionality at companies such as Anthropic; review relevant computer-use approaches during design. Expected benefit: reduce manual exploration and loop review time.
+
+#### LOOP-03 · Borrow ideas from Claude Code's `/loop`
+
+Comparison recorded 2026-11-17 (read from the bundled text of `claude.exe` v2.1.326; nothing built yet). The two share a name but differ: Clanker's loops are a durable scan-and-fix pipeline over a registered project (`loop-engine.js`, `investigation-manager.js`), Claude Code's `/loop` is a skill that re-runs any one prompt on a timer through `CronCreate` and `ScheduleWakeup`. Clanker is ahead on resuming after a crash, quota and token accounting, isolated worktrees and verification before anything reaches the project. What it lacks is cheap, general repetition. Extracted text for reference: `C:/Dev/loop-compare/`. The `CronCreate` internals (jitter, exact expiry) were not read.
+
+- [x] **Repeat a prompt.** 2026-11-25: `/loop 5m <prompt>` (units s, m, h; `--max N` runs, `--for 2h` expiry, defaults 24 runs and 7 days, so a forgotten loop ends) schedules the prompt in this chat, and every finished run leaves the next one an interval later (`recurrence` on the Scheduled queue, `SchedulerQueue.repeat`, `lib/loop-command.js`). `/loop stop` or cancelling the waiting row ends it; the queue row reads "repeats every 5 min, run 2 of 24". Fixed-time only, no attachments, shortest interval 1 minute, runs only while the editor is open (SCHED-01 would lift that). Tested with a real queue on a temp folder (`test/scheduler-recurrence.test.js`, `test/loop-command.test.js`); not yet run in the live editor. The Antigravity `schedule` tool is still only drawn as a card.
+- [ ] **Model-chosen delay.** Overnight loops wait a fixed 10 minutes (`intervalMinutes`) even when nothing changed. Let a cycle end with a next delay (clamped, for example 1 to 60 minutes), a one-line reason and a "nothing changed" flag, as `ScheduleWakeup` does with `delaySeconds`, `reason` and `noop`. The identical-source-hash skip already covers the unchanged-source case, so this is about quiet nights costing less, not correctness.
+- [ ] **Event wake-ups.** A loop waiting on a CI run or an editor's quota reset should wake on the event, with the timer only as a long fallback (Claude Code arms a `Monitor` and keeps a 20 to 30 minute heartbeat). Today it only polls on `nextRunAt` and watches quota.
+- [ ] **Re-arm as a decision.** Make "run another cycle?" an explicit per-cycle decision with a stated reason, instead of a default that the four-clean-cycles rule and the run cap end. Claude Code treats re-arming this way.
+- [ ] **Outcome message on stop.** A stopped loop has no next tick to explain itself. `docs/plans/loop-redesign.md` already asks for explicit end states ("Verified patch ready", "Waiting for quota", "Budget exhausted"); make the run card always show one, and state the outcome in the chat or notification.
+- [ ] **Check, don't assume:** whether a prompt sent through Clanker to the Claude CLI can use `/loop` or the `ScheduleWakeup` tool, and whether a session loop would survive the extension's headless runs. Not tested.
+
+**Next:** start with the recurrence field on the Scheduled queue; the other four reuse the same "next run" decision. Keep the loop engine's resumability, budgets and worktree isolation; none of this should weaken them.
+
+**Done when:** a scheduled prompt can repeat on an interval and be cancelled from the queue, an overnight loop can choose a shorter or longer wait and records why, and every stop shows a specific end state. Cover each with a test; don't send real prompts to CLIs.
 
 ### LOOP-04 · Loop guardrails (with the loop rewrite)
 
