@@ -2,7 +2,9 @@
 // --only=id,id --width=420 --theme=light --out=C:/Dev/clanker-glass/interactions
 // Setup duration includes each scenario's intentional waits; it is not input latency.
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
+const devDir = (sub) => path.join(process.platform === 'win32' ? 'C:/Dev' : path.join(os.homedir(), 'dev'), sub); // scratch output lives outside the synced repo
 import { performance } from 'node:perf_hooks';
 import { chromium } from 'playwright';
 import { openChat } from './ui-tester/boot.mjs';
@@ -10,7 +12,7 @@ import { scenarios } from './ui-tester/scenarios.mjs';
 
 const args = process.argv.slice(2);
 const option = (key, fallback) => args.find(arg => arg.startsWith(`--${key}=`))?.slice(key.length + 3) || fallback;
-const out = path.resolve(option('out', 'C:/Dev/clanker-glass/interactions'));
+const out = path.resolve(option('out', devDir('clanker-glass/interactions')));
 const only = option('only', '').split(',').filter(Boolean);
 const selected = scenarios.filter(s => !only.length || only.includes(s.id));
 if (!selected.length || only.some(id => !selected.some(s => s.id === id))) throw new Error('Unknown scenario selection');

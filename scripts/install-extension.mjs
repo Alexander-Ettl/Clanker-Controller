@@ -34,7 +34,7 @@ const TARGETS = {
   },
 };
 
-const IGNORE = new Set(['node_modules', 'test', '.vscode', '.git', 'install-into-antigravity.ps1', 'patch-sidebar-width.ps1']);
+const IGNORE = new Set(['node_modules', 'test', '.vscode', '.git', 'install-into-antigravity.ps1', 'install-into-antigravity.sh']);
 const skip = (name) => IGNORE.has(name) || name.endsWith('.vsix');
 
 // voice-router/lib is shared with the extension (lib/voice-capture.js); bundle it so installed copies are self-contained.

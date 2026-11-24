@@ -1736,7 +1736,7 @@
       hotkeyBtn.textContent = capturing ? 'Press keys…' : state.hotkey || 'Set hotkey';
       $('hotkeyClear').hidden = !state.supported || !state.hotkey || capturing;
       $('hotkeyDesc').textContent = capturing ? HOTKEY_HINT
-        : !state.supported ? 'A system-wide hotkey is only available on Windows (Linux desktops do not let apps listen globally). Bind “Clanker Controller: Dictate” in Keyboard Shortcuts instead.'
+        : !state.supported ? 'Linux desktops do not let apps listen globally. Bind a desktop shortcut to scripts/linux/clanker-dictate (KDE: System Settings > Keyboard > Shortcuts > Add New > Command), or bind “Clanker Controller: Dictate” in VS Code Keyboard Shortcuts for use inside the editor.'
           : !state.hotkey ? 'Start and stop dictation from anywhere, without the mic button.'
             : state.hotkeyActive ? 'Works in any app. Pick keys the app in front does not use.'
               : 'Saved, but not listening. Reload the window to retry.';

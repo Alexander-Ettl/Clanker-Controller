@@ -4,7 +4,9 @@
 // floor; --phases=typing,menu to run some of them. --out=path sets the report folder (default C:/Dev/clanker-glass/dock-performance).
 //   node ai-chat-panel/test/dock-performance.mjs --gpu
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
+const devDir = (sub) => path.join(process.platform === 'win32' ? 'C:/Dev' : path.join(os.homedir(), 'dev'), sub); // scratch output lives outside the synced repo
 import { chromium } from 'playwright';
 import { openChat } from './ui-tester/boot.mjs';
 
@@ -77,7 +79,7 @@ if (phases.includes('scroll')) results.push(await phase('scroll', 3000, async (m
   await until(ms, async () => { for (let k = 0; k < 20; k++) { await page.mouse.wheel(0, 60 * direction); await page.waitForTimeout(16); } direction = -direction; });
 }));
 
-const out = path.resolve(args.find(a => a.startsWith('--out='))?.slice(6) || 'C:/Dev/clanker-glass/dock-performance');
+const out = path.resolve(args.find(a => a.startsWith('--out='))?.slice(6) || devDir('clanker-glass/dock-performance'));
 fs.mkdirSync(out, { recursive: true });
 fs.writeFileSync(path.join(out, 'benchmark.json'), JSON.stringify({ options: args, problems, results }, null, 2));
 await browser.close();

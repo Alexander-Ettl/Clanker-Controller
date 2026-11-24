@@ -8,5 +8,5 @@ node_modules/**
 .env*
 !.env.example
 install-into-antigravity.ps1
-patch-sidebar-width.ps1
+install-into-antigravity.sh
 PROJECTS.md

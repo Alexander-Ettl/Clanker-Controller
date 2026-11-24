@@ -26,6 +26,7 @@ const { VoiceCapture } = require('./lib/voice-capture.js');
 const { learnedTerms } = require('./lib/voice-learn.js');
 const providers = require('./lib/providers'); // the coding-agent CLIs Clanker drives (docs/adding-a-provider.md)
 const { VoiceHotkey, createHotkeyHandlers } = require('./lib/voice-hotkey.js');
+const { DictateSocket } = require('./lib/dictate-socket.js');
 const { GroqAccount } = require('./lib/groq-account.js');
 const voiceDictionary = require('./lib/voice-dictionary.js');
 const { scanProjects } = require('./lib/voice-scan-projects.js');
@@ -4330,6 +4331,20 @@ function activate(context) {
   });
   void groqAccount.init();
   voiceHotkey.start(voiceConfig().get('voiceHotkey', ''));
+  // Linux: a desktop shortcut runs scripts/linux/clanker-dictate, which toggles dictation through this socket.
+  const dictateHandlers = createHotkeyHandlers({
+    mode: () => 'toggle',
+    isRecording: () => voiceCapture.isRecording(),
+    begin: () => chatWindowManager.getOrCreateActive().handleMicToggle(),
+    finish: () => chatWindowManager.getOrCreateActive().handleMicToggle(),
+    cancel: () => chatWindowManager.getOrCreateActive().handleMicCancel(),
+  });
+  const dictateSocket = new DictateSocket({
+    commands: { toggle: () => dictateHandlers.onDown() },
+    onError: (reason) => console.warn(`Clanker Controller: the dictation socket failed (${reason}).`),
+  });
+  dictateSocket.start();
+  context.subscriptions.push({ dispose: () => dictateSocket.stop() }, vscode.window.onDidChangeWindowState((state) => { if (state.focused) dictateSocket.touch(); }));
   const describeRecording = (recording) => `${recording.name} · ${Math.max(1, Math.round(recording.seconds / 60))} min · ${recording.status}`;
   async function recoverVoiceRecording(dir) {
     if (voiceCapture.isRecording()) { void vscode.window.showWarningMessage('Stop the current dictation first.'); return; }

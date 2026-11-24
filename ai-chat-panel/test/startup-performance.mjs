@@ -1,9 +1,11 @@
 // Cold-document startup in the real webview, fake host, headed Edge. No real model calls.
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
+const devDir = (sub) => path.join(process.platform === 'win32' ? 'C:/Dev' : path.join(os.homedir(), 'dev'), sub); // scratch output lives outside the synced repo
 import { chromium } from 'playwright';
 import { openChat } from './ui-tester/boot.mjs';
-const out = path.resolve(process.argv.find(arg => arg.startsWith('--out='))?.slice(6) || 'C:/Dev/clanker-glass/startup');
+const out = path.resolve(process.argv.find(arg => arg.startsWith('--out='))?.slice(6) || devDir('clanker-glass/startup'));
 fs.mkdirSync(out, { recursive: true });
 const browser = await chromium.launch({ channel: process.platform === 'win32' ? 'msedge' : undefined, headless: false });
 const results = [];

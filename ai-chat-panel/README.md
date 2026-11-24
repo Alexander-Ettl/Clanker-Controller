@@ -207,8 +207,17 @@ current task finish, while Stop interrupts it and holds the remaining queue.
 
 To install into Antigravity IDE (`~/.antigravity-ide/extensions/local.ai-chat-panel-0.1.0`), use the bundled installer script:
 
+```bash
+# Linux/macOS: copy files into the extensions folder and register them in extensions.json
+./install-into-antigravity.sh
+# or symlink this folder for live development (recommended)
+./install-into-antigravity.sh --link
+# the same, for VS Code, from the repo root
+node scripts/install-extension.mjs vscode --link
+```
+
 ```powershell
-# Copy files into ~/.antigravity-ide/extensions and register in extensions.json:
+# Windows: copy files into ~/.antigravity-ide/extensions and register in extensions.json:
 powershell -ExecutionPolicy Bypass -File .\install-into-antigravity.ps1
 
 # Or create a Directory Junction for live development (recommended):
@@ -228,11 +237,9 @@ The launcher is a 64px rail (new chat, Manage chats, the Scheduled timer pill, S
 
 The Activity Bar icon (`aiChatPanel.mainView`) is only a doorway: showing that view focuses the chat view and closes the primary sidebar again, so the left sidebar flashes briefly.
 
-### Legacy: `patch-sidebar-width.ps1`
+### Legacy: the sidebar patch
 
-Earlier versions locked the *primary* sidebar to 64px by editing the IDE's bundled workbench file. That is no longer needed. It was restored on 2026-09-29 (`-Restore`: the file's SHA-256 matches both the backup and the checksum in the IDE's `product.json`, so the "corrupt installation" notice is gone). To undo a patch applied by hand, run `powershell -ExecutionPolicy Bypass -File .\patch-sidebar-width.ps1 -Restore` and reload the window (the pristine copy sits next to the patched one as `workbench.desktop.main.js.orig`, under `%LOCALAPPDATA%\Programs\Antigravity IDE\resources\app\out\vs\workbench\`). An IDE update also removes the patch.
-
-**Known, accepted while the patch is applied: "Your Antigravity IDE installation appears to be corrupt. Please reinstall."** shows at every launch. Antigravity compares the workbench file with a hash stored in `resources\app\product.json`, and the patched file no longer matches. The notice is cosmetic; the IDE works. It is dismissed, not fixed, on purpose: silencing it means writing the patched file's hash into `product.json`, i.e. editing the IDE's own integrity check, which was deliberately left alone. If that is ever wanted, the hash is `sha256`, base64, without `=` padding, and `product.json` should be backed up first (`-Restore` would then need to restore both files).
+Earlier versions locked the *primary* sidebar to 64px by editing the IDE's bundled workbench file. That is no longer needed, and the script that applied it (`patch-sidebar-width.ps1`) was removed on 2026-11-25. If an old Windows install still shows "Your Antigravity IDE installation appears to be corrupt", reinstall the IDE, which restores the pristine `workbench.desktop.main.js`.
 
 The launcher's sidebar header looks blank but is not: VS Code draws the container title ("Clanker Controller", which is also the Activity Bar tooltip) and cannot hide it. While the launcher is the visible sidebar view the extension writes `workbench.colorCustomizations["sideBarTitle.foreground"] = "#00000000"` (transparent, so the theme's sidebar background shows) to your user settings, and removes it again as soon as another view (Explorer, ...) is shown. If a window is closed while the launcher shows, the next start clears it. All sidebar titles share that one colour, which is why it is switched rather than set once. Any `sideBarTitle.foreground` you set yourself is remembered and put back.
 

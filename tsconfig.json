@@ -1,5 +1,5 @@
 {
-  "//": "Type-check pilot (TS-01). No build output: JavaScript stays the runtime. Only files that start with // @ts-check are checked. Run: npm.cmd run typecheck (TypeScript lives in C:/Dev/tools/ts, outside the synced folder).",
+  "//": "Type-check pilot (TS-01). No build output: JavaScript stays the runtime. Only files that start with // @ts-check are checked. Run: npm.cmd run typecheck (TypeScript lives in C:/Dev/tools/ts or ~/dev/tools/ts, outside the synced folder; scripts/typecheck.mjs passes --typeRoots).",
   "compilerOptions": {
     "allowJs": true,
     "checkJs": false,
