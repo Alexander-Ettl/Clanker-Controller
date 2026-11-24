@@ -1,0 +1,45 @@
+name: CLI drift
+
+# Weekly: install the latest public Claude Code and Codex CLIs and check that every flag Clanker passes is still in their --help
+# (ai-chat-panel/test/fixtures/provider-flags.json). It only runs `--version` and `--help`. CI cannot sign in and sends no prompts,
+# so a green run says nothing about whether a turn still works; it only catches a renamed or removed flag.
+# Antigravity (agy) and GitHub Copilot are not installed here: agy has no npm package, so check those on a dev machine with
+# `node scripts/verify-cli-flags.mjs agy`.
+
+on:
+  schedule:
+    - cron: '17 6 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  drift:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Install the latest CLIs
+        run: npm install --global @anthropic-ai/claude-code @openai/codex
+      - name: Check the flags
+        id: flags
+        run: |
+          set +e
+          node scripts/verify-cli-flags.mjs claude codex | tee drift.txt
+          echo "status=${PIPESTATUS[0]}" >> "$GITHUB_OUTPUT"
+      - name: Open an issue on drift
+        if: steps.flags.outputs.status != '0'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          title="A CLI changed a flag Clanker passes"
+          existing=$(gh issue list --state open --search "in:title \"$title\"" --json number --jq '.[0].number')
+          body=$(printf 'The weekly CLI drift check failed.\n\n```\n%s\n```\n\nRun `node scripts/verify-cli-flags.mjs` locally, fix the command line in `ai-chat-panel/lib/stream-engine.js` and update `ai-chat-panel/test/fixtures/provider-flags.json`. Workflow run: %s/%s/actions/runs/%s' "$(cat drift.txt)" "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID")
+          if [ -n "$existing" ]; then gh issue comment "$existing" --body "$body"; else gh issue create --title "$title" --body "$body"; fi
+      - name: Fail the run on drift
+        if: steps.flags.outputs.status != '0'
+        run: exit 1

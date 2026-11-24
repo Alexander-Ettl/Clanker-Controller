@@ -1,0 +1,15 @@
+{
+  "//": "The command-line flags Clanker passes to each CLI (ai-chat-panel/lib/stream-engine.js buildCommand, lib/providers/*). scripts/verify-cli-flags.mjs checks each one still appears in that CLI's own --help, so a rename is caught by the weekly job instead of by a chat that quietly stops answering. Add a flag here when the code starts passing it.",
+  "claude": {
+    "help": [["--help"]],
+    "flags": ["--print", "--output-format", "--input-format", "--verbose", "--dangerously-skip-permissions", "--model", "--effort", "--resume", "--name", "--permission-mode", "--permission-prompt-tool"]
+  },
+  "codex": {
+    "help": [["exec", "--help"], ["exec", "resume", "--help"]],
+    "flags": ["--json", "--sandbox", "--skip-git-repo-check", "--model", "--config"]
+  },
+  "agy": {
+    "help": [["--help"]],
+    "flags": ["--input-format", "--output-format", "--model", "--dangerously-skip-permissions", "--add-dir", "--conversation"]
+  }
+}

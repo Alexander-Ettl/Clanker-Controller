@@ -13,6 +13,7 @@
     "verify:models": "node scripts/verify-model-provider-identity.mjs",
     "verify:investigations": "node scripts/investigation-smoke.cjs",
     "verify:bridge": "node scripts/verify-visor-bridge.mjs",
+    "verify:cli-flags": "node scripts/verify-cli-flags.mjs",
     "test:loops-ui": "node ai-chat-panel/test/investigations-ui.mjs",
     "test:compliance-ui": "node ai-chat-panel/test/compliance-settings.mjs",
     "test:voice-ui": "node ai-chat-panel/test/voice-start.mjs",

@@ -14,6 +14,7 @@ const { readQuestion } = require('./agy-question.js');
 const { AgySubagents } = require('./agy-subagents.js');
 const { isLimitNotice } = require('../media/limit-notice.js');
 const providers = require('./providers');
+const { silentTurnMessage } = require('./provider-health.js');
 
 // P17-D: how an older claude CLI / API rejects the Opus 5.5 model id or the
 // --effort flag. Only checked before a turn has produced any output.
@@ -619,6 +620,7 @@ class StreamEngine extends EventEmitter {
     if (!recovering) this.hadText = false;
     this.lastTextKey = this.hadText ? 'retry' : null;
     this.sawOutput = false;
+    this.unrecognizedLines = 0;
     this.agyLimit = null;
     this.limitShown = false;
     this.codexTurnId = null;
@@ -954,6 +956,7 @@ class StreamEngine extends EventEmitter {
     // any output; that turn reruns once on the fallback model instead.
     this.fallback = agent === 'claude' && !live && /opus/i.test(model || '') ? { agent, prompt, attachments, resume, freshPrompt, permissionMode } : null;
     this.sawOutput = false;
+    this.unrecognizedLines = 0;
     // P16-I: a missing CLI becomes a structured event the chat view renders
     // as a setup card, instead of a raw `spawn ... ENOENT` string posing as
     // the model's reply.
@@ -1065,7 +1068,11 @@ class StreamEngine extends EventEmitter {
       this.backgroundCommands.clear();
       if (code && !child.turnCompleted && !this.sawOutput && !child.reportedError) {
         const detail = lastDiagnostic;
-        this.emit('event', { type: 'delta', text: detail || `${agent} exited with code ${code}.`, model: agent, agent });
+        this.emit('event', { type: 'delta', text: detail || silentTurnMessage({ agent, code, unrecognized: this.unrecognizedLines }) || `${agent} exited with code ${code}.`, model: agent, agent });
+      } else if (!code && !child.turnCompleted && !this.sawOutput && !child.reportedError) {
+        // A clean exit with no reply and no turn result: nothing it printed was something Clanker renders.
+        const hint = silentTurnMessage({ agent, code, unrecognized: this.unrecognizedLines, diagnostic: lastDiagnostic });
+        if (hint) this.emit('event', { type: 'delta', text: hint, model: agent, agent });
       }
       this.child = null;
       if (!child.turnCompleted) this.emit('event', { type: 'turn_complete', agent });
@@ -1115,6 +1122,7 @@ class StreamEngine extends EventEmitter {
     this.lastTextKey = null;
     this.hadText = false;
     this.sawOutput = false;
+    this.unrecognizedLines = 0;
     this.agyLimit = null;
     this.limitShown = false;
     this.resumeRetry = null;
@@ -1231,7 +1239,7 @@ class StreamEngine extends EventEmitter {
       }
     }
     try { event = raw === undefined ? { type: 'delta', text: line, model: agent, agent } : normalizeEvent(raw, agent); } catch { event = { type: 'delta', text: line, model: agent, agent }; }
-    if (!event) return;
+    if (!event) { if (raw !== undefined && !this.sawOutput) this.unrecognizedLines = (this.unrecognizedLines || 0) + 1; return; } // counted for silentTurnMessage
     if (event.fallback) {
       delete event.fallback;
       if (this.hadText) return;
