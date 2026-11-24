@@ -89,7 +89,7 @@ function readCatalog(home = homeDir()) {
 // ---- the extension's side -------------------------------------------------------------------------------------------------
 
 /** Called by the extension whenever its model list changes: the catalog for `--to`, and a fixed-path launcher that survives folder moves. */
-function publish({ models = [], home = homeDir(), script = __filename } = {}) {
+function publish({ models = [], faults = {}, home = homeDir(), script = __filename } = {}) {
   fs.mkdirSync(home, { recursive: true });
   const target = fs.realpathSync(script);
   const launcher = [
@@ -104,7 +104,13 @@ function publish({ models = [], home = homeDir(), script = __filename } = {}) {
   const catalog = models.map(({ id, agent, model, effort, label, company }) => ({ id, agent, model, effort: effort || null, label, company }));
   const write = (name, body) => { const file = path.join(home, name); try { if (fs.readFileSync(file, 'utf8') === body) return; } catch { /* new file */ } fs.writeFileSync(file, body); };
   write('clanker-agent.js', launcher);
-  write('agent-bridge.json', `${JSON.stringify({ models: catalog }, null, 2)}\n`);
+  // `faults`: agent -> { title, detail } for a CLI the sidebar shows as unusable (signed out, plan ended). `start` refuses these at once.
+  const known = Object.fromEntries(Object.entries(faults).filter(([, f]) => f).map(([agent, f]) => [agent, { title: String(f.title || '').slice(0, 200), detail: String(f.detail || '').slice(0, 300) }]));
+  // The timestamp only moves when the content does or after 10 minutes, so an unchanged republish leaves the file alone.
+  const bridgeFile = path.join(home, 'agent-bridge.json');
+  const before = readJson(bridgeFile);
+  const same = before && JSON.stringify([before.models, before.faults]) === JSON.stringify([catalog, known]) && Date.now() - Date.parse(before.publishedAt) < 10 * 60 * 1000;
+  if (!same) writeJson(bridgeFile, { models: catalog, faults: known, publishedAt: now() });
   return path.join(home, 'clanker-agent.js');
 }
 
@@ -197,6 +203,12 @@ async function start(options, deps = {}) {
   writeJson(path.join(dir, 'status.json'), { id, state: 'queued', agent: target.agent, model: target.model, effort: target.effort, label: target.label, mode, createdAt: request.createdAt, updatedAt: request.createdAt });
   indexJob(request.from, dir, deps.home);
   if (deps.inline) return { id, dir, target, request };
+  const fault = publishedFault(target.agent, deps.home);
+  if (fault) {
+    patchStatus(dir, { state: 'failed', error: fault, hint: hintFor(target.agent, 'sign in'), finishedAt: now() });
+    fs.writeFileSync(path.join(dir, 'result.md'), `> INCOMPLETE: ${fault}\n\n(the task was not started)\n`);
+    return { id, dir, target, request };
+  }
   try {
     const { nodeCommand } = require('./loop-exec');
     const node = nodeCommand();
@@ -207,6 +219,15 @@ async function start(options, deps = {}) {
     patchStatus(dir, { state: 'failed', error: `The background worker could not start: ${error.message}`, hint: 'Run it in the foreground instead: `run` waits in this shell.', finishedAt: now() });
   }
   return { id, dir, target, request };
+}
+
+const FAULT_FRESH_MS = 60 * 60 * 1000;
+/** Why the sidebar says this CLI cannot be used right now, from what the extension last published (null: fine, unknown or too old to trust). */
+function publishedFault(agent, home = homeDir()) {
+  const published = readJson(path.join(home, 'agent-bridge.json'));
+  const fault = published?.faults?.[agent];
+  if (!fault || !(Date.now() - Date.parse(published.publishedAt) < FAULT_FRESH_MS)) return null;
+  return `${fault.title}${fault.detail ? `: ${fault.detail}` : ''}`.slice(0, 300);
 }
 
 const HINTS = [
@@ -392,6 +413,6 @@ async function main(argv, io = {}) {
   }
 }
 
-module.exports = { indexedJobs, readJobMetadata, main, start, runJob, readStatus, cancel, resolveTarget, readCatalog, publish, wrapPrompt, parseArgs, jobDir, describe };
+module.exports = { publishedFault, indexedJobs, readJobMetadata, main, start, runJob, readStatus, cancel, resolveTarget, readCatalog, publish, wrapPrompt, parseArgs, jobDir, describe };
 
 if (require.main === module) main(process.argv.slice(2)).then((code) => { process.exitCode = code; });

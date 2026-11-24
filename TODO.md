@@ -135,8 +135,8 @@ Built 2026-11-11 (see [agent-bridge](docs/agent-bridge.md)): `lib/clanker-agent.
 - [x] 2026-11-18: the Agents button never showed for tasks started with a `--cwd` outside the chat's folder (a Codex chat running five Gemini searches). Tasks now leave a `~/.clanker/jobs/<chat>/` pointer that the viewer follows (`lib/bridge-agents.js`, test in `test/bridge-agents.test.js`). Not yet seen in the live IDE.
 - [ ] Run the smoke task once per vendor (a few tokens each, command in the doc). Confirm Antigravity `--mode plan` returns the findings and Codex `web_search="live"` is accepted; fix the recipes in `researchSpec` if not.
 - [ ] Start a task from inside a Codex chat and check that its sandbox allows the background worker and the other CLIs' sign-in files; if not, decide between `run`-only for Codex and a broker in the extension.
-- [ ] Show running tasks in the chat's Agents sheet, and queue a "task finished: <path>" turn into the chat that started it (the extension could pass its chat id in an environment variable and watch `_work/clanker/*/status.json`).
-- [ ] Ask `CliAccounts.ensureFresh` before starting, so a signed-out CLI fails at once with the sidebar's text.
+- [x] Running tasks already show in the chat's Agents sheet (`lib/bridge-agents.js` polls the job folders and keeps the turn open while one works). [ ] Still open: queue a "task finished: <path>" turn into the chat that started it when its turn has already ended.
+- [x] 2026-11-25: a signed-out or unusable CLI fails at once with the sidebar's text. The extension publishes each CLI's `CliAccounts.fault` into `~/.clanker/agent-bridge.json` (on every connection change and every 10 minutes); `start` reads it, ignores it when older than an hour, and ends the task as `failed` with the sign-in hint and no worker. Unit-tested; not yet seen live (reload the editor).
 
 **Done when:** a Claude chat starts a Codex and an Antigravity task, sees both finish with tagged sources, and a deliberately signed-out CLI ends as `failed` with a hint, with no manual file hunting.
 

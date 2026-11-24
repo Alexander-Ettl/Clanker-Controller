@@ -179,6 +179,24 @@ test('the extension publishes a launcher at a fixed place and the model list the
   assert.doesNotMatch(listed.stdout, /Low|has not published/);
 });
 
+test('a CLI the sidebar shows as signed out is refused at once, with the hint, and no worker starts', async () => {
+  const home = tmp(), cwd = tmp();
+  agent.publish({ models: CATALOG, home, faults: { codex: { title: 'Signed out', detail: 'Codex needs you to sign in again.' }, claude: null } });
+  const refused = await agent.start({ to: 'Codex Sol 6.1 Medium', task: 'x', prompt: 'hi', cwd }, { catalog: CATALOG, home });
+  const status = agent.readStatus(refused.dir);
+  assert.equal(status.state, 'failed');
+  assert.match(status.error, /Signed out: Codex needs you to sign in/);
+  assert.match(status.hint, /Sign in to codex/);
+  assert.equal(status.pid, undefined, 'no worker ran');
+  assert.match(fs.readFileSync(path.join(refused.dir, 'result.md'), 'utf8'), /INCOMPLETE[\s\S]*not started/);
+  assert.equal(agent.publishedFault('claude', home), null, 'a vendor without a fault is untouched');
+  // A published fault that is old is not trusted: the editor may be closed and the CLI signed in again since.
+  const file = path.join(home, 'agent-bridge.json');
+  const stale = JSON.parse(fs.readFileSync(file, 'utf8')); stale.publishedAt = new Date(Date.now() - 2 * 3600 * 1000).toISOString();
+  fs.writeFileSync(file, JSON.stringify(stale));
+  assert.equal(agent.publishedFault('codex', home), null);
+});
+
 test('mistakes are explained, not thrown', async () => {
   assert.match((await run(['start', '--to', 'Codex Sol 6.1 Medium', '--cwd', tmp()], { inline: true })).text, /No prompt/);
   assert.match((await run(['status', 'nope', '--cwd', tmp()])).text, /No task "nope"/);

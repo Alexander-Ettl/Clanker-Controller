@@ -4016,7 +4016,7 @@ function activate(context) {
       for (const host of chatWindowManager?.hosts || []) void host.panel.webview.postMessage(message);
       void launcher?.view?.webview.postMessage(message); // the rail drops the rings of CLIs that are removed or unavailable
     },
-    onChange: () => cliHub.connectionsChanged(),
+    onChange: () => { cliHub.connectionsChanged(); try { publishAgentModels(); } catch { /* not created yet */ } },
     onChecked: () => {
       if (!cliHub.modelsBusy) cliHub.ready = cliHub.refreshModels();
       return cliHub.ready;
@@ -4395,7 +4395,7 @@ function activate(context) {
   // CLI versions, the update icon and the starred models (Settings > Models) share one hub; every chat window hears it.
   // The `clanker-agent` command (skill clanker-load-agent) lets any agent hand a task to another vendor's model. It reads the picker's
   // models and starts through a launcher at ~/.clanker/clanker-agent.js, both written here whenever the model list changes.
-  const publishAgentModels = () => { try { clankerAgent.publish({ models: AVAILABLE_MODELS.filter(entry => cliAccounts.isEnabled(entry.agent) !== false) }); } catch { /* the helper is optional */ } };
+  const publishAgentModels = () => { try { clankerAgent.publish({ models: AVAILABLE_MODELS.filter(entry => cliAccounts.isEnabled(entry.agent) !== false), faults: Object.fromEntries(['claude', 'codex', 'gemini'].map(agent => [agent, cliAccounts.fault(agent)])) }); } catch { /* the helper is optional */ } };
   const cliHub = new CliHub({
     accounts: cliAccounts,
     autoUpdateEnabled: () => vscode.workspace.getConfiguration('aiChatPanel').get('autoUpdateClis', true),
@@ -4434,6 +4434,9 @@ function activate(context) {
     },
   });
   publishAgentModels();
+  const agentFaultTimer = setInterval(publishAgentModels, 10 * 60 * 1000); // keeps the sign-in state `clanker-agent start` trusts fresh
+  agentFaultTimer.unref?.();
+  context.subscriptions.push({ dispose: () => clearInterval(agentFaultTimer) });
   // What the headless runner cannot read from VS Code's settings: written whenever it could have changed.
   const publishRunnerSettings = () => {
     try {
