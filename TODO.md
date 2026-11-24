@@ -101,11 +101,13 @@ One-click undo exists (`lib/turn-undo.js`, snapshots from `git stash create` in 
 
 The loop engine already creates a worktree per fix (`lib/loop-workspace.js`); chats can't, so two agents on one repo overwrite each other.
 
-- [ ] An opt-in "Isolated worktree" choice when starting a chat: `git worktree add -b clanker/<slug>` under a managed folder outside the repo tree (not inside Nextcloud), with a setup list for ignored essentials (`.env`, dependency folders linked, not copied).
+**Status 2026-11-25: the git side is built and tested, the chat and UI side is not.** `ai-chat-panel/lib/chat-worktree.js` creates `clanker/<slug>` worktrees under `~/.clanker/worktrees/<repo>/` (outside the repo and refused inside Nextcloud/OneDrive; `CLANKER_WORKTREES` overrides), links `.env`, `.env.local` and `node_modules` instead of copying and keeps the links out of `git add -A`, refuses submodules, warns about uncommitted work in the base, reports branch/dirty/ahead, lists, prunes and removes (a dirty tree or unmerged branch is kept unless forced, and removal never follows a link into the real `node_modules`). `test/chat-worktree.test.js` runs 12 cases on real temp repositories, including two worktrees editing one file at once with no overwrite or index lock. The chat wiring is deliberately not done: the project root is read in about a dozen places (`projects.context(...)` for turns, queue, schedule, handoffs, loops, recovery), so the chat's working root has to be changed in one place first, with tests for queued and scheduled turns.
+
+- [ ] (git side done, UI not) An opt-in "Isolated worktree" choice when starting a chat: `git worktree add -b clanker/<slug>` under a managed folder outside the repo tree (not inside Nextcloud), with a setup list for ignored essentials (`.env`, dependency folders linked, not copied).
 - [ ] The chat's project root stays explicit: the worktree path becomes the chat's working root for every queued and scheduled turn, and the original project stays visible as its parent (see `ai-chat-panel/PROJECTS.md`).
 - [ ] Chat header shows branch, worktree path and a dirty-file count. Actions: open in new window, show diff against base (reuse DIFF-01), remove worktree. Merge and cherry-pick stay in git for the first version.
 - [ ] Single-root sequential chat remains the default. Suggest a worktree when a second chat starts on a repo that already has a running one.
-- [ ] Refuse or warn on repos with submodules and on a dirty base; clean up on delete chat; survive restarts and chat recovery (`chat-recovery.js`).
+- [ ] (submodule refusal, dirty-base warning and safe removal done in `chat-worktree.js`) Clean up on delete chat; survive restarts and chat recovery (`chat-recovery.js`).
 
 **Estimate (AI-assisted):** 1-1.5 days; the concurrency and cleanup edge cases need real testing. **Done when:** two chats edit the same file in one repo at once with no overwrites or index-lock errors, and either worktree can be diffed or removed from the UI without leaving a stale `git worktree` entry.
 
