@@ -11,6 +11,26 @@ const MAX_ATTACHMENT_BYTES = 20 * 1024 * 1024;
 const MODELS = { has: (agent) => providers.has(agent) }; // any registered provider (lib/providers)
 // Statuses still shown in the Scheduled tab and counted against MAX_QUEUE_SIZE.
 const ACTIVE = new Set(['pending', 'dispatched', 'interrupted']);
+const MIN_REPEAT_MINUTES = 1;
+const MAX_REPEAT_MINUTES = 24 * 60;
+const DEFAULT_REPEAT_RUNS = 24; // a loop never runs forever by accident
+const MAX_REPEAT_RUNS = 500;
+const DEFAULT_REPEAT_DAYS = 7;
+
+/**
+ * A repeating prompt (`/loop 5m <prompt>`): the interval, how many runs at most and when it expires. Always bounded, so a
+ * forgotten loop ends by itself. Returns null for "not repeating"; throws for a bad interval.
+ */
+function normalizeRecurrence(raw, now = Date.now()) {
+  if (raw === undefined || raw === null) return null;
+  const every = Number(raw.everyMinutes);
+  if (!Number.isFinite(every) || every < MIN_REPEAT_MINUTES || every > MAX_REPEAT_MINUTES) throw new Error(`A repeating prompt needs an interval of ${MIN_REPEAT_MINUTES} to ${MAX_REPEAT_MINUTES} minutes.`);
+  const maxRuns = raw.maxRuns === undefined ? DEFAULT_REPEAT_RUNS : Math.floor(Number(raw.maxRuns));
+  if (!Number.isFinite(maxRuns) || maxRuns < 1 || maxRuns > MAX_REPEAT_RUNS) throw new Error(`A repeating prompt runs 1 to ${MAX_REPEAT_RUNS} times.`);
+  const expires = raw.expiresAt === undefined ? now + DEFAULT_REPEAT_DAYS * 86400000 : Date.parse(raw.expiresAt);
+  if (!Number.isFinite(expires) || expires <= now) throw new Error('A repeating prompt needs an expiry in the future.');
+  return { everyMinutes: Math.round(every * 1000) / 1000, maxRuns, expiresAt: new Date(expires).toISOString(), run: Math.max(1, Math.floor(Number(raw.run) || 1)) };
+}
 
 function taskId() {
   return `sched_${Date.now()}_${crypto.randomBytes(6).toString('hex')}`;
@@ -102,6 +122,9 @@ class SchedulerQueue {
       if (!['quota-reset', 'fixed-time'].includes(task?.dispatchTrigger)) throw new Error('Scheduled task has an invalid dispatch trigger.');
       if (task.dispatchTrigger === 'fixed-time' && Number.isNaN(Date.parse(task.dispatchTime || ''))) throw new Error('Fixed-time tasks require an ISO dispatchTime.');
 
+      const recurrence = normalizeRecurrence(task.recurrence);
+      if (recurrence && task.dispatchTrigger !== 'fixed-time') throw new Error('A repeating prompt runs on a clock, not on a usage reset.');
+      if (recurrence && rawAttachments.length) throw new Error('A repeating prompt can\'t carry attachments.');
       const id = taskId();
       const attachmentDir = path.join(this.stagingDir, id, 'attachments');
       const attachments = await this.stageAttachments(rawAttachments, attachmentDir);
@@ -120,6 +143,7 @@ class SchedulerQueue {
         // "When the usage resets" is not "as soon as there is usage": the reset moment the model's quota reported when this
         // was scheduled, so the task waits for it even while quota is left. Unknown reset: it goes by quota alone.
         ...(task.dispatchTrigger === 'quota-reset' && Number.isFinite(Date.parse(task.notBefore || '')) ? { notBefore: new Date(task.notBefore).toISOString() } : {}),
+        ...(recurrence ? { recurrence } : {}),
         status: 'pending',
         retryCount: 0,
         createdAt: new Date().toISOString(),
@@ -189,7 +213,39 @@ class SchedulerQueue {
   }
 
   async markCompleted(taskIdValue, outputPreview = '') {
-    return this.update(taskIdValue, (task) => { task.status = 'done'; task.completedAt = new Date().toISOString(); task.outputPreview = String(outputPreview || '').slice(0, 800); task.error = undefined; });
+    return this.update(taskIdValue, (task) => {
+      task.status = 'done'; task.completedAt = new Date().toISOString(); task.outputPreview = String(outputPreview || '').slice(0, 800); task.error = undefined;
+      if (task.recurrence) this.repeat(task);
+    });
+  }
+
+  /**
+   * A finished repeating task leaves a fresh pending copy one interval later, until the run limit or the expiry. Cancelling
+   * that copy (or the chat's `/loop stop`) ends the loop, because nothing else makes the next one. Called inside a write.
+   */
+  repeat(task) {
+    const { everyMinutes, maxRuns, expiresAt, run } = task.recurrence;
+    const next = Date.now() + everyMinutes * 60000;
+    const reason = task.recurrence.stopped ? 'was stopped' : run >= maxRuns ? `ran ${maxRuns} times` : next > Date.parse(expiresAt) ? 'reached its expiry' : '';
+    if (reason) { task.recurrence = { ...task.recurrence, ended: reason }; return; }
+    const { id: _id, status: _status, completedAt: _completedAt, outputPreview: _preview, error: _error, dispatchedAt: _dispatchedAt, retryAfter: _retryAfter, interruptedAt: _interruptedAt, interruptedReason: _interruptedReason, ...rest } = task;
+    this.tasks.push({ ...rest, id: taskId(), attachments: [], dispatchTime: new Date(next).toISOString(), recurrence: { everyMinutes, maxRuns, expiresAt, run: run + 1 }, status: 'pending', retryCount: 0, createdAt: new Date().toISOString() });
+  }
+
+  /** `/loop stop`: cancels the chat's waiting repeats. Returns how many there were. */
+  async stopRepeating(chatId) {
+    await this.load();
+    let stopped = 0;
+    await this.withWrite(async () => {
+      for (const task of this.tasks) {
+        if (task.chatId !== chatId || !task.recurrence || !ACTIVE.has(task.status)) continue;
+        if (task.status === 'dispatched') task.recurrence = { ...task.recurrence, stopped: true }; // the run in flight finishes, but leaves no next one
+        else { task.status = 'cancelled'; task.completedAt = new Date().toISOString(); }
+        stopped++;
+      }
+      if (stopped) await this.persist();
+    });
+    return stopped;
   }
 
   async markFailed(taskIdValue, error) {
@@ -392,4 +448,4 @@ function firstPrompt(state = {}, tasks = []) {
     .sort((a, b) => (rank.get(a.id) ?? 1e9) - (rank.get(b.id) ?? 1e9))[0];
 }
 
-module.exports = { SchedulerQueue, isDue, resetObserved, firstPrompt, MAX_QUEUE_SIZE, MAX_ATTACHMENT_BYTES, ACTIVE_STATUSES: [...ACTIVE] };
+module.exports = { SchedulerQueue, normalizeRecurrence, isDue, resetObserved, firstPrompt, MAX_QUEUE_SIZE, MAX_ATTACHMENT_BYTES, ACTIVE_STATUSES: [...ACTIVE] };

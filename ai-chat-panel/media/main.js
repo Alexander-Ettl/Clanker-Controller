@@ -445,9 +445,14 @@
     if (when.title !== label) when.title = label;
   }
   function scheduledLabel(task) {
-    if (dueNow(task)) return '';
+    const repeat = task.recurrence ? `repeats every ${formatEvery(task.recurrence.everyMinutes)}, run ${task.recurrence.run} of ${task.recurrence.maxRuns}` : '';
+    if (dueNow(task)) return repeat;
     const at = fireTimeOf(task);
-    return task.dispatchTrigger === 'quota-reset' ? resetLabel(task) : at ? formatWhen(at) : '';
+    const when = task.dispatchTrigger === 'quota-reset' ? resetLabel(task) : at ? formatWhen(at) : '';
+    return repeat && when ? `${when} \u00b7 ${repeat}` : when || repeat;
+  }
+  function formatEvery(minutes) {
+    return minutes % 60 === 0 ? `${minutes / 60} h` : minutes < 60 ? `${minutes} min` : `${Math.floor(minutes / 60)} h ${minutes % 60} min`;
   }
   // A scheduled prompt whose time has come only waits for its chat's turn: that is a queued prompt, not a third state.
   function dueNow(task) {
@@ -2787,6 +2792,14 @@
     if (architect && !architect[1]) { appendNotice('Give /architect a task: "/architect move the header links into a menu".'); return; }
     const pipeline = Boolean(architect);
     if (pipeline) text = architect[1].trim();
+    // /loop 5m <prompt> repeats a prompt in this chat; /loop stop ends it (host: ChatWindowHost.loopCommand, lib/loop-command.js).
+    const loop = /^\/loop(?:\s+([\s\S]*))?$/i.exec(text);
+    if (loop) {
+      vscode.postMessage({ type: 'loopCommand', args: loop[1] || '', modelId: pendingModelId || activeModelId });
+      promptInput.value = '';
+      closeSlashMenu(); autoGrow(); renderComposerState();
+      return;
+    }
     // A panel command, not a turn: hands this chat's Claude session to the phone (see extension.js).
     if (/^\/(remote-control|rc)(\s|$)/i.test(text)) {
       vscode.postMessage({ type: 'remoteControl' });

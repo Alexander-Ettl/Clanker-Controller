@@ -97,6 +97,7 @@ const { sweepStorage } = require('./lib/storage-gc.js');
 const voiceArchive = require('./lib/voice-archive.js');
 const { planUndo, applyUndo, fileCount, fileList } = require('./lib/turn-undo.js');
 const turnDiff = require('./lib/turn-diff.js');
+const { parseLoopCommand, USAGE: LOOP_USAGE } = require('./lib/loop-command.js');
 const { verifyInstruction, ARCHITECT_PREFIX, buildInstruction } = require('./lib/turn-extras.js');
 
 // P17-X: clock locale + format shared by both webviews ('24h' default, 'auto' follows vscode.env.language).
@@ -1782,6 +1783,7 @@ class ChatWindowHost {
       case 'remoteControl': void this.run.toggleRemote(); break;
       case 'undoTurn': void this.undoLastTurn(); break;
       case 'openTurnDiff': void this.openTurnDiff(message.index); break;
+      case 'loopCommand': void this.loopCommand(message.args, message.modelId); break;
       case 'requestToolOutput': {
         // The full text of one finished card's output. The index is absolute; the tool id guards against a chat that changed since.
         const entry = message.chatId === this.chat.id && Number.isSafeInteger(message.index) ? this.chat.messages[message.index] : null;
@@ -2286,6 +2288,26 @@ class ChatWindowHost {
     run.save();
     post({ type: 'undoOffer', count: 0 });
     notice(`Undid the last turn: ${done.restored} restored, ${done.removed} removed${done.failed.length ? `, ${done.failed.length} could not be changed (${done.failed.slice(0, 3).join(', ')})` : ''}.`);
+  }
+
+  /** /loop: repeat a prompt in this chat on the scheduler queue's recurrence, or stop the repeats. */
+  async loopCommand(args, modelId) {
+    const run = this.run;
+    const notice = (text) => run.post({ type: 'notice', text });
+    const parsed = parseLoopCommand(args);
+    if (parsed.error) return notice(parsed.error);
+    if (parsed.action === 'help') return notice(LOOP_USAGE);
+    if (parsed.action === 'stop') {
+      const stopped = await this.deps.schedulerQueue.stopRepeating(run.chat.id);
+      this.deps.notifySchedulerQueue?.();
+      return notice(stopped ? `Stopped ${stopped === 1 ? 'the repeating prompt' : `${stopped} repeating prompts`} in this chat.` : 'No repeating prompt in this chat.');
+    }
+    const option = modelOption(modelId) || modelOption(this.activeModelId);
+    const model = option?.agent && option.agent !== 'auto' ? option.agent : this.lastRoutedAgent || run.chat.context?.agent || 'claude';
+    const recurrence = { everyMinutes: parsed.everyMinutes, ...(parsed.maxRuns ? { maxRuns: parsed.maxRuns } : {}), ...(parsed.forMinutes ? { expiresAt: new Date(Date.now() + parsed.forMinutes * 60000).toISOString() } : {}) };
+    // The first run is due now; the queue adds the next one an interval after each run ends.
+    const ok = await this.scheduleTask({ task: { model, modelId: option?.id, prompt: parsed.prompt, dispatchTrigger: 'fixed-time', dispatchTime: new Date().toISOString(), recurrence, resumeHere: true }, attachments: [], run });
+    if (ok) notice(`Repeating every ${parsed.everyMinutes < 1 ? `${Math.round(parsed.everyMinutes * 60)} seconds` : `${parsed.everyMinutes} minute${parsed.everyMinutes === 1 ? '' : 's'}`}${parsed.maxRuns ? `, at most ${parsed.maxRuns} times` : ''}. "/loop stop" ends it; it only runs while the editor is open.`);
   }
 
   /**

@@ -7,13 +7,14 @@ One list, one place per capability. The README, the site and the store page copy
 - **Claude Code, Codex, Antigravity (Gemini) and GitHub Copilot in one chat**, one model per message. Clanker runs the official CLIs headlessly and parses their structured streams, using your own sign-ins. Code: `ai-chat-panel/lib/providers/`, `lib/stream-engine.js`. Guide: [adding a provider](adding-a-provider.md).
 - **Handoffs with a briefing.** The next agent gets a condensed summary of what the others did; shortened parts point to a full transcript. Code: `lib/chat-history.js`, `lib/chat-recovery.js` ([recovery](chat-recovery.md)).
 - **Cross-vendor agents.** `clanker-load-agent` starts a Claude, Codex or Antigravity task from inside another agent; the chat's **Agents** sheet shows the running tasks. Guide: [agent bridge](agent-bridge.md). Only fake CLIs have been run end to end.
-- **`/architect <task>`**: one model plans and another builds ([`aiChatPanel.architectModel`, `editorModel`](../ai-chat-panel/package.json)). Other slash commands: `/undo`, `/verify`, `/remote-control`, `/grillme`.
+- **`/architect <task>`**: one model plans and another builds ([`aiChatPanel.architectModel`, `editorModel`](../ai-chat-panel/package.json)). Other slash commands: `/undo`, `/verify`, `/loop` (repeat a prompt, see Quota and scheduling), `/remote-control`, `/grillme`.
 - **Sign-in help.** A signed-out CLI shows a red ring, a card in the chat and a sign-in action (on Linux, Antigravity's browser sign-in runs in a setup terminal). Code: `lib/auth-gate.js`, `lib/cli-accounts.js`.
 
 ## Quota and scheduling
 
 - **Usage rings** per provider with the percentage left in the 5-hour window and the reset time (`lib/quota*.js`, the rail). The optional second extension `antigravity-usage-statusbar/` puts the gauges in the status bar.
 - **Scheduler.** A prompt that hits a limit queues **Continue** for the reset; you can schedule prompts for a clock time, queue them behind the running turn, reorder them and move one to another provider. The editor must stay open (`lib/scheduler-queue.js`).
+- **Repeating prompts.** `/loop 5m <prompt>` repeats a prompt in the chat (bounded by `--max` runs and `--for` time; `/loop stop` ends it) through the scheduler queue's recurrence (`lib/loop-command.js`).
 - **Early usage windows.** A tiny ping every 5 hours starts each subscription window (`lib/session-warmup.js`); an optional Google Cloud variant runs it without your PC ([guide](cloud-usage-windows.md)).
 - **API value meter and per-turn reply cost**: every turn priced at pay-per-token rates, as a comparison and not a bill (`lib/cost-meter.js`).
 
@@ -49,4 +50,4 @@ One list, one place per capability. The README, the site and the store page copy
 
 ## Not built yet
 
-See [`TODO.md`](../TODO.md): a worktree per chat, a headless runner for scheduled turns, recurring prompts, provider contract tests.
+See [`TODO.md`](../TODO.md): a worktree per chat, a headless runner for scheduled turns, provider contract tests.
