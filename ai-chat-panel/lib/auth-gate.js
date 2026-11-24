@@ -94,7 +94,7 @@ class AuthGate extends EventEmitter {
     const name = providers.get(inc.agent).accountName;
     const count = this.pending(inc.agent);
     const signin = fault.kind === 'signin';
-    const canFix = fault.action !== 'none' && !(signin && fault.action === 'connectCli'); // Antigravity cannot sign in from here
+    const canFix = fault.action !== 'none' && !(signin && fault.action === 'connectCli'); // a CLI without a sign-in command or setup terminal cannot sign in from here
     return { agent: inc.agent, kind: fault.kind, expired: Boolean(fault.expired), action: canFix ? fault.action : 'none', busy: inc.busy, error: inc.error, count,
       title: `${name} · ${fault.title}`,
       message: `${fault.detail} ${waiting(count)}.`,

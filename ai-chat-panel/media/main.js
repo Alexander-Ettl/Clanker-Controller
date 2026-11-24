@@ -5073,6 +5073,30 @@
     return null;
   }
 
+  const lazyToolOutputs = new WeakMap(); // card -> { index, toolId, length, requested }
+  const lazyById = new Map(); // `${chatId}:${index}` -> card, while the host is answering
+  // True while the card's full output is still on its way (the preview stays in view until it lands).
+  function requestFullOutput(card) {
+    const lazy = lazyToolOutputs.get(card);
+    if (!lazy) return false;
+    if (!lazy.requested) {
+      lazy.requested = true;
+      lazyById.set(`${currentChatId}:${lazy.index}`, card);
+      card.classList.add('is-loading-output');
+      vscode.postMessage({ type: 'requestToolOutput', chatId: currentChatId, index: lazy.index, toolId: lazy.toolId });
+    }
+    return true;
+  }
+  function receiveToolOutput(message) {
+    const card = lazyById.get(`${message.chatId}:${message.index}`);
+    lazyById.delete(`${message.chatId}:${message.index}`);
+    if (!card) return;
+    card.classList.remove('is-loading-output');
+    const lazy = lazyToolOutputs.get(card);
+    if (typeof message.text !== 'string') { if (lazy) lazy.requested = false; return; } // opening it again asks again
+    lazyToolOutputs.delete(card); card.classList.remove('is-lazy');
+    resetToolView(card, message.text); // draws the view when the card is open
+  }
   function ensureToolView(card) {
     if (card.dataset.view === '1') return;
     const info = toolInfo.get(card), body = card.querySelector('.tool-body');
@@ -5207,8 +5231,10 @@
     }
     if (diffLines) details.dataset.diff = '1'; // the diff is drawn when the card opens (ensureToolView)
     else body.textContent = (output && output.text) || '';
+    // A long output arrives as a preview; the rest is fetched when the card opens (see 'toolOutput').
+    if (output?.lazy && !diffLines) { lazyToolOutputs.set(details, output.lazy); details.classList.add('is-lazy'); }
     details.appendChild(body);
-    details.addEventListener('toggle', () => { if (details.open) ensureToolView(details); });
+    details.addEventListener('toggle', () => { if (details.open && !requestFullOutput(details)) ensureToolView(details); });
     // A picture shows itself when the card opens, so you see what the agent saw without another click.
     if (target?.type === 'image') {
       details.addEventListener('toggle', () => {
@@ -5749,7 +5775,7 @@
     pendingAssistantBodies.clear();
     toolCards.clear(); pendingCards.clear(); openToolCard = null;
     currentTurnEl = null;
-    const { anchor, flush } = renderStoredMessages(messages, running, chat.historyUserStart || 0);
+    const { anchor, flush } = renderStoredMessages(messages, running, chat.historyUserStart || 0, chat.historyStart || 0);
     const latest = messages.findLastIndex((entry) => entry.role === 'assistant' && !entry.compact);
     if (!running && messages[latest]?.undo?.count && !messages[latest].undone && !messages.slice(latest).some((entry) => entry.role === 'user' && !entry.compact)) offerUndo(messages[latest].undo.count);
     if (!synced) {
@@ -5785,7 +5811,7 @@
     }
   }
 
-  function renderStoredMessages(messages, running = null, userStart = 0) {
+  function renderStoredMessages(messages, running = null, userStart = 0, firstIndex = 0) {
     nextUserIndex = userStart;
     const live = running ? messages.findLastIndex((message) => message.role === 'assistant') : -1;
     // Each stored turn collapses the same way a live one does; its duration is
@@ -5794,9 +5820,9 @@
     let startedAt = null;
     let endedAt = null;
     const flush = () => { if (anchor) collapseTurn(anchor, startedAt && endedAt ? Date.parse(endedAt) - Date.parse(startedAt) : null); anchor = null; };
-    const storedTool = (message) => message.event?.type === 'question_required' && message.event.deferred
+    const storedTool = (message, at) => message.event?.type === 'question_required' && message.event.deferred
       ? appendQuestionCard(message.event)
-      : appendToolCard({ name: message.event?.name, command: message.event?.command || message.event?.file, output: { text: message.event?.output || '' }, toolId: message.event?.toolId, done: message.done !== false || !running || message.interrupted, cancelled: message.interrupted, error: message.error, diff: message.event?.diff, startedAt: message.startedAt ?? message.event?.startedAt ?? (message.done === false && running ? (running.startedAt || Date.parse(startedAt)) : undefined), durationMs: message.durationMs ?? message.event?.durationMs });
+      : appendToolCard({ name: message.event?.name, command: message.event?.command || message.event?.file, output: { text: message.event?.output || '', ...(message.event?.outputTruncated ? { lazy: { index: firstIndex + at, toolId: message.event.toolId, length: message.event.outputTruncated } } : {}) }, toolId: message.event?.toolId, done: message.done !== false || !running || message.interrupted, cancelled: message.interrupted, error: message.error, diff: message.event?.diff, startedAt: message.startedAt ?? message.event?.startedAt ?? (message.done === false && running ? (running.startedAt || Date.parse(startedAt)) : undefined), durationMs: message.durationMs ?? message.event?.durationMs });
     const placed = new Set();
     let hiddenCompactTurn = false;
     restoringHistory = true;
@@ -5825,7 +5851,7 @@
         let from = 0;
         for (let next = index + 1; messages[next]?.role === 'tool' && Number.isFinite(messages[next].offset); next++) {
           appendAssistantDelta(text.slice(from, messages[next].offset), message.agent, message.modelLabel, message.roleName);
-          storedTool(messages[next]);
+          storedTool(messages[next], next);
           placed.add(next);
           from = messages[next].offset;
         }
@@ -5835,7 +5861,7 @@
         endAssistantTurn(message.at || null);
         endedAt = message.at;
       }
-      else if (message.role === 'tool' && !placed.has(index)) storedTool(message);
+      else if (message.role === 'tool' && !placed.has(index)) storedTool(message, index);
     });
     restoringHistory = false;
     return { anchor, flush };
@@ -5862,7 +5888,7 @@
     stickToEnd = false;
     currentTurnEl = null; currentAssistantBubble = null; turnBubbles = []; turnRoutedAgent = null;
     try {
-      const { flush } = renderStoredMessages(page.messages, null, page.historyUserStart);
+      const { flush } = renderStoredMessages(page.messages, null, page.historyUserStart, page.historyStart);
       flush();
       const fragment = document.createDocumentFragment();
       while (tail.nextSibling) fragment.append(tail.nextSibling);
@@ -6367,6 +6393,7 @@
         break;
       }
       case 'chatHistory': prependHistory(message); break;
+      case 'toolOutput': receiveToolOutput(message); break;
       case 'filePreview': {
         const resolve = previewWaiting.get(message.requestId);
         previewWaiting.delete(message.requestId);

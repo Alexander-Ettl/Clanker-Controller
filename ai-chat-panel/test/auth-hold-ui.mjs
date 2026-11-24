@@ -86,8 +86,11 @@ try {
     assert.match(await card.innerText(), /did not finish/);
     if (width === 420) await page.screenshot({ path: path.join(out, 'held-error-420.png') });
 
-    // A kind without a button (Antigravity has no sign-in command) still offers "Check again".
+    // Antigravity signs in from its own setup terminal, so its hold has the button too.
     await send(antigravity);
+    assert.deepEqual(await card.locator('button').allInnerTexts(), ['Sign in to Gemini / Antigravity', 'Check again']);
+    // A kind without a button (a CLI with no sign-in at all) still offers "Check again".
+    await send({ ...antigravity, action: 'none', button: '' });
     assert.deepEqual(await card.locator('button').allInnerTexts(), ['Check again']);
 
     await send({ type: 'authHold', chatId: 'auth-chat', cleared: true });

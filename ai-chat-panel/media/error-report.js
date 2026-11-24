@@ -46,6 +46,8 @@
   window.clankerLog = report; // other scripts can log a message of their own: clankerLog('warn', 'voice', 'No microphone')
 
   window.addEventListener('error', (event) => {
+    // The browser's note that a layout observer's reaction was painted a frame later. Nothing failed.
+    if (/^ResizeObserver loop (?:completed with undelivered notifications|limit exceeded)/.test(event.message || '')) { event.stopImmediatePropagation(); return; }
     if (event.error || event.message) {
       const where = event.filename ? `${event.filename.split('/').pop()}:${event.lineno}:${event.colno}` : '';
       report('error', 'uncaught', event.error ? text(event.error) : event.message, event.error?.stack || where, where && event.error ? `at ${where}` : '');

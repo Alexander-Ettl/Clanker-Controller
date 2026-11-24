@@ -74,7 +74,7 @@ test('Linux: the setup terminal installs through sh for the CLIs that have an of
   assert.match(claude.shellArgs[1], /^curl -fsSL https:\/\/claude\.ai\/install\.sh \| bash && .*auth login; exec "/);
   assert.match(terminalSpec('codex', null, 'linux').shellArgs[1], /^npm install -g @openai\/codex@latest && codex login/);
   assert.match(terminalSpec('copilot', null, 'linux').shellArgs[1], /^npm install -g @github\/copilot@latest/);
-  assert.throws(() => terminalSpec('gemini', null, 'linux'), /official website/, 'no invented install line for a CLI without one');
+  assert.match(terminalSpec('gemini', null, 'linux').shellArgs[1], /^curl -fsSL https:\/\/antigravity\.google\/cli\/install\.sh \| bash/, "Antigravity's official script");
   assert.deepEqual(terminalSpec('claude', '/home/a/.local/bin/claude', 'linux'), { shellPath: '/home/a/.local/bin/claude', shellArgs: ['auth', 'login'] });
 });
 

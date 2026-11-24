@@ -50,6 +50,7 @@ const { CodexThreadTitles, codexThreadTitle } = require('./lib/codex-thread-titl
 const { readAgentTitle, hasAgentTitles } = require('./lib/agent-titles.js');
 const { CodexChatSync, inputHash, repairImportedPrompts } = require('./lib/codex-chat-sync.js');
 const { historyPage } = require('./lib/chat-history.js');
+const TOOL_PREVIEW_MAX = 2000, TOOL_PREVIEW_CHARS = 1200; // longer outputs are sent in full only when the card is opened
 const { route, routeBest } = require('./lib/auto-router.js');
 const { runtime: routingRuntime, projectStack } = require('./lib/routing-runtime.js');
 const { contextAssets } = require('./lib/work-context.js');
@@ -1770,6 +1771,13 @@ class ChatWindowHost {
       case 'scheduleMode': this.deps.setScheduleMode?.(message.mode); break; // the mode the last scheduled prompt used
       case 'remoteControl': void this.run.toggleRemote(); break;
       case 'undoTurn': void this.undoLastTurn(); break;
+      case 'requestToolOutput': {
+        // The full text of one finished card's output. The index is absolute; the tool id guards against a chat that changed since.
+        const entry = message.chatId === this.chat.id && Number.isSafeInteger(message.index) ? this.chat.messages[message.index] : null;
+        const valid = entry?.role === 'tool' && typeof entry.event?.output === 'string' && (!message.toolId || entry.event.toolId === message.toolId);
+        this.panel.webview.postMessage({ type: 'toolOutput', chatId: message.chatId, index: message.index, ...(valid ? { text: entry.event.output } : { error: 'This output is no longer available.' }) });
+        break;
+      }
       case 'requestChatHistory': {
         if (message.chatId !== this.chat.id || !Number.isSafeInteger(message.before) || message.before <= 0 || message.before > this.chat.messages.length) break;
         const page = historyPage(this.chat.messages, message.before);
@@ -2168,9 +2176,14 @@ class ChatWindowHost {
       const queueCount = this.pendingQueueCount(id);
       this.panel.webview.postMessage({ type: 'chatLoading', ...(queueCount !== 0 ? { queueCount } : {}) });
     }
+    const started = Date.now();
     const run = this.deps.chatWindowManager.runFor(id);
+    const loaded = Date.now();
     if (run && run !== this.run) this.attach(run);
     else if (switching) this.panel.webview.postMessage({ type: 'chatLoaded', chat: this.webviewChat(this.chat), running: this.run.turn }); // chat gone: put the current one back
+    // Where a slow open went (the Logs popup, "Clanker Controller" output channel): reading the chat, or painting it in this window.
+    const total = Date.now() - started;
+    if (total > 150) log.info('chat open', `${total} ms for ${id}: ${loaded - started} ms to load it, ${total - (loaded - started)} ms to hand it to this window`);
   }
 
   /** Revert on the Nth user message: a fork holding everything before it opens
@@ -2417,6 +2430,11 @@ class ChatWindowHost {
     return messages.map((m) => {
       const { compactContext, compactPreviousContext, ...visible } = m;
       if (visible.role === 'assistant' && visible.compact) visible.text = '';
+      // Opening a chat used to ship every tool's whole output (93% of a long chat's page) although cards start folded.
+      // A finished card gets a preview and the page asks for the rest when the card is opened (`requestToolOutput`).
+      if (visible.role === 'tool' && visible.done !== false && typeof visible.event?.output === 'string' && visible.event.output.length > TOOL_PREVIEW_MAX) {
+        visible.event = { ...visible.event, output: visible.event.output.slice(0, TOOL_PREVIEW_CHARS), outputTruncated: visible.event.output.length };
+      }
       return visible.role === 'user' && visible.attachments?.length ? { ...visible, files: this.webviewFiles(visible.attachments) } : visible;
     });
   }
@@ -3863,7 +3881,7 @@ function activate(context) {
   setTimeout(sweepVoice, 60000).unref?.();
   setInterval(sweepVoice, 6 * 60 * 60 * 1000).unref?.(); // IDE windows stay open for days
   const codexCommands = new CodexCommandCatalog();
-  const codexThreadTitles = new CodexThreadTitles({ cwd: workspaceDir });
+  const codexThreadTitles = new CodexThreadTitles({ cwd: workspaceDir, stateFile: path.join(SESSION_DIR, 'codex-thread-titles.json') });
   context.subscriptions.push(codexThreadTitles);
   const codexChatSync = new CodexChatSync({ cwd: workspaceDir, runs: () => chatWindowManager?.runs.values() || [] });
   context.subscriptions.push(codexChatSync);

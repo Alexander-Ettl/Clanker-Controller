@@ -45,10 +45,17 @@ module.exports = {
     const res = await fetchImpl(UPDATER, { signal: AbortSignal.timeout(8000) });
     return res.ok ? parseLatest(await res.text()) : null;
   },
+  // agy has no `login` command: started bare while signed out it asks for a login method, and "Google OAuth" (the default) opens
+  // the browser. It is the same everywhere; nothing depends on the Antigravity IDE being installed or signed in. The setup
+  // terminal runs bare `agy`, Clanker presses Enter on that menu once it has started, and watches the status until it flips.
   login: [],
+  terminalLogin: true,
+  autoSelectLogin: 3000,
+  watchSignIn: true,
   // agy has no separate auth-status command. A model-list response confirms CLI readiness, not account validity.
   authStatus: { args: ['models'], interpret: (result) => (result.ok && parseModels(result.stdout).length ? 'ready' : 'signin') },
   entitlement,
+  installPosix: 'curl -fsSL https://antigravity.google/cli/install.sh | bash && "$HOME/.local/bin/agy"',
   install: 'Invoke-RestMethod https://antigravity.google/cli/install.ps1 | Invoke-Expression; & "$env:LOCALAPPDATA\\agy\\bin\\agy.exe"',
   discoverModels: async ({ file, runCli }) => {
     const result = await runCli(file, ['models'], 30000);

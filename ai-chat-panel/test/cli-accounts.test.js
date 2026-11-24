@@ -92,7 +92,35 @@ test('native terminal specs quote shims and offer Windows installs without WSL',
   assert.match(terminalSpec('claude', null, 'win32').shellArgs.at(-1), /claude.ai\/install.ps1/);
   assert.match(terminalSpec('codex', null, 'win32').shellArgs.at(-1), /npm.cmd install -g @openai\/codex/);
   assert.match(terminalSpec('codex', "C:/O'Brien tools/codex.cmd", 'win32').shellArgs.at(-1), /O''Brien/);
-  assert.throws(() => terminalSpec('gemini', null, 'darwin'), /official website/);
+  assert.match(terminalSpec('gemini', null, 'linux').shellArgs.at(-1), /antigravity.google\/cli\/install.sh/);
+  assert.deepEqual(terminalSpec('gemini', '/home/me/.local/bin/agy', 'linux'), { shellPath: '/home/me/.local/bin/agy', shellArgs: [] }, 'sign-in is the bare CLI');
+});
+
+test('Antigravity signs in from its own terminal: the browser menu is chosen for you and the terminal closes once it works', async () => {
+  const timers = [];
+  const realSet = global.setTimeout;
+  global.setTimeout = (fn) => { const t = { fn, unref() {} }; timers.push(t); return t; };
+  try {
+    const f = fixture({ enabled: ['gemini'] });
+    f.paths.gemini = '/home/me/.local/bin/agy';
+    let signedIn = false; const sent = [];
+    f.accounts.run = async () => (signedIn ? { ok: true, stdout: 'gemini-flash\tGemini Flash' } : { ok: false, stdout: '', stderr: 'Please sign in to view available models.' });
+    await f.accounts.check();
+    const fault = f.accounts.fault('gemini');
+    assert.equal(fault.action, 'fixCli', 'a signed-out Antigravity gets a sign-in button, not "use the IDE"');
+    f.accounts.vscode.window.createTerminal = (options) => { const t = { options, sendText: (...a) => sent.push(a), show() {}, dispose() { f.terminals.splice(f.terminals.indexOf(t), 1); } }; f.terminals.push(t); return t; };
+    assert.deepEqual(await f.accounts.fix('gemini'), { ok: false });
+    assert.equal(f.terminals.length, 1);
+    assert.equal(f.terminals[0].options.shellPath, '/home/me/.local/bin/agy');
+    timers.shift().fn(); // Enter on "Google OAuth"
+    assert.deepEqual(sent, [['', true]]);
+    await timers.shift().fn(); // still signed out: keep watching
+    assert.equal(f.terminals.length, 1);
+    signedIn = true;
+    await timers.shift().fn();
+    assert.equal(f.terminals.length, 0, 'the setup terminal closes once the account works');
+    assert.equal(f.accounts.fault('gemini'), null);
+  } finally { global.setTimeout = realSet; }
 });
 
 test('failed checks never report connected; overlapping checks share one run and refresh', async () => {

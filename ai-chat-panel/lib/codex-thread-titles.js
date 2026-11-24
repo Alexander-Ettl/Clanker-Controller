@@ -1,5 +1,6 @@
 'use strict';
 
+const fs = require('node:fs');
 const { CodexAppServer } = require('./codex-app-server');
 const { deriveFallbackTitle } = require('./chat-store');
 
@@ -8,10 +9,18 @@ function codexThreadTitle(chat, project) {
   return `🤖 ${clean(project?.name) || 'Clanker Controller'} · ${clean(chat.title || deriveFallbackTitle(chat.messages))}`;
 }
 
+function readState(file) {
+  try { const value = JSON.parse(fs.readFileSync(file, 'utf8')); return value && typeof value === 'object' && !Array.isArray(value) ? value : {}; } catch { return {}; }
+}
+
 // One metadata-only connection for all chats, including saved threads that aren't open in a panel.
 class CodexThreadTitles {
-  constructor({ cwd, server = null, onError = error => require('./log.js').warn('codex thread title', error) } = {}) {
+  constructor({ cwd, server = null, stateFile = null, onError = error => require('./log.js').warn('codex thread title', error) } = {}) {
     this.cwd = cwd;
+    // chat id -> the name last settled for it (sent, or answered "no rollout found": the thread is not on this computer).
+    // Without it every start loaded every saved Codex chat again, on the host's thread, to send the names it already had.
+    this.stateFile = stateFile;
+    this.settled = readState(stateFile);
     this.server = server;
     this.onError = onError;
     this.names = new Map();
@@ -30,10 +39,20 @@ class CodexThreadTitles {
         this.server ||= new CodexAppServer({ cwd: this.cwd });
         await this.server.request('thread/name/set', { threadId, name });
         this.names.set(threadId, name);
-      } catch (error) { this.onError(error); }
+        this.settle(chat.id, name);
+      } catch (error) {
+        // A chat carried over from another computer names a thread this one never had. That will not change by retrying.
+        if (/no rollout found/i.test(error?.message || '')) this.settle(chat.id, name);
+        else this.onError(error);
+      }
       finally { if (this.pending.get(threadId) === name) this.pending.delete(threadId); }
     });
     return this.queue;
+  }
+  settle(chatId, name) {
+    if (!this.stateFile || !chatId || this.settled[chatId] === name) return;
+    this.settled[chatId] = name;
+    try { fs.writeFileSync(this.stateFile, JSON.stringify(this.settled), 'utf8'); } catch { /* only a cache: the next start looks again */ }
   }
   repairSaved(chatStore, projects) {
     let entries, index = 0;
@@ -43,7 +62,8 @@ class CodexThreadTitles {
       if (this.disposed) return;
       const started = Date.now();
       try {
-        entries ||= chatStore.list().filter(chat => chat.models.includes('codex'));
+        // The listing already holds each chat's title, so only chats whose name changed since it was settled are loaded.
+        entries ||= chatStore.list().filter(chat => chat.models.includes('codex') && this.settled[chat.id] !== codexThreadTitle({ title: chat.title }, projects.get(chat.projectId)));
         const entry = entries[index++];
         if (!entry) return;
         const chat = chatStore.load(entry.id);

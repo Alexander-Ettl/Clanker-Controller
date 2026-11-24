@@ -66,3 +66,26 @@ test('rapid name edits retain the latest requested title', async () => {
   await first;
   assert.deepEqual(calls, [{ threadId: 'thread', name: '🤖 Visor · New title' }]);
 });
+
+test('a settled name is not sent again after a restart, and a thread this computer never had is not retried or logged', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const fs = require('node:fs'), os = require('node:os'), path = require('node:path');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'clanker-titles-'));
+  try {
+    const stateFile = path.join(dir, 'codex-thread-titles.json');
+    const calls = [], errors = [];
+    const server = { async request(_method, params) { calls.push(params.threadId); if (params.threadId === 'gone') throw new Error('no rollout found for thread id gone'); }, dispose() {} };
+    const first = new CodexThreadTitles({ server, stateFile, onError: error => errors.push(error.message) });
+    const project = { name: 'P' };
+    await first.sync({ id: 'a', title: 'One', sessions: { codex: { id: 'ta' } } }, project);
+    await first.sync({ id: 'b', title: 'Two', sessions: { codex: { id: 'gone' } } }, project);
+    assert.deepEqual(errors, [], 'a missing thread is settled, not an error');
+    const loads = [];
+    const restarted = new CodexThreadTitles({ server, stateFile });
+    const list = () => [{ id: 'a', title: 'One', projectId: 'p', models: ['codex'] }, { id: 'b', title: 'Two', projectId: 'p', models: ['codex'] }, { id: 'c', title: 'Three', projectId: 'p', models: ['codex'] }];
+    restarted.repairSaved({ list, load: id => { loads.push(id); return null; } }, { get: () => project });
+    t.mock.timers.tick(3000);
+    restarted.dispose();
+    assert.deepEqual(loads, ['c'], 'only the chat that was never settled is loaded');
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});

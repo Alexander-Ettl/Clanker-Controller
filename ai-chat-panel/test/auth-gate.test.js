@@ -188,11 +188,11 @@ test('CLIs that were not added, and other CLIs, are not held by one that is sign
   f.gate.dispose(); g.gate.dispose();
 });
 
-test('a CLI with no sign-in command (Antigravity) offers no button but is still released when it works', async () => {
+test('Antigravity signs in from its own setup terminal (no IDE needed) and is released when it works', async () => {
   const f = fixture({ agents: ['gemini'], status: { gemini: 'signin' } });
   const block = await f.gate.check('gemini');
-  assert.equal(block.action, 'none');
-  assert.equal(f.prompts[0].block.button, '');
+  assert.equal(block.action, 'fixCli');
+  assert.equal(f.prompts[0].block.button, 'Sign in to Gemini / Antigravity');
   f.state.gemini = 'connected';
   await until(() => f.resolved().length);
   f.gate.dispose();

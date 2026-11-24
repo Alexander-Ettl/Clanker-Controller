@@ -60,11 +60,13 @@ class CliAccounts {
     }
     const expired = this.expired[agent];
     if (!expired && this.auth[agent] !== 'signin') return null;
-    // Antigravity has no sign-in command: it is signed in from its own app, and the next look notices.
+    // Antigravity has no sign-in command: its bare CLI asks for a login method (terminalLogin), and the next look notices.
+    const provider = providers.get(agent);
+    const inTerminal = !login.length && provider.terminalLogin;
     return { kind: 'signin', expired: Boolean(expired), code, title: expired ? 'Sign-in expired' : 'Not signed in',
       detail: expired ? `${accountName} ended your sign-in while Clanker was working. Sign in with your browser and it works again.` : `${accountName} has no signed-in account. Sign in with your browser and it works again.`,
-      action: login.length ? 'fixCli' : 'connectCli', label: 'Sign in',
-      steps: login.length ? ['Press the button to open your browser and sign in.'] : [`Sign in to ${accountName} in its own app.`] };
+      action: login.length || inTerminal ? 'fixCli' : 'connectCli', label: 'Sign in',
+      steps: login.length || inTerminal ? ['Press the button to open your browser and sign in.'] : [`Sign in to ${accountName} in its own app.`] };
   }
   // "Enabled" is what the rest of Clanker asks (picker, Auto, scheduler, rail): added and not known to be out of access.
   // `connectedAgents` is what you added, which Settings lists and the setup flow checks.
@@ -107,11 +109,37 @@ class CliAccounts {
       this.terminals.set(agent, terminal);
       this.notes[agent] = damage ? `${providers.get(agent).accountName} cannot start: ${damage} Repairing it in the setup terminal, then signing in.` : 'Finish sign-in in your browser or setup terminal, then check connections.';
       terminal.show(true);
+      if (!damage && file) this.autoSelectLogin(agent, terminal);
     } catch {
       this.terminals.delete(agent);
       if (!damage) this.notes[agent] = 'Setup could not open. Try again, or install the CLI from its official website.';
     }
     this.push();
+  }
+  // A CLI whose bare start asks for a login method: press Enter on the default (browser sign-in) once it is up, then watch the
+  // CLI's own status and close the terminal when the account works, so you never have to find the terminal at all.
+  autoSelectLogin(agent, terminal) {
+    const provider = providers.get(agent);
+    if (provider.autoSelectLogin && !provider.login.length && !['connected', 'ready'].includes(this.auth[agent])) {
+      const timer = setTimeout(() => { if (this.vscode.window.terminals.includes(terminal)) terminal.sendText('', true); }, provider.autoSelectLogin);
+      timer.unref?.();
+    }
+    if (provider.watchSignIn) this.watchSignIn(agent, terminal);
+  }
+  watchSignIn(agent, terminal, { everyMs = 4000, forMs = 10 * 60 * 1000 } = {}) {
+    const until = this.now() + forMs;
+    const step = async () => {
+      if (this.disposed || this.terminals.get(agent) !== terminal) return;
+      if (this.now() > until) return;
+      const state = await this.verify(agent).catch(() => 'unknown');
+      if (this.disposed || this.terminals.get(agent) !== terminal) return;
+      if (['connected', 'ready'].includes(state)) {
+        this.trustSignIn(agent); this.notes[agent] = ''; this.terminals.delete(agent);
+        terminal.dispose(); await this.check(); return;
+      }
+      const timer = setTimeout(step, everyMs); timer.unref?.();
+    };
+    const timer = setTimeout(step, everyMs); timer.unref?.();
   }
   // Runs the CLI's own status check. Returns the real error when the CLI cannot start at all, '' otherwise (signed out is not damage).
   async probe(agent, file) {
