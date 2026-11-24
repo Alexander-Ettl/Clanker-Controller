@@ -113,16 +113,18 @@ The loop engine already creates a worktree per fix (`lib/loop-workspace.js`); ch
 
 ### SCHED-01 · Headless runner for due scheduled turns
 
-Scheduled prompts and quota-reset continuations only fire while the IDE is open (`scheduler-queue.js`). A full daemon is out of scope (DAEMON-01); a small runner covers the 2 a.m. case.
+Scheduled prompts and quota-reset continuations used to fire only while the IDE was open (`scheduler-queue.js`). A full daemon is out of scope (DAEMON-01); a small runner covers the 2 a.m. case.
 
-- [ ] A `clanker run-due` entry (node script next to the `~/.clanker/clanker-agent.js` launcher pattern) that reads the disk-backed queue, runs due turns through the stream engine in the chat's explicit project root, and writes the result into the chat store so it shows when the IDE reopens.
-- [ ] Guard against double runs: a lock so the IDE and the runner never execute the same task, and the IDE takes over when it's open.
-- [ ] An opt-in command to register it with Task Scheduler (Windows) and `systemd --user` (Linux); nothing is installed silently.
-- [ ] Telegram or OS notification when a headless turn ends; reuse `telegram-bridge.js` and `notify.js` only if they work without the IDE, otherwise ship without and note the gap.
+**Status 2026-11-25: built and tested with a fake CLI; not yet run in the live editor, and not left running overnight.** `lib/headless-runner.js` reads the same disk-backed queue and chat store, runs each due task through the real `StreamEngine` in the chat's project root (resuming the chat's own agent session, or briefing it when it has none), and writes the reply into the chat (a new "Scheduled: ..." chat for a task without one), then marks the task and shows a desktop notification (`notify.js`, which works without the editor). `lib/runner-lock.js`: every editor window writes `ide.<pid>.lock`, and the runner exits at once while one is fresh; the runner holds `runner.lock` (exclusive create, heartbeat, dead or silent holders are taken over); the editor's queue refuses to load while it is held and the watchdog reloads the file afterwards. `lib/run-due-cli.js` is the entry (`~/.clanker/clanker-run-due.js`, rewritten at each editor start, with the settings the runner cannot read from VS Code in `~/.clanker/runner.json`). `lib/runner-service.js` installs the timer (systemd `--user` every 5 minutes, or a Task Scheduler task) only from the Command Palette entry *Run Scheduled Prompts While the Editor Is Closed*, and removes it. Tests: `test/headless-runner.test.js` (11 cases on a temp session folder: reply in chat, resume, editor open, two runners at once, dead lock, not due, no quota, CLI removed, failing turn, missing project, busy chat) and `test/runner-service.test.js`.
 
-**Estimate (AI-assisted):** 1-1.5 days; the lock and shared store access are the risk. **Done when:** with the IDE closed, a prompt scheduled for a quota reset runs on time, appears in the chat after reopening, and never runs twice. Test with fake CLIs, not real prompts.
+- [x] `clanker-run-due` entry that runs due turns in the chat's explicit project root and writes the result into the chat store.
+- [x] A lock so the editor and the runner never run the same task, and the editor takes over when it is open.
+- [x] Opt-in registration with Task Scheduler (Windows) and `systemd --user` (Linux); nothing is installed silently. (Windows path only unit-tested with a fake `schtasks`.)
+- [x] OS notification when a headless turn ends. Telegram is not wired: its token lives in the editor's secret storage, which a process without the editor cannot read.
+- [ ] Try it for real once: reload the editor, run the Command Palette entry, close the editor, schedule a prompt a few minutes ahead and check `journalctl --user -u clanker-run-due` and the chat afterwards.
+- [ ] Known limits: a turn that asks for approval or a question is stopped with a note in the chat (nobody to answer); attachments and the Auth gate's sign-in prompt are not used; if the editor opens while the runner is mid-turn, its queue stays unavailable (the load error is logged and retried) until the turn finishes, which is untested live; `--max` caps one run at 10 turns.
 
-Text/code and table previews shipped on 2026-11-16. No ordering here implies a release commitment; loop items are parked under Deferred.
+**Done when:** with the IDE closed, a prompt scheduled for a quota reset runs on time, appears in the chat after reopening, and never runs twice. Test with fake CLIs, not real prompts. The first half is covered by the tests above; the live run is the open item.
 
 ### AGENT-01 Â· Cross-vendor agents: live check and chat integration
 

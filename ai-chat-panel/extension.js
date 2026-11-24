@@ -64,11 +64,16 @@ const { promptFor, permissionFor, appendInstructions } = require('./media/model-
 const { CostMeter, chatTotal, chatCost, LEDGER_VERSION } = require('./lib/api-cost.js');
 const { isLimitNotice, LIMIT_RE, resetsInMs } = require('./media/limit-notice.js');
 const { accessFailure } = require('./lib/provider-access.js');
+const { recordToolEnd, quotaAvailable } = require('./lib/turn-record.js');
 const { AuthGate } = require('./lib/auth-gate.js');
 const clankerAgent = require('./lib/clanker-agent.js');
 const { showAuthPrompt } = require('./lib/auth-prompt.js');
 const { SchedulerQueue, ACTIVE_STATUSES, isDue, resetObserved, firstPrompt } = require('./lib/scheduler-queue.js');
 const { keepAwake } = require('./lib/keep-awake');
+const { IdePresence, runnerActive } = require('./lib/runner-lock.js');
+const headlessRunner = require('./lib/headless-runner.js');
+const runDueCli = require('./lib/run-due-cli.js');
+const runnerService = require('./lib/runner-service.js');
 const { SessionWarmup } = require('./lib/session-warmup');
 const { CloudWarmup } = require('./lib/cloud-warmup');
 const { subscriptionBilled } = require('./lib/billing-mode');
@@ -81,7 +86,6 @@ const { configureTelegram: setupTelegram, TOKEN_KEY, CHAT_KEY, OWNER_KEY } = req
 const { forwardRequest, bindTelegramControls } = require('./lib/telegram-control.js');
 const { resolveEditorTheme } = require('./lib/editor-theme.js');
 const { buildHandoff, buildCompactionHandoff, taskState, checkpointStart, estimateTokens, COMPACT_DIRECTIVE, COMPACT_TARGET_TOKENS } = require('./lib/chat-handoff.js');
-const { RECORDED_OUTPUT_CHARS } = require('./lib/chat-transcript.js');
 const { CodexCommandCatalog } = require('./lib/codex-commands.js');
 const { SlashCommandCatalog } = require('./lib/slash-commands.js');
 
@@ -130,27 +134,6 @@ const timePrefs = () => JSON.stringify({ locale: vscode.env.language || 'en', ti
 const QUOTA_POLL_MS = 5000;
 const WATCHDOG_POLL_MS = 15000; // a timer that reaches 0 should not wait up to a minute for the next look
 
-function recordToolEnd(chat, event) {
-  if (!event.toolId) return;
-  const step = chat.messages.findLast(entry => entry.role === 'tool' && entry.event?.toolId === event.toolId);
-  if (!step) return;
-  const startedAt = step.startedAt ?? step.event?.startedAt;
-  const durationMs = Number.isFinite(event.durationMs) ? event.durationMs : (Number.isFinite(startedAt) ? Math.max(0, Date.now() - startedAt) : undefined);
-  if (Number.isFinite(durationMs)) { step.durationMs = durationMs; event.durationMs = durationMs; }
-  step.done = true;
-  step.error = Boolean(event.error);
-  step.event = { ...step.event, ...(Number.isFinite(durationMs) ? { durationMs } : {}), output: String(event.output || '').slice(0, RECORDED_OUTPUT_CHARS), diff: event.diff || step.event.diff, ...(Number.isInteger(event.exitCode) ? { exitCode: event.exitCode } : {}) };
-}
-
-function quotaAvailable(quotas, modelOrTask) {
-  const agent = typeof modelOrTask === 'string' ? modelOrTask : modelOrTask?.model;
-  const quota = typeof modelOrTask === 'string' ? quotas?.[agent] : quotaFor(quotas, modelOrTask?.modelId, agent);
-  if (quota?.secondary?.remaining === 0) return false;
-  return agent === 'gemini' && typeof quota?.remaining !== 'number'
-    ? true // no live Antigravity number: never block it
-    : typeof quota?.remaining === 'number' && quota.remaining > 0;
-}
-
 class SchedulerWatchdog {
   constructor({ queue, workspaceDir, getModels, getPermissionMode, getModelPrompts, getModelSettings, telegram, onQueueChange, chatStore, onHistoryChange, notify, resumeInChat, isChatBusy, getQueueState, isAgentEnabled, projects, authGate }) {
     this.projects = projects; this.authGate = authGate || null;
@@ -181,8 +164,11 @@ class SchedulerWatchdog {
   }
   async tick() {
     if (this.running || this.activeTaskId) return;
+    // The headless runner (editor closed at the time) owns the queue file while it works; afterwards read what it wrote.
+    if (runnerActive(this.queue.sessionDir)) { this.sawRunner = true; return; }
     this.running = true;
     try {
+      if (this.sawRunner) { this.sawRunner = false; await this.queue.reload(); this.onQueueChange(); }
       await refreshClaudeUsage(this.workspaceDir); // real numbers before deciding a Claude task may run
       await this.releaseObservedResets();
       // A task that goes back into its chat is handed over once that chat is idle, and only one at a time: the model finishes
@@ -3954,6 +3940,12 @@ function activate(context) {
 
   const schedulerQueue = new SchedulerQueue({ workspaceDir, sessionDir: SESSION_DIR, keepAwake });
   context.subscriptions.push(schedulerQueue);
+  // SCHED-01: while this editor is open the headless runner stands down, and while the runner is working (editor was closed) the
+  // queue file is its own; the Scheduled tab says so and the watchdog reloads once it is done.
+  const idePresence = new IdePresence(SESSION_DIR);
+  idePresence.start();
+  context.subscriptions.push({ dispose: () => idePresence.dispose() });
+  schedulerQueue.guard = () => { if (runnerActive(SESSION_DIR)) throw new Error('A scheduled prompt is running while the editor was closed. The queue opens when it finishes.'); };
   let launcher = null;
   let chatWindowManager = null;
   // Prompts that go out unattended (queued, scheduled, "continue") first ask whether their CLI is signed in; if not, they
@@ -4318,6 +4310,19 @@ function activate(context) {
     },
   });
   publishAgentModels();
+  // What the headless runner cannot read from VS Code's settings: written whenever it could have changed.
+  const publishRunnerSettings = () => {
+    try {
+      headlessRunner.publishSettings({ sessionDir: SESSION_DIR, workspaceDir, models: getModels(), permissionMode: getPermissionMode(), modelPrompts: cliHub.prompts, modelSettings: cliHub.modelSettings, catalog: cliHub.fetched,
+        enabledAgents: providers.ids().filter((agent) => cliAccounts.isEnabled(agent) !== false) });
+      runDueCli.publishLauncher();
+    } catch { /* the runner is optional */ }
+  };
+  publishRunnerSettings();
+  context.subscriptions.push(vscode.workspace.onDidChangeConfiguration((event) => { if (event.affectsConfiguration('aiChatPanel')) publishRunnerSettings(); }));
+  const runnerTimer = setInterval(publishRunnerSettings, 10 * 60 * 1000);
+  runnerTimer.unref?.();
+  context.subscriptions.push({ dispose: () => clearInterval(runnerTimer) });
   cliHub.ready = cliHub.refreshModels();
   chatWindowManager.deps.ensureModels = () => cliHub.ready;
   chatWindowManager.deps.waitForCliUpdate = agent => cliHub.updatePromises.get(agent);
@@ -4474,6 +4479,18 @@ function activate(context) {
     vscode.commands.registerCommand('aiChatPanel.toggleMic', () => void chatWindowManager.getOrCreateActive().handleMicToggle()),
     // Voice recordings are kept 7 days. If a long dictation broke, this transcribes whatever is missing and puts the text in the chat.
     vscode.commands.registerCommand('aiChatPanel.recoverVoiceRecording', () => recoverVoiceRecording()),
+    // SCHED-01: opt-in timer that runs due scheduled prompts while the editor is closed. Nothing is installed without this menu.
+    vscode.commands.registerCommand('aiChatPanel.headlessRunner', async () => {
+      publishRunnerSettings();
+      const on = runnerService.installed();
+      const pick = await vscode.window.showQuickPick([
+        { label: on ? 'Update the timer' : 'Set up the timer', detail: `Checks every ${runnerService.EVERY_MINUTES} minutes for scheduled prompts that are due and runs them while the editor is closed. It does nothing while an editor is open.`, id: 'install' },
+        { label: 'Remove the timer', detail: 'Scheduled prompts run only while the editor is open.', id: 'remove' },
+      ], { title: 'Run scheduled prompts with the editor closed', placeHolder: on ? 'The timer is set up' : 'The timer is not set up' });
+      if (!pick) return;
+      const result = pick.id === 'install' ? runnerService.install({ launcher: path.join(process.env.CLANKER_HOME || path.join(os.homedir(), '.clanker'), runDueCli.LAUNCHER) }) : runnerService.remove();
+      void (result.ok ? vscode.window.showInformationMessage(result.message) : vscode.window.showWarningMessage(result.message));
+    }),
     vscode.commands.registerCommand('aiChatPanel.openVoiceRecordings', () => { fs.mkdirSync(voiceDir, { recursive: true }); return vscode.env.openExternal(vscode.Uri.file(voiceDir)); }),
     vscode.commands.registerCommand('aiChatPanel.chooseProject', () => chatWindowManager.getOrCreateActive().chooseProject()),
     vscode.commands.registerCommand('aiChatPanel.manageProjects', () => chatWindowManager.getOrCreateActive().manageProjects()),

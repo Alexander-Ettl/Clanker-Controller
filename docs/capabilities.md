@@ -13,7 +13,7 @@ One list, one place per capability. The README, the site and the store page copy
 ## Quota and scheduling
 
 - **Usage rings** per provider with the percentage left in the 5-hour window and the reset time (`lib/quota*.js`, the rail). The optional second extension `antigravity-usage-statusbar/` puts the gauges in the status bar.
-- **Scheduler.** A prompt that hits a limit queues **Continue** for the reset; you can schedule prompts for a clock time, queue them behind the running turn, reorder them and move one to another provider. The editor must stay open (`lib/scheduler-queue.js`).
+- **Scheduler.** A prompt that hits a limit queues **Continue** for the reset; you can schedule prompts for a clock time, queue them behind the running turn, reorder them and move one to another provider. Prompts run while the editor is open (`lib/scheduler-queue.js`); an optional timer (Command Palette: *Run Scheduled Prompts While the Editor Is Closed*) runs due ones with the editor closed through `lib/headless-runner.js`, in the chat's own project root, and steps aside when an editor opens (`lib/runner-lock.js`). The headless run has no Telegram or approval prompts: a turn that needs an answer is stopped and says so in the chat.
 - **Repeating prompts.** `/loop 5m <prompt>` repeats a prompt in the chat (bounded by `--max` runs and `--for` time; `/loop stop` ends it) through the scheduler queue's recurrence (`lib/loop-command.js`).
 - **Early usage windows.** A tiny ping every 5 hours starts each subscription window (`lib/session-warmup.js`); an optional Google Cloud variant runs it without your PC ([guide](cloud-usage-windows.md)).
 - **API value meter and per-turn reply cost**: every turn priced at pay-per-token rates, as a comparison and not a bill (`lib/cost-meter.js`).
@@ -50,4 +50,4 @@ One list, one place per capability. The README, the site and the store page copy
 
 ## Not built yet
 
-See [`TODO.md`](../TODO.md): a worktree per chat, a headless runner for scheduled turns, provider contract tests.
+See [`TODO.md`](../TODO.md): a worktree per chat in the chat UI and provider contract tests.

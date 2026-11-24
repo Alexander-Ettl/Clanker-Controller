@@ -48,7 +48,7 @@ When a task runs into its usage limit, Clanker queues **Continue** for the reset
   <img src="docs/images/scheduler.png" alt="Three scheduled prompts waiting in the composer: two for the Claude reset in one and a half hours, one for a clock time" width="620">
 </p>
 
-The IDE has to stay open for scheduled prompts to run.
+Scheduled prompts run while the editor is open. To run them with the editor closed, use **Clanker Controller: Run Scheduled Prompts While the Editor Is Closed** from the Command Palette: it sets up a timer you can remove again (systemd `--user` on Linux, Task Scheduler on Windows). The runner steps aside whenever an editor is open, and the reply is waiting in the chat when you return. Nothing is installed unless you pick it.
 
 ## Start usage windows early
 

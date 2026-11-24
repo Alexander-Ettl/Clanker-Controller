@@ -104,6 +104,10 @@
                 "title": "Clanker Controller:Recover Voice Recording"
             },
             {
+                "command": "aiChatPanel.headlessRunner",
+                "title": "Clanker Controller:Run Scheduled Prompts While the Editor Is Closed"
+            },
+            {
                 "command": "aiChatPanel.openVoiceRecordings",
                 "title": "Clanker Controller:Open Voice Recordings Folder"
             },

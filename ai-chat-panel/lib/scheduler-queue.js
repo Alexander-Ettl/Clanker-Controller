@@ -64,8 +64,11 @@ class SchedulerQueue {
       }
     }
   }
+  /** Reads the queue again from disk (after a headless run changed it behind this process's back). */
+  async reload() { this.loaded = false; await this.load(); }
   async load() {
     if (this.loaded) return;
+    this.guard?.(); // the editor sets this: it throws while the headless runner owns the queue file
     await fs.mkdir(this.sessionDir, { recursive: true });
     try {
       const parsed = JSON.parse(await this.readFile());
