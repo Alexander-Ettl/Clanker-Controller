@@ -4241,7 +4241,7 @@
   // Undo turn: the last reply gets one more action when its turn changed files (lib/turn-undo.js; /undo does the same).
   const UNDO_ICON = '<svg viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M3 8a5 5 0 1 0 1.6-3.7" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/><path d="M3 2.75v2.5h2.5" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>';
   function dropUndo() { transcriptEl.querySelectorAll('.undo-action').forEach((el) => el.remove()); }
-  function offerUndo(count) {
+  function offerUndo(count, diff) {
     dropUndo();
     const turn = count ? transcriptEl.lastElementChild : null; // the latest turn only, even when it ended in tools with no reply text
     if (!turn) return;
@@ -4252,6 +4252,38 @@
     undo.classList.add('undo-action');
     undo.append(`Undo · ${label}`); // labelled: an icon alone hid the one action that matters after a bad turn
     row.append(undo);
+    if (diff?.files?.length) turn.append(turnDiffList(diff));
+  }
+
+  // What the turn changed: "3 files, +42 / -11", opening to the files. A file opens the editor's diff (host: ChatRun.openTurnDiff).
+  function turnDiffList(diff) {
+    const box = document.createElement('details');
+    box.className = 'undo-action turn-diff';
+    const head = document.createElement('summary');
+    const total = document.createElement('span');
+    total.textContent = `${diff.count} file${diff.count === 1 ? '' : 's'} changed`;
+    const sum = document.createElement('span');
+    sum.className = 'turn-diff-sum';
+    sum.append(Object.assign(document.createElement('span'), { className: 'turn-diff-add', textContent: `+${diff.add}` }), ' ', Object.assign(document.createElement('span'), { className: 'turn-diff-del', textContent: `\u2212${diff.del}` }));
+    head.append(total, sum);
+    box.append(head);
+    const list = document.createElement('div');
+    list.className = 'turn-diff-files';
+    diff.files.forEach((file, index) => {
+      const item = document.createElement('button');
+      item.type = 'button';
+      item.className = 'turn-diff-file';
+      item.title = `Open the diff for ${file.path}`;
+      const status = Object.assign(document.createElement('span'), { className: `turn-diff-status status-${file.status}`, textContent: file.status === 'A' ? 'new' : file.status === 'D' ? 'deleted' : 'edited' });
+      const name = Object.assign(document.createElement('span'), { className: 'turn-diff-name', textContent: file.path });
+      const counts = Object.assign(document.createElement('span'), { className: 'turn-diff-counts', textContent: file.add === null ? 'binary' : `+${file.add} \u2212${file.del}` });
+      item.append(status, name, counts);
+      item.addEventListener('click', () => vscode.postMessage({ type: 'openTurnDiff', index }));
+      list.append(item);
+    });
+    if (diff.count > diff.files.length) list.append(Object.assign(document.createElement('div'), { className: 'turn-diff-more', textContent: `\u2026 and ${diff.count - diff.files.length} more` }));
+    box.append(list);
+    return box;
   }
 
   // Your message: hovering shows time, Copy, and Revert. Revert forks the
@@ -6785,7 +6817,7 @@
         break;
       }
       // A turn that didn't come from this composer (a scheduled prompt, Remote Control): your bubble.
-      case 'undoOffer': offerUndo(Number(message.count) || 0); break;
+      case 'undoOffer': offerUndo(Number(message.count) || 0, message.diff); break;
       case 'droid': playDroid(message.kind); break;
       case 'verifyInfo': verifyCommand = message.command || ''; renderVerify(); break;
       case 'userMessage': {

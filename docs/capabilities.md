@@ -20,6 +20,7 @@ One list, one place per capability. The README, the site and the store page copy
 ## Safety and undo
 
 - **Undo turn.** Each turn snapshots the working tree (`git stash create`); `/undo` or the button restores what the turn changed and leaves other files alone (`lib/turn-undo.js`).
+- **What a turn changed.** Under a reply, "N files changed +A −D" opens to the files; a file opens the editor's diff against the pre-turn copy (`lib/turn-diff.js`).
 - **Auto-verify.** After a turn Clanker can run your check (`/verify`, `aiChatPanel.verifyCommand`) and report the result.
 - **Permission modes** per chat (`aiChatPanel.permissionMode`) and a log viewer for every CLI run (**Show Logs**).
 - **Compliance options** for loops: scout redaction and an EU compliance guide ([compliance](compliance-eu.md)).
@@ -48,4 +49,4 @@ One list, one place per capability. The README, the site and the store page copy
 
 ## Not built yet
 
-See [`TODO.md`](../TODO.md): a diff view for each turn, a worktree per chat, a headless runner for scheduled turns, recurring prompts, provider contract tests.
+See [`TODO.md`](../TODO.md): a worktree per chat, a headless runner for scheduled turns, recurring prompts, provider contract tests.

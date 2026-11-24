@@ -90,9 +90,9 @@ Upstream CLI releases can change flags or event shapes overnight; today only han
 
 One-click undo exists (`lib/turn-undo.js`, snapshots from `git stash create` in `stream-engine.js`). What's missing is seeing the change before deciding.
 
-- [ ] After each turn, a collapsible line at the bottom of the reply ("3 files, +42 / -11") computed from the pre-turn snapshot against the working tree, per repo.
-- [ ] Clicking a file opens VS Code's diff editor (`vscode.diff`) with the snapshot copy on the left (a read-only virtual document provider); created and deleted files open correctly.
-- [ ] Reuse the existing undo bookkeeping, including the rule that files the turn didn't touch stay as they are; show nothing when the snapshot object has been pruned.
+- [x] 2026-11-25: after a turn that changed files, a collapsible "N files changed +A −D" line sits under the reply's actions, per repo, computed from the pre-turn snapshot (`lib/turn-diff.js`, `media/main.js` `turnDiffList`). Rendered in dark and light (`test/turn-diff-ui.mjs`, `SHOT_DIR=` saves pictures); not yet seen in the live editor.
+- [x] 2026-11-25: clicking a file runs `vscode.diff` with the snapshot copy on the left through a `clanker-snapshot:` document provider; created files have an empty left side, deleted ones an empty right side (`ChatWindowHost.openTurnDiff`, `test/turn-diff-host.test.js`). The page sends only a list index; the host rebuilds the paths from the turn's own record.
+- [x] 2026-11-25: it reads `planUndo`'s set, so the list and undo always agree (tested), and shows nothing when git pruned the snapshot. Not covered: a file that was untracked before the turn and edited by it (undo ignores it too).
 - [ ] Stretch, only after the basics ship: attach selected diff lines as a review comment to the next prompt.
 
 **Estimate (AI-assisted):** 3-6 hours including the rendered light and dark check. **Done when:** a turn that edits, creates and deletes files lists all three, each opens a correct diff, and undo still restores exactly the same set. Keep Liquid Glass styling.

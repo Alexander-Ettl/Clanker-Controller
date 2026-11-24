@@ -3605,6 +3605,57 @@ body.attachment-dragging .drop-overlay-card { transform: scale(1); }
   font: 500 10.5px var(--font-text);
 }
 
+/* What the turn changed: a quiet collapsible under the reply's actions; a file opens the editor's diff. */
+.turn-diff {
+  margin-top: 2px;
+  font: 500 10.5px var(--font-text);
+  color: var(--text-tertiary);
+}
+.turn-diff > summary {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 22px;
+  padding: 0 6px;
+  border-radius: 8px;
+  cursor: pointer;
+  list-style: none;
+  transition: background-color 0.18s var(--eo-ease), color 0.18s var(--eo-ease);
+}
+.turn-diff > summary::-webkit-details-marker { display: none; }
+.turn-diff > summary::before { content: '\203A'; display: inline-block; transition: transform 0.2s var(--eo-ease); }
+.turn-diff[open] > summary::before { transform: rotate(90deg); }
+.turn-diff > summary:hover, .turn-diff > summary:focus-visible { background: rgb(var(--ink) / 0.07); color: var(--text-secondary); }
+.turn-diff-sum { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
+.turn-diff { --diff-add: #4cd37d; --diff-del: #ff6b63; }
+body.vscode-light .turn-diff { --diff-add: #1a7f3c; --diff-del: #c8352d; } /* readable on the pale glass */
+.turn-diff-add { color: var(--diff-add); }
+.turn-diff-del { color: var(--diff-del); }
+.turn-diff-files { display: grid; gap: 1px; margin: 3px 0 2px; max-width: 520px; }
+.turn-diff-file {
+  display: grid;
+  grid-template-columns: 52px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  padding: 3px 6px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--text-secondary);
+  font: 500 11px var(--font-mono);
+  text-align: left;
+  cursor: pointer;
+  transition: background-color 0.16s var(--eo-ease);
+}
+.turn-diff-file:hover, .turn-diff-file:focus-visible { background: rgb(var(--ink) / 0.08); }
+.turn-diff-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; direction: rtl; text-align: left; } /* a long path keeps its file name visible */
+.turn-diff-status { font: 600 9.5px var(--font-text); text-transform: uppercase; letter-spacing: 0.04em; color: var(--text-tertiary); }
+.turn-diff-status.status-A { color: var(--diff-add); }
+.turn-diff-status.status-D { color: var(--diff-del); }
+.turn-diff-counts, .turn-diff-more { color: var(--text-tertiary); font-variant-numeric: tabular-nums; }
+.turn-diff-more { padding: 2px 6px; }
+@media (prefers-reduced-motion: reduce) { .turn-diff > summary, .turn-diff > summary::before, .turn-diff-file { transition: none; } }
+
 /* What a reply cost: Claude Code's own API-equivalent figure, quiet beside the time. */
 .msg-cost {
   margin-right: 4px;

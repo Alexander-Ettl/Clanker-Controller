@@ -96,6 +96,7 @@ const { notifyReply, textAfterLastTool } = require('./lib/notify.js');
 const { sweepStorage } = require('./lib/storage-gc.js');
 const voiceArchive = require('./lib/voice-archive.js');
 const { planUndo, applyUndo, fileCount, fileList } = require('./lib/turn-undo.js');
+const turnDiff = require('./lib/turn-diff.js');
 const { verifyInstruction, ARCHITECT_PREFIX, buildInstruction } = require('./lib/turn-extras.js');
 
 // P17-X: clock locale + format shared by both webviews ('24h' default, 'auto' follows vscode.env.language).
@@ -814,7 +815,9 @@ class ChatRun {
     const undo = this.turnUndo;
     this.turnUndo = null;
     if (!undo || !reply || reply.compact) return 0;
-    const count = fileCount(planUndo(undo.bases, undo.startedAt));
+    const summary = turnDiff.summarizeTurn(undo.bases, undo.startedAt, this.deps.workspaceDir);
+    const count = summary.count;
+    this.turnDiffSummary = count ? turnDiff.publicSummary(summary) : null; // posted with the undo offer
     if (count) reply.undo = { ...undo, count };
     return count;
   }
@@ -1446,7 +1449,7 @@ class ChatRun {
     if (delay !== undefined || event.type === 'delta' || event.type === 'usage') this.deps.chatStore.checkpoint(this.chat, { settled: this.settledCount(), delay });
     if (event.type === 'session') this.retitle();
     this.postEvent(autoCompact ? { ...event, compacting: true } : event);
-    if (undoCount) this.post({ type: 'undoOffer', count: undoCount });
+    if (undoCount) { this.post({ type: 'undoOffer', count: undoCount, diff: this.turnDiffSummary || null }); this.turnDiffSummary = null; }
     if (compacted) this.post({ type: 'usage', agent: compacted.agent, contextTokens: compacted.tokens, estimated: true });
     else if (contextEstimate) this.post({ type: 'usage', agent: contextEstimate.agent, contextTokens: contextEstimate.tokens, estimated: true });
     // An agent past 90% of its window compacts before the next turn can overflow it.
@@ -1778,6 +1781,7 @@ class ChatWindowHost {
       case 'scheduleMode': this.deps.setScheduleMode?.(message.mode); break; // the mode the last scheduled prompt used
       case 'remoteControl': void this.run.toggleRemote(); break;
       case 'undoTurn': void this.undoLastTurn(); break;
+      case 'openTurnDiff': void this.openTurnDiff(message.index); break;
       case 'requestToolOutput': {
         // The full text of one finished card's output. The index is absolute; the tool id guards against a chat that changed since.
         const entry = message.chatId === this.chat.id && Number.isSafeInteger(message.index) ? this.chat.messages[message.index] : null;
@@ -2282,6 +2286,27 @@ class ChatWindowHost {
     run.save();
     post({ type: 'undoOffer', count: 0 });
     notice(`Undid the last turn: ${done.restored} restored, ${done.removed} removed${done.failed.length ? `, ${done.failed.length} could not be changed (${done.failed.slice(0, 3).join(', ')})` : ''}.`);
+  }
+
+  /**
+   * A changed file under the last reply: the editor's diff view with the pre-turn copy (from the turn's git snapshot, through the
+   * clanker-snapshot: document provider) on the left and the file as it is now on the right. The webview sends only a list index;
+   * the paths come from the turn's own record, so the page can't ask for any other file.
+   */
+  async openTurnDiff(index) {
+    const run = this.run;
+    const notice = (text) => run.post({ type: 'notice', text });
+    const messages = run.chat.messages;
+    const last = messages[messages.findLastIndex((entry) => entry.role === 'assistant' && !entry.compact)];
+    if (!last?.undo || last.undone) return notice('There is no turn left to compare.');
+    const entry = turnDiff.summarizeTurn(last.undo.bases, last.undo.startedAt, this.deps.workspaceDir).files[Number(index)];
+    const snapshot = last.undo.bases.find(([root]) => root === entry?.root)?.[1];
+    if (!entry || !snapshot) return notice('That file is no longer part of the turn.');
+    const label = `/${entry.path}`;
+    const before = vscode.Uri.from({ scheme: turnDiff.SCHEME, path: label, query: turnDiff.snapshotQuery(entry.root, snapshot, entry.file) });
+    const now = entry.status === 'D' ? vscode.Uri.from({ scheme: turnDiff.SCHEME, authority: 'empty', path: label }) : vscode.Uri.file(path.join(entry.root, entry.file));
+    const title = entry.status === 'A' ? `${entry.path} (new in this turn)` : entry.status === 'D' ? `${entry.path} (deleted in this turn)` : `${entry.path} (before this turn ↔ now)`;
+    await vscode.commands.executeCommand('vscode.diff', before, now, title, { preview: true, preserveFocus: false });
   }
 
   /** The Compact button: compacts whichever agent's context the gauge shows (see ChatRun.compact). */
@@ -4417,6 +4442,13 @@ function activate(context) {
     }),
     // The palette command keeps its name: an extra chat in its own editor window, beside the sidebar chat.
     // Dictate without reaching for the button: bind a key to this in Keyboard Shortcuts. It ends by itself after a pause.
+    vscode.workspace.registerTextDocumentContentProvider(turnDiff.SCHEME, {
+      provideTextDocumentContent(uri) {
+        if (uri.authority === 'empty') return '';
+        const query = turnDiff.parseSnapshotQuery(uri.query);
+        return query ? turnDiff.snapshotText(query.root, query.snapshot, query.file) : '';
+      },
+    }),
     vscode.commands.registerCommand('aiChatPanel.toggleMic', () => void chatWindowManager.getOrCreateActive().handleMicToggle()),
     // Voice recordings are kept 7 days. If a long dictation broke, this transcribes whatever is missing and puts the text in the chat.
     vscode.commands.registerCommand('aiChatPanel.recoverVoiceRecording', () => recoverVoiceRecording()),
