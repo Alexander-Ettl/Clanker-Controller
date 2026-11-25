@@ -35,7 +35,7 @@ try {
     // Busy and empty: stop alone in the slot. Typing: send takes the very same spot, stop goes.
     assert.equal(await page.locator('#sendBtn').isHidden(), true, `${tag}: send is hidden while there is nothing to send`);
     await page.locator('#promptInput').fill('hello');
-    await page.waitForTimeout(150);
+    await page.waitForTimeout(900); // the send button scales in; measure it at rest
     assert.equal(await page.locator('#stopBtn').isHidden(), true, `${tag}: no stop button while typing`);
     const slot = await box('#sendBtn');
     assert.ok(Math.abs(slot.right - stop.right) < 1 && Math.abs(slot.top - stop.top) < 1, `${tag}: send takes stop's exact place`);

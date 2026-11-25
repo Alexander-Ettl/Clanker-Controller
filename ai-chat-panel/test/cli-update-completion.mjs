@@ -17,9 +17,9 @@ try {
   await send(completed);
   const note = page.locator('.cs-provider[data-agent=gemini] .cs-update-note');
   assert.equal(await note.innerText(), 'Update complete.');
-  await page.clock.runFor(4900);
+  await page.clock.runFor(4300); // the installed clock also ticks in real time, so leave room under 5 s
   assert.equal(await note.count(), 1);
-  await page.clock.runFor(200);
+  await page.clock.runFor(1500);
   assert.equal(await note.count(), 0, 'completion clears after five seconds without another host message');
   await send(completed);
   assert.equal(await note.count(), 0, 'status refresh cannot replay an expired completion');

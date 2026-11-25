@@ -46,7 +46,7 @@ try {
     assert.equal(await page.locator('[data-role=sessionWarmupStatusRow]').isHidden(), true, 'no results row before the first ping');
     await page.evaluate((last) => window.api.fleet({ models: [], clis: {}, services: { sessionWarmup: { enabled: true, last } } }), last);
     const status = await page.locator('[data-role=sessionWarmupStatus]').innerText();
-    assert.match(status, /Claude Haiku 5\.5 Low \d\d:\d\d, 31 tokens/);
+    assert.match(status, /Claude Haiku 5\.5 Low \d\d:\d\d(?: [AP]M)?, 31 tokens/);
     assert.match(status, /GPT 5\.5 Mini Low: window already running/);
     assert.match(status, /Gemini 3\.8 Flash Low: failed, exit 1/);
 

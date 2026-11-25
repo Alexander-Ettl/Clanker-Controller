@@ -107,6 +107,9 @@ function probe(options) {
   const seen = new Set();
   const compare = (a, b) => {
     if (a === b || a.contains(b) || b.contains(a)) return;
+    // By design (Liquid Glass): the transcript scrolls under the top bar and the composer dock (UI-04).
+    const glassOver = el => el.matches?.('.topbar, .compose-row');
+    if ((a.id === 'transcript' && glassOver(b)) || (b.id === 'transcript' && glassOver(a))) return;
     const key = selectorOf(a) + '|' + selectorOf(b); if (seen.has(key)) return; seen.add(key);
     const ra = a.getBoundingClientRect(), rb = b.getBoundingClientRect();
     const shared = common(ra, rb), smaller = Math.min(area(ra), area(rb));

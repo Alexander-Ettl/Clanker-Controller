@@ -32,7 +32,7 @@ import { installFakeHost } from './ui-tester/fake-host.mjs';
 const browser = await chromium.launch({ headless: true, channel: process.platform === 'win32' ? 'msedge' : undefined });
 const results = [];
 try {
-  async function open(width, stateName, sidebar = false) {
+  async function open(width, stateName, sidebar = true) {
     const page = await browser.newPage({ viewport: { width, height: 2600 } });
     const errors = [];
     page.on('pageerror', error => errors.push(error.message));

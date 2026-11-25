@@ -155,6 +155,11 @@ export async function runTester({ scenarios, outDir, baselineDir, only = null, u
           const findings = state.findings;
           if (state.crop || findings.some(item => SEVERE.has(item.severity))) { const file = path.join(outDir, 'shots', `${id.replace(/[^\w.-]/g, '_')}.png`); fs.writeFileSync(file, picture); state.shot = path.basename(file); }
           states.push(state); log(`${id}: ${findings.filter(item => SEVERE.has(item.severity)).length} to review, picture ${state.pixel.status}, tree ${state.aria}`);
+        } catch (error) {
+          // A scenario that cannot even be set up (a stale assertion, a missing control) is one finding, not the end of the whole run.
+          const failedId = `${scenario.id}@${width}`, message = String(error?.message || error).split('\n').slice(0, 3).join(' ').slice(0, 300);
+          states.push({ id: failedId, scenario: scenario.id, width, findings: [{ kind: 'scenario-failed', severity: 'error', selector: '(setup)', text: message, isNew: true, fingerprint: sha(`${failedId}|scenario-failed`) }], aria: 'new', pixel: { status: 'new' }, shot: null, crop: null });
+          log(`${failedId}: 1 to review, the scenario could not be set up: ${message}`);
         } finally { await page.close(); }
       }
     }

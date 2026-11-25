@@ -12,11 +12,11 @@ try {
   const input = page.getByRole('combobox', { name: 'Search settings' });
   assert.equal(await page.locator('#settingsModal .cs').evaluate(el => el.firstElementChild.classList.contains('cs-settings-search')), true);
   await input.fill('hotkey');
-  assert.equal(await page.getByRole('option').count(), 2);
+  assert.equal(await page.getByRole('listbox', { name: 'Matching settings' }).getByRole('option').count(), 2);
   await input.press('ArrowDown');
-  assert.match(await page.locator('[role="option"][aria-selected="true"]').innerText(), /Dictation hotkey/);
+  assert.match(await page.getByRole('listbox', { name: 'Matching settings' }).locator('[role="option"][aria-selected="true"]').innerText(), /Dictation hotkey/);
   await input.press('ArrowUp');
-  assert.match(await page.locator('[role="option"][aria-selected="true"]').innerText(), /Hotkey behavior/);
+  assert.match(await page.getByRole('listbox', { name: 'Matching settings' }).locator('[role="option"][aria-selected="true"]').innerText(), /Hotkey behavior/);
   await input.press('Enter');
   assert.equal(await page.locator('[data-pane="voice"]').isVisible(), true);
   assert.equal(await input.inputValue(), '');
@@ -27,8 +27,8 @@ try {
   assert.equal(await page.locator('.cs-project-icons').evaluate(el => el.open), true);
   await input.fill('confidence needed');
   await send({ type: 'fleet', services: { routing: { config: DEFAULTS, usage: {}, models: [], connected: {} } } });
-  await page.getByRole('option').first().waitFor();
-  assert.match(await page.getByRole('option').first().innerText(), /Routing › How it decides/);
+  await page.getByRole('listbox', { name: 'Matching settings' }).getByRole('option').first().waitFor();
+  assert.match(await page.getByRole('listbox', { name: 'Matching settings' }).getByRole('option').first().innerText(), /Routing › How it decides/);
   await input.press('Enter');
   assert.equal(await page.locator('[data-pane="routing"]').isVisible(), true);
   assert.equal(await page.locator('[data-key="g:decide"]').evaluate(el => el.open), true);
@@ -40,7 +40,7 @@ try {
   assert.equal(await input.inputValue(), '');
   assert.equal(await page.locator('#settingsModal').isVisible(), true, 'Escape clears the query before closing settings');
   await input.fill('microphone');
-  await page.getByRole('option').first().click();
+  await page.getByRole('listbox', { name: 'Matching settings' }).getByRole('option').first().click();
   assert.equal(await page.locator('[data-pane="voice"]').isVisible(), true);
   await input.fill('hotkey');
   await page.getByRole('button', { name: 'Clear settings search', exact: true }).click();

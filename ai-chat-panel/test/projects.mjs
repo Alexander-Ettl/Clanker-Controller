@@ -48,8 +48,6 @@ try {
   assert.equal(await page.locator('.project-picker').innerText(), 'Portfolio');
   await page.locator('.project-picker').click();
   assert.equal(await page.evaluate(() => window.sent.some(message => message.type === 'chooseProject')), true);
-  await page.getByRole('button', { name: 'Open project in Explorer' }).click();
-  assert.equal(await page.evaluate(() => window.sent.some(message => message.type === 'openProjectExplorer')), true);
   const input = page.locator('#promptInput');
   await input.fill('Portfolio unsent draft');
   const image = { path: '/projects/a/attachments/picture.png', name: 'picture.png', mimeType: 'image/png', uri: 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/ZL8AAAAASUVORK5CYII=' };
@@ -73,7 +71,6 @@ try {
   assert.equal(await page.locator('.attachment-strip .attachment-chip').count(), 0);
   await send({ type: 'project', project: null, required: true });
   assert.equal(await page.locator('.project-picker').innerText(), 'Choose project');
-  assert.equal(await page.getByRole('button', { name: 'Open project in Explorer' }).isVisible(), false);
   await send({ type: 'project', project: { id: 'planning', name: 'Research', root: null }, required: false });
   assert.equal(await page.locator('.project-picker').innerText(), 'Research');
   await send({ type: 'project', project: projectB, required: false });

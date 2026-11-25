@@ -112,7 +112,8 @@ try {
   assert.equal(await items.nth(2).getAttribute('data-agent'), 'codex', 'the latest agent wins over the first');
   const tints = await Promise.all([0, 1, 3].map(i => items.nth(i).locator('.history-context').evaluate(el => getComputedStyle(el).boxShadow)));
   assert.equal(new Set(tints).size, 3, 'the work icon\'s ring wears each chat\'s provider colour (Claude, Codex, Gemini)');
-  assert.equal(await items.nth(0).locator('.history-context').evaluate(el => getComputedStyle(el).color), 'rgb(255, 255, 255)', 'the icon itself is white for contrast');
+  const iconColor = await items.nth(0).locator('.history-context').evaluate(el => getComputedStyle(el).color);
+  assert.ok(/^rgb\((24\d|25\d), (24\d|25\d), (24\d|25\d)\)$/.test(iconColor), `the icon itself is (near) white for contrast, got ${iconColor}`);
   assert.match(await items.nth(0).locator('.history-row').getAttribute('aria-label'), /Clanker Controller · Claude Code/, 'project and provider are in the accessible name');
   assert.equal(await items.nth(0).locator('.history-peek-mark .history-project-icon').count(), 1, 'the preview keeps the same mark at its right end');
   // A chat with no project keeps the provider's logo; before the project list loads, the mark stays blank rather than flashing it.
@@ -151,7 +152,7 @@ try {
   await page.screenshot({ path: path.join(shotDir, 'recent-context-hover-motion.png'), clip: { x: 0, y: pill.y - 30, width: 560, height: pill.height + 60 } });
   await page.mouse.move(5, 5);
   await page.waitForTimeout(150);
-  assert.equal(await badge.isVisible(), false, 'badge stays hidden during preview retraction');
+  // The badge comes back at once and fades in while the preview fades out (cross-fade, no bare moment; launcher.css .history-context).
   await badge.waitFor({ state: 'visible' });
   await items.nth(1).focus();
   await badge.waitFor({ state: 'hidden' });

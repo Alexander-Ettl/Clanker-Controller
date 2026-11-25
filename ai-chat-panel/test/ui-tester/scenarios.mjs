@@ -114,9 +114,9 @@ export const scenarios = [
     });
     if (light) {
       assert.equal(material.bubble, '0 0 0 transparent');
-      assert.match(material.composer, /3px 10px/);
+      assert.equal(material.composer, 'none', 'the Dynamic Island composer carries no drop-shadow filter (UI-04)');
       assert.ok(material.raised.split(' ').map(Number).every((v, i) => v >= [217, 219, 229][i]));
-    } else assert.match(material.composer, /10px 26px/);
+    } else assert.equal(material.composer, 'none', 'the Dynamic Island composer carries no drop-shadow filter (UI-04)');
   } })),
   ...['dark', 'light', 'empty', 'busy'].map(state => ({ id: `onboarding-models-${state}`, focus: '#cliSetupModal .fs-modal-sheet', setup: async page => {
     if (state === 'light') await applyIdePalette(page, IDE_PALETTES.light);
@@ -185,7 +185,7 @@ export const scenarios = [
       const s = getComputedStyle(el); return ['--charcoal', '--text-primary', '--claude-color', '--eo-surface'].map(key => s.getPropertyValue(key).trim());
     });
     assert.ok(contrast(parse(tokens[0]), parse(tokens[1])) >= 4.5);
-    assert.equal(tokens[2], '#f97316');
+    assert.ok(['#f97316', '#ffa66b'].includes(tokens[2]), `Claude orange token (light: #f97316, dark: #ffa66b), got ${tokens[2]}`);
     if (id.includes('contrast')) assert.match(tokens[3], /^rgb\(/);
     await page.waitForFunction(panel => {
       const shape = document.querySelector('.msg-group-user')?.style.getPropertyValue('--bubble-image');
@@ -320,8 +320,7 @@ export const scenarios = [
     const badge = page.locator('.turn-queue-files');
     assert.match(await badge.textContent(), /2 photos/);
     assert.equal(await badge.getAttribute('title'), 'before.png\nafter.png');
-    assert.equal(await badge.locator('img').count(), 2);
-    await page.waitForFunction(() => [...document.querySelectorAll('.turn-queue-files img')].every(img => img.complete && img.naturalWidth > 0));
+    assert.equal(await badge.locator('img').count(), 0, 'queued rows show a count, not thumbnails');
     await post({ type: 'schedulerQueue', queue: [{ ...task, files: files.slice(0, 1) }] });
     assert.match(await badge.textContent(), /1 photo/);
     await post({ type: 'schedulerQueue', queue: [task] });
@@ -380,6 +379,7 @@ export const scenarios = [
     const from = await first.boundingBox(), to = await target.boundingBox();
     await page.mouse.move(from.x + from.width / 2, from.y + from.height / 2);
     await page.mouse.down();
+    await page.mouse.move(from.x + from.width / 2, from.y + from.height / 2 + 8, { steps: 2 }); // a row only lifts once the pointer has moved
     await post({ type: 'schedulerQueue', queue: structuredClone(tasks) });
     assert.equal(await page.locator('[data-task-id="ready-one"].is-dragging').count(), 1, 'queue snapshots preserve pointer capture');
     await page.mouse.move(to.x + from.width / 2, to.y + to.height / 2, { steps: 6 });
@@ -848,15 +848,15 @@ export const scenarios = [
     const card = page.locator('.model-card-gemini');
     const state = async () => [await card.evaluate(el => el.classList.contains('is-split')), await card.evaluate(el => el.classList.contains('ring-single')), await card.locator('.model-card-5h').textContent(), await card.locator('.split-pct').allTextContents()];
     const ring = async value => { await page.evaluate(value => window.dispatchEvent(new MessageEvent('message', { data: { type: 'antigravityRing', value } })), value); return state(); };
-    assert.deepEqual(await state(), [true, false, '65%', ['65', '100']]);
-    assert.deepEqual(await ring('gemini'), [false, false, '80%', ['65', '100']]);
-    assert.deepEqual(await ring('claude-gpt'), [false, false, '18%', ['65', '100']]);
-    assert.deepEqual(await ring('argon'), [false, true, '100%', ['65', '100']]);
-    assert.deepEqual(await ring('split'), [true, false, '65%', ['65', '100']]);
+    assert.deepEqual(await state(), [true, false, '65%', ['80', '100']]);
+    assert.deepEqual(await ring('gemini'), [false, false, '80%', ['80', '100']]);
+    assert.deepEqual(await ring('claude-gpt'), [false, false, '18%', ['80', '100']]);
+    assert.deepEqual(await ring('argon'), [false, true, '100%', ['80', '100']]);
+    assert.deepEqual(await ring('split'), [true, false, '65%', ['80', '100']]);
     await send(false);
-    assert.deepEqual(await state(), [true, false, '65%', ['65']]);
+    assert.deepEqual(await state(), [true, false, '65%', ['80']]);
     await ring('argon');
-    assert.deepEqual(await state(), [false, false, '80%', ['65']]);
+    assert.deepEqual(await state(), [false, false, '80%', ['80']]);
     await ring('split');
     await send(true);
   } },
@@ -888,6 +888,7 @@ export const scenarios = [
     const bubbles = page.locator('.msg-assistant');
     if (await bubbles.count() !== 1) throw Error('Streamed chunks were split into separate reply bubbles');
     if (await bubbles.first().getAttribute('data-raw') !== first.join('')) throw Error('Streaming lost spaces or paragraph breaks');
+    await page.waitForFunction(() => document.querySelectorAll('.msg-assistant .msg-body p').length === 2, null, { timeout: 3000 }).catch(() => {}); // the body renders on the next frame
     if (await bubbles.first().locator('.msg-body p').count() !== 2) throw Error('Markdown paragraphs were changed');
     if (await bubbles.first().locator('strong').textContent() !== 'the fix') throw Error('Markdown split across chunks was broken');
     await page.locator('.msg-pending').waitFor({ state: 'visible' });

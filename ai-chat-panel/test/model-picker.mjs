@@ -81,7 +81,7 @@ try {
   await page.getByRole('button',{name:'Edit with AI',exact:true}).click();
   assert.equal(await page.evaluate(()=>window.sent.at(-1).type),'editRoutingConfigWithAI');
   await page.evaluate(()=>window.postMessage({type:'prefillPrompt',routingConfig:true,text:'Adjust my routing preferences'},'*'));
-  assert.equal(await page.locator('#settingsModal').isVisible(),false);
+  await page.locator('#settingsModal').waitFor({state:'hidden'}); // the modal closes with a short exit animation
   assert.equal(await page.locator('#promptInput').inputValue(),'Adjust my routing preferences');
   const orchestrator = { id: 'gemini-pro-orchestrator-g1-pro', agent: 'gemini', model: 'gemini-pro-orchestrator-g1-pro', label: 'Orchestrator (Argon)', shortLabel: 'Orchestrator', brand: 'antigravityArgon' };
   await page.evaluate((entry) => window.postMessage({ type: 'modelCatalog', catalog: [entry], available: [entry] }, '*'), orchestrator);

@@ -6,6 +6,7 @@ import assert from 'node:assert/strict';
 import Module, { createRequire } from 'node:module';
 import fs from 'node:fs';
 import path from 'node:path';
+import os from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { chromium } from 'playwright';
 
@@ -30,7 +31,7 @@ const capture = {
 const manager = Object.assign(Object.create(ChatWindowManager.prototype), { hosts: new Set(), activeHost: null, mic: null, deps: { voiceCapture: capture } });
 const windows = ['sidebar', 'popup-1', 'popup-2'].map(name => {
   const received = [];
-  const host = Object.assign(Object.create(ChatWindowHost.prototype), { name, received, panel: { webview: { postMessage: message => { received.push(message); return Promise.resolve(true); } } }, deps: { chatWindowManager: manager, voiceCapture: capture } });
+  const host = Object.assign(Object.create(ChatWindowHost.prototype), { name, received, panel: { webview: { postMessage: message => { received.push(message); return Promise.resolve(true); } } }, deps: { voiceDir: fs.mkdtempSync(path.join(os.tmpdir(), 'voice-targets-')), chatWindowManager: manager, voiceCapture: capture } });
   manager.hosts.add(host);
   return host;
 });

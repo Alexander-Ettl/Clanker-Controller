@@ -60,8 +60,10 @@ try {
   // Codex runs out: the extension drops it from the catalog and flags it unavailable.
   const failure = { kind: 'plan', reason: 'Needs ChatGPT Plus or above.', detail: 'This account is on the Free plan' };
   await send({ type: 'modelCatalog', catalog: catalog('codex'), available: catalog('codex') });
-  await send(providerState({ unavailable: failure }));
-  assert.deepEqual(await cards(), ['claude', 'gemini'], 'no usage ring for an unavailable CLI');
+  await send(providerState({ unavailable: failure, fault: { kind: 'plan', code: null, title: failure.reason, detail: failure.detail, action: 'restoreCli', label: 'Allow a retry', steps: [] } }));
+  // An unusable CLI keeps its ring, in red, so hovering can say why (see launcher.js usableAgents); only its models leave the selector.
+  assert.deepEqual(await cards(), ['claude', 'codex', 'gemini'], 'an unavailable CLI keeps its ring');
+  assert.equal(await page.locator('#modelCards .model-card[data-agent="codex"]').evaluate(el => el.classList.contains('is-faulty')), true, 'and the ring is red');
   await page.locator('#modelPill').click();
   const menu = await page.locator('#modelMenu').innerText();
   assert.doesNotMatch(menu, /GPT|Codex/, 'no Codex models in the selector');
@@ -91,7 +93,7 @@ try {
   assert.deepEqual(await cards(), ['claude', 'codex', 'gemini']);
   assert.equal(await card.locator('.cs-state').innerText() !== 'Not available', true);
   assert.deepEqual(errors, []);
-  console.log('Unavailable CLI: ring and selector models drop out, Your CLIs says why, Try again restores them.');
+  console.log('Unavailable CLI: the ring turns red and selector models drop out, Your CLIs says why, Try again restores them.');
 } finally {
   await browser.close();
 }
