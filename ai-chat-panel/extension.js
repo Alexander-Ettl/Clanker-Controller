@@ -4510,7 +4510,8 @@ function activate(context) {
   });
   void groqAccount.init();
   voiceHotkey.start(voiceConfig().get('voiceHotkey', ''));
-  // Linux: a desktop shortcut runs scripts/linux/clanker-dictate, which toggles dictation through this socket.
+  // Linux: a desktop shortcut runs ~/.clanker/clanker-dictate (published below), which toggles dictation through this socket.
+  try { require('./lib/dictate-socket').publishScript(); } catch { /* the shortcut script is optional */ }
   const dictateHandlers = createHotkeyHandlers({
     mode: () => 'toggle',
     isRecording: () => voiceCapture.isRecording(),

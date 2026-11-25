@@ -29,7 +29,7 @@ One list, one place per capability. The README, the site and the store page copy
 ## Voice
 
 - **Dictation** with Groq Whisper: record in the chat or by hotkey, cleanup, a personal dictionary, long recordings kept 7 days and recoverable (**Recover Voice Recording**). Needs a free Groq key (Settings > Voice). Code: `voice-router/`, `lib/voice-*.js`.
-- **Hotkey.** System-wide on Windows (`voiceHotkey`). On Linux a desktop shortcut runs `scripts/linux/clanker-dictate`, which talks to the editor through a Unix socket (`lib/dictate-socket.js`).
+- **Hotkey.** System-wide on Windows (`voiceHotkey`). On Linux a desktop shortcut runs `~/.clanker/clanker-dictate`, which talks to the editor through a Unix socket (`lib/dictate-socket.js`).
 - **Model routing** by prompt and quota ([routing](routing-config.md)).
 
 ## Projects and loops
@@ -45,7 +45,7 @@ One list, one place per capability. The README, the site and the store page copy
 | Platform | Status |
 |---|---|
 | Windows 10/11 | Primary; a Windows CI job runs the unit tests. |
-| Linux | Verified on Ubuntu 24.04 (GNOME) and Kubuntu (KDE Plasma, Wayland, VS Code), an Ubuntu CI job runs the unit tests: notifications, chime, keep-awake, clipboard, media pause, dictation, process cleanup. The system-wide hotkey is replaced by `scripts/linux/clanker-dictate`. |
+| Linux | Verified on Ubuntu 24.04 (GNOME) and Kubuntu (KDE Plasma, Wayland, VS Code), an Ubuntu CI job runs the unit tests: notifications, chime, keep-awake, clipboard, media pause, dictation, process cleanup. The system-wide hotkey is replaced by `~/.clanker/clanker-dictate`. |
 | macOS | Untested. |
 | Editors | VS Code and Antigravity IDE. |
 

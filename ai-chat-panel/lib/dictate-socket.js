@@ -1,7 +1,7 @@
 'use strict';
 
 // Linux has no app-level global hotkey (Wayland forbids it, X11 grabs are fragile). The desktop owns the shortcut instead:
-// a KDE/GNOME custom shortcut runs scripts/linux/clanker-dictate, which writes one line to this Unix socket, and the line
+// a KDE/GNOME custom shortcut runs ~/.clanker/clanker-dictate (copied from lib/clanker-dictate at every start), which writes one line to this Unix socket, and the line
 // does what the Windows hotkey's key-down does (start dictation, or stop and transcribe). Every editor window listens on its
 // own socket (…-<pid>.sock) and touches it when it gains focus; the script tries the most recently touched one first, so the
 // shortcut reaches the window you used last without windows fighting over one path.
@@ -78,4 +78,17 @@ class DictateSocket {
   }
 }
 
-module.exports = { socketPath, DictateSocket };
+/** Copies the shortcut script to ~/.clanker/clanker-dictate so a Marketplace install has it at a fixed path. Returns that path (null off Linux). */
+function publishScript({ home = process.env.CLANKER_HOME || path.join(os.homedir(), '.clanker'), platform = process.platform } = {}) {
+  if (platform !== 'linux') return null;
+  const source = fs.readFileSync(path.join(__dirname, 'clanker-dictate'));
+  const target = path.join(home, 'clanker-dictate');
+  fs.mkdirSync(home, { recursive: true });
+  let current = null;
+  try { current = fs.readFileSync(target); } catch { /* first start */ }
+  if (!current || !current.equals(source)) fs.writeFileSync(target, source);
+  fs.chmodSync(target, 0o755);
+  return target;
+}
+
+module.exports = { publishScript, socketPath, DictateSocket };

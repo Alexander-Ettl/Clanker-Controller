@@ -69,7 +69,7 @@ test('it does nothing off Linux', () => {
 
 test('the shortcut script reaches the window used last and skips dead sockets', { skip: !linux && 'Linux only (Unix socket and bash script)' }, async () => {
   const dir = tmp();
-  const script = path.join(__dirname, '..', '..', 'scripts', 'linux', 'clanker-dictate');
+  const script = path.join(__dirname, '..', 'lib', 'clanker-dictate');
   const uid = process.getuid();
   const hits = [];
   // Real pids, because a socket whose pid is gone is swept when another window starts.
@@ -87,4 +87,15 @@ test('the shortcut script reaches the window used last and skips dead sockets', 
   } finally { older.stop(); newer.stop(); }
   await new Promise((resolve) => setTimeout(resolve, 50));
   assert.equal(await run(), 1, 'with no window listening the script fails');
+});
+
+test('the shortcut script is published to a fixed path, executable, and left alone when unchanged', { skip: !linux && 'Linux only' }, () => {
+  const home = tmp();
+  const file = require('../lib/dictate-socket').publishScript({ home });
+  assert.equal(file, path.join(home, 'clanker-dictate'));
+  assert.ok(fs.statSync(file).mode & 0o100, 'executable');
+  const before = fs.statSync(file).mtimeMs;
+  require('../lib/dictate-socket').publishScript({ home });
+  assert.equal(fs.statSync(file).mtimeMs, before);
+  assert.equal(require('../lib/dictate-socket').publishScript({ home, platform: 'win32' }), null);
 });
