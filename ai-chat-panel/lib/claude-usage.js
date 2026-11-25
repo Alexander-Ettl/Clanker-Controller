@@ -12,6 +12,7 @@
  */
 const { spawn } = require('node:child_process');
 const { locate, resolveShim } = require('./binary-locator.js');
+const { cliTelemetry } = require('./cli-telemetry.js');
 
 const MONTHS = { jan: 0, feb: 1, mar: 2, apr: 3, may: 4, jun: 5, jul: 6, aug: 7, sep: 8, oct: 9, nov: 10, dec: 11 };
 
@@ -69,7 +70,7 @@ function probeClaudeUsage(cwd) {
     let child;
     const timer = setTimeout(() => { try { child?.kill(); } catch { /* gone */ } resolve(null); }, 45000);
     try {
-      child = spawn(shim?.command || binary, [...(shim?.args || []), '-p', '/usage', '--output-format', 'stream-json', '--verbose'], { cwd, windowsHide: true, stdio: ['ignore', 'pipe', 'ignore'] });
+      child = spawn(shim?.command || binary, [...(shim?.args || []), '-p', '/usage', '--output-format', 'stream-json', '--verbose'], { cwd, windowsHide: true, stdio: ['ignore', 'pipe', 'ignore'], env: { ...process.env, ...cliTelemetry('claude').env } });
     } catch { clearTimeout(timer); return resolve(null); }
     child.on('error', () => { clearTimeout(timer); resolve(null); });
     child.stdout.on('data', (chunk) => { out += chunk; });

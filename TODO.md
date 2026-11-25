@@ -298,6 +298,11 @@ Existing technical follow-up from [adding a provider](docs/adding-a-provider.md)
 
 ## Needs investigation
 
+### TELEMETRY-01 · Agy telemetry in Clanker
+
+- [ ] Extend the CLI telemetry switch when Agy offers a launch override for its headless stream, or when Clanker adopts ACP (see ACP-01). The installed Agy headless CLI rejects `--disable-telemetry`. Google documents that flag for [ACP](https://antigravity.google/docs/ide/extensions/acp) and saves the headless CLI's [Enable Telemetry preference](https://antigravity.google/docs/settings#ai-credits-and-feedback) with the account. Verify both toggle states without changing the account preference.
+
+
 These come from recent performance reviews, not new confirmed defects. Reproduce or measure before changing behavior.
 
 | ID | Follow-up and next action | Completion criterion / evidence |
@@ -320,6 +325,8 @@ These come from recent performance reviews, not new confirmed defects. Reproduce
 Consider providers beyond the main coding CLIs, including **Groq**. Keep **Groq** distinct from **Grok** and check billing, quota scope and reset rules per service; don't apply one universal five-hour or 24-hour timer. This is a design constraint, not a task to mark complete.
 
 ## Recently closed / reconciled
+
+- 2026-11-25 · Added an off-by-default CLI telemetry switch under Chat Settings > General for Codex and Claude Code. [CLI launch overrides](ai-chat-panel/lib/cli-telemetry.js).
 
 - 2026-11-22 · LINUX: every Windows-only code path now has a Linux counterpart (see README, Platform), including `antigravity-usage-statusbar` `/proc` + `ss` discovery, and is verified on an Ubuntu 24.04 QEMU VM (VS Code 1.147 installed via `install-extension.mjs`, full unit suite 785/785 pass + 1 Windows-only skip, `npm run check`, `verify:models`, 11 real-tool X11/PulseAudio/MPRIS/dunst/systemd-inhibit/proc/killTree/ffmpeg checks, and 6 Wayland Sway `wl-copy`/`wl-paste`, statusbar RPC, `StreamEngine` turn/cancel, and XDG recovery checks). Fixed `image-shrink.js` nested `min()`, `keep-awake.js` `--what=sleep`, `antigravity-usage-statusbar/antigravity.js` Linux discovery, and Voice Settings narrow-sidebar wrapping / unsupported hotkey button hiding. **Open (physical hardware only):** sign in to real CLIs and dictate with a real physical microphone on a Linux desktop.
 

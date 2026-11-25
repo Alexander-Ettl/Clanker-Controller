@@ -1216,6 +1216,22 @@ export const scenarios = [
     assert.equal(await page.locator('#settingsModal').innerText().then(text => text.includes('Use your existing account, or create one during sign-in.')), false);
   } })),
   ...['general', 'voice', 'remote', 'models'].map(tab => ({ id: `settings-${tab}`, height: 1400, focus: MODAL, setup: openSettings(tab) })),
+  { id: 'settings-cli-telemetry', height: 1000, scope: '.cs-row:has([data-role=cliTelemetry])', focus: MODAL, setup: async page => {
+    await openSettings('general')(page);
+    const toggle = page.getByRole('switch', { name: 'CLI telemetry' });
+    const fleet = services => page.evaluate(services => window.dispatchEvent(new MessageEvent('message', { data: { type: 'fleet', models: [], clis: {}, services } })), services);
+    await fleet({});
+    assert.equal(await toggle.getAttribute('aria-checked'), 'false');
+    await toggle.press('Space');
+    assert.equal(await toggle.getAttribute('aria-checked'), 'true');
+    assert.deepEqual(await page.evaluate(() => window.sent.findLast(m => m.type === 'setCliTelemetry')), { type: 'setCliTelemetry', enabled: true });
+    await fleet({ cliTelemetry: true });
+    assert.equal(await toggle.getAttribute('aria-checked'), 'true');
+    await toggle.click();
+    assert.equal(await toggle.getAttribute('aria-checked'), 'false');
+    assert.deepEqual(await page.evaluate(() => window.sent.findLast(m => m.type === 'setCliTelemetry')), { type: 'setCliTelemetry', enabled: false });
+    await toggle.evaluate(el => el.closest('.cs-row').scrollIntoView({ block: 'center' }));
+  } },
   { id: 'settings-chat-names', height: 1400, scope: '.chat-names-picker', focus: MODAL, setup: async page => {
     await openSettings('general')(page);
     const pill = name => page.locator(`.names-pill[data-names="${name}"]`);

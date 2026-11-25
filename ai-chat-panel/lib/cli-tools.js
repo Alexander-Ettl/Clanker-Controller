@@ -9,6 +9,7 @@
 const { execFile } = require('node:child_process');
 const https = require('node:https');
 const { locate, resolveShim, headlessEnv } = require('./binary-locator.js');
+const { cliTelemetry } = require('./cli-telemetry.js');
 const { MODEL_CATALOG, normalizeModels, setModelCatalog, setFavoriteModels, setEnabledAgents, modelOption } = require('./model-catalog.js');
 const { withPrompt, cleanPrompt, promptFor } = require('../media/model-prompts.js');
 
@@ -70,12 +71,13 @@ const parseAgyLatest = (text) => providers.get('gemini').parseLatest(text);
  * Runs a CLI (npm .cmd shims included) headless; never rejects. stdin is closed at once: `codex update` and
  * `agy update` wait on an open stdin pipe and would sit there until the timeout. `onLine` hears each output line.
  */
-function runCli(file, args, timeout, onLine, input = '') {
+function runCli(file, args, timeout, onLine, input = '', agent) {
+  const telemetry = cliTelemetry(agent);
   const isCmd = /\.cmd$/i.test(file);
   const shim = isCmd ? resolveShim(file) : null;
   const shell = isCmd && !shim;
   return new Promise((resolve) => {
-    const child = execFile(shim ? shim.command : shell ? `"${file}"` : file, [...(shim ? shim.args : []), ...args], { windowsHide: true, timeout, shell, maxBuffer: 16 << 20, env: { ...process.env, ...headlessEnv(file) } },
+    const child = execFile(shim ? shim.command : shell ? `"${file}"` : file, [...(shim ? shim.args : []), ...telemetry.args, ...args], { windowsHide: true, timeout, shell, maxBuffer: 16 << 20, env: { ...process.env, ...headlessEnv(file), ...telemetry.env } },
       (error, stdout, stderr) => resolve({ ok: !error, code: error ? (Number.isInteger(error.code) ? error.code : null) : 0, stdout: String(stdout), stderr: String(stderr || error?.message || '') }));
     child.stdin?.on('error', () => {}); // a CLI may exit before it reads initialization
     child.stdin?.end(input);
@@ -93,7 +95,7 @@ async function installedVersion(agent) {
   if (!file) return null;
   const args = providers.get(agent)?.versionArgs || ['--version'];
   for (const timeout of [10000, 25000]) {
-    const { stdout, stderr } = await runCli(file, args, timeout);
+    const { stdout, stderr } = await runCli(file, args, timeout, undefined, '', agent);
     const version = parseVersion(stdout) || parseVersion(stderr);
     if (version) return version;
   }
@@ -133,7 +135,7 @@ async function checkVersions() {
 async function updateCli(agent, onLine) {
   const file = locate(agent).path;
   if (!file) return { ok: false, message: 'CLI not found' };
-  const { ok, stdout, stderr } = await runCli(file, providers.get(agent)?.updateArgs || ['update'], 180000, onLine);
+  const { ok, stdout, stderr } = await runCli(file, providers.get(agent)?.updateArgs || ['update'], 180000, onLine, '', agent);
   // npm's cleanup warnings are noise; the last line that is not one carries the outcome.
   const lines = (ok ? stdout : stderr || stdout).split(/\r?\n/).map((line) => line.trim()).filter((line) => line && !/^npm warn/i.test(line));
   return { ok, message: lines.at(-1) || (ok ? 'Updated' : 'Update failed') };
@@ -148,7 +150,7 @@ async function fetchModels(enabled = providers.ids()) {
     const file = enabled.includes(provider.id) ? locate(provider.id).path : null;
     if (!file) return [provider.id, null];
     try {
-      const found = await provider.discoverModels({ file, runCli });
+      const found = await provider.discoverModels({ file, runCli: (binary, args, timeout, onLine, input) => runCli(binary, args, timeout, onLine, input, provider.id) });
       return [provider.id, found ? normalizeModels(found) : null];
     } catch (error) {
       require('./log.js').error('model discovery', `${provider.name || provider.id}:`, error);

@@ -35,6 +35,7 @@ async function main(argv = [], { out = (text) => console.log(text), err = (text)
   if (argv.includes('--help') || argv.includes('-h')) { out('Usage: clanker-run-due.js [--max N] [--quiet]\nRuns scheduled Clanker prompts that are due while the editor is closed.'); return 0; }
   const settings = readSettings();
   if (!settings) { err('Clanker has not published its settings yet. Open the editor once, then try again.'); return 2; }
+  require('./cli-telemetry.js').configureCliTelemetry(() => settings.cliTelemetry);
   const maxFlag = argv.indexOf('--max');
   const maxTasks = maxFlag >= 0 ? Math.max(1, Math.min(50, Number(argv[maxFlag + 1]) || 10)) : 10;
   const quiet = argv.includes('--quiet');

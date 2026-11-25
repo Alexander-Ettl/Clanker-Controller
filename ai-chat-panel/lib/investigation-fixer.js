@@ -7,10 +7,15 @@
 
 const fs = require('node:fs');
 const { locate } = require('./binary-locator');
+const { cliTelemetry } = require('./cli-telemetry.js');
 const { processOutput, usageTotal, extractJson, cliHelp } = require('./investigation-runner');
 const { shimmed } = require('./loop-exec');
 
-const withShim = (found, args, input) => { const spec = shimmed(found, args); return { command: spec.command, args: spec.args, env: spec.env, input }; };
+function withShim(agent, found, args, input) {
+  const telemetry = cliTelemetry(agent);
+  const spec = shimmed(found, [...telemetry.args, ...args]);
+  return { ...spec, env: { ...spec.env, ...telemetry.env }, input };
+}
 
 // Claude takes the level as a flag and Codex as a config key; Antigravity has it in the model id.
 const claudeModel = (model, effort) => [...(model && model !== 'claude' ? ['--model', model] : []), ...(effort ? ['--effort', effort] : [])];
@@ -29,7 +34,7 @@ function fixerSpec(agent, { model, effort, cwd, prompt }) {
     args = ['--model', model, '--mode', 'accept-edits', '--sandbox', '--disable-slash-commands', '--add-dir', cwd, '--input-format', 'stream-json', '--output-format', 'stream-json'];
     input = `${JSON.stringify({ event: 'user', message: { content: prompt } })}\n`;
   } else throw new Error(`No unattended editor recipe for ${agent}.`);
-  return withShim(found, args, input);
+  return withShim(agent, found, args, input);
 }
 
 /** A reader: same CLIs, no edit rights and no tools. The task goes in the prompt; the reply must be one JSON object. */
@@ -45,7 +50,7 @@ function readerSpec(agent, { model, cwd, prompt }) {
   } else if (agent === 'codex') {
     args = ['exec', '--json', '--sandbox', 'read-only', '-c', 'approval_policy="never"', '--skip-git-repo-check', '--ephemeral', '-C', cwd, ...(model ? ['-m', model] : []), '-'];
   } else throw new Error(`No reader recipe for ${agent}.`);
-  return withShim(found, args, `${prompt}\n`);
+  return withShim(agent, found, args, `${prompt}\n`);
 }
 
 /**
@@ -69,7 +74,7 @@ function researchSpec(agent, { model, effort, cwd, prompt }) {
     const readOnly = 'This is a read-only research run. Terminal commands are unavailable: do not call run_command, command_status or send_command_input (including curl, PowerShell, Python or shell commands). Use the available file-reading tools for files, search_web for searches, and a read-only URL/browser tool for original pages if one is declared in your toolset. Do not assume a URL-reading tool is available. If a source cannot be opened with the available read tools, mark it [BLOCKED] and continue. Never attempt a denied action again or work around its denial. Always return your findings in a final text reply; do not write a result file yourself.';
     input = `${JSON.stringify({ event: 'user', message: { content: `${readOnly}\n\n${prompt}` } })}\n`;
   } else throw new Error(`No research recipe for ${agent}.`);
-  return withShim(found, args, input);
+  return withShim(agent, found, args, input);
 }
 
 function parseLine(line, state) {

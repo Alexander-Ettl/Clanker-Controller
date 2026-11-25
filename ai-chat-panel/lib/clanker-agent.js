@@ -362,7 +362,12 @@ async function main(argv, io = {}) {
   const cwd = path.resolve(flags.cwd || process.cwd());
   try {
     // CLANKER_AGENT_SPEC_MODULE: a module exporting (request, args) => spec, so tests can run the detached worker against a fake CLI.
-    if (command === '_worker') { await runJob(names[0], process.env.CLANKER_AGENT_SPEC_MODULE ? { spec: require(process.env.CLANKER_AGENT_SPEC_MODULE) } : {}); return 0; }
+    if (command === '_worker') {
+      const { readSettings } = require('./headless-runner.js');
+      require('./cli-telemetry.js').configureCliTelemetry(() => readSettings()?.cliTelemetry);
+      await runJob(names[0], process.env.CLANKER_AGENT_SPEC_MODULE ? { spec: require(process.env.CLANKER_AGENT_SPEC_MODULE) } : {});
+      return 0;
+    }
     if (command === 'models') {
       const filter = words(names.join(' '));
       const all = readCatalog(io.home);

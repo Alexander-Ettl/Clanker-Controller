@@ -280,6 +280,12 @@
                     "default": true,
                     "markdownDescription": "Silently update outdated connected provider CLIs while they have no active work and you have not typed with them for 30 seconds. Other providers can update while you chat. Turn off to use manual updates. Chat Settings > General has the switch."
                 },
+                "aiChatPanel.cliTelemetry": {
+                    "type": "boolean",
+                    "scope": "application",
+                    "default": false,
+                    "markdownDescription": "Allow Codex and Claude Code processes started by Clanker to follow their own telemetry settings. Reload the editor to apply changes to running processes. Agy telemetry is controlled in its /config menu."
+                },
                 "aiChatPanel.sessionWarmup": {
                     "type": "boolean",
                     "default": true,

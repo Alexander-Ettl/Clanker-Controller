@@ -10,6 +10,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { run, shimmed } = require('./loop-exec.js');
+const { cliTelemetry } = require('./cli-telemetry.js');
 const { fromRateLimitEvent } = require('./claude-usage.js');
 const { usageTotal } = require('./investigation-runner.js');
 
@@ -38,13 +39,13 @@ function cheapestModel(models, agent, brand) {
 function commandFor(agent, entry, binary, { lean = true } = {}) {
   const { command, args, env } = shimmed(binary, []);
   if (agent === 'claude') {
-    return { command, env, input: `${PROMPT}\n`, args: [...args, '-p', '--output-format', 'stream-json', '--verbose', '--model', entry.model, ...(entry.effort ? ['--effort', entry.effort] : []),
+    return { command, env: { ...env, ...cliTelemetry(agent).env }, input: `${PROMPT}\n`, args: [...args, '-p', '--output-format', 'stream-json', '--verbose', '--model', entry.model, ...(entry.effort ? ['--effort', entry.effort] : []),
       ...(lean ? ['--tools', '', '--system-prompt', 'Reply with only the number the user asks for.', '--no-session-persistence', '--disable-slash-commands', '--setting-sources', 'local', '--strict-mcp-config'] : [])] };
   }
   if (agent === 'codex') {
     // No --ephemeral: Codex's quota is read from its session logs (quota-sources.js), so a ping that leaves none starts the
     // window without Clanker ever seeing it, and the ring keeps showing no window running.
-    return { command, env, input: `${PROMPT}\n`, args: [...args, 'exec', '--json', '--skip-git-repo-check', '--sandbox', 'read-only', '--model', entry.model, ...(entry.effort ? ['-c', `model_reasoning_effort="${entry.effort}"`] : []), '-'] };
+    return { command, env, input: `${PROMPT}\n`, args: [...args, 'exec', '--json', '--skip-git-repo-check', '--sandbox', 'read-only', ...cliTelemetry(agent).args, '--model', entry.model, ...(entry.effort ? ['-c', `model_reasoning_effort="${entry.effort}"`] : []), '-'] };
   }
   return { command, env, input: JSON.stringify({ event: 'user', message: { content: PROMPT } }) + '\n', args: [...args, '--model', entry.model, '--mode', 'plan', '--sandbox', '--disable-slash-commands',
     '--input-format', 'stream-json', '--output-format', 'stream-json', '--print-timeout', `${TIMEOUT_MS / 1000}s`] };

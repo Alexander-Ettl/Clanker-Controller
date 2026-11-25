@@ -1220,13 +1220,14 @@ test('CLI command lines use only flags the real CLIs accept, and stdin payloads 
   const claude = e.commandFor('claude', 'hi');
   assert.ok(claude.args.includes('-p') && claude.args.includes('auto') && !claude.args.includes('--model'));
   assert.ok(!claude.args.includes('accept-non-destructive') && !claude.args.includes('--input-format'));
+  const telemetryArgs = ['-c', 'analytics.enabled=false', '-c', 'otel.exporter=none', '-c', 'otel.metrics_exporter=none', '-c', 'otel.trace_exporter=none'];
   const codex = e.commandFor('codex', 'hi');
-  assert.deepEqual(codex.args, ['exec', '--json', '--sandbox', 'danger-full-access', '-c', 'approval_policy="never"', '-c', 'approvals_reviewer="user"', '--skip-git-repo-check', '-m', 'gpt-6.1-sol', '-']);
+  assert.deepEqual(codex.args, ['exec', '--json', '--sandbox', 'danger-full-access', '-c', 'approval_policy="never"', '-c', 'approvals_reviewer="user"', '--skip-git-repo-check', ...telemetryArgs, '-m', 'gpt-6.1-sol', '-']);
   const review = e.commandFor('codex', 'focus on races', [], { codexCommand: 'review' });
-  assert.deepEqual(review.args, ['exec', 'review', '--json', '--skip-git-repo-check', '-m', 'gpt-6.1-sol', '-']);
+  assert.deepEqual(review.args, ['exec', 'review', '--json', '--skip-git-repo-check', ...telemetryArgs, '-m', 'gpt-6.1-sol', '-']);
   assert.equal(review.input, 'focus on races\n');
   const defaultReview = e.commandFor('codex', '', [], { codexCommand: 'review', codexCommandArgs: ['--uncommitted'] });
-  assert.deepEqual(defaultReview.args, ['exec', 'review', '--uncommitted', '--json', '--skip-git-repo-check', '-m', 'gpt-6.1-sol']);
+  assert.deepEqual(defaultReview.args, ['exec', 'review', '--uncommitted', '--json', '--skip-git-repo-check', ...telemetryArgs, '-m', 'gpt-6.1-sol']);
   assert.equal(defaultReview.input, '');
   const gemini = e.commandFor('gemini', 'hi');
   assert.deepEqual(JSON.parse(gemini.input), { event: 'user', message: { content: 'hi' } });

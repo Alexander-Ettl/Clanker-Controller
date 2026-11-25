@@ -3,6 +3,7 @@
 const { EventEmitter } = require('node:events');
 const { spawn } = require('node:child_process');
 const { locate, resolveShim } = require('./binary-locator.js');
+const { cliTelemetry } = require('./cli-telemetry.js');
 const { launchFailure } = require('./providers/shared.js');
 
 const REQUEST_TIMEOUT_MS = 30000;
@@ -40,7 +41,7 @@ function processSpec(binary) {
   const shell = process.platform === 'win32' && /\.cmd$/i.test(binary) && !shim;
   return {
     command: shim?.command || (shell ? `"${binary}"` : binary),
-    args: [...(shim?.args || []), 'app-server', '--stdio'],
+    args: [...(shim?.args || []), 'app-server', '--stdio', ...cliTelemetry('codex').args],
     shell,
   };
 }

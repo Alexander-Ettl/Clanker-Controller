@@ -30,11 +30,15 @@ test('commands send the prompt on stdin with the cheap model and no tools, and t
   assert.deepEqual(claude.args.slice(claude.args.indexOf('--model'), claude.args.indexOf('--model') + 4), ['--model', 'claude-haiku-5-5', '--effort', 'low']);
   assert.ok(claude.args.includes('--tools') && claude.args.includes('--no-session-persistence'));
   assert.equal(claude.input, 'respond with 1\n');
+  assert.equal(claude.env.DISABLE_TELEMETRY, '1');
+  assert.equal(claude.env.CLAUDE_CODE_ENABLE_TELEMETRY, '0');
   assert.ok(!commandFor('claude', cheapestModel(catalog, 'claude'), 'claude.exe', { lean: false }).args.includes('--tools'));
   const codex = commandFor('codex', cheapestModel(catalog, 'codex'), 'codex.exe');
   assert.deepEqual(codex.args.slice(0, 2), ['exec', '--json']);
   assert.ok(codex.args.includes('model_reasoning_effort="low"') && codex.args.at(-1) === '-');
   assert.ok(!codex.args.includes('--ephemeral'), 'the ping must leave a session log: Codex quota is read from it');
+  assert.ok(codex.args.includes('analytics.enabled=false'));
+  assert.ok(codex.args.includes('otel.metrics_exporter=none'));
   const agy = commandFor('gemini', cheapestModel(catalog, 'gemini'), 'C:\\Users\\me\\AppData\\Local\\agy\\bin\\agy.exe');
   assert.ok(agy.args.includes('gemini-3.8-flash-low'));
   assert.equal(agy.env.AGY_CLI_DISABLE_AUTO_UPDATE, 'true', 'agy otherwise opens a terminal window for its background updater');

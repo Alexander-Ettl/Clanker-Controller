@@ -264,6 +264,11 @@
           <button class="cs-switch" data-role="completionSound" role="switch" aria-checked="true" aria-label="Completion sound" type="button"></button>
         </div>
         <div class="cs-row">
+          <span class="cs-icon">${ICON.sliders}</span>
+          <div class="cs-info"><span class="cs-title">CLI telemetry</span><span class="cs-desc" id="cs-cli-telemetry-desc">Allow Codex and Claude Code to use their own telemetry settings. Reload the editor to apply changes to running sessions. For Agy, use Enable Telemetry in /config.</span></div>
+          <button class="cs-switch" data-role="cliTelemetry" role="switch" aria-checked="false" aria-label="CLI telemetry" aria-describedby="cs-cli-telemetry-desc" type="button"></button>
+        </div>
+        <div class="cs-row">
           <span class="cs-icon">${ICON.note}</span>
           <div class="cs-info"><span class="cs-title">Work-context icons</span><span class="cs-desc">Classify prompts with the configured free routing service and show category icons beside chats.</span></div>
           <button class="cs-switch" data-role="workContextIcons" role="switch" aria-checked="false" aria-label="Work-context icons" type="button"></button>
@@ -1431,6 +1436,7 @@
       $('statusBar').setAttribute('aria-checked', String(Boolean(services.statusBar)));
       $('autoContinueOnLimit').setAttribute('aria-checked', String(services.autoContinueOnLimit !== false));
       $('autoUpdateClis').setAttribute('aria-checked', String(services.autoUpdateClis !== false));
+      $('cliTelemetry').setAttribute('aria-checked', String(services.cliTelemetry === true));
       $('completionSound').setAttribute('aria-checked', String(services.completionSound !== false));
       $('workContextIcons').setAttribute('aria-checked', String(services.workContextIcons === true));
       if (services.rail) for (const [key, value] of [['railProjects', services.rail.projects], ['railChats', services.rail.chats]]) setRailSelect($(key), value);
@@ -1507,6 +1513,11 @@
       const enabled = $('autoUpdateClis').getAttribute('aria-checked') !== 'true';
       $('autoUpdateClis').setAttribute('aria-checked', String(enabled));
       vscode.postMessage({ type: 'setAutoUpdateClis', enabled });
+    });
+    $('cliTelemetry').addEventListener('click', () => {
+      const enabled = $('cliTelemetry').getAttribute('aria-checked') !== 'true';
+      $('cliTelemetry').setAttribute('aria-checked', String(enabled));
+      vscode.postMessage({ type: 'setCliTelemetry', enabled });
     });
     $('completionSound').addEventListener('click', () => {
       const enabled = $('completionSound').getAttribute('aria-checked') !== 'true';

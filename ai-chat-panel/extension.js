@@ -10,6 +10,8 @@ const { TerminalSessionManager } = require('./lib/pty-session.js');
 const log = require('./lib/log.js'); // the Logs popup and the "Clanker Controller" output channel
 const { readQuotas, onDidChangeQuotas, recordClaudeUsage, claudeUsageAge } = require('./lib/quota-bridge.js');
 const { probeClaudeUsage } = require('./lib/claude-usage.js');
+const { configureCliTelemetry } = require('./lib/cli-telemetry.js');
+const cliTelemetryEnabled = () => vscode.workspace.getConfiguration('aiChatPanel').get('cliTelemetry', false);
 
 // Claude's real usage after a restart or a quiet spell: `claude -p /usage` is a local command
 // (0 tokens), so it's asked whenever the last real reading is 15+ minutes old or a window rolled over.
@@ -3776,6 +3778,16 @@ class LauncherViewProvider {
       case 'cloudWarmup': void this.deps.cloudWarmup?.handle(message); break;
       case 'setAutoContinueOnLimit': if (typeof message.enabled === 'boolean') void vscode.workspace.getConfiguration('aiChatPanel').update('autoContinueOnLimit', message.enabled, vscode.ConfigurationTarget.Global); break;
       case 'setAutoUpdateClis': if (typeof message.enabled === 'boolean') void vscode.workspace.getConfiguration('aiChatPanel').update('autoUpdateClis', message.enabled, vscode.ConfigurationTarget.Global); break;
+      case 'setCliTelemetry': {
+        if (typeof message.enabled === 'boolean') {
+          void vscode.workspace.getConfiguration('aiChatPanel').update('cliTelemetry', message.enabled, vscode.ConfigurationTarget.Global).then(undefined, (error) => {
+            log.error('Settings', 'Could not save CLI telemetry', error);
+            void vscode.window.showErrorMessage('Clanker could not save the CLI telemetry setting.');
+            void this.pushFleet();
+          });
+        }
+        break;
+      }
       case 'setCompletionSound': if (typeof message.enabled === 'boolean') void vscode.workspace.getConfiguration('aiChatPanel').update('completionSound', message.enabled, vscode.ConfigurationTarget.Global); break;
       case 'setWorkContextIcons': if (typeof message.enabled === 'boolean') void vscode.workspace.getConfiguration('aiChatPanel').update('workContextIcons', message.enabled, vscode.ConfigurationTarget.Global); break;
       case 'setCompliance': if (COMPLIANCE_SETTINGS[message.key]) void vscode.workspace.getConfiguration('aiChatPanel').update(COMPLIANCE_SETTINGS[message.key], Boolean(message.value), vscode.ConfigurationTarget.Global); break;
@@ -3869,6 +3881,7 @@ class LauncherViewProvider {
       statusBar: vscode.workspace.getConfiguration('aiChatPanel').get('showStatusBar', false),
       autoContinueOnLimit: vscode.workspace.getConfiguration('aiChatPanel').get('autoContinueOnLimit', true),
       autoUpdateClis: vscode.workspace.getConfiguration('aiChatPanel').get('autoUpdateClis', true),
+      cliTelemetry: cliTelemetryEnabled(),
       completionSound: vscode.workspace.getConfiguration('aiChatPanel').get('completionSound', true),
       workContextIcons: vscode.workspace.getConfiguration('aiChatPanel').get('workContextIcons', false),
       rail: railLimits(),
@@ -3988,6 +4001,7 @@ function railMarkup(buttons) {
 
 function activate(context) {
   installLog(context, () => chatWindowManager); // first, so everything after it can log
+  configureCliTelemetry(cliTelemetryEnabled);
   refreshBinaries();
   const AGENTS = agentList();
   const sessionManager = new TerminalSessionManager(vscode, AGENTS);
@@ -4142,7 +4156,7 @@ function activate(context) {
       void launcher?.pushFleet();
       for (const host of chatWindowManager?.hosts || []) void host.settingsPane?.pushFleet();
     }
-    if (event.affectsConfiguration('aiChatPanel.autoContinueOnLimit') || event.affectsConfiguration('aiChatPanel.autoUpdateClis')) {
+    if (event.affectsConfiguration('aiChatPanel.autoContinueOnLimit') || event.affectsConfiguration('aiChatPanel.autoUpdateClis') || event.affectsConfiguration('aiChatPanel.cliTelemetry')) {
       void launcher?.pushFleet();
       for (const host of chatWindowManager?.hosts || []) void host.settingsPane?.pushFleet();
     }
@@ -4441,7 +4455,7 @@ function activate(context) {
   const publishRunnerSettings = () => {
     try {
       headlessRunner.publishSettings({ sessionDir: SESSION_DIR, workspaceDir, models: getModels(), permissionMode: getPermissionMode(), modelPrompts: cliHub.prompts, modelSettings: cliHub.modelSettings, catalog: cliHub.fetched,
-        enabledAgents: providers.ids().filter((agent) => cliAccounts.isEnabled(agent) !== false) });
+        cliTelemetry: cliTelemetryEnabled(), enabledAgents: providers.ids().filter((agent) => cliAccounts.isEnabled(agent) !== false) });
       runDueCli.publishLauncher();
     } catch { /* the runner is optional */ }
   };

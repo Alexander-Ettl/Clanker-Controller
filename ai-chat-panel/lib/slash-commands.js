@@ -13,6 +13,7 @@ const path = require('node:path');
 const os = require('node:os');
 const { spawn } = require('node:child_process');
 const { locate, resolveShim } = require('./binary-locator.js');
+const { cliTelemetry } = require('./cli-telemetry.js');
 const { fetchAntigravitySlashCommands } = require('./antigravity.js');
 
 const PROBE_EVERY_MS = 30 * 60 * 1000;
@@ -34,7 +35,7 @@ function probeClaudeCommands(cwd) {
     try {
       child = spawn(shim?.command || binary, [...(shim?.args || []), '-p', 'x', '--output-format', 'stream-json', '--verbose'], {
         cwd, windowsHide: true, stdio: ['ignore', 'pipe', 'ignore'],
-        env: { ...process.env, ANTHROPIC_BASE_URL: 'http://127.0.0.1:9' },
+        env: { ...process.env, ...cliTelemetry('claude').env, ANTHROPIC_BASE_URL: 'http://127.0.0.1:9' },
       });
     } catch { return done(null); }
     child.on('error', () => done(null));

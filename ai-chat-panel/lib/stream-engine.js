@@ -6,6 +6,7 @@ const crypto = require('node:crypto');
 const fs = require('node:fs');
 const path = require('node:path');
 const { locate, resolveShim, headlessEnv } = require('./binary-locator.js');
+const { cliTelemetry } = require('./cli-telemetry.js');
 const { CodexAppServer } = require('./codex-app-server.js');
 const { AVAILABLE_MODELS, defaultModel } = require('./model-catalog.js');
 const { fromRateLimitEvent } = require('./claude-usage.js');
@@ -576,6 +577,7 @@ class StreamEngine extends EventEmitter {
       }
       return { command, args: ['-p', '--output-format', 'stream-json', '--verbose', '--permission-mode', permFlag, ...modelArgs], input: fullPrompt + '\n' };
     }
+    const telemetryArgs = cliTelemetry('codex').args;
     const effortArgs = effort ? ['-c', `model_reasoning_effort="${effort}"`] : [];
     const modelArgs = model ? ['-m', model] : [];
     // Composer slash actions are discovered from this installed CLI's own
@@ -583,7 +585,7 @@ class StreamEngine extends EventEmitter {
     if (choice.codexCommand) {
       return {
         command,
-        args: ['exec', choice.codexCommand, ...(choice.codexCommandArgs || []), '--json', '--skip-git-repo-check', ...modelArgs, ...effortArgs, ...(fullPrompt ? ['-'] : [])],
+        args: ['exec', choice.codexCommand, ...(choice.codexCommandArgs || []), '--json', '--skip-git-repo-check', ...telemetryArgs, ...modelArgs, ...effortArgs, ...(fullPrompt ? ['-'] : [])],
         input: fullPrompt ? `${fullPrompt}\n` : '',
       };
     }
@@ -592,8 +594,8 @@ class StreamEngine extends EventEmitter {
     const autoArgs = permMode === 'auto' ? ['--approve-for-me'] : [];
     const approvalArgs = ['-c', `approval_policy="${permMode === 'fullAccess' ? 'never' : 'on-request'}"`, '-c', `approvals_reviewer="${permMode === 'auto' ? 'auto_review' : 'user'}"`];
     // `exec resume` takes config overrides but has no --sandbox or --approve-for-me flags.
-    if (resume) return { command, args: ['exec', 'resume', resume, '--json', '-c', `sandbox_mode="${permMode === 'fullAccess' ? 'danger-full-access' : 'workspace-write'}"`, ...approvalArgs, '--skip-git-repo-check', ...modelArgs, ...effortArgs, '-'], input: fullPrompt + '\n' };
-    return { command, args: ['exec', '--json', ...sandboxArgs, ...autoArgs, ...approvalArgs, '--skip-git-repo-check', ...modelArgs, ...effortArgs, '-'], input: fullPrompt + '\n' };
+    if (resume) return { command, args: ['exec', 'resume', resume, '--json', '-c', `sandbox_mode="${permMode === 'fullAccess' ? 'danger-full-access' : 'workspace-write'}"`, ...approvalArgs, '--skip-git-repo-check', ...telemetryArgs, ...modelArgs, ...effortArgs, '-'], input: fullPrompt + '\n' };
+    return { command, args: ['exec', '--json', ...sandboxArgs, ...autoArgs, ...approvalArgs, '--skip-git-repo-check', ...telemetryArgs, ...modelArgs, ...effortArgs, '-'], input: fullPrompt + '\n' };
   }
 
   getCodexServer() {
@@ -983,6 +985,7 @@ class StreamEngine extends EventEmitter {
       env: {
         ...process.env,
         ...headlessEnv(spec.command),
+        ...cliTelemetry(agent).env,
         ...this.chatEnv,
         CLAUDE_CONFIG_DIR: process.env.CLAUDE_CONFIG_DIR,
         ...(isCompacting ? {
