@@ -26,7 +26,11 @@ A tag build checks `OVSX_PAT` before packaging. A retry uses the workflow from t
 
    The `.vsix` files land in `~/dev/clanker-publish/out` on Linux and `C:\Dev\clanker-publish\out` on Windows (`--stage <dir>` changes it; staging inside Nextcloud or OneDrive is refused). Don't pass `--target win32-x64`: Linux is supported, and a platform target hides the extension from Linux users. Only the system-wide dictation hotkey is Windows-only; on Linux a desktop shortcut runs `scripts/linux/clanker-dictate`. `--only chat`, `--only usage` or `--only theme` builds one (`theme` is the Clanker Paper & Ink colour themes in `clanker-theme/`).
 4. Look inside before publishing: `cd ~/dev/clanker-publish/ai-chat-panel && npx @vscode/vsce ls --tree`. No `test/`, `.env*`, `types/` or dev `.ps1`/`.sh` scripts should be listed.
-5. Push the version tag to publish through GitHub Actions. To upload an existing `.vsix` by hand, use the publisher management page. [Visual Studio Marketplace publisher management](https://marketplace.visualstudio.com/manage)
+5. Push the version tag to publish through GitHub Actions. **Always wait for CI and the `Release` workflow to finish and confirm the release is live before proceeding:**
+   - **`CI` (`ci.yml`)** on `main` typically reports in **~1m 10s – 1m 55s** (`ubuntu-latest` ~35–45s, `windows-latest` ~1m 20s – 1m 50s). Wait for it to go green before tagging a new release.
+   - **`Release` (`release.yml`)** on tag `v*` typically reports in **~1m 45s – 2m 45s** (allow up to **4m** with runner queue: `check` ~1m 35s + `publish` ~40s). Watch it with `gh run watch` and verify Open VSX, the VS Code Marketplace, and the GitHub Release assets all succeeded before moving on.
+   - Note on naming: `antigravity-usage-statusbar` is published under its original ID on Open VSX (`clanker-controller.antigravity-usage-statusbar`), while the VS Code Marketplace build uses `--store marketplace` (`clanker-controller.clanker-usage-statusbar`) because `antigravity-usage-statusbar` is already claimed on the Marketplace.
+   - To upload an existing `.vsix` by hand, use the publisher management page. [Visual Studio Marketplace publisher management](https://marketplace.visualstudio.com/manage)
 
 ## What the packager changes in the staging copy
 

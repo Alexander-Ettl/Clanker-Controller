@@ -17,8 +17,12 @@ env:
 
 jobs:
   check:
-    # The extensions are Windows-only, so test on Windows, like CI.
-    runs-on: windows-latest
+    name: check (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -62,7 +66,9 @@ jobs:
           fi
 
       - name: Build the packages
-        run: node scripts/package-marketplace.mjs --publisher "$PUBLISHER" --stage "$RUNNER_TEMP/clanker-publish"
+        run: |
+          node scripts/package-marketplace.mjs --publisher "$PUBLISHER" --stage "$RUNNER_TEMP/clanker-publish"
+          node scripts/package-marketplace.mjs --publisher "$PUBLISHER" --store marketplace --only usage --stage "$RUNNER_TEMP/clanker-publish-marketplace"
 
       - uses: actions/upload-artifact@v4
         with:
@@ -79,7 +85,10 @@ jobs:
       - name: Publish to the VS Code Marketplace
         if: github.ref_type == 'tag'
         run: |
-          for f in "$RUNNER_TEMP"/clanker-publish/out/*.vsix; do
+          for f in \
+            "$RUNNER_TEMP"/clanker-publish/out/ai-chat-panel-*.vsix \
+            "$RUNNER_TEMP"/clanker-publish-marketplace/out/clanker-usage-statusbar-*.vsix \
+            "$RUNNER_TEMP"/clanker-publish/out/clanker-theme-*.vsix; do
             npx --yes @vscode/vsce publish --oidc --packagePath "$f" --skip-duplicate
           done
 

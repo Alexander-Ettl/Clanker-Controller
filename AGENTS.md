@@ -10,6 +10,10 @@ Start with `README.md`. For remaining work, read the root `TODO.md`; it is the s
 
 Checks from this root: `npm run check`, `npm test`, `npm run verify:models`. `npm run verify:bridge` also needs the compiled Visor extension; set `VISOR_DIR` if it isn't at `../Visor`. Scope verification to the change and don't send test prompts to real CLIs.
 
+GitHub CI & releases (mandatory wait):
+- Before cutting or tagging a new release, push to `main` and **wait for the `CI` workflow (`ci.yml`) to report green** (measured duration: **~1m 10s – 1m 55s**; `ubuntu-latest` ~35–45s, `windows-latest` ~1m 20s – 1m 50s).
+- Whenever a release tag (`v*`) is pushed, **wait for the `Release` workflow (`release.yml`) to finish and verify the release is live** before reporting done or starting follow-up work (measured duration: **~1m 45s – 2m 45s**, allow up to **4m** with runner queue). Watch it directly (`gh run watch <id>`) and confirm Open VSX, VS Code Marketplace, and the GitHub Release all succeeded so any publishing failure is caught and fixed immediately.
+
 Keep extension IDs, command IDs and settings IDs stable across folder moves. The VS Code and Antigravity installs are links to `ai-chat-panel/` and `antigravity-usage-statusbar/` (`node scripts/install-extension.mjs vscode --link`); reload the editor window after changes to extension-host code. A linked install runs from a symlinked path, so locate sibling folders (`voice-router/`, `Visor/`) from `fs.realpathSync(__dirname)`.
 
 Shells launched from another app may inherit a broken `GIT_CONFIG_COUNT` without its `GIT_CONFIG_VALUE_n` entries, which makes every `git` call fail; unset `GIT_CONFIG_COUNT` and the `GIT_CONFIG_KEY_n`/`GIT_CONFIG_VALUE_n` variables, and start VS Code from the desktop launcher.

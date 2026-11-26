@@ -1,6 +1,6 @@
 #!/usr/bin/env node
-// Builds the Marketplace / Open VSX packages for both extensions. See docs/publishing.md.
-//   node scripts/package-marketplace.mjs --publisher <id> [--target win32-x64] [--stage <dir>] [--only chat|usage|theme]
+// Builds the Marketplace / Open VSX packages for the extensions. See docs/publishing.md.
+//   node scripts/package-marketplace.mjs --publisher <id> [--target win32-x64] [--stage <dir>] [--only chat|usage|theme] [--store ovsx|marketplace]
 //
 // Why a staging copy: the repo keeps `publisher: "local"` so the installed dev junctions keep their extension ID
 // and chat storage. The published build needs a real publisher, the shared voice-router/lib bundled in, and the
@@ -23,6 +23,11 @@ if (!publisher || publisher === 'local') {
 }
 const target = opt('target');
 const only = opt('only');
+const store = opt('store', 'ovsx');
+if (store !== 'ovsx' && store !== 'marketplace') {
+  console.error(`Unknown --store "${store}". Expected "ovsx" or "marketplace".`);
+  process.exit(2);
+}
 const stage = path.resolve(opt('stage', process.platform === 'win32' ? 'C:/Dev/clanker-publish' : path.join(os.tmpdir(), 'clanker-publish')));
 if (/[\\/](Nextcloud|OneDrive)[\\/]/i.test(stage)) {
   console.error(`Refusing to stage inside a synced folder: ${stage}`);
@@ -56,7 +61,9 @@ const EXTENSIONS = [
       fs.writeFileSync(path.join(dest, 'README.md'), absolutise(fs.readFileSync(path.join(root, 'README.md'), 'utf8')));
     },
   },
-  { key: 'usage', dir: 'antigravity-usage-statusbar', prepare() {} },
+  // VS Code Marketplace already has an unrelated/retired listing under `antigravity-usage-statusbar`,
+  // so the Marketplace package uses `clanker-usage-statusbar` while Open VSX and local dev keep the original ID.
+  { key: 'usage', dir: 'antigravity-usage-statusbar', marketplaceName: 'clanker-usage-statusbar', prepare() {} },
   { key: 'theme', dir: 'clanker-theme', prepare() {} },
 ];
 
@@ -75,6 +82,7 @@ for (const ext of EXTENSIONS) {
   const manifestPath = path.join(dest, 'package.json');
   const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
   manifest.publisher = publisher;
+  if (store === 'marketplace' && ext.marketplaceName) manifest.name = ext.marketplaceName;
   delete manifest.private; // vsce refuses to publish a private package
   fs.writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
 
