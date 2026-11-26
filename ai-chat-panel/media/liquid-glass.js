@@ -531,6 +531,16 @@
     const layerMask = (url, x, y, w, h) => `${url} ${x}px ${y}px / ${w} ${h} no-repeat`;
     row.parentNode.insertBefore(glass, row);
     let last = '', busy = false, silhouette = 'none', lastDockH = '';
+    // --dock-h is the transcript's bottom edge. draw() runs a frame behind the layout it measures, so while the dock grows the
+    // transcript was cut off by the new height for a frame and then jumped when the variable caught up. A ResizeObserver runs after
+    // layout and before paint, so the edge moves in the very frame the dock does.
+    // The variable lives on the transcript, its only reader. On <body> every write woke the theme palette's style observer, which
+    // reads about forty computed properties: while the dock animates that is once per frame, and it cost more than the animation.
+    const setDockH = (value) => { lastDockH = value; (doc.querySelector('.transcript') || doc.body).style.setProperty('--dock-h', value); };
+    if (!upper && typeof ResizeObserver === 'function') new ResizeObserver(() => {
+      const dockH = `${Math.ceil(row.getBoundingClientRect().height)}px`;
+      if (dockH !== lastDockH) setDockH(dockH);
+    }).observe(row);
 
     // The textarea rewrites its own height on every keystroke; if that changes the dock's size the ResizeObserver says so.
     const watch = new MutationObserver((list) => { if (list.some((m) => !(m.type === 'attributes' && m.target.tagName === 'TEXTAREA'))) kick(); });
@@ -592,7 +602,7 @@
       lightFilter.setAttribute('width', num(w)); lightFilter.setAttribute('height', num(h));
       lightSvg.querySelector('g').innerHTML = shapeRects(shapes);
       const dockH = `${Math.ceil(rr.height)}px`;
-      if (!upper && dockH !== lastDockH) { lastDockH = dockH; doc.body.style.setProperty('--dock-h', dockH); } // inherited by the whole page: only when it changes
+      if (!upper && dockH !== lastDockH) setDockH(dockH); // only when it changes
       onDrawn(shapes, w, h, sig);
       if (!doc.body.classList.contains('lg-island')) doc.body.classList.add('lg-island');
     }

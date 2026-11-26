@@ -2259,3 +2259,36 @@ test('attachUris copies dropped/pasted local files into attachments and turns di
   const mentions = host.messages.find(m => m.type === 'insertMentions');
   assert.deepEqual(mentions?.paths, ['sub'], 'dropped directory becomes a workspace-relative @-mention');
 });
+
+test('a start that waits on a CLI update tells the page what for, then withdraws it; a quick one stays silent', async t => {
+  const f = fixture(t), run = f.chat(), host = f.host(run), Run = run.constructor;
+  const before = Run.STAGE_NOTICE_MS;
+  Run.STAGE_NOTICE_MS = 60;
+  t.after(() => { Run.STAGE_NOTICE_MS = before; });
+  const waits = () => host.messages.filter(message => message.type === 'startWaiting');
+  let finish;
+  run.deps.waitForCliUpdate = () => new Promise(resolve => { finish = resolve; });
+  run.queuePaused = true;
+  run.enqueue({ id: 'cold-start', text: 'Queued while the CLI updates', modelId: 'claude-sonnet-5-5-high', attachments: [], queued: true });
+  run.pauseQueue(false);
+  await until(waits, list => list.length > 0);
+  assert.equal(waits()[0].stage, 'update');
+  assert.match(waits()[0].label, /^Updating /);
+  assert.equal(waits()[0].chatId, run.chat.id);
+  assert.equal(run.streamEngine.runs.length, 0, 'the prompt has not been sent while the update runs');
+  finish();
+  await until(() => run.streamEngine.runs.length, count => count === 1);
+  await until(waits, list => list.some(message => message.stage === null));
+  assert.equal(run.streamEngine.runs.length, 1, 'it goes out by itself once the wait is over');
+  assert.deepEqual(waits().map(message => message.stage).filter(stage => stage === null).length, 1, 'the wait is withdrawn exactly once');
+
+  // A wait shorter than the notice delay never reaches the page.
+  const quiet = f.chat(), quietHost = f.host(quiet);
+  Run.STAGE_NOTICE_MS = 400;
+  quiet.deps.waitForCliUpdate = () => new Promise(resolve => setTimeout(resolve, 20));
+  quiet.queuePaused = true;
+  quiet.enqueue({ id: 'warm-start', text: 'Queued with a quick check', modelId: 'claude-sonnet-5-5-high', attachments: [], queued: true });
+  quiet.pauseQueue(false);
+  await until(() => quiet.streamEngine.runs.length, count => count === 1);
+  assert.equal(quietHost.messages.filter(message => message.type === 'startWaiting').length, 0, 'a quick wait is not announced');
+});

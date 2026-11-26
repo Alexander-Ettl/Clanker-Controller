@@ -65,6 +65,16 @@ Paint order, back to front:
 - **Morph, don't swap:** when a bud changes state, animate the existing shape's size and content rather than removing it and spawning another.
 - `prefers-reduced-motion`: no emerge or retract motion; shapes still fuse.
 
+### Sending a prompt moves the page a little each frame (2026-11-26)
+
+The dock's height is the transcript's bottom edge, so anything that changes the dock's height also moves the conversation. Measured at a fixed 60 fps (`ai-chat-panel/test/send-motion.mjs --save=<dir>` keeps every frame), the old send moved the conversation 130px in one frame to the new message, 94px when the first prompt was queued (the strip took its full height at once while the transcript's `--dock-h` caught up a frame later) and 48px for the next, and the typed box dropped 19px. Rules that keep it smooth:
+
+- **Tween the layout height, not only a transform.** The queue strip's height (and padding and the row gap) goes from its old to its new value on one 300ms `cubic-bezier(0.3, 0.7, 0.2, 1)` curve (`glideQueueStrip` in `main.js`; 13 to 15px per frame for a 94px move, no jolt on the first frame). A row that appears or goes also fades and slides 10px. A queue that empties leaves a `.queue-ghost` copy that shrinks away, since the live strip is hidden at once. The strip no longer runs the `island-bud` spring; its own height tween is what the goo draws the neck from.
+- **The transcript's bottom edge follows in the same frame.** `--dock-h` is written from a `ResizeObserver` on the compose row (after layout, before paint) and lives on `.transcript`, not `<body>`: a write on `<body>` woke the theme palette's style observer, which read about forty computed properties per frame while the dock moved.
+- **A new message is scrolled to, not jumped to.** `glideTranscriptToEnd` runs a critically damped spring (`GLIDE_OMEGA` 19 rad/s, about a third of a second, no overshoot) toward the live scroll end, so a dock that is still growing is followed. The tail pin and `scrollTranscriptToEnd` stand down while it runs; a reader who scrolls up ends it.
+- **The box that held the sent text settles** with the existing `animateComposerHeight` instead of snapping.
+- Reduced motion skips all of it.
+
 ### One shape, one slot, menus on the upper slab (2026-11-18)
 
 The composer is the squircle at every width; there is no pill state. The text spans the width on top and `.composer-bar` runs below it: `+`, model, agents and the permission chip on the left; the clock, dictate and the single stop/send slot on the right. Stop and send never show together and share the slot, so the bar does not reshuffle when a turn starts. While dictating, send is disabled until the recording is finished or cancelled (Esc).

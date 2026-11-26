@@ -87,6 +87,7 @@ test('the shortcut script reaches the window used last and skips dead sockets', 
   } finally { older.stop(); newer.stop(); }
   await new Promise((resolve) => setTimeout(resolve, 50));
   assert.equal(await run(), 1, 'with no window listening the script fails');
+  assert.doesNotMatch(fs.readFileSync(script, 'utf8'), /notify-send/, 'never shows a desktop popup when no window is listening');
 });
 
 test('the shortcut script is published to a fixed path, executable, and left alone when unchanged', { skip: !linux && 'Linux only' }, () => {

@@ -83,6 +83,9 @@ try {
     assert.equal(await todoCard.locator('.todo-step.is-done').count(), 1);
     assert.equal(await todoCard.locator('.todo-step.is-active').count(), 1);
     assert.equal(await todoCard.locator('.todo-step.is-pending').count(), 2);
+    assert.equal(await todoCard.locator('.todo-step-dot').count(), 4, 'each step renders a simple dot');
+    assert.equal(await todoCard.locator('.todo-step-num').count(), 0, 'no step numbers');
+    assert.equal(await todoCard.locator('> summary').isVisible(), false, 'open checklist hides redundant top icon and header title');
     const bodyFont = await todoCard.locator('.todo-steps').evaluate((el) => getComputedStyle(el).fontFamily);
     const monoFont = await page.evaluate(() => getComputedStyle(document.documentElement).getPropertyValue('--font-mono').trim());
     assert.notEqual(bodyFont, monoFont, 'Update Steps uses proportional UI font, not monospace code font');

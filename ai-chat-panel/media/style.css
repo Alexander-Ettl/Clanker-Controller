@@ -2224,18 +2224,6 @@ html:not(.is-window-blurred) .msg-group-user:is(.is-dock-hovered, :has(.msg-acti
 .msg-user .msg-clamp-toggle:hover { background: rgb(var(--panel-raised) / 0.94); border-color: rgb(var(--ink) / 0.24); }
 .msg-clamp-toggle:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 
-/* A prompt the scheduler sent: the same bubble, with a quiet clock tag above it. */
-.msg-scheduled-tag {
-  display: inline-flex;
-  align-items: center;
-  align-self: flex-end;
-  gap: 5px;
-  margin: 0 12px 4px 0;
-  color: var(--text-tertiary);
-  font: 500 10.5px var(--font-text);
-}
-.msg-scheduled-tag svg { width: 12px; height: 12px; color: var(--fg-cyan); }
-
 /* Inline file references follow the surrounding text and keep their file-type icon. */
 .file-badge {
   display: inline-flex;
@@ -2415,6 +2403,27 @@ html:not(.is-window-blurred) .msg-group-user:is(.is-dock-hovered, :has(.msg-acti
   100% { transform: none; }
 }
 @media (prefers-reduced-motion: reduce) { .compose-row > .island-bud { animation: none; } }
+/* The queue strip's entrance is a height tween driven from main.js (glideQueueStrip): the dock's height has to change a little each
+   frame, and a transform-only spring leaves the layout to jump by the full height in the first one. */
+.compose-row > .turn-queue-strip.island-bud { animation: none; }
+
+/* "Getting ready": the bud above the composer while a start waits on the model list, usage, a CLI update or memory (main.js showStartWait). */
+.compose-row > .start-wait { display: flex; flex-direction: column; gap: 6px; padding: 10px 14px 12px; border-radius: 18px; overflow: hidden; animation: none; }
+.compose-row > .start-wait[hidden] { display: none; }
+.start-wait-row { display: flex; align-items: center; gap: 8px; min-width: 0; font: 600 12.5px var(--font-text); color: var(--text-primary); }
+.start-wait-row b { font-weight: 700; white-space: nowrap; }
+.start-wait-what { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 500; color: var(--text-secondary); }
+.start-wait-time { flex: none; font: 500 11px var(--font-mono); font-variant-numeric: tabular-nums; color: var(--text-secondary); }
+.start-wait-note { font: 11.5px/1.35 var(--font-text); color: var(--text-secondary); }
+.start-wait-spin { flex: none; width: 12px; height: 12px; border-radius: 50%; border: 2px solid rgb(var(--ink) / 0.22); border-top-color: var(--accent); animation: tool-spin 0.8s linear infinite; }
+.start-wait-bar { position: relative; height: 3px; border-radius: 2px; overflow: hidden; background: rgb(var(--ink) / 0.12); }
+.start-wait-bar i { position: absolute; inset: 0 auto 0 0; width: 36%; border-radius: 2px; background: var(--accent); animation: start-wait-slide 1.25s cubic-bezier(0.45, 0, 0.25, 1) infinite; }
+.start-wait-bar.is-determinate i { width: calc(var(--p, 0) * 1%); animation: none; transition: width 0.4s var(--eo-ease); }
+@keyframes start-wait-slide { from { transform: translateX(-100%); } to { transform: translateX(280%); } }
+@media (prefers-reduced-motion: reduce) { .start-wait-spin, .start-wait-bar i { animation: none; } .start-wait-bar i { width: 36%; } }
+/* What is left of the strip while it shrinks away after the queue empties (glideQueueStrip): a dead copy, same look, no events. */
+.queue-ghost { display: flex; flex-direction: column; gap: 6px; padding: 6px; border-radius: 18px; overflow: hidden; pointer-events: none; container: queue-strip / inline-size; animation: none; }
+.queue-ghost > * { flex-shrink: 0; }
 
 /* "Scheduled" confirmation: a bud of the pill; retracts into it when it leaves. */
 .compose-row > .schedule-bud {
@@ -2468,37 +2477,110 @@ html:not(.is-window-blurred) .msg-group-user:is(.is-dock-hovered, :has(.msg-acti
 .compact-divider svg { width: 14px; height: 14px; }
 .compact-divider small { flex-basis: 100%; order: 2; font-weight: 500; opacity: 0.8; }
 
-.model-handoff-divider { flex-wrap: nowrap; margin: 2px 0; }
-.model-handoff-divider::before, .model-handoff-divider::after { flex-basis: 12px; }
+.model-handoff-divider {
+  container-type: inline-size;
+  flex-wrap: nowrap;
+  margin: 2px 0;
+  gap: 0 10px;
+}
+.model-handoff-divider[data-from-agent='claude'] { --from-agent: var(--claude-color); }
+.model-handoff-divider[data-from-agent='codex'] { --from-agent: var(--codex-color); }
+.model-handoff-divider[data-from-agent='gemini'] { --from-agent: var(--gemini-color); }
+.model-handoff-divider[data-to-agent='claude'] { --to-agent: var(--claude-color); }
+.model-handoff-divider[data-to-agent='codex'] { --to-agent: var(--codex-color); }
+.model-handoff-divider[data-to-agent='gemini'] { --to-agent: var(--gemini-color); }
+.model-handoff-divider::before {
+  flex-basis: 12px;
+  background: linear-gradient(90deg, transparent, color-mix(in srgb, var(--from-agent, var(--eo-border)) 34%, var(--eo-border)));
+}
+.model-handoff-divider::after {
+  flex-basis: 12px;
+  background: linear-gradient(90deg, color-mix(in srgb, var(--to-agent, var(--eo-border)) 34%, var(--eo-border)), transparent);
+}
 .model-handoff-status {
-  display: flex;
+  display: inline-flex;
   flex-wrap: wrap;
   align-items: center;
   justify-content: center;
-  gap: 3px 8px;
+  gap: 4px 10px;
   min-width: 0;
-  padding: 4px 9px;
-  border: 1px solid var(--eo-border);
-  border-radius: var(--pill);
-  background: var(--eo-surface);
+  padding: 5px 13px 5px 12px;
+  border: 1px solid rgb(var(--ink) / 0.11);
+  border-radius: 16px;
+  background:
+    linear-gradient(90deg, color-mix(in srgb, var(--from-agent, transparent) 10%, transparent), transparent 44%, color-mix(in srgb, var(--to-agent, transparent) 11%, transparent)),
+    linear-gradient(180deg, rgb(var(--sheen) / 0.065), transparent 68%),
+    var(--eo-surface);
+  box-shadow: inset 0 1px 0 rgb(var(--sheen) / 0.11), 0 2px 10px rgb(0 0 0 / 0.18);
 }
-.model-handoff-route { display: flex; align-items: center; gap: 6px; min-width: 0; }
-.model-handoff-title, .model-handoff-arrow { flex-shrink: 0; }
+.model-handoff-title {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  font: 500 11px/1 var(--font-text);
+  letter-spacing: 0.01em;
+  color: var(--text-secondary);
+}
+.model-handoff-title::after {
+  content: '';
+  width: 1px;
+  height: 11px;
+  background: rgb(var(--ink) / 0.14);
+}
+.model-handoff-route { display: inline-flex; align-items: center; justify-content: center; gap: 7px; min-width: 0; }
+.model-handoff-arrow {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  color: rgb(var(--ink) / 0.38);
+}
+.model-handoff-arrow svg { width: 12px; height: 12px; display: block; }
 .model-handoff-model {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
   min-width: 0;
-  overflow-wrap: anywhere;
-  text-wrap: balance;
+  font: 600 11.5px/1.25 var(--font-text);
   color: var(--text-primary);
 }
-.model-handoff-model::before {
+.model-handoff-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.model-handoff-model.is-from { font-weight: 500; color: var(--text-secondary); }
+.model-handoff-icon { display: inline-flex; align-items: center; flex-shrink: 0; }
+.model-handoff-icon .agent-logo { width: 13px; height: 13px; display: block; }
+.model-handoff-model.is-from .model-handoff-icon { opacity: 0.85; }
+.model-handoff-model[data-agent='claude'] { --agent: var(--claude-color); }
+.model-handoff-model[data-agent='codex'] { --agent: var(--codex-color); }
+.model-handoff-model[data-agent='gemini'] { --agent: var(--gemini-color); }
+.model-handoff-model.is-fallback::before {
   content: '';
   display: inline-block;
-  width: 5px;
-  height: 5px;
-  margin-inline-end: 5px;
+  width: 6px;
+  height: 6px;
   border-radius: 50%;
   background: var(--agent, currentColor);
-  vertical-align: 0.15em;
+  flex-shrink: 0;
+}
+@container (max-width: 420px) {
+  .model-handoff-status {
+    padding: 4px 9px;
+    gap: 2px 6px;
+    border-radius: 12px;
+  }
+  .model-handoff-title {
+    flex-basis: 100%;
+    justify-content: center;
+    font-size: 10px;
+    line-height: 1.1;
+  }
+  .model-handoff-title::after { display: none; }
+  .model-handoff-route {
+    flex-wrap: wrap;
+    gap: 2px 5px;
+  }
+  .model-handoff-model { font-size: 10.5px; line-height: 1.2; gap: 4px; }
+  .model-handoff-icon .agent-logo { width: 11px; height: 11px; }
+  .model-handoff-arrow svg { width: 11px; height: 11px; }
 }
 
 /* The same quiet divider thinks while the context is compressed, then rests. */
@@ -3736,11 +3818,14 @@ body:not(.vscode-high-contrast, .vscode-high-contrast-light) :is(.transcript, .t
   align-self: flex-start;
   max-width: 100%;
   padding: 2px 6px;
+  border: 0;
   border-radius: 0;
   background: none;
+  box-shadow: none;
   color: var(--fg-red);
   font: 500 13.5px/1.5 var(--font-text);
   text-align: left;
+  animation: none;
 }
 
 .chat-notice.is-interrupted svg {
@@ -4255,17 +4340,17 @@ body.vscode-light .turn-diff { --diff-add: #1a7f3c; --diff-del: #c8352d; } /* re
 .tool-card.tool-todo:has(.tool-label:not(:empty)) .tool-name {
   display: none;
 }
+.tool-card.tool-todo[open] > summary {
+  display: none;
+}
 .tool-card.tool-todo .tool-label {
   font: 500 12.5px/1.35 var(--font-text);
   color: var(--text-secondary);
 }
-.tool-card.tool-todo[open] .tool-label {
-  color: var(--text-primary);
-}
 .tool-card.tool-todo .tool-body {
   font: 400 12.5px/1.5 var(--font-text);
   background: transparent;
-  border-top: 1px solid rgb(var(--ink) / 0.06);
+  border-top: 0;
   transition: max-height 0.26s var(--eo-ease), padding 0.26s var(--eo-ease), opacity 0.2s var(--eo-ease);
 }
 .tool-card.tool-todo.is-closing .tool-body {
@@ -4277,37 +4362,28 @@ body.vscode-light .turn-diff { --diff-add: #1a7f3c; --diff-del: #c8352d; } /* re
 .todo-steps {
   list-style: none;
   margin: 0;
-  padding: 8px 10px 10px;
+  padding: 8px 10px;
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: 3px;
   font: 400 12.5px/1.45 var(--font-text);
 }
 .todo-step {
   display: flex;
-  align-items: baseline;
-  gap: 7px;
-  padding: 4px 8px;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 5px 9px;
   border-radius: 9px;
   color: var(--text-secondary);
   transition: background-color 0.15s var(--eo-ease), color 0.15s var(--eo-ease);
 }
-.todo-step-mark {
+.todo-step-dot {
   flex: none;
-  align-self: center;
-  display: inline-grid;
-  place-items: center;
-  width: 15px;
-  height: 15px;
-  color: var(--text-tertiary);
-}
-.todo-step-mark svg { width: 14px; height: 14px; display: block; }
-.todo-step-num {
-  flex: none;
-  font: 500 11.5px/1.4 var(--font-text);
-  font-variant-numeric: tabular-nums;
-  color: var(--text-tertiary);
-  min-width: 14px;
+  width: 7px;
+  height: 7px;
+  margin-top: 5.5px;
+  border-radius: 50%;
+  box-sizing: border-box;
 }
 .todo-step-text {
   flex: 1;
@@ -4317,13 +4393,8 @@ body.vscode-light .turn-diff { --diff-add: #1a7f3c; --diff-del: #c8352d; } /* re
 .todo-step.is-done {
   color: var(--text-tertiary);
 }
-.todo-step.is-done .todo-step-mark {
-  color: var(--fg-green, #30d158);
-  opacity: 0.85;
-}
-.todo-step.is-done .todo-step-text {
-  text-decoration: line-through;
-  text-decoration-color: rgb(var(--ink) / 0.25);
+.todo-step.is-done .todo-step-dot {
+  background: color-mix(in srgb, var(--text-primary) 55%, transparent);
 }
 .todo-step.is-active {
   background: color-mix(in srgb, var(--accent) 11%, transparent);
@@ -4331,15 +4402,13 @@ body.vscode-light .turn-diff { --diff-add: #1a7f3c; --diff-del: #c8352d; } /* re
   color: var(--text-primary);
   font-weight: 600;
 }
-.todo-step.is-active .todo-step-mark {
-  color: var(--accent);
+.todo-step.is-active .todo-step-dot {
+  background: var(--accent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 26%, transparent);
 }
-.todo-step.is-active .todo-step-num {
-  color: var(--accent);
-  font-weight: 600;
-}
-.todo-step.is-pending .todo-step-mark {
-  opacity: 0.45;
+.todo-step.is-pending .todo-step-dot {
+  border: 1.5px solid rgb(var(--ink) / 0.28);
+  background: transparent;
 }
 @media (prefers-reduced-motion: reduce) {
   .tool-card.tool-todo .tool-body { transition: none; }
@@ -4789,14 +4858,38 @@ body.vscode-light .tv, body.vscode-high-contrast-light .tv { --tv-blue: #0b5cad;
 
 .chat-notice {
   align-self: center;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
   max-width: 92%;
-  padding: 6px 12px;
+  padding: 5px 13px;
+  border: 1px solid rgb(var(--ink) / 0.09);
   border-radius: var(--pill);
-  background: rgb(var(--ink) / 0.05);
+  background:
+    linear-gradient(180deg, rgb(var(--sheen) / 0.055), transparent 68%),
+    rgb(var(--ink) / 0.036);
+  box-shadow: inset 0 1px 0 rgb(var(--sheen) / 0.08), 0 1px 4px rgb(0 0 0 / 0.14);
   color: var(--text-secondary);
-  font: 11.5px/1.4 var(--font-text);
+  font: 500 11.5px/1.4 var(--font-text);
+  letter-spacing: -0.005em;
   text-align: center;
+  animation: msg-in 0.24s var(--eo-ease);
 }
+.chat-notice svg {
+  width: 13px;
+  height: 13px;
+  flex-shrink: 0;
+  color: color-mix(in srgb, var(--fg-cyan) 78%, var(--text-secondary));
+}
+.chat-notice.is-schedule {
+  border-color: color-mix(in srgb, var(--fg-cyan) 22%, rgb(var(--ink) / 0.09));
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--fg-cyan) 7%, rgb(var(--sheen) / 0.05)), transparent 72%),
+    rgb(var(--ink) / 0.036);
+  color: color-mix(in srgb, var(--text-primary) 78%, var(--text-secondary));
+}
+.chat-notice + .chat-notice { margin-top: -2px; }
 .msg-continued { margin-top: -4px; }
 
 @media (prefers-reduced-motion: reduce) {

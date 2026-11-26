@@ -192,11 +192,21 @@
     }
   }
 
+  // A reset less than a minute away reads as seconds ("42s"), not "now" or a rounded "1m": the label is redrawn once a second
+  // while any reset is that close (see the ticker below), so it counts down to the moment it opens.
+  function resetCountdown(resetsAt, now = Date.now()) {
+    const ms = resetsAt * 1000 - now;
+    return ms > 0 && ms < 60000 ? `${Math.ceil(ms / 1000)}s` : null;
+  }
+  const resetWithinMinute = (node) => !!node && typeof node === 'object' && Object.entries(node).some(([key, value]) => (key === 'resetsAt' && typeof value === 'number' && resetCountdown(value) !== null) || (value && typeof value === 'object' && resetWithinMinute(value)));
+
   // P16-M: legible model cards with 5h and 7d "% remaining" gauges.
   function resetsIn(resetsAt) {
     if (!resetsAt) return '';
-    const ms = resetsAt * 1000 - Date.now();
+    const now = Date.now();
+    const ms = resetsAt * 1000 - now;
     if (!(ms > 0)) return 'resetting';
+    if (ms < 60000) return `resets in ${resetCountdown(resetsAt, now)}`;
     const minutes = Math.round(ms / 60000);
     const d = Math.floor(minutes / 1440);
     const h = Math.floor((minutes % 1440) / 60);
@@ -207,6 +217,8 @@
   // The 5h reset as a bare countdown ("1h 50m", "45m", "2d 3h"), small and dim under the percentage; the tooltip spells it out.
   function resetShort(resetsAt) {
     if (!resetsAt) return '';
+    const seconds = resetCountdown(resetsAt);
+    if (seconds) return seconds;
     const minutes = Math.round((resetsAt * 1000 - Date.now()) / 60000);
     if (!(minutes > 0)) return 'now';
     const d = Math.floor(minutes / 1440);
@@ -243,6 +255,8 @@
   // The reset as tightly as it reads ("45m", "1h50m", "2d4h"): two of these sit side by side under a 47px ring.
   function resetTight(resetsAt) {
     if (!resetsAt) return '';
+    const seconds = resetCountdown(resetsAt);
+    if (seconds) return seconds;
     const minutes = Math.round((resetsAt * 1000 - Date.now()) / 60000);
     if (!(minutes > 0)) return 'now';
     const d = Math.floor(minutes / 1440), h = Math.floor((minutes % 1440) / 60), m = minutes % 60;
@@ -442,12 +456,17 @@
   const usableAgents = () => (window.PROVIDER_IDS || ['claude', 'codex', 'gemini'])
     .filter((agent) => favoriteAgents.has(agent) && (!connections || connections[agent]?.enabled));
   const poolsOf = (quotas) => ({ claudeGpt: quotas?.antigravityClaudeGpt, argon: quotas?.antigravityArgon });
+  let countdownActive = false;
   function renderModelCards(quotas) {
+    countdownActive = resetWithinMinute(quotas);
     const agents = usableAgents();
     if ([...modelCards.children].map((card) => card.dataset.agent).join() !== agents.join()) { modelCards.replaceChildren(...agents.map((agent) => modelCard(agent, quotas?.[agent], poolsOf(quotas), connections?.[agent]))); return; }
     agents.forEach((agent, i) => updateModelCard(modelCards.children[i], quotas?.[agent], poolsOf(quotas), connections?.[agent]));
   }
   setInterval(() => lastQuotas && renderModelCards(lastQuotas), 30000); // countdowns
+  setInterval(() => {
+    if (lastQuotas && (countdownActive || resetWithinMinute(lastQuotas))) renderModelCards(lastQuotas);
+  }, 1000); // the last minute counts in seconds, including the transition to "now"
   // Until the first quotas message arrives the cards are shimmering skeletons (see .is-loading in launcher.css).
   modelCards.classList.add('is-loading');
   modelCards.setAttribute('aria-busy', 'true');

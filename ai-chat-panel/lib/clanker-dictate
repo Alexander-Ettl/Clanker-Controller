@@ -30,5 +30,4 @@ for sock in "${candidates[@]}"; do
   if [ "$(send "$sock")" = "ok" ]; then exit 0; fi
 done
 echo "Clanker is not listening. Open VS Code with the Clanker Controller extension first." >&2
-command -v notify-send >/dev/null && notify-send -a Clanker "Dictation" "Clanker is not running in any editor window."
 exit 1

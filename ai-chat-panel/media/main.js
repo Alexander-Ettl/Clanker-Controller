@@ -2531,6 +2531,55 @@
   document.querySelector('.compose-row').prepend(queueStrip);
   if (typeof ResizeObserver === 'function') new ResizeObserver(() => !queueStrip.hidden && updateQueueMaxHeight()).observe(queueStrip);
 
+  // ---------- "Getting ready": what a start is waiting on ----------
+  // After a cold start the model list, the usage numbers or a CLI that is updating itself can hold a prompt for a minute. The host
+  // announces a wait that lasts more than a moment (startWaiting); this bud sits above the composer and says what is being
+  // waited for, that the prompt goes out by itself afterwards, and keeps a moving bar so it is clear nothing has frozen.
+  const startWait = document.createElement('div');
+  startWait.className = 'start-wait island-bud';
+  startWait.hidden = true;
+  startWait.setAttribute('role', 'status');
+  startWait.setAttribute('aria-live', 'polite');
+  startWait.innerHTML = '<div class="start-wait-row"><span class="start-wait-spin" aria-hidden="true"></span><b>Getting ready</b><span class="start-wait-what"></span><span class="start-wait-time"></span></div>'
+    + '<div class="start-wait-note"></div><div class="start-wait-bar" role="progressbar" aria-label="Getting ready"><i></i></div>';
+  queueStrip.after(startWait);
+  const startWaitEls = { what: startWait.querySelector('.start-wait-what'), time: startWait.querySelector('.start-wait-time'), note: startWait.querySelector('.start-wait-note'), bar: startWait.querySelector('.start-wait-bar') };
+  let startWaitHide = 0, startWaitClock = 0, startWaitSince = 0;
+  const startWaitFrames = (height) => ({ height: `${height}px`, paddingTop: '', paddingBottom: '', marginTop: '0px', opacity: 1, transform: 'none', overflow: 'hidden' });
+  const startWaitClosed = { height: '0px', paddingTop: '0px', paddingBottom: '0px', marginTop: '-6px', opacity: 0, transform: 'translateY(10px)', overflow: 'hidden' };
+  function tickStartWait() {
+    const seconds = Math.max(0, Math.round((Date.now() - startWaitSince) / 1000));
+    startWaitEls.time.textContent = seconds >= 3 ? `${seconds} s` : '';
+  }
+  function hideStartWait(immediate = false) {
+    clearTimeout(startWaitHide); clearInterval(startWaitClock); startWaitClock = 0;
+    if (startWait.hidden) return;
+    startWait.getAnimations().forEach((animation) => animation.cancel());
+    if (immediate || REDUCED_MOTION.matches) { startWait.hidden = true; return; }
+    const height = startWait.getBoundingClientRect().height;
+    startWait.animate([startWaitFrames(height), startWaitClosed], { duration: 260, easing: DOCK_EASE }).finished.then(() => { startWait.hidden = true; }, () => {});
+  }
+  function showStartWait({ stage, label, since, progress }) {
+    if (!stage) { clearTimeout(startWaitHide); startWaitHide = setTimeout(hideStartWait, 180); return; } // the next stage replaces this one without a flicker
+    clearTimeout(startWaitHide);
+    const wasShown = !startWait.hidden;
+    const before = startWait.hidden ? 0 : startWait.getBoundingClientRect().height;
+    startWait.dataset.stage = stage;
+    startWaitEls.what.textContent = label || '';
+    startWaitEls.note.textContent = (turnQueue.length || busy) ? 'Your queued prompts send as soon as this finishes.' : 'Your prompt sends as soon as this finishes.';
+    const determinate = Number.isFinite(progress);
+    startWaitEls.bar.classList.toggle('is-determinate', determinate);
+    if (determinate) { startWaitEls.bar.style.setProperty('--p', String(Math.max(0, Math.min(100, progress * 100)))); startWaitEls.bar.setAttribute('aria-valuenow', String(Math.round(progress * 100))); } else startWaitEls.bar.removeAttribute('aria-valuenow');
+    startWaitSince = since || Date.now();
+    tickStartWait();
+    if (!startWaitClock) startWaitClock = setInterval(tickStartWait, 1000);
+    startWait.getAnimations().forEach((animation) => animation.cancel());
+    startWait.hidden = false;
+    if (REDUCED_MOTION.matches) return;
+    const after = startWait.getBoundingClientRect().height;
+    if (Math.abs(after - before) >= 1 || !wasShown) startWait.animate([before ? startWaitFrames(before) : startWaitClosed, startWaitFrames(after)], { duration: 300, easing: DOCK_EASE });
+  }
+
   // P17-L: hairline icons, no emoji.
   const queueSvg = (d) => `<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${d}</svg>`;
   const QUEUE_ICONS = {
@@ -2848,7 +2897,43 @@
     if (cap > 0) queueStrip.style.setProperty('--queue-max-h', `${cap}px`);
   }
 
+  // The strip is part of the dock, and the dock's height moves the transcript's bottom edge. Showing, growing or emptying the queue
+  // must therefore move that edge a little each frame, never all at once: the strip's height is tweened from what it was to what it
+  // now is (a row that appears or goes also fades and slides), so the dock, the glass behind it and the pinned transcript tail follow
+  // frame by frame. A queue that empties leaves a copy of itself behind to shrink away, since the live strip is already hidden.
+  const DOCK_EASE = 'cubic-bezier(0.3, 0.7, 0.2, 1)'; // 13 to 15px per frame at the start and the middle of a 94px move; no jolt on the first frame
+  const stripHeight = () => (queueStrip.hidden ? 0 : queueStrip.getBoundingClientRect().height);
+  function glideQueueStrip(before, ghost) {
+    queueStrip.getAnimations().forEach((animation) => animation.cancel());
+    const after = stripHeight();
+    if (REDUCED_MOTION.matches || Math.abs(after - before) < 1) { ghost?.remove(); return; }
+    const gap = 6; // the compose row's gap: a strip that is not there takes none of it either
+    const closed = { height: '0px', paddingTop: '0px', paddingBottom: '0px', marginTop: `-${gap}px`, opacity: 0, transform: 'translateY(10px)', overflow: 'hidden' };
+    const open = (height) => ({ height: `${height}px`, paddingTop: '', paddingBottom: '', marginTop: '0px', opacity: 1, transform: 'none', overflow: 'hidden' });
+    const timing = { duration: 300, easing: DOCK_EASE };
+    if (after === 0) { // emptied: the copy shrinks away
+      if (!ghost) return;
+      ghost.animate([open(before), closed], timing).finished.then(() => ghost.remove(), () => ghost.remove());
+      return;
+    }
+    const frames = [before ? open(before) : closed, open(after)];
+    queueStrip.animate(frames, timing);
+  }
   function renderTurnQueue() {
+    if (queueStrip.dataset.chatId === (currentChatId || '') && queueStrip.querySelector('.is-dragging')) return;
+    const before = stripHeight();
+    const ghost = before > 0 && !REDUCED_MOTION.matches ? queueStrip.cloneNode(true) : null;
+    const chatBefore = queueStrip.dataset.chatId;
+    renderTurnQueueNow();
+    if (ghost && queueStrip.hidden && queueStrip.dataset.chatId === chatBefore) {
+      ghost.className = 'queue-ghost island-bud'; // not .turn-queue-strip: the live strip stays the only one of those
+      ghost.removeAttribute('id'); ghost.removeAttribute('aria-label'); ghost.setAttribute('aria-hidden', 'true'); ghost.inert = true; ghost.hidden = false;
+      queueStrip.after(ghost);
+    }
+    glideQueueStrip(before, ghost && ghost.isConnected ? ghost : null);
+  }
+
+  function renderTurnQueueNow() {
     if (queueStrip.dataset.chatId === (currentChatId || '') && queueStrip.querySelector('.is-dragging')) return; // reconcile pending snapshots on pointer release
     const scheduled = isChatSwitching ? [] : scheduledHere();
     const queued = isChatSwitching ? [] : turnQueue;
@@ -3016,6 +3101,7 @@
     renderAttachments();
     mentioned.clear();
     renderMentions();
+    const typedHeight = promptInput.offsetHeight;
     promptInput.value = '';
     if (composerDraft) {
       promptInput.value = composerDraft.text;
@@ -3027,6 +3113,8 @@
     closeSlashMenu();
     autoGrow();
     renderComposerState();
+    // The box that held the sent text settles back to one line instead of snapping: the dock's top edge follows it down.
+    animateComposerHeight(typedHeight);
   }
 
   sendBtn.addEventListener('click', () => sendPrompt());
@@ -4425,8 +4513,37 @@
       loadVisibleGaps(scrollingUp);
     }
   }, { passive: true });
+  // Scrolls the tail into view the way a spring would: a critically damped approach with no jump at the start or the end.
+  // A new message lands below the fold in one frame; snapping to it moves the whole conversation a hundred pixels at once.
+  // The target is read every frame, so a dock that is still growing underneath is followed rather than overshot.
+  const GLIDE_OMEGA = 19; // rad/s: settles in about a third of a second
+  let tailGlide = 0;
+  function glideTranscriptToEnd() {
+    if (restoringHistory) return;
+    stickToEnd = true;
+    if (REDUCED_MOTION.matches) { scrollTranscriptToEnd(true); return; }
+    if (tailGlide) return;
+    let last = performance.now(), velocity = 0;
+    const chatId = currentChatId;
+    const finish = () => { tailGlide = 0; transcriptEl.scrollTop = transcriptEl.scrollHeight; lastScrollTop = transcriptEl.scrollTop; updateTranscriptFade(); };
+    const step = (now) => {
+      const dt = Math.min(0.05, Math.max(0.001, (now - last) / 1000)); last = now;
+      const gap = transcriptEl.scrollHeight - transcriptEl.clientHeight - transcriptEl.scrollTop;
+      if (!stickToEnd) { tailGlide = 0; return; } // the reader scrolled away
+      if (gap < 0.6 || chatId !== currentChatId) { finish(); return; }
+      const decay = Math.exp(-GLIDE_OMEGA * dt), carry = velocity + GLIDE_OMEGA * gap;
+      const nextGap = (gap + carry * dt) * decay;
+      velocity = (velocity - GLIDE_OMEGA * carry * dt) * decay;
+      transcriptEl.scrollTop += gap - nextGap;
+      lastScrollTop = transcriptEl.scrollTop;
+      updateTranscriptFade();
+      tailGlide = requestAnimationFrame(step);
+    };
+    tailGlide = requestAnimationFrame(step);
+  }
   function scrollTranscriptToEnd(force = false) {
     if (restoringHistory) return;
+    if (tailGlide && stickToEnd) return; // the glide is already carrying the tail; a snap here would undo it
     if (!force && !stickToEnd) return;
     stickToEnd = true;
     if (transcriptScrollFrame) return;
@@ -4444,7 +4561,7 @@
   // images decoding, a turn collapsing) re-pins the tail while stuck to it.
   const pinToEnd = new ResizeObserver(() => {
     transcriptEl.style.setProperty('--transcript-h', `${transcriptEl.clientHeight}px`); // the first message sits at a share of this
-    if (stickToEnd) {
+    if (stickToEnd && !tailGlide) {
       transcriptEl.scrollTop = transcriptEl.scrollHeight;
       lastScrollTop = transcriptEl.scrollTop;
       updateTranscriptFade();
@@ -4725,6 +4842,8 @@
     if (!handoff?.from?.label || !handoff?.to?.label || turn.previousElementSibling?.classList.contains('model-handoff-divider')) return;
     const divider = document.createElement('div');
     divider.className = 'model-handoff-divider';
+    if (handoff.from.agent) divider.dataset.fromAgent = handoff.from.agent;
+    if (handoff.to.agent) divider.dataset.toAgent = handoff.to.agent;
     divider.setAttribute('role', 'note');
     divider.setAttribute('aria-label', `Context handoff from ${handoff.from.label} to ${handoff.to.label}`);
     const capsule = document.createElement('div');
@@ -4734,19 +4853,32 @@
     title.textContent = 'Context handoff';
     const route = document.createElement('span');
     route.className = 'model-handoff-route';
-    const model = ({ agent, label }) => {
+    const model = ({ agent, label }, side) => {
       const node = document.createElement('span');
-      node.className = 'model-handoff-model';
+      node.className = `model-handoff-model is-${side}`;
       node.dataset.agent = agent;
-      node.textContent = label;
       node.title = label;
+      const svg = (window.AGENT_ICONS && window.AGENT_ICONS[agent]) || '';
+      if (svg) {
+        const icon = document.createElement('span');
+        icon.className = 'model-handoff-icon';
+        icon.setAttribute('aria-hidden', 'true');
+        icon.innerHTML = svg;
+        node.append(icon);
+      } else {
+        node.classList.add('is-fallback');
+      }
+      const name = document.createElement('span');
+      name.className = 'model-handoff-label';
+      name.textContent = label;
+      node.append(name);
       return node;
     };
     const arrow = document.createElement('span');
     arrow.className = 'model-handoff-arrow';
     arrow.setAttribute('aria-hidden', 'true');
-    arrow.textContent = '→';
-    route.append(model(handoff.from), arrow, model(handoff.to));
+    arrow.innerHTML = '<svg viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2 6h7.5M6.75 3l3 3-3 3"/></svg>';
+    route.append(model(handoff.from, 'from'), arrow, model(handoff.to, 'to'));
     capsule.append(title, route);
     divider.append(capsule);
     turn.before(divider);
@@ -4782,14 +4914,6 @@
       scrollTranscriptToEnd(true);
       return;
     }
-    // Sent by the scheduler, not typed just now: the same bubble, with a quiet clock tag above it.
-    if (scheduled) {
-      const tag = document.createElement('div');
-      tag.className = 'msg-scheduled-tag';
-      tag.innerHTML = CLOCK_SVG;
-      tag.append('Scheduled');
-      group.appendChild(tag);
-    }
     const bubble = document.createElement('div');
     bubble.className = 'msg msg-user';
     bubble.dataset.raw = text; // right-click "Copy message" copies exactly what was sent
@@ -4822,7 +4946,7 @@
     turnAnchor = group;
     turnStartedAt = Date.now();
     currentAssistantBubble = null;
-    scrollTranscriptToEnd(true);
+    if (restoringHistory) scrollTranscriptToEnd(true); else glideTranscriptToEnd();
   }
 
   // The auto-assigned role, as one quiet line in the reply header instead of the
@@ -5772,18 +5896,12 @@
     return tvFrame({ left: [tvChip('JSON')], content: rows.el, painters: [rows.paint], copy: pretty, expand: big ? null : expand });
   }
 
-  const TODO_STATE_ICONS = {
-    done: '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="8" cy="8" r="6" stroke-width="1.3" opacity="0.45"/><path d="m5.4 8.2 1.8 1.8 3.5-3.8"/></svg>',
-    active: '<svg viewBox="0 0 16 16" fill="none" aria-hidden="true"><circle cx="8" cy="8" r="6" stroke="currentColor" stroke-width="1.4" opacity="0.4"/><circle cx="8" cy="8" r="3" fill="currentColor"/></svg>',
-    pending: '<svg viewBox="0 0 16 16" fill="none" aria-hidden="true"><circle cx="8" cy="8" r="5.6" stroke="currentColor" stroke-width="1.3"/></svg>',
-  };
-
   function viewChecklist(text) {
     const lines = String(text || '').split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
     if (!lines.length) return null;
     const list = document.createElement('ul');
     list.className = 'todo-steps';
-    lines.forEach((raw, index) => {
+    lines.forEach((raw) => {
       let state = 'pending';
       let title = raw;
       if (/^(?:✓|✔|☑|\[x\]|-\s*\[x\])\s*/i.test(raw)) {
@@ -5798,17 +5916,13 @@
       }
       const item = document.createElement('li');
       item.className = `todo-step is-${state}`;
-      const mark = document.createElement('span');
-      mark.className = 'todo-step-mark';
-      mark.setAttribute('aria-hidden', 'true');
-      mark.innerHTML = TODO_STATE_ICONS[state];
-      const num = document.createElement('span');
-      num.className = 'todo-step-num';
-      num.textContent = `${index + 1}.`;
+      const dot = document.createElement('span');
+      dot.className = 'todo-step-dot';
+      dot.setAttribute('aria-hidden', 'true');
       const label = document.createElement('span');
       label.className = 'todo-step-text';
       label.textContent = title || raw;
-      item.append(mark, num, label);
+      item.append(dot, label);
       list.append(item);
     });
     return list;
@@ -6480,8 +6594,13 @@
   function appendNotice(text) {
     clearEmptyState();
     const note = document.createElement('div');
-    note.className = 'chat-notice';
-    note.textContent = text;
+    const isSchedule = /when usage resets|scheduled/i.test(text);
+    note.className = isSchedule ? 'chat-notice is-schedule' : 'chat-notice';
+    if (isSchedule) note.insertAdjacentHTML('afterbegin', CLOCK_SVG);
+    const label = document.createElement('span');
+    label.className = 'chat-notice-text';
+    label.textContent = text;
+    note.append(label);
     turnHost().appendChild(note);
     scrollTranscriptToEnd();
   }
@@ -7814,6 +7933,7 @@
         if (message.type === 'chatSynced' && message.chat?.id !== currentChatId) break;
         isChatSwitching = false;
         if (message.chat?.id !== currentChatId) {
+          hideStartWait(true); // what the other chat was waiting for is not this chat's wait
           resetVoiceCorrections(); lastVoiceDraft = null; dismissedVoiceTerms.clear();
           if (editingQueue) finishQueueEdit();
           if (currentChatId) chatDrafts.set(currentChatId, { text: promptInput.value, files: attachments.slice(), mentions: [...mentioned] });
@@ -7855,6 +7975,11 @@
         const resolve = previewWaiting.get(message.requestId);
         previewWaiting.delete(message.requestId);
         resolve?.(message);
+        break;
+      }
+      case 'startWaiting': {
+        if (message.chatId && message.chatId !== currentChatId) break;
+        showStartWait(message);
         break;
       }
       case 'turnQueue': {

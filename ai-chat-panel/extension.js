@@ -594,8 +594,8 @@ async function planTurn(run, message, deps) {
   run.requireProject(); // Validate the pinned project; never fall back to the active editor.
   const text = message.text;
   if (/^\/compact(?:\s|$)/i.test(text.trimStart())) throw new Error('Clanker manages compaction automatically.');
-  if (deps.ensureModels) await deps.ensureModels();
-  const quotas = await readQuotas();
+  if (deps.ensureModels) await (run.gate ? run.gate('models', 'Loading models…', deps.ensureModels()) : deps.ensureModels());
+  const quotas = await (run.gate ? run.gate('usage', 'Checking usage…', readQuotas()) : readQuotas());
   let option = modelOption(message.modelId);
   if (message.modelId && message.modelId !== 'auto' && !option) throw new Error(`Selected model ${message.modelId} is unavailable. Refresh Models or choose another model.`);
   const accounts = deps.cliAccounts;
@@ -1210,6 +1210,22 @@ class ChatRun {
       .finally(() => { this.deps.chatWindowManager.release(this); this.deps.notifyHistory(); });
   }
 
+  /**
+   * Starting a turn waits on things the person cannot see: the model list, the usage numbers, a CLI that is updating itself,
+   * free memory, a sign-in check. After a cold start that can be a minute, and a queued prompt just sat there. A wait that lasts
+   * longer than STAGE_NOTICE_MS is announced to the page (startWaiting, with what it is waiting for) and withdrawn when it ends,
+   * so a quick one never flashes.
+   */
+  async gate(stage, label, work, detail = {}) {
+    if (!work || typeof work.then !== 'function') return work;
+    let shown = false;
+    const timer = setTimeout(() => { shown = true; this.post({ type: 'startWaiting', chatId: this.chat.id, stage, label, since: Date.now(), ...detail }); }, ChatRun.STAGE_NOTICE_MS);
+    try { return await work; } finally {
+      clearTimeout(timer);
+      if (shown) this.post({ type: 'startWaiting', chatId: this.chat.id, stage: null });
+    }
+  }
+
   async startTurn(message, { origin = null, queued = null } = {}) {
     const text = String(message.text || '').trim();
     if (!text) return;
@@ -1232,7 +1248,7 @@ class ChatRun {
     try {
       if (!queued) this.streamEngine.interrupt();
       const config = vscode.workspace.getConfiguration('aiChatPanel');
-      if (this.deps.ensureModels) await this.deps.ensureModels();
+      if (this.deps.ensureModels) await this.gate('models', 'Loading models…', this.deps.ensureModels());
       const pipelineModel = (key, agent) => {
         const option = modelOption(config.get(key)) || defaultModel(agent);
         if (!option) throw new Error(`No ${agent} models available. Refresh Models in Chat Settings.`);
@@ -1251,11 +1267,11 @@ class ChatRun {
       const modelId = message.pipeline ? pipelineModel('architectModel', 'claude') : pinned ? pipelineModel('editorModel', 'codex') : selected;
       const plan = await planTurn(this, { ...message, text, ...extras, modelId }, this.deps);
       // A provider picked while its idle update is finishing starts on the new binary.
-      await this.deps.waitForCliUpdate?.(plan.agent);
+      await this.gate('update', `Updating ${providers.get(plan.agent)?.name || plan.agent}…`, this.deps.waitForCliUpdate?.(plan.agent));
       // Nobody is watching a queued prompt start: when memory is short it waits (up to 10 minutes) instead of tipping the machine into the OOM killer.
-      if (queued && !queued.priority) await this.deps.waitForMemory?.();
+      if (queued && !queued.priority) await this.gate('memory', 'Waiting for free memory…', this.deps.waitForMemory?.());
       // Look before sending what nobody is watching (queued, scheduled, "continue"): a signed-out CLI keeps it queued and says why.
-      const blocked = queued ? await this.deps.authGate?.check(plan.agent) : null;
+      const blocked = queued ? await this.gate('auth', 'Checking sign-in…', this.deps.authGate?.check(plan.agent)) : null;
       // Pause, delete, or reorder during planning takes effect before a task starts.
       if (version !== this.startVersion || (queued && (queued.editing || this.turn || (this.queuePaused && !queued.priority) || this.queue[0] !== queued))) return false;
       if (blocked) { if (this.deps.authGate.incident(plan.agent)) this.holdForAuth(plan.agent, blocked); return false; } // false: drain looks again, and holds or sends
@@ -5168,5 +5184,7 @@ function installLog(context, manager) {
 }
 
 function deactivate() { stopOwnHub(); return stopChatStorage?.(); }
+
+ChatRun.STAGE_NOTICE_MS = 400; // a start that waits longer than this tells the page what for (ChatRun.gate)
 
 module.exports = { activate, deactivate, agentList, injectTarget, opusTerminalCommand, ChatWindowHost, ChatWindowManager, LauncherViewProvider, SchedulerWatchdog, TunnelManager, quotaAvailable, cleanAttachmentName };
