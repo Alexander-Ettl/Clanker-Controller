@@ -2,7 +2,7 @@
     "name": "ai-chat-panel",
     "displayName": "Clanker Controller",
     "description": "One chat for Claude Code, Codex, Gemini and GitHub Copilot in VS Code and Antigravity IDE.",
-    "version": "0.1.1",
+    "version": "0.2.0",
     "publisher": "local",
     "license": "MPL-2.0",
     "repository": {

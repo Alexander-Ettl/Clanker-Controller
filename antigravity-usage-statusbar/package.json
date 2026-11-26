@@ -2,7 +2,7 @@
   "name": "antigravity-usage-statusbar",
   "displayName": "Gemini, Claude & Codex Usage",
   "description": "Shows Gemini (Antigravity), Claude Code, and Codex rate-limit usage in the Antigravity IDE status bar.",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "publisher": "local",
   "license": "MPL-2.0",
   "repository": { "type": "git", "url": "https://github.com/Alexander-Ettl/Clanker-Controller.git", "directory": "antigravity-usage-statusbar" },
