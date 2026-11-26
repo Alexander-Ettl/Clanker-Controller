@@ -108,6 +108,10 @@
                 "title": "Clanker Controller:Run Scheduled Prompts While the Editor Is Closed"
             },
             {
+                "command": "aiChatPanel.dictateToggle",
+                "title": "Clanker Controller:Dictate (start or stop)"
+            },
+            {
                 "command": "aiChatPanel.openVoiceRecordings",
                 "title": "Clanker Controller:Open Voice Recordings Folder"
             },
@@ -186,6 +190,13 @@
                 }
             ]
         },
+        "keybindings": [
+            {
+                "command": "aiChatPanel.dictateToggle",
+                "key": "f9",
+                "when": "!editorTextFocus"
+            }
+        ],
         "configuration": {
             "title": "Clanker Controller",
             "properties": {
@@ -228,10 +239,35 @@
                     "default": true,
                     "markdownDescription": "Play the notification chime when a reply finishes and nothing you queued is left to run. Turn off for silence; the desktop notification shown while the IDE is in the background is unaffected. Chat Settings > General has the switch."
                 },
+                "aiChatPanel.openFailedToolCards": {
+                    "type": "boolean",
+                    "default": false,
+                    "markdownDescription": "Open a tool step by itself when it fails, so its error is on screen without a click. Off by default: a failed step stays folded (its row still turns red and says Failed) and opens when you click it. Chat Settings > General has the switch."
+                },
+                "aiChatPanel.oomGuard": {
+                    "type": "boolean",
+                    "default": true,
+                    "markdownDescription": "Linux: keep the editor alive when memory runs out, so running and queued prompts survive. Clanker sets systemd's `OOMPolicy=continue` for VS Code's app unit (a killed language server no longer stops all of VS Code), gives VS Code and the CLIs the lowest kill priority your user may set, makes other desktop apps (not the desktop itself, terminals or editors) the kernel's first choice while prompts run or wait, closes idle warm CLI sessions, and holds a queued prompt back while memory is very low. No root needed; the files are in `~/.config/systemd/user/app-code-.scope.d/` and `app-code@.service.d/`."
+                },
+                "aiChatPanel.appearance": {
+                    "type": "string",
+                    "enum": ["clanker", "halo"],
+                    "enumDescriptions": [
+                        "Every control in view: the sidebar rail with usage, projects and recent chats, tool cards and the full composer.",
+                        "Minimal: a slim header instead of the rail, a softer transcript with each turn's steps folded into one pill, and only the composer controls you use most. Follows your colour theme."
+                    ],
+                    "default": "clanker",
+                    "markdownDescription": "How the chat looks. **Clanker** shows every control; **Halo** is the minimal look: fewer buttons, folded work steps and a glow round the message box while a reply is being written. Switches open chats at once. Chat Settings > General has the picker."
+                },
                 "aiChatPanel.workContextIcons": {
                     "type": "boolean",
                     "default": false,
                     "markdownDescription": "Show what each Recent chat is working on as a small icon, chosen by Cloudflare's Clef Flash. **Turn on only if the Cloudflare account connected in Settings > Routing is on the Workers Free plan.** Clanker cannot check your plan. The feature spends at most 1,000 of Cloudflare's 10,000 free Neurons a day (about 250 classifications) and stops when 8,000 are used; it never falls back to another provider and does nothing without a Cloudflare connection."
+                },
+                "aiChatPanel.chatFolders": {
+                    "type": "boolean",
+                    "default": true,
+                    "markdownDescription": "Group chats into folders in Manage Chats and expand them from the sidebar's Recent list. Turn off to hide folder controls and show every chat flat without deleting your folders. Chat Settings > General has the switch."
                 },
                 "aiChatPanel.livePrices": {
                     "type": "boolean",
@@ -280,11 +316,22 @@
                     "default": true,
                     "markdownDescription": "Silently update outdated connected provider CLIs while they have no active work and you have not typed with them for 30 seconds. Other providers can update while you chat. Turn off to use manual updates. Chat Settings > General has the switch."
                 },
+                "aiChatPanel.autoUpdateApps": {
+                    "type": "boolean",
+                    "default": false,
+                    "markdownDescription": "Also update desktop apps installed from an apt repository (the ChatGPT app, Claude Desktop) while they have no active work. Each update asks for your system password in the system's own dialog, so this is off by default; a dismissed dialog is not shown again for six hours. Without this, Settings shows an Update button."
+                },
+                "aiChatPanel.confirmExternalLinks": {
+                    "type": "boolean",
+                    "scope": "application",
+                    "default": false,
+                    "description": "Ask before opening an external link from Clanker chat. Chat Settings > General has the switch."
+                },
                 "aiChatPanel.cliTelemetry": {
                     "type": "boolean",
                     "scope": "application",
                     "default": false,
-                    "markdownDescription": "Allow Codex and Claude Code processes started by Clanker to follow their own telemetry settings. Reload the editor to apply changes to running processes. Agy telemetry is controlled in its /config menu."
+                    "markdownDescription": "Off blocks telemetry for Codex and Claude Code and disables Agy feedback surveys. Reload the editor to apply changes to running processes. Agy's account-level telemetry has no headless CLI flag and is controlled via Enable Telemetry in its /config menu."
                 },
                 "aiChatPanel.sessionWarmup": {
                     "type": "boolean",
@@ -369,6 +416,24 @@
                     "type": "string",
                     "default": "",
                     "markdownDescription": "Microphone for dictation, by its device name. Set it in Chat Settings > Voice. Empty: automatic (the system's default input; Settings shows which one). A device that is not connected falls back to automatic."
+                },
+                "aiChatPanel.voiceProvider": {
+                    "type": "string",
+                    "enum": ["groq", "local"],
+                    "default": "groq",
+                    "markdownDescription": "Speech-to-text backend for dictation. `groq` (default) uses Groq's cloud Whisper API. `local` runs whisper.cpp on this machine using a model downloaded on demand in Chat Settings > Voice."
+                },
+                "aiChatPanel.voiceGroqModel": {
+                    "type": "string",
+                    "enum": ["whisper-large-v3-turbo", "whisper-large-v3"],
+                    "default": "whisper-large-v3-turbo",
+                    "markdownDescription": "Whisper model used when dictation runs on Groq. `whisper-large-v3-turbo` is fastest and cheapest; `whisper-large-v3` offers slightly higher accuracy."
+                },
+                "aiChatPanel.voiceLocalModel": {
+                    "type": "string",
+                    "enum": ["base.en", "small.en", "medium.en", "small", "large-v3-turbo"],
+                    "default": "small.en",
+                    "markdownDescription": "On-device whisper.cpp model used when `aiChatPanel.voiceProvider` is `local`. Includes English-only (`*.en`) and Multilingual models; downloaded on demand outside this workspace."
                 },
                 "aiChatPanel.models": {
                     "type": "object",

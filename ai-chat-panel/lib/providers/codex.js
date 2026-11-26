@@ -39,6 +39,7 @@ function parseModels(text) {
 
 module.exports = {
   id: 'codex',
+  nativeAutoCompaction: true,
   name: 'Codex',
   company: 'OpenAI',
   color: '#8b5cf6',

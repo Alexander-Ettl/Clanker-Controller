@@ -71,7 +71,7 @@ function withClaudeLive(quotas) {
 // reset countdowns. `remaining`/`windowLabel` stay for the chat header.
 function windowOf(raw, windowLabel, key) {
   const live = raw && typeof raw.remaining === 'number'
-    ? { remaining: raw.remaining, used: raw.used, resetsAt: raw.resetsAt ?? null, windowMinutes: raw.windowMinutes ?? null, windowLabel }
+    ? { remaining: raw.remaining, used: raw.used, resetsAt: raw.resetsAt ?? null, windowMinutes: raw.windowMinutes ?? null, windowLabel: raw.windowLabel || windowLabel, ...(raw.detail ? { detail: raw.detail } : {}) }
     : null;
   if (!key) return live && resetPassed(live) ? fresh(live) : live;
   // No reset time in the reading, and it is exactly what was remembered before whose reset has since passed: the same
@@ -96,7 +96,8 @@ function shapeQuotas(raw) {
   const claudeOpus = windowOf(quotas.claudeOpus, '7d');
   const codex = windowOf(quotas.codex, '5h', 'codex');
   const gemini = windowOf(quotas.gemini, '5h', 'gemini');
-  const antigravityClaudeGpt = windowOf(quotas.antigravityClaudeGpt, quotas.antigravityClaudeGpt?.windowMinutes === 10080 ? '7d' : '5h');
+  const copilot = windowOf(quotas.copilot, 'month', 'copilot'); // a monthly allowance; its reset is remembered like the 5h windows
+  const antigravityClaudeGpt = windowOf(quotas.antigravityClaudeGpt, quotas.antigravityClaudeGpt?.windowMinutes === 10080 ? '7d' : '5h', 'antigravityClaudeGpt');
   const antigravityArgon = windowOf(quotas.antigravityArgon, quotas.antigravityArgon?.windowMinutes === 10080 ? '7d' : '5h');
   return {
     claude: claude && { ...claude, secondary: claudeWeekly },
@@ -105,6 +106,7 @@ function shapeQuotas(raw) {
     opus: claude && { ...claude, secondary: claudeOpus || claudeWeekly },
     codex: codex && { ...codex, secondary: windowOf(quotas.codex?.secondary, '7d') },
     gemini: gemini && { ...gemini, secondary: windowOf(quotas.gemini?.secondary, '7d') },
+    copilot,
     antigravityClaudeGpt: antigravityClaudeGpt && { ...antigravityClaudeGpt, secondary: windowOf(quotas.antigravityClaudeGpt?.secondary, '7d') },
     antigravityArgon: antigravityArgon && { ...antigravityArgon, secondary: windowOf(quotas.antigravityArgon?.secondary, '7d') },
   };

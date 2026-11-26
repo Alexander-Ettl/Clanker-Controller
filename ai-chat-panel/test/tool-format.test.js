@@ -96,3 +96,36 @@ test('diffs and JSON in command output are recognised', () => {
   assert.equal(f.looksLikeJson('[1, 2'), false);
   assert.equal(f.looksLikeJson('plain'), false);
 });
+
+test('Stop cards name what was stopped from JSON, truncated JSON, plain text or fallback id', () => {
+  const { toolTarget } = require('../lib/stream-engine');
+  const { recordToolEnd } = require('../lib/turn-record');
+
+  assert.equal(toolTarget({ task_id: 'bwclxqqlk' }), 'bwclxqqlk');
+  assert.equal(toolTarget({ shell_id: 'sh-42' }), 'sh-42');
+
+  const full = JSON.stringify({
+    message: 'Successfully stopped task: bwclxqqlk (/home/user/dev/scratch/halo/verify.sh)',
+    task_id: 'bwclxqqlk',
+    task_type: 'local_bash',
+    command: '/home/user/dev/scratch/halo/verify.sh',
+  });
+  assert.equal(f.stopTarget(full), '/home/user/dev/scratch/halo/verify.sh');
+
+  // Truncated preview (e.g. long bash loop cut at 1200 chars before the closing quote/brace).
+  const truncated = '{"message":"Successfully stopped task: bq54oqqjl (seen=\\"\\"; while true; do sleep 10; done';
+  assert.equal(f.stopTarget(truncated, 'bq54oqqjl'), 'seen=""; while true; do sleep 10; done');
+
+  // Subagent / monitor description JSON.
+  assert.equal(f.stopTarget(JSON.stringify({ description: 'Watch shard logs', task_id: 't9' })), 'Watch shard logs');
+
+  // Plain-text outputs and fallback when running.
+  assert.equal(f.stopTarget('Successfully stopped task: abc (npm test)'), 'npm test');
+  assert.equal(f.stopTarget('No task found with ID: missing1'), 'missing1');
+  assert.equal(f.stopTarget('', 'b7809vj52'), 'b7809vj52');
+
+  // recordToolEnd persists the stopped command onto the recorded TaskStop event.
+  const chat = { messages: [{ role: 'tool', event: { toolId: 't1', name: 'TaskStop', command: 'bwclxqqlk' }, done: false }] };
+  recordToolEnd(chat, { toolId: 't1', output: full, error: false });
+  assert.equal(chat.messages[0].event.command, '/home/user/dev/scratch/halo/verify.sh');
+});

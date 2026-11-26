@@ -334,7 +334,7 @@ test('disabled tiers and private projects make no external requests',async()=>{f
 test('low confidence retries exactly once on regular Clef then uses configured default',async()=>{const {router,calls}=make({default_model:'fast'},async()=>cf('deep',.2));const r=await router.route({prompt:'Investigate'},models);assert.equal(r.pick,'fast');assert.equal(r.retries,1);assert.deepEqual(calls.map(c=>c.body.model),['clef-flash','clef']);});
 test('vision is enforced even for a bad semantic pick, caps swap to a ranked usable model',async()=>{const {router}=make({},async()=>cf('other'));assert.notEqual((await router.route({prompt:'Inspect image',screenshot:true},models)).pick,'other');const r=await router.route({prompt:'Debug'},models,{codex:{remaining:0}});assert.equal(r.pick,'other');});
 test('screenshot uses regular Clef with JPEG copy, original attachment remains intact',async()=>{const {router,calls}=make();router.image=async()=> 'smallJPEG';const state={prompt:'Inspect screenshot',screenshot:true,attachments:['original.png']};await router.route(state,models);assert.equal(calls[0].body.model,'clef');assert.deepEqual(calls[0].body.images,[{content_type:'image/jpeg',base64:'smallJPEG'}]);assert.deepEqual(state.attachments,['original.png']);});
-test('each continuity trigger and target window 80% check',()=>{const c=config();const s={prompt:'a'.repeat(400),context_tokens:7900,previous:deep};assert.equal(continuity(s,fast,{continuation:true},c).reason,'target context threshold');assert.equal(continuity(s,deep,{continuation:true},c).action,'continue');assert.equal(continuity(s,other,{},c).reason,'provider changed');assert.equal(continuity({...s,new_chat:true},deep,{},c).reason,'user requested');assert.equal(continuity(s,deep,{continuation:false},c).reason,'unrelated task');assert.equal(continuity(s,deep,{},config({session_mode:'always_new'})).reason,'always new');});
+test('continuity preserves native sessions at the context limit and keeps other routing triggers',()=>{const c=config();const s={prompt:'a'.repeat(400),context_tokens:10000,previous:deep};assert.equal(continuity(s,fast,{continuation:true},c).action,'continue');assert.equal(continuity(s,deep,{continuation:true},c).action,'continue');assert.equal(continuity(s,other,{},c).reason,'provider changed');assert.equal(continuity({...s,new_chat:true},deep,{},c).reason,'user requested');assert.equal(continuity(s,deep,{continuation:false},c).reason,'unrelated task');assert.equal(continuity(s,deep,{},config({session_mode:'always_new'})).reason,'always new');});
 test('same-provider hysteresis avoids insignificant switches; caps permit switching',async()=>{const {router}=make({hysteresis:.3},async()=>cf('deep'));const near={...fast,complexity:.7};assert.equal((await router.route({prompt:'Debug',previous:near},[near,deep])).pick,'fast');assert.equal((await router.route({prompt:'Debug',previous:near},[near,deep],{codex:{remaining:0}})).exhausted,true);});
 test('legacy shadow settings migrate to manual without classifier calls; benchmarks still classify',async()=>{
   const {router,calls}=make({router_mode:'shadow'});
@@ -450,4 +450,15 @@ test('manual selections skip classifier-inferred vision or context requirements'
   });
   assert.equal((await router.route({prompt:'Task',manual_pick:'fast'},models)).pick,'fast');
   assert.equal(calls.length,0);
+});
+
+test('the fallback session ceiling uses the reported window when the harness cannot compact', () => {
+  // The chat that kept losing its Claude session: 129 "percent" of 128k was 165k tokens of a 1M window.
+  const c = config();
+  const sonnet = { id: 'fallback-model', agent: 'test-cli', context: c.policy.default_context };
+  const state = { prompt: 'continue', context_tokens: 165000, previous: sonnet };
+  assert.equal(continuity(state, sonnet, { continuation: true }, c).reason, 'target context threshold', 'without the known window the old behaviour');
+  const known = { ...state, context_windows: { [sonnet.id]: 1000000 } };
+  assert.deepEqual(continuity(known, sonnet, { continuation: true }, c), { action: 'continue', reason: 'session compatible', context_pct: 17, cache_break: false });
+  assert.equal(continuity({ ...known, context_tokens: 850000 }, sonnet, { continuation: true }, c).reason, 'target context threshold', 'a genuinely full window still starts a new session');
 });

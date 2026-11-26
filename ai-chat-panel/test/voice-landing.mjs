@@ -83,13 +83,31 @@ try {
     await page.waitForTimeout(500);
     assert.equal(await height(), idle, `${mode}: the box returns to its height`);
 
-    // Empty box: no row, the transcript is the first text, Ctrl+Z empties it again.
+    // Empty box: no row, full-width symmetric processing bar, the transcript is the first text, Ctrl+Z empties it again.
     await input.fill('');
     await page.waitForTimeout(250);
     const empty = await height();
     await record();
     assert.equal(await height(), empty, `${mode}: an empty box does not grow`);
     await send({ type: 'micState', state: 'processing', target: true });
+    await page.waitForTimeout(900);
+    const singleBar = await page.evaluate(() => {
+      const overlay = document.querySelector('.voice-overlay');
+      const oStyle = getComputedStyle(overlay);
+      const bStyle = getComputedStyle(overlay, '::before');
+      return {
+        mask: oStyle.maskImage,
+        left: parseFloat(bStyle.left),
+        right: parseFloat(bStyle.right),
+        width: parseFloat(bStyle.width),
+        overlayWidth: overlay.getBoundingClientRect().width,
+      };
+    });
+    assert.equal(singleBar.mask, 'none', `${mode}: processing drops the waveform edge fade so both ends match`);
+    assert.equal(Math.round(singleBar.left), 6, `${mode}: single-line loader left inset is 6px`);
+    assert.equal(Math.round(singleBar.right), 6, `${mode}: single-line loader right inset is 6px`);
+    assert.ok(Math.abs(singleBar.width - (singleBar.overlayWidth - 12)) <= 1, `${mode}: single-line loader spans the full width symmetrically`);
+    if (shot('x')) await composer.screenshot({ path: shot(`${mode}-single-processing`) });
     await land();
     await page.waitForTimeout(1300);
     assert.equal(await input.inputValue(), NEW);
@@ -105,6 +123,54 @@ try {
     await page.waitForTimeout(700);
     assert.equal(await height(), before, `${mode}: a cancelled recording gives the row back`);
     assert.equal(await input.inputValue(), OLD);
+
+    // Cursor-in-middle insertion: clicking between typed text and an earlier voice prompt inserts right at the cursor
+    // even if focus leaves the textarea (e.g. clicking the mic button or hitting F9), keeps smart spacing, places the
+    // cursor right after the inserted text, supports dictionary edit-learning, and one Ctrl+Z restores the original text.
+    const TWO_PARTS = 'I typed this first.\nEarlier voice prompt.';
+    await input.fill(TWO_PARTS);
+    await input.evaluate((el, pos) => {
+      el.focus();
+      el.setSelectionRange(pos, pos);
+      el.dispatchEvent(new Event('mouseup', { bubbles: true }));
+      el.blur();
+    }, 'I typed this first.'.length);
+    await record();
+    await send({ type: 'micState', state: 'processing', target: true });
+    await send({ type: 'micState', state: 'idle', target: true });
+    await send({ type: 'voiceResult', output: { cleanedPrompt: 'Inserted in between.' }, rawTranscript: 'Inserted in between.' });
+    await page.waitForTimeout(300);
+    assert.equal(await input.inputValue(), 'I typed this first. Inserted in between.\nEarlier voice prompt.', `${mode}: dictation inserts at saved cursor position between lines`);
+    const cursorPos = await input.evaluate(el => ({ start: el.selectionStart, end: el.selectionEnd }));
+    assert.deepEqual(cursorPos, { start: 'I typed this first. Inserted in between.'.length, end: 'I typed this first. Inserted in between.'.length }, `${mode}: cursor sits right after inserted dictation`);
+    await undo();
+    assert.equal(await input.inputValue(), TWO_PARTS, `${mode}: Ctrl+Z removes middle-inserted dictation in one step`);
+
+    // Selection replacement: selecting a word and dictating replaces that selection cleanly and Ctrl+Z restores it.
+    await input.fill('Fix the bug quickly.');
+    await input.evaluate((el) => {
+      el.focus();
+      el.setSelectionRange(8, 11); // "bug"
+      el.dispatchEvent(new Event('select', { bubbles: true }));
+      el.blur();
+    });
+    await send({ type: 'voiceResult', output: { cleanedPrompt: 'cursor logic' }, rawTranscript: 'cursor logic' });
+    await page.waitForTimeout(200);
+    assert.equal(await input.inputValue(), 'Fix the cursor logic quickly.', `${mode}: dictation replaces active selection with clean spacing`);
+    await undo();
+    assert.equal(await input.inputValue(), 'Fix the bug quickly.', `${mode}: Ctrl+Z restores replaced selection`);
+
+    // Start-of-input insertion (index 0): inserts at start with a trailing space.
+    await input.fill('Second part.');
+    await input.evaluate((el) => {
+      el.focus();
+      el.setSelectionRange(0, 0);
+      el.dispatchEvent(new Event('click', { bubbles: true }));
+      el.blur();
+    });
+    await send({ type: 'voiceResult', output: { cleanedPrompt: 'First part.' }, rawTranscript: 'First part.' });
+    await page.waitForTimeout(200);
+    assert.equal(await input.inputValue(), 'First part. Second part.', `${mode}: dictation at index 0 adds trailing space`);
 
     // A long draft scrolls inside the capped box and the row still sits under its last line.
     await input.fill(Array.from({ length: 12 }, (_, i) => `Line ${i + 1} of a long written prompt`).join('\n'));

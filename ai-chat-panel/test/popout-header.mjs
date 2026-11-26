@@ -5,7 +5,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { chromium } from 'playwright';
 
-// A chat opened as an editor tab shows only New chat and Manage chats in its header; Scheduled and Loops stay out.
+// A chat opened as an editor tab shows Find, Manage chats and New chat in its header; Scheduled and Loops stay out.
 const require = createRequire(import.meta.url);
 require('./model-fixture').seedModels();
 const uri = file => ({ fsPath: file, toString: () => file });
@@ -40,11 +40,26 @@ try {
   // A scheduled prompt arriving must not bring the Queue pill back.
   await page.evaluate(() => window.postMessage({ type: 'schedulerQueue', tasks: [{ id: 't1', status: 'pending', prompt: 'x', model: 'codex', scheduledAt: Date.now() + 60000 }] }, '*'));
   await page.waitForTimeout(300);
-  const visible = await page.locator('.topbar-actions button').evaluateAll(buttons => buttons.filter(b => b.getBoundingClientRect().width > 0).map(b => b.id));
-  assert.deepEqual(visible, ['historyBtn', 'newChatBtn']);
+  const visible = await page.locator('.topbar-actions button').evaluateAll(buttons => buttons.filter(b => b.getBoundingClientRect().width > 0).map(b => ({
+    id: b.id,
+    w: Math.round(b.getBoundingClientRect().width),
+    h: Math.round(b.getBoundingClientRect().height),
+    svgW: Math.round(b.querySelector('svg').getBoundingClientRect().width),
+    svgH: Math.round(b.querySelector('svg').getBoundingClientRect().height),
+  })));
+  assert.deepEqual(visible, [
+    { id: 'findBtn', w: 42, h: 42, svgW: 20, svgH: 20 },
+    { id: 'historyBtn', w: 42, h: 42, svgW: 20, svgH: 20 },
+    { id: 'newChatBtn', w: 42, h: 42, svgW: 20, svgH: 20 },
+  ]);
+  const bodyPad = await page.evaluate(() => {
+    const cs = getComputedStyle(document.body);
+    return { left: cs.paddingLeft, right: cs.paddingRight, bottom: cs.paddingBottom };
+  });
+  assert.deepEqual(bodyPad, { left: '10px', right: '10px', bottom: '14px' });
   assert.deepEqual(errors, []);
   if (process.argv[2]) await page.locator('.topbar').screenshot({ path: path.join(process.argv[2], 'popout-header.png') });
-  console.log('popout header ok:', visible.join(', '));
+  console.log('popout header ok:', visible.map(b => `${b.id}(${b.w}x${b.h})`).join(', '));
 } finally {
   await browser.close();
 }

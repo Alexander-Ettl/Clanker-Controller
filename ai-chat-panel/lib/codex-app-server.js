@@ -3,6 +3,7 @@
 const { EventEmitter } = require('node:events');
 const { spawn } = require('node:child_process');
 const { locate, resolveShim } = require('./binary-locator.js');
+const { prepareCliEnv } = require('./cli-env.js');
 const { cliTelemetry } = require('./cli-telemetry.js');
 const { launchFailure } = require('./providers/shared.js');
 
@@ -16,7 +17,6 @@ const REQUEST_TIMEOUT_MS = 30000;
 const APP_SERVER_COMMANDS = Object.freeze([
   { name: 'review', description: 'Review uncommitted changes, or use the text as custom review instructions', methods: ['review/start'] },
   { name: 'goal', description: 'Show, set, or clear the current Codex goal', methods: ['thread/goal/get', 'thread/goal/set', 'thread/goal/clear'] },
-  { name: 'compact', description: 'Compact the current Codex thread context', methods: ['thread/compact/start'] },
   { name: 'status', description: 'Show the current thread, goal, and usage status', methods: ['thread/goal/get', 'account/usage/read', 'account/rateLimits/read'] },
   { name: 'model', description: 'List models available to this Codex installation', methods: ['model/list'] },
   { name: 'skills', description: 'List skills available in this workspace', methods: ['skills/list'] },
@@ -84,7 +84,7 @@ class CodexAppServer extends EventEmitter {
       cwd: this.cwd,
       windowsHide: true,
       shell: spec.shell,
-      env: this.env,
+      env: prepareCliEnv(this.env),
       stdio: ['pipe', 'pipe', 'pipe'],
     });
     this.child = child;

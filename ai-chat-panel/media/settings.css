@@ -354,6 +354,7 @@
 .chat-names-picker,
 .ring-source-picker,
 .voice-mode-picker,
+.voice-provider-picker,
 .permission-mode-picker {
   display: flex;
   gap: 2px;
@@ -362,10 +363,12 @@
   border-radius: var(--pill);
   border: 1px solid var(--eo-border);
 }
+.look-pill,
 .format-pill,
 .names-pill,
 .ring-source-pill,
 .mode-pill,
+.provider-pill,
 .permission-pill {
   padding: 4px 10px;
   border: none;
@@ -376,17 +379,28 @@
   cursor: pointer;
   transition: color 0.15s var(--eo-ease);
 }
+.look-pill:hover,
 .format-pill:hover,
 .names-pill:hover,
 .ring-source-pill:hover,
 .mode-pill:hover,
+.provider-pill:hover,
 .permission-pill:hover { color: var(--text-primary); }
+.look-pill.active,
 .format-pill.active,
 .names-pill.active,
 .ring-source-pill.active,
 .mode-pill.active,
+.provider-pill.active,
 .permission-pill.active { color: var(--text-primary); }
 .ring-source-pill { white-space: nowrap; padding-inline: 8px; }
+.cs-select.cs-voice-select { max-width: 220px; }
+.cs-voice-local { border-top: 1px solid rgb(var(--ink) / 0.06); }
+.cs-voice-local-controls { padding-top: 0; }
+.cs-select.cs-voice-local-select { flex: 0 1 300px; max-width: 100%; }
+.cs-voice-local-progress { padding: 0 14px 10px 60px; }
+.cs-voice-local-progress[hidden] { display: none; }
+.cs-voice-local-progress .cs-progress-bar { animation: none; transition: width 0.25s var(--eo-ease); }
 
 /* Voice: the hotkey as a key cap, the Groq key field, and the day's usage as bars like the quota rings'. */
 .cs-keycap { min-width: 96px; justify-content: center; font-variant-numeric: tabular-nums; }

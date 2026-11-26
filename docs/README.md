@@ -27,7 +27,7 @@ Start at the [root README](../README.md). For remaining work, use [TODO.md](../T
 | Usage windows | [Google Cloud setup, costs and removal](cloud-usage-windows.md); local warmups and automatic updates are in the [development guide](development.md#usage-windows-and-cli-maintenance) |
 | Loops | [Loop guide](loops.md); LOOP-01 tracks reconciliation with recent work |
 | Remote access and compliance | [Telegram setup](telegram-setup.md), [Telegram risks](telegram-security-and-risks.md), [EU compliance notes](compliance-eu.md) |
-| Performance already implemented | [Paged chat history](chat-performance.md), [rendering and persistence improvements](performance-implementation.md), [interaction benchmark](interaction-performance.md) |
+| Performance already implemented | [Paged chat history](chat-performance.md), [rendering and persistence improvements](performance-implementation.md), [interaction benchmark](interaction-performance.md), [resize and release of the window edge](resize-performance.md) |
 
 The [21 October performance audit](performance-opportunities.md) records an earlier state. Read its implementation follow-up first; TODO lists the unresolved investigations. Reports under `out/` are local evidence and may be missing in a fresh checkout.
 
@@ -38,6 +38,8 @@ The [21 October performance audit](performance-opportunities.md) records an earl
 | CONTEXT-01 | [Recent chat context icons](plans/recent-chat-context-icons.md), [contact sheet](plans/recent-chat-context-icons-sheet.html) | Built; off until `aiChatPanel.workContextIcons` is set; free only |
 | LOOP-01 | [Loop redesign](plans/loop-redesign.md) | Interrupted integration; reconcile against existing changes |
 | SEARCH-01 | [Manage Chats message search](plans/manage-chats-search-plan.md) | Deferred research; benchmark before choosing a dependency |
+| VOICE-01, DESKTOP-01, DESKTOP-02 | [Dictation focus, hotkey, apps vs CLIs, app updates](plans/dictation-focus-hotkey-and-desktop-apps.md) | Dictation focus built 2026-11-25; the rest researched, not built |
+| UI-MIN-01 | [Minimal appearance](plans/minimal-appearance/README.md), [mockup gallery](plans/minimal-appearance/index.html) | Halo picked and built 2026-11-25 (`aiChatPanel.appearance`); Quiet and Ledger stay mockups |
 
 [Batch synthesis workflow](batch-synthesis-workflow.md) is design context spanning Clanker and Visor. The [voice-router guide](../voice-router/README.md) describes the existing batch CLI; proposed editor workflows aren't automatically open Clanker tasks.
 

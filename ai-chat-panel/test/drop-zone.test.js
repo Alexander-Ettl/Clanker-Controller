@@ -119,3 +119,61 @@ test('JSON-only IDE drags count as attachment drags', () => {
   assert.equal(isAttachmentDrag({ dataTransfer: { types: ['ResourceURLs', 'text/plain'] } }), true);
   assert.equal(isAttachmentDrag({ dataTransfer: { types: ['text/plain'] } }), false);
 });
+
+test('dragenter, dragover and drop call preventDefault and stopPropagation so VS Code does not block external drops without Shift', () => {
+  const { fire } = setup();
+  for (const name of ['dragenter', 'dragover', 'drop']) {
+    let prevented = false, stopped = false;
+    fire('doc', name, {
+      dataTransfer: { types: ['Files'] },
+      preventDefault() { prevented = true; },
+      stopPropagation() { stopped = true; },
+    });
+    assert.equal(prevented, true, `${name} must call preventDefault`);
+    assert.equal(stopped, true, `${name} must call stopPropagation`);
+  }
+});
+
+test('Linux Dolphin/GTK drags with Files + text/uri-list attach files; Explorer drags mention; URI-only or folder drops route to attachUris', () => {
+  const { classifyDrop, isAttachmentDrag, droppedUris } = require('../media/drop-zone');
+  const png = { name: 'shot.png', type: 'image/png', size: 1234 };
+  const kdeUri = 'file:///home/user/Pictures/shot.png';
+
+  // KDE Dolphin / GTK OS drag: carries BOTH Files and text/uri-list (no VS Code IDE MIME types).
+  const dolphin = {
+    types: ['Files', 'text/uri-list', 'application/x-kde-urilist'],
+    files: [png],
+    getData: (t) => (t === 'text/uri-list' ? `${kdeUri}\r\n` : ''),
+  };
+  assert.equal(isAttachmentDrag({ dataTransfer: dolphin }), true);
+  assert.deepEqual(classifyDrop(dolphin), { kind: 'files', files: [png], uris: [kdeUri] });
+
+  // Wayland / KIO URI-only OS drag (no File blobs populated, only text/uri-list or x-special/gnome-copied-files).
+  const gnome = {
+    types: ['x-special/gnome-copied-files'],
+    files: [],
+    getData: (t) => (t === 'x-special/gnome-copied-files' ? `copy\n${kdeUri}\n` : ''),
+  };
+  assert.equal(isAttachmentDrag({ dataTransfer: gnome }), true);
+  assert.deepEqual(classifyDrop(gnome), { kind: 'uris', uris: [kdeUri] });
+
+  // Dropping a folder from Dolphin hands URIs to the host instead of trying FileReader on a directory.
+  const folderDrop = {
+    types: ['Files', 'text/uri-list'],
+    files: [{ name: 'docs', size: 0 }],
+    items: [{ kind: 'file', webkitGetAsEntry: () => ({ isDirectory: true }) }],
+    getData: (t) => (t === 'text/uri-list' ? 'file:///home/user/docs\n' : ''),
+  };
+  assert.deepEqual(classifyDrop(folderDrop), { kind: 'uris', uris: ['file:///home/user/docs'] });
+
+  // VS Code Explorer drag still produces workspace @-mentions.
+  const explorer = {
+    types: ['application/vnd.code.uri-list', 'text/uri-list'],
+    files: [],
+    getData: (t) => (t === 'application/vnd.code.uri-list' ? 'file:///home/user/dev/a.js\r\n' : ''),
+  };
+  assert.deepEqual(classifyDrop(explorer), { kind: 'mentions', uris: ['file:///home/user/dev/a.js'] });
+
+  // Plain-text path fallback encodes # and ? safely on Linux.
+  assert.deepEqual(droppedUris(dt({ 'text/plain': '/home/user/notes #1?v=2.md' })), ['file:///home/user/notes%20%231%3Fv=2.md']);
+});

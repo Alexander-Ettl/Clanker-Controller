@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Minimal appearance · mockup gallery</title>
+<style>
+  body { margin: 0; background: #26262b; color: #e8e8ea; font: 13px/1.5 system-ui, sans-serif; }
+  header { position: sticky; top: 0; z-index: 2; display: flex; flex-wrap: wrap; gap: 14px; align-items: center; padding: 12px 20px; background: #1d1d21ee; backdrop-filter: blur(12px); }
+  h1 { font-size: 15px; margin: 0 12px 0 0; }
+  label { display: inline-flex; gap: 6px; align-items: center; color: #aaa; }
+  select { background: #333338; color: #eee; border: 0; border-radius: 6px; padding: 4px 6px; font: inherit; }
+  main { display: flex; flex-wrap: wrap; gap: 22px; padding: 20px; align-items: flex-start; }
+  figure { margin: 0; }
+  figcaption { color: #aaa; font-size: 12px; margin-bottom: 6px; }
+  iframe { display: block; border: 0; border-radius: 8px; box-shadow: 0 0 0 1px #0007, 0 10px 30px -12px #000a; background: #000; }
+  p.note { margin: 0; color: #999; font-size: 12px; flex-basis: 100%; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Minimal appearance</h1>
+  <label>Variant <select id="variant"><option value="all">All three</option><option value="quiet">A · Quiet</option><option value="halo">B · Halo</option><option value="ledger">C · Ledger</option></select></label>
+  <label>Theme <select id="theme"></select></label>
+  <label>State <select id="state"></select></label>
+  <label>Width <select id="width"><option>320</option><option selected>420</option><option>900</option></select></label>
+  <p class="note">Static mockups: nothing here is wired to the extension. Pick "All themes" or "All states" to compare one variant side by side.</p>
+</header>
+<main id="grid"></main>
+<script>
+  const THEMES = { 'clanker-ink': 'Clanker Ink', 'dark-modern': 'Dark Modern', navy: 'Navy (custom dark)', 'light-modern': 'Light Modern', 'solarized-light': 'Solarized Light', 'hc-dark': 'High Contrast Dark', 'hc-light': 'High Contrast Light' };
+  const STATES = { empty: 'New chat', chat: 'Finished turn', steps: 'Steps opened', running: 'Working', model: 'Model menu', more: 'More menu', settings: 'Settings toggle' };
+  const NAMES = { quiet: 'A · Quiet', halo: 'B · Halo', ledger: 'C · Ledger' };
+  const fill = (el, entries, all) => { el.innerHTML = `<option value="all">${all}</option>` + Object.entries(entries).map(([v, l]) => `<option value="${v}">${l}</option>`).join(''); };
+  fill(theme, THEMES, 'All themes'); fill(state, STATES, 'All states');
+  const q = new URLSearchParams(location.search);
+  for (const el of [variant, theme, state, width]) if (q.get(el.id)) el.value = q.get(el.id);
+  if (!q.get('theme')) theme.value = 'clanker-ink';
+  if (!q.get('state')) state.value = 'chat';
+  function render() {
+    const vs = variant.value === 'all' ? Object.keys(NAMES) : [variant.value];
+    const ts = theme.value === 'all' ? Object.keys(THEMES) : [theme.value];
+    const ss = state.value === 'all' ? Object.keys(STATES) : [state.value];
+    const w = +width.value, h = 860;
+    grid.innerHTML = vs.flatMap(v => ts.flatMap(t => ss.map(s => `<figure><figcaption>${NAMES[v]} · ${THEMES[t]} · ${STATES[s]}</figcaption><iframe src="${v}.html?theme=${t}&state=${s}" width="${w}" height="${h}" title="${NAMES[v]} ${s}"></iframe></figure>`))).join('');
+    history.replaceState(null, '', `?${new URLSearchParams({ variant: variant.value, theme: theme.value, state: state.value, width: width.value })}`);
+  }
+  for (const el of [variant, theme, state, width]) el.addEventListener('change', render);
+  render();
+</script>
+</body>
+</html>

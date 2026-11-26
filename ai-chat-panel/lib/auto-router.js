@@ -1,10 +1,16 @@
 'use strict';
 
 const { MODEL_CATALOG, quotaFor: catalogQuotaFor } = require('./model-catalog.js');
+const { categoryFitScore } = require('./model-benchmarks.js');
 const EFFORTS = ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'];
 const quotaFor = (model, quotas) => catalogQuotaFor(quotas, model);
 function lowQuota(entry) {
   return [entry, entry?.secondary].some(window => typeof window?.remaining === 'number' && window.remaining < 15);
+}
+function minQuotaPct(model, quotas) {
+  const entry = quotaFor(model, quotas);
+  const vals = [entry?.remaining, entry?.secondary?.remaining].filter((v) => typeof v === 'number' && Number.isFinite(v));
+  return vals.length ? Math.min(...vals) : null;
 }
 
 function candidates(quotas, available) {
@@ -17,10 +23,30 @@ function candidates(quotas, available) {
   return healthy.length ? healthy : usable;
 }
 
-// Offline fallback uses task complexity and discovered effort, never model/provider names or fixed roles.
+function inferCategory(prompt) {
+  const text = String(prompt || '');
+  if (/\b(visual|design|styling|layout|logo|svg|icon|aesthetic|beautiful|css|ui|frontend)\b/i.test(text)) return { purpose: 'visual', difficulty: 0.55 };
+  if (/\b(typo|rename|translate)\b/i.test(text) && !/\b(debug|bug|backend|api|database|server|crash|error|architecture|migration|refactor|security|audit)\b/i.test(text)) return { purpose: 'information', difficulty: 0.2 };
+  if (/\b(debug|bug|backend|api|database|server|terminal|cli|crash|error|fix)\b/i.test(text)) return { purpose: 'backend', difficulty: 0.85 };
+  if (/\b(architecture|architect|from scratch|new app|new project|migration|refactor|build|complex|deep|reason|security|audit|investigate)\b/i.test(text)) return { purpose: 'build', difficulty: 0.85 };
+  if (/\b(quick|simple|brief|documentation|search|research|look up|explain)\b/i.test(text)) return { purpose: 'information', difficulty: 0.2 };
+  return { purpose: 'unspecified', difficulty: 0.5 };
+}
+
+// Offline fallback uses objective third-party category benchmarks + quota health when available,
+// falling back to effort-distance for unknown models.
 function fallback(prompt, models, quotas) {
-  const target = /\b(architecture|architect|complex|deep|reason|security|audit|migration|refactor|debug|investigate)\b/i.test(prompt) ? 5
-    : /\b(typo|rename|translate|quick|simple|brief)\b/i.test(prompt) ? 2 : 4;
+  const { purpose, difficulty } = inferCategory(prompt);
+  const scored = models.map((model) => ({
+    model,
+    score: categoryFitScore(model, { purpose, difficulty, quotaPct: minQuotaPct(model, quotas) }),
+  }));
+  if (scored.some((entry) => entry.score != null)) {
+    return scored.sort((a, b) => (b.score ?? -1) - (a.score ?? -1)
+      || (minQuotaPct(b.model, quotas) ?? 50) - (minQuotaPct(a.model, quotas) ?? 50)
+      || Number(b.model.isDefault === true) - Number(a.model.isDefault === true))[0].model;
+  }
+  const target = difficulty >= 0.8 ? 5 : difficulty <= 0.3 ? 2 : 4;
   const distance = model => {
     const effort = model.effort || /(?:[-\s(])(none|minimal|low|medium|high|xhigh|max|ultra)\)?$/i.exec(model.model)?.[1];
     const rank = EFFORTS.indexOf(effort);

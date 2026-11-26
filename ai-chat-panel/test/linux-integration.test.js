@@ -71,10 +71,14 @@ test('Linux: the setup terminal installs through sh for the CLIs that have an of
   const { terminalSpec } = require('../lib/cli-accounts');
   const claude = terminalSpec('claude', null, 'linux');
   assert.equal(claude.shellArgs[0], '-c');
-  assert.match(claude.shellArgs[1], /^curl -fsSL https:\/\/claude\.ai\/install\.sh \| bash && .*auth login; exec "/);
-  assert.match(terminalSpec('codex', null, 'linux').shellArgs[1], /^npm install -g @openai\/codex@latest && codex login/);
-  assert.match(terminalSpec('copilot', null, 'linux').shellArgs[1], /^npm install -g @github\/copilot@latest/);
-  assert.match(terminalSpec('gemini', null, 'linux').shellArgs[1], /^curl -fsSL https:\/\/antigravity\.google\/cli\/install\.sh \| bash/, "Antigravity's official script");
+  assert.match(claude.shellArgs[1], /(^|; )curl -fsSL https:\/\/claude\.ai\/install\.sh \| bash && .*auth login; exec "/);
+  assert.match(terminalSpec('codex', null, 'linux').shellArgs[1], /(^|; )npm install -g @openai\/codex@latest && codex login/);
+  assert.match(terminalSpec('copilot', null, 'linux').shellArgs[1], /(^|; )npm install -g @github\/copilot@latest/);
+  assert.match(terminalSpec('gemini', null, 'linux').shellArgs[1], /(^|; )curl -fsSL https:\/\/antigravity\.google\/cli\/install\.sh \| bash/, "Antigravity's official script");
+  // A non-interactive `bash -c` skips ~/.bashrc, so the line carries the folders nvm and friends keep npm in.
+  const line = terminalSpec('copilot', null, 'linux').shellArgs[1];
+  const nodeDir = require('node:path').dirname(process.execPath);
+  if (/\.nvm\//.test(nodeDir)) assert.ok(line.startsWith('export PATH="') && line.includes(nodeDir), 'the nvm bin folder is on the setup line\'s PATH');
   assert.deepEqual(terminalSpec('claude', '/home/a/.local/bin/claude', 'linux'), { shellPath: '/home/a/.local/bin/claude', shellArgs: ['auth', 'login'] });
 });
 
@@ -82,6 +86,35 @@ test('Linux: CLIs are also looked for where install scripts and npm put them, no
   const { unixBinDirs } = require('../lib/binary-locator');
   const dirs = unixBinDirs('/home/a', { NPM_CONFIG_PREFIX: '/opt/npm' });
   for (const dir of [path.join('/home/a', '.local', 'bin'), path.join('/home/a', '.npm-global', 'bin'), path.join('/opt/npm', 'bin'), '/usr/local/bin']) assert.ok(dirs.includes(dir), dir);
+});
+
+test('Linux: an nvm install is searched, and a copy the user owns wins over a root-owned app-bundled one that cannot update itself', () => {
+  const fs = require('node:fs');
+  const os = require('node:os');
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'nvm-'));
+  const saved = { HOME: process.env.HOME, NVM_DIR: process.env.NVM_DIR, PATH: process.env.PATH };
+  for (const version of ['v22.1.0', 'v24.22.3']) fs.mkdirSync(path.join(home, '.nvm', 'versions', 'node', version, 'bin'), { recursive: true });
+  const mine = path.join(home, '.nvm', 'versions', 'node', 'v24.22.3', 'bin', 'codex');
+  fs.writeFileSync(mine, '', { mode: 0o755 });
+  // A folder that is not writable stands in for /usr/lib/chatgpt/resources.
+  const bundledDir = path.join(home, 'app'); fs.mkdirSync(bundledDir);
+  fs.writeFileSync(path.join(bundledDir, 'codex'), '', { mode: 0o755 }); fs.chmodSync(bundledDir, 0o555);
+  Object.assign(process.env, { HOME: home, PATH: bundledDir });
+  delete process.env.NVM_DIR;
+  const resolved = require.resolve('../lib/binary-locator.js');
+  delete require.cache[resolved];
+  try {
+    const locator = require('../lib/binary-locator.js');
+    const dirs = locator.unixBinDirs(home, {});
+    assert.ok(dirs.indexOf(path.join(home, '.nvm', 'versions', 'node', 'v24.22.3', 'bin')) < dirs.indexOf(path.join(home, '.nvm', 'versions', 'node', 'v22.1.0', 'bin')), 'newest Node first');
+    const writable = process.getuid?.() !== 0;
+    assert.equal(locator.locate('codex').path, writable ? mine : path.join(bundledDir, 'codex'));
+  } finally {
+    fs.chmodSync(bundledDir, 0o755);
+    for (const [key, value] of Object.entries(saved)) { if (value === undefined) delete process.env[key]; else process.env[key] = value; }
+    delete require.cache[resolved];
+    fs.rmSync(home, { recursive: true, force: true });
+  }
 });
 
 test('Linux: the Antigravity language server is found by its token in /proc and its port by ss', async () => {

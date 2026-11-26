@@ -65,7 +65,16 @@
     };
     const fractions = (x, y) => `${(x / 40).toFixed(4)} ${(y / 46).toFixed(4)}`;
     const absolute = (x, y) => `${x.toFixed(2)} ${y.toFixed(2)}`;
+    const squircleAbs = [];
+    for (let i = 0; i < steps; i++) {
+      const t = (2 * Math.PI * i) / steps;
+      const c = Math.cos(t);
+      const s = Math.sin(t);
+      squircleAbs.push(`${(20 + 20 * Math.sign(c) * Math.abs(c) ** (2 / n)).toFixed(2)} ${(20 + 20 * Math.sign(s) * Math.abs(s) ** (2 / n)).toFixed(2)}`);
+    }
+    const squircleMask = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 40 40"><mask id="m"><path d="M${squircleAbs.join('L')}Z" fill="#fff" stroke="#000" stroke-width="2" stroke-linejoin="round"/></mask><rect width="40" height="40" mask="url(#m)"/></svg>`;
     const fillMask = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 40 46"><mask id="m"><path d="${bubblePath(absolute)}" fill="#fff" stroke="#000" stroke-width="2" stroke-linejoin="round"/></mask><rect width="40" height="46" mask="url(#m)"/></svg>`;
+    document.documentElement.style.setProperty('--squircle-fill-mask', `url("data:image/svg+xml,${encodeURIComponent(squircleMask)}")`);
     document.documentElement.style.setProperty('--bubble-fill-mask', `url("data:image/svg+xml,${encodeURIComponent(fillMask)}")`);
     document.body.insertAdjacentHTML('afterbegin', `<svg width="0" height="0" style="position:absolute" aria-hidden="true"><defs><clipPath id="squircle" clipPathUnits="objectBoundingBox"><path d="M${points.join('L')}Z"/></clipPath><clipPath id="bubble" clipPathUnits="objectBoundingBox"><path d="${bubblePath(fractions)}"/></clipPath>${RING_TUBE}</defs></svg>`);
   })();
@@ -251,6 +260,11 @@
       card.querySelector('.ring-rows').insertAdjacentHTML('afterbegin', '<span class="ring-group-name">Gemini Models</span>');
       card.querySelector('.ring-rows').insertAdjacentHTML('afterend', `<span class="ring-rows ring-rows-claude-gpt"><span class="ring-group-name">Claude and GPT models</span>${pillRow('5h')}${pillRow('7d')}</span><span class="ring-rows ring-rows-argon"><span class="ring-group-name">Gemini 4 Argon</span>${pillRow('7d')}</span>`);
     }
+    if (agent === 'copilot') { // one monthly allowance, not a 5h window and a week
+      const rows = card.querySelectorAll('.ring-row');
+      rows[0].querySelector('.ring-row-name').textContent = 'Month';
+      rows[1].hidden = true;
+    }
     card.querySelector('.ring-fault-btn').addEventListener('click', () => card._fault && vscode.postMessage({ type: card._fault.action, agent }));
     return updateModelCard(card, quota, extras, connection);
   }
@@ -364,7 +378,7 @@
       row.querySelector('.ring-row-eta').textContent = resetShort(win?.resetsAt);
     });
     card.querySelector('.model-card-5h').textContent = five === null ? '—' : `${five}%`;
-    card.querySelector('.model-card-7d').textContent = week === null ? '—' : `${week}%`;
+    card.querySelector('.model-card-7d').textContent = week === null ? (card.dataset.agent === 'copilot' ? '' : '—') : `${week}%`;
     card.querySelector('.model-card-reset').textContent = resetShort(first?.resetsAt);
     card.classList.toggle('is-empty', five === null);
     const agent = card.dataset.agent;
@@ -381,7 +395,12 @@
     burnLabel.classList.toggle('is-low', spent || pace?.resetsFirst === false);
     card.title = segments
       ? `${names[agent] || agent}: ${segments.map((pool) => `${pool.label} ${pool.windows.length ? pool.windows.map(windowSummary).join(', ') : 'no live quota'}`).join(' · ')}`
-      : `${names[agent] || agent}: ${five === null ? 'no live quota' : `${five}% of the ${single ? 'week' : '5h window'} left`}${week === null ? '' : `, ${week}% of the week`}${first?.resetsAt ? `, ${resetsIn(first.resetsAt)}` : ''}`;
+      : `${names[agent] || agent}: ${five === null ? 'no live quota' : `${five}% of the ${first?.windowMinutes > 10080 ? `month's ${first.detail?.what || 'allowance'}` : single ? 'week' : '5h window'} left`}${week === null ? '' : `, ${week}% of the week`}${first?.resetsAt ? `, ${resetsIn(first.resetsAt)}` : ''}`;
+    if (first?.detail && first.windowMinutes > 10080) {
+      const { plan, used, entitlement, what } = first.detail;
+      const count = Number(used).toLocaleString(undefined, { maximumFractionDigits: what === 'AI credits' ? 3 : 0 });
+      card.title += `\n${plan}: ${count} of ${entitlement} ${what} used this month`;
+    }
     card.title += spent ? `\n${burn}` : `\n${burn}\nAverage since this quota window started; includes idle time.`;
     if (agent === 'gemini') {
       const describe = ([pct, win], label) => `${label}: ${pct === null ? 'no live quota' : `${pct}% left`}${win?.resetsAt ? `, ${resetsIn(win.resetsAt)}` : ''}`;
@@ -417,10 +436,11 @@
 
   // Re-render in place (same nodes) so the rings sweep instead of popping.
   // No Opus card: it runs on the Claude account, so the Claude ring already shows its windows.
-  // A CLI that was removed has no ring. One that cannot be used (not signed in, damaged install, plan ended, credits out) keeps it, in red:
-  // hovering says why and offers the fix. Until the first connections message every provider shows.
+  // Only show enabled providers with favorites. Keep a favorited provider's fault card so it can be fixed from the rail.
   let connections = null;
-  const usableAgents = () => (window.PROVIDER_IDS || ['claude', 'codex', 'gemini']).filter((agent) => connections ? connections[agent]?.enabled : !window.PROVIDERS?.find((p) => p.id === agent)?.optional);
+  let favoriteAgents = new Set((window.MODEL_CATALOG || []).map((model) => model.agent));
+  const usableAgents = () => (window.PROVIDER_IDS || ['claude', 'codex', 'gemini'])
+    .filter((agent) => favoriteAgents.has(agent) && (!connections || connections[agent]?.enabled));
   const poolsOf = (quotas) => ({ claudeGpt: quotas?.antigravityClaudeGpt, argon: quotas?.antigravityArgon });
   function renderModelCards(quotas) {
     const agents = usableAgents();
@@ -451,7 +471,7 @@
   // Under each tile, the Manage Chats wording in its short form (chat-time.js): "Just now", "4 min ago", the clock time today,
   // "Yesterday", then the date ("Sep 28"; "Sep 2025" once a year old).
   const railTime = (iso) => window.chatTime.chatTime(iso, { locale: TIME_PREFS.locale, hourCycle: HOUR_CYCLE, compact: true });
-  setInterval(() => historyList.querySelectorAll('.history-time').forEach((label) => { label.textContent = railTime(label.dataset.at); }), 30000);
+  setInterval(() => historyList.querySelectorAll('.history-time[data-at]').forEach((label) => { label.textContent = railTime(label.dataset.at); }), 30000);
 
   // Hovering a tile pulls its left edge out over the chat into a preview (launcher.css): the same bubble outline at the
   // wider size, so the two left corners keep their curvature and the tail stays put. CSS animates the width; this redraws
@@ -460,7 +480,8 @@
   let peekCount = 0;
   const peekShapes = new ResizeObserver((entries) => entries.forEach(({ target, contentRect }) => {
     if (!contentRect.width) return;
-    const outline = window.bubbleOutline(contentRect.width, 46, 6);
+    const isFolder = target.classList.contains('is-folder-peek');
+    const outline = window.bubbleOutline(contentRect.width, isFolder ? 40 : 46, isFolder ? 0 : 6);
     target.querySelectorAll('.history-peek-shape path').forEach((path) => path.setAttribute('d', outline));
   }));
 
@@ -538,101 +559,316 @@
   let recentTimer;
 
   let lastSessions;
-  // The project list arrives separately from the chats (main.js); the previews pick up its icons when it does.
-  window.addEventListener('rail-projects', () => lastSessions && renderHistory(lastSessions));
-  window.addEventListener('rail-limits', () => lastSessions && renderHistory(lastSessions));
+  let lastFolders = [];
+  let chatFoldersEnabled = window.CHAT_FOLDERS_ENABLED !== false;
+  let expandedFolderId = null;
+  const FOLDER_ICON_SVG = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.35" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2 5.2A1.7 1.7 0 0 1 3.7 3.5h2.2l1.4 1.6h5A1.7 1.7 0 0 1 14 6.8v4.5a1.7 1.7 0 0 1-1.7 1.7H3.7A1.7 1.7 0 0 1 2 11.3z"/></svg>';
+  const FOLDER_OPEN_SVG = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m4.5 9.8 3.5-3.6 3.5 3.6"/></svg>';
+  const PIN_BADGE_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path class="pin-head" d="M9.2 3.5h5.6l-.5 6 3.2 3.6H6.5l3.2-3.6z"/><path d="M12 13.1v7.4"/></svg>';
 
-  function renderHistory(sessions) {
+  // The project list arrives separately from the chats (main.js); the previews pick up its icons when it does.
+  window.addEventListener('rail-projects', () => lastSessions && renderHistory(lastSessions, lastFolders));
+  window.addEventListener('rail-limits', () => lastSessions && renderHistory(lastSessions, lastFolders));
+
+  function folderMiniGrid(members) {
+    if (!members.length) {
+      const icon = document.createElement('span');
+      icon.className = 'folder-empty-mark';
+      icon.setAttribute('aria-hidden', 'true');
+      icon.innerHTML = FOLDER_ICON_SVG;
+      return icon;
+    }
+    const grid = document.createElement('span');
+    grid.className = 'folder-mini-grid';
+    grid.setAttribute('aria-hidden', 'true');
+    for (const member of members.slice(0, 4)) {
+      const cell = document.createElement('span');
+      cell.className = 'folder-mini-cell';
+      const agent = member.latestAgent || (member.models || []).at(-1);
+      cell.append(tileMark(member, agent));
+      grid.append(cell);
+    }
+    return grid;
+  }
+
+  function folderPeek(entry, rowClasses, expanded) {
+    const { folder, members } = entry;
+    const id = ++peekCount;
+    const peek = document.createElement('div');
+    peek.className = `history-peek is-folder-peek ${rowClasses.replace('history-row', '').replace('is-folder-tile', '').trim()}`;
+    peek.setAttribute('aria-hidden', 'true');
+    peek.innerHTML = `<svg class="history-peek-shape"><defs><clipPath id="peek-clip-${id}"><path/></clipPath><linearGradient id="peek-sheen-${id}" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#fff" stop-opacity=".045"/><stop offset=".4" stop-color="#fff" stop-opacity="0"/></linearGradient></defs><g clip-path="url(#peek-clip-${id})"><path class="history-peek-fill"/><path fill="url(#peek-sheen-${id})"/><path class="history-peek-rim"/></g></svg><div class="history-peek-text"><div class="history-peek-head"><div class="history-peek-title"></div><span class="history-peek-context"></span></div><div class="history-peek-meta"><span class="history-peek-last"></span></div></div><span class="history-peek-mark"></span>`;
+    peek.querySelector('.history-peek-title').textContent = folder.name;
+    const chip = peek.querySelector('.history-peek-context');
+    chip.textContent = members.length ? `${members.length} chat${members.length === 1 ? '' : 's'}` : 'Empty';
+    const last = peek.querySelector('.history-peek-last');
+    if (expanded) {
+      last.textContent = 'Click to collapse folder';
+    } else if (members.length) {
+      last.textContent = members.slice(0, 3).map(s => s.title || s.preview || 'New chat').join(' · ');
+    } else {
+      last.textContent = 'No chats in folder';
+    }
+    const mark = peek.querySelector('.history-peek-mark');
+    if (expanded) {
+      const icon = document.createElement('span');
+      icon.className = 'folder-collapse-mark';
+      icon.innerHTML = FOLDER_OPEN_SVG;
+      mark.append(icon);
+    } else {
+      mark.append(folderMiniGrid(members));
+    }
+    peekShapes.observe(peek);
+    return peek;
+  }
+
+  function renderChatItem(session, isRecent) {
+    // A plain div, not a button: it hosts its own nested controls cleanly.
+    const row = document.createElement('div');
+    row.className = `history-row${session.state === 'waiting' ? ' is-waiting' : ''}${isRecent(session) ? ' is-recent' : ''}${session.selected ? ' is-selected' : ''}`;
+    if (session.selected) row.setAttribute('aria-current', 'true');
+    // The last agent that actually worked in the chat (not the first one, and not the model picked in the composer).
+    const agent = session.latestAgent || (session.models || []).at(-1);
+    const context = contextOf(session);
+    const title = session.title || session.preview || 'New chat';
+    const lastText = session.lastMessage?.text ? ` · "${session.lastMessage.text.slice(0, 60)}…"` : '';
+    // The hover preview shows all of this; the label is for screen readers.
+    row.setAttribute('aria-label', `${session.pinned ? 'Pinned · ' : ''}${title}${lastText} · ${session.projectName ? `${session.projectName} · ` : ''}${agent ? `${names[agent] || agent} · ` : ''}${context ? `${context.label} · ` : ''}${window.chatTime.chatTime(session.updatedAt, { locale: TIME_PREFS.locale, hourCycle: HOUR_CYCLE })}${session.state === 'waiting' ? ' · Needs input' : ''}`);
+
+    const lead = document.createElement('span');
+    lead.className = 'history-lead';
+    lead.append(tileMark(session, agent));
+    row.append(lead);
+    const time = document.createElement('span');
+    time.className = 'history-time';
+    time.dataset.at = session.updatedAt || '';
+    time.textContent = railTime(session.updatedAt);
+    const item = document.createElement('div');
+    item.className = 'history-item';
+    item.tabIndex = 0;
+    item.dataset.id = session.id;
+    item.setAttribute('role', 'button');
+    item.setAttribute('aria-label', row.getAttribute('aria-label'));
+    if (session.selected) item.setAttribute('aria-current', 'true');
+    item.addEventListener('click', () => vscode.postMessage({ type: 'restoreChat', id: session.id }));
+    item.addEventListener('keydown', event => {
+      if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); item.click(); }
+    });
+    if (agent) item.dataset.agent = agent; // the provider's colour for the orb
+    item.append(row, time, historyPeek(session, row.className, agent, title, context));
+    if (context) {
+      // The work icon sits on the tile's lower-left corner, on the item (the tile itself is clipped to the bubble).
+      const badge = document.createElement('span');
+      badge.className = 'history-context';
+      badge.setAttribute('aria-hidden', 'true');
+      badge.innerHTML = context.svg;
+      item.append(badge);
+    }
+    if (session.pinned) {
+      // A pushpin on the tile's top-left corner (the same glyph as the project pins); pinned chats lead the list.
+      const pin = document.createElement('span');
+      pin.className = 'history-pin';
+      pin.setAttribute('aria-hidden', 'true');
+      pin.innerHTML = PIN_BADGE_SVG;
+      item.append(pin);
+    }
+    if (session.state === 'running') {
+      // The same orb as the chat's "Thinking" pill (.pending-orb, style.css).
+      const orb = document.createElement('span');
+      orb.className = 'pending-orb history-spinner';
+      orb.setAttribute('aria-hidden', 'true');
+      item.append(orb);
+    }
+    return item;
+  }
+
+  function renderFolderItem(entry, expanded) {
+    const { folder, members } = entry;
+    const row = document.createElement('div');
+    row.className = `history-row is-folder-tile${expanded ? ' is-expanded' : ''}${entry.waiting ? ' is-waiting' : ''}${entry.recent ? ' is-recent' : ''}${entry.selected ? ' is-selected' : ''}`;
+    const lead = document.createElement('span');
+    lead.className = 'history-lead';
+    if (expanded) {
+      const closeIcon = document.createElement('span');
+      closeIcon.className = 'folder-collapse-mark';
+      closeIcon.innerHTML = FOLDER_OPEN_SVG;
+      lead.append(closeIcon);
+    } else {
+      lead.append(folderMiniGrid(members));
+    }
+    row.append(lead);
+    const label = document.createElement('span');
+    label.className = 'history-time history-folder-label';
+    label.textContent = folder.name;
+    const item = document.createElement('div');
+    item.className = `history-item is-folder${expanded ? ' is-expanded' : ''}`;
+    item.tabIndex = 0;
+    item.dataset.id = `folder:${folder.id}`;
+    item.dataset.folderId = folder.id;
+    item.setAttribute('role', 'button');
+    item.setAttribute('aria-expanded', String(expanded));
+    item.setAttribute('aria-label', `${folder.pinned ? 'Pinned · ' : ''}Folder: ${folder.name} · ${members.length} chat${members.length === 1 ? '' : 's'}${entry.waiting ? ' · Needs input' : ''}${expanded ? ' · Expanded' : ''}`);
+    const toggle = () => {
+      expandedFolderId = expanded ? null : folder.id;
+      renderHistory(lastSessions, lastFolders);
+    };
+    item.addEventListener('click', toggle);
+    item.addEventListener('keydown', event => {
+      if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); toggle(); }
+      else if (event.key === 'Escape' && expanded) { event.preventDefault(); expandedFolderId = null; renderHistory(lastSessions, lastFolders); historyList.querySelector(`.history-item[data-folder-id="${CSS.escape(folder.id)}"]`)?.focus(); }
+    });
+    if (entry.latestAgent) item.dataset.agent = entry.latestAgent;
+    item.append(row, label, folderPeek(entry, row.className, expanded));
+    if (folder.pinned) {
+      const pin = document.createElement('span');
+      pin.className = 'history-pin';
+      pin.setAttribute('aria-hidden', 'true');
+      pin.innerHTML = PIN_BADGE_SVG;
+      item.append(pin);
+    }
+    if (entry.running && !expanded) {
+      const orb = document.createElement('span');
+      orb.className = 'pending-orb history-spinner';
+      orb.setAttribute('aria-hidden', 'true');
+      item.append(orb);
+    }
+    return item;
+  }
+
+  function renderHistory(sessions, folders = lastFolders) {
     historyList.removeAttribute('aria-busy');
     lastSessions = sessions;
+    lastFolders = Array.isArray(folders) ? folders : [];
+    const activeFolders = chatFoldersEnabled ? lastFolders : [];
     clearTimeout(recentTimer);
-    // Where each chat's tile was, so the ones that move (a clicked chat rises to the top, the old first one steps down) glide there.
+    // Where each tile was, so the ones that move glide smoothly into place.
     const before = new Map([...historyList.querySelectorAll('.history-item[data-id]')].map((el) => [el.dataset.id, el.getBoundingClientRect().top]));
+    const wasExpanded = expandedFolderId;
     historyList.replaceChildren();
-    if (!sessions || !sessions.length) {
+    const hasSessions = Array.isArray(sessions) && sessions.length > 0;
+    const hasPinnedEmptyFolder = activeFolders.some(folder => folder.pinned);
+    if (!hasSessions && !hasPinnedEmptyFolder) {
+      expandedFolderId = null;
       const empty = document.createElement('div');
       empty.className = 'history-empty';
       empty.textContent = 'No conversations yet.';
       historyList.appendChild(empty);
       return;
     }
+    const list = sessions || [];
     const now = Date.now();
     const isRecent = (session) => Number(session.recentUntil) > now;
-    const nextExpiry = Math.min(...sessions.map((session) => Number(session.recentUntil)).filter((until) => until > now));
+    const nextExpiry = Math.min(...list.map((session) => Number(session.recentUntil)).filter((until) => until > now));
     if (Number.isFinite(nextExpiry)) recentTimer = setTimeout(() => vscode.postMessage({ type: 'requestHistory' }), nextExpiry - now + 20);
-    // Keep the selected chat and recently selected or running chats visible before the older ones.
-    // Pinned chats come first, in pin order, even if they fill more than the configured slots.
-    const pinned = sessions.filter((s) => s.pinned).sort((a, b) => a.pinOrder - b.pinOrder);
-    const rest = sessions.filter((s) => !s.pinned);
-    const ordered = [
-      ...pinned,
-      ...rest.filter((s) => s.selected),
-      ...rest.filter((s) => !s.selected && (isRecent(s) || s.state === 'running')),
-      ...rest.filter((s) => !s.selected && !isRecent(s) && s.state !== 'running'),
-    ];
-    // Past the latest few, the Chats button above is the one way into the rest (no second "+N" door).
-    for (const session of ordered.slice(0, Math.max(railChats(), pinned.length))) {
-      // A plain div, not a button: it hosts its own nested delete <button>,
-      // and a <button> may not contain another <button> (HTML would silently
-      // reparent it, breaking the click target).
-      const row = document.createElement('div');
-      row.className = `history-row${session.state === 'waiting' ? ' is-waiting' : ''}${isRecent(session) ? ' is-recent' : ''}${session.selected ? ' is-selected' : ''}`;
-      if (session.selected) row.setAttribute('aria-current', 'true');
-      // One pill per chat: the coding environment it last ran on (just one; two or three don't fit), then the name.
-      // The tooltip names both and gives the time.
-      // The last agent that actually worked in the chat (not the first one, and not the model picked in the composer).
-      const agent = session.latestAgent || (session.models || []).at(-1);
-      const context = contextOf(session);
-      const title = session.title || session.preview || 'New chat';
-      const lastText = session.lastMessage?.text ? ` · "${session.lastMessage.text.slice(0, 60)}…"` : '';
-      // The hover preview shows all of this; the label is for screen readers.
-      row.setAttribute('aria-label', `${session.pinned ? 'Pinned · ' : ''}${title}${lastText} · ${session.projectName ? `${session.projectName} · ` : ''}${agent ? `${names[agent] || agent} · ` : ''}${context ? `${context.label} · ` : ''}${window.chatTime.chatTime(session.updatedAt, { locale: TIME_PREFS.locale, hourCycle: HOUR_CYCLE })}${session.state === 'waiting' ? ' · Needs input' : ''}`);
 
-      const lead = document.createElement('span');
-      lead.className = 'history-lead';
-      lead.append(tileMark(session, agent));
-      row.append(lead);
-      const time = document.createElement('span');
-      time.className = 'history-time';
-      time.dataset.at = session.updatedAt || '';
-      time.textContent = railTime(session.updatedAt);
-      const item = document.createElement('div');
-      item.className = 'history-item';
-      item.tabIndex = 0;
-      item.dataset.id = session.id;
-      item.setAttribute('role', 'button');
-      item.setAttribute('aria-label', row.getAttribute('aria-label'));
-      if (session.selected) item.setAttribute('aria-current', 'true');
-      item.addEventListener('click', () => vscode.postMessage({ type: 'restoreChat', id: session.id }));
-      item.addEventListener('keydown', event => {
-        if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); item.click(); }
+    if (!activeFolders.length) {
+      expandedFolderId = null;
+      // Keep the selected chat and recently selected or running chats visible before the older ones.
+      // Pinned chats come first, in pin order, even if they fill more than the configured slots.
+      const pinned = list.filter((s) => s.pinned).sort((a, b) => a.pinOrder - b.pinOrder);
+      const rest = list.filter((s) => !s.pinned);
+      const ordered = [
+        ...pinned,
+        ...rest.filter((s) => s.selected),
+        ...rest.filter((s) => !s.selected && (isRecent(s) || s.state === 'running')),
+        ...rest.filter((s) => !s.selected && !isRecent(s) && s.state !== 'running'),
+      ];
+      for (const session of ordered.slice(0, Math.max(railChats(), pinned.length))) historyList.appendChild(renderChatItem(session, isRecent));
+      glideHistory(before);
+      return;
+    }
+
+    if (expandedFolderId && !activeFolders.some(folder => folder.id === expandedFolderId)) expandedFolderId = null;
+    const sessionById = new Map(list.map(session => [session.id, session]));
+    const folderOfChat = new Map();
+    for (const folder of activeFolders) {
+      for (const id of folder.chatIds || []) if (sessionById.has(id) && !folderOfChat.has(id)) folderOfChat.set(id, folder);
+    }
+
+    const sortSessions = (items) => {
+      const pinned = items.filter(s => s.pinned).sort((a, b) => a.pinOrder - b.pinOrder);
+      const rest = items.filter(s => !s.pinned);
+      return [
+        ...pinned,
+        ...rest.filter(s => s.selected),
+        ...rest.filter(s => !s.selected && (isRecent(s) || s.state === 'running' || s.state === 'waiting')),
+        ...rest.filter(s => !s.selected && !isRecent(s) && s.state !== 'running' && s.state !== 'waiting'),
+      ];
+    };
+
+    const folderEntries = [];
+    for (const folder of activeFolders) {
+      const members = sortSessions((folder.chatIds || []).map(id => sessionById.get(id)).filter(Boolean));
+      if (!folder.pinned && !members.length && folder.id !== expandedFolderId) continue;
+      const selected = members.some(s => s.selected);
+      const waiting = members.some(s => s.state === 'waiting');
+      const running = members.some(s => s.state === 'running');
+      const recent = members.some(s => isRecent(s));
+      const updatedAt = members.reduce((best, s) => (String(s.updatedAt || '') > best ? String(s.updatedAt || '') : best), folder.updatedAt || folder.createdAt || '');
+      const leadChat = members.find(s => s.state === 'waiting') || members.find(s => s.state === 'running') || members.find(s => s.selected) || members[0];
+      const latestAgent = leadChat?.latestAgent || (leadChat?.models || []).at(-1) || null;
+      folderEntries.push({ kind: 'folder', id: folder.id, folder, members, pinned: Boolean(folder.pinned), pinnedAt: folder.pinnedAt ?? 0, selected, waiting, running, recent, updatedAt, latestAgent });
+    }
+
+    const standalone = list.filter(s => !folderOfChat.has(s.id)).map(session => ({
+      kind: 'chat',
+      id: session.id,
+      session,
+      pinned: Boolean(session.pinned),
+      pinOrder: session.pinOrder ?? 0,
+      selected: Boolean(session.selected),
+      waiting: session.state === 'waiting',
+      running: session.state === 'running',
+      recent: isRecent(session),
+      updatedAt: session.updatedAt || '',
+    }));
+
+    const pinnedItems = [
+      ...folderEntries.filter(e => e.pinned).sort((a, b) => a.pinnedAt - b.pinnedAt),
+      ...standalone.filter(e => e.pinned).sort((a, b) => a.pinOrder - b.pinOrder),
+    ];
+    const rankOf = (entry) => (entry.selected ? 0 : (entry.recent || entry.running || entry.waiting) ? 1 : 2);
+    const unpinnedItems = [...folderEntries.filter(e => !e.pinned), ...standalone.filter(e => !e.pinned)]
+      .sort((a, b) => (rankOf(a) - rankOf(b)) || String(b.updatedAt).localeCompare(String(a.updatedAt)));
+
+    const visibleLimit = Math.max(railChats(), pinnedItems.length);
+    const visible = [...pinnedItems, ...unpinnedItems].slice(0, visibleLimit);
+
+    // An expanded folder moves to the very top position in Recent, with all of its chats listed directly below.
+    const expandedEntry = expandedFolderId ? folderEntries.find(entry => entry.id === expandedFolderId) : null;
+    if (expandedEntry) {
+      const group = document.createElement('div');
+      group.className = 'history-folder-group is-expanded';
+      group.dataset.folderId = expandedEntry.id;
+      group.setAttribute('role', 'region');
+      group.setAttribute('aria-label', `${expandedEntry.folder.name} folder`);
+      group.addEventListener('keydown', (event) => {
+        if (event.key === 'Escape') {
+          event.preventDefault();
+          expandedFolderId = null;
+          renderHistory(lastSessions, lastFolders);
+          historyList.querySelector(`.history-item[data-folder-id="${CSS.escape(expandedEntry.id)}"]`)?.focus();
+        }
       });
-      if (agent) item.dataset.agent = agent; // the provider's colour for the orb
-      item.append(row, time, historyPeek(session, row.className, agent, title, context));
-      if (context) {
-        // The work icon sits on the tile's lower-left corner, on the item (the tile itself is clipped to the bubble).
-        const badge = document.createElement('span');
-        badge.className = 'history-context';
-        badge.setAttribute('aria-hidden', 'true');
-        badge.innerHTML = context.svg;
-        item.append(badge);
+      group.appendChild(renderFolderItem(expandedEntry, true));
+      const contents = document.createElement('div');
+      contents.className = `history-folder-contents${wasExpanded !== expandedEntry.id ? ' is-opening' : ''}`;
+      if (expandedEntry.members.length) {
+        for (const member of expandedEntry.members) contents.appendChild(renderChatItem(member, isRecent));
+      } else {
+        const emptyNote = document.createElement('span');
+        emptyNote.className = 'history-folder-empty-rail';
+        emptyNote.textContent = 'Empty';
+        contents.appendChild(emptyNote);
       }
-      if (session.pinned) {
-        // A pushpin on the tile's top-left corner (the same glyph as the project pins); pinned chats lead the list.
-        const pin = document.createElement('span');
-        pin.className = 'history-pin';
-        pin.setAttribute('aria-hidden', 'true');
-        pin.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path class="pin-head" d="M9.2 3.5h5.6l-.5 6 3.2 3.6H6.5l3.2-3.6z"/><path d="M12 13.1v7.4"/></svg>';
-        item.append(pin);
-      }
-      if (session.state === 'running') {
-        // The same orb as the chat's "Thinking" pill (.pending-orb, style.css).
-        const orb = document.createElement('span');
-        orb.className = 'pending-orb history-spinner';
-        orb.setAttribute('aria-hidden', 'true');
-        item.append(orb);
-      }
-      historyList.appendChild(item);
+      group.appendChild(contents);
+      historyList.appendChild(group);
+    }
+
+    for (const entry of visible) {
+      if (expandedEntry && entry.kind === 'folder' && entry.id === expandedEntry.id) continue;
+      if (entry.kind === 'folder') historyList.appendChild(renderFolderItem(entry, false));
+      else historyList.appendChild(renderChatItem(entry.session, isRecent));
     }
     glideHistory(before);
   }
@@ -664,8 +900,15 @@
   window.addEventListener('message', (event) => {
     const message = event.data;
     switch (message.type) {
-      case 'history': renderHistory(message.sessions); break;
+      case 'history':
+        if (typeof message.chatFoldersEnabled === 'boolean') chatFoldersEnabled = message.chatFoldersEnabled;
+        renderHistory(message.sessions, Array.isArray(message.folders) ? message.folders : []);
+        break;
       case 'cliStatus': updatesStatus(message); break;
+      case 'modelCatalog':
+        favoriteAgents = new Set(message.catalog.map((model) => model.agent));
+        renderModelCards(lastQuotas);
+        break;
       case 'antigravityRing':
         ringSource = message.value || 'argon';
         renderModelCards(lastQuotas);

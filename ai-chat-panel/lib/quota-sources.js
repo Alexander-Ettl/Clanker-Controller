@@ -10,6 +10,7 @@ const os = require('node:os');
 const path = require('node:path');
 const { EventEmitter } = require('node:events');
 const { fetchQuotaSummary } = require('./antigravity-quota.js');
+const { readCopilotUsage } = require('./copilot-usage.js');
 
 const POLL_INTERVAL_MS = 5_000;
 const CODEX_TAIL_BYTES = 512 * 1024;
@@ -133,22 +134,30 @@ function findLatestCodexRateLimit(text) {
 }
 
 function normalizeAntigravityBucket(bucket) {
-  if (!bucket) return null;
-  const remainingFraction = finiteNumber(bucket.remainingFraction ?? bucket.remaining_fraction);
+  if (!bucket || typeof bucket !== 'object') return null;
+  const rawReset = bucket.resetTime ?? bucket.reset_time;
+  const resetMs = typeof rawReset === 'number'
+    ? (rawReset > 1e12 ? rawReset : rawReset * 1000)
+    : Date.parse(rawReset);
+  const hasReset = Number.isFinite(resetMs);
+  const description = bucket.description ?? null;
+  const rawFraction = bucket.remainingFraction ?? bucket.remaining_fraction;
+  let remainingFraction = finiteNumber(rawFraction);
+  // Proto3 JSON omits 0-valued numeric fields: an active or limit-hit bucket with no remainingFraction means 0% left.
+  if (remainingFraction === null && rawFraction == null && (hasReset || /hit your .* limit|exhausted|depleted|\b0%/i.test(String(description || '')))) {
+    remainingFraction = 0;
+  }
   if (remainingFraction === null) return null;
   const remaining = percent(remainingFraction * 100);
   if (remaining === null) return null;
-  const resetMs = Date.parse(bucket.resetTime ?? bucket.reset_time);
-  if (!Number.isFinite(resetMs)) return null;
   const bucketId = String(bucket.bucketId ?? bucket.bucket_id ?? '');
-  const weekly = bucket.window === 'weekly' || bucketId.includes('weekly');
-  const description = bucket.description ?? null;
-  // An untouched bucket has remainingFraction 1 and no "You have used..." description; its resetTime is just now + window.
+  const weekly = bucket.window === 'weekly' || /weekly|7d/i.test(bucketId);
+  // An untouched bucket has remainingFraction 1 and no "You have used..." description (and may omit resetTime altogether).
   return {
     used: 100 - remaining,
     remaining,
     windowMinutes: weekly ? 7 * 24 * 60 : 300,
-    resetsAt: remainingFraction >= 1 && !description ? null : resetMs / 1000,
+    resetsAt: !hasReset || (remainingFraction >= 1 && !description) ? null : resetMs / 1000,
     displayName: bucket.displayName ?? bucket.display_name ?? null,
     description,
   };
@@ -157,17 +166,24 @@ function normalizeAntigravityBucket(bucket) {
 function parseAntigravityQuota(data, groupName = 'Gemini Models') {
   const groups = data?.response?.groups ?? data?.groups;
   if (!Array.isArray(groups)) return null;
-  const group = groups.find(
+  const want = groupName.toLowerCase();
+  let group = groups.find(
     (g) => g.displayName === groupName ||
-      (typeof g.displayName === 'string' && g.displayName.toLowerCase().includes(groupName.toLowerCase())),
+      (typeof g.displayName === 'string' && g.displayName.toLowerCase().includes(want)),
   );
+  // Fall back to the 3p bucket / Claude+GPT description if Google renames the "Claude and GPT models" group title.
+  if (!group && want.includes('claude')) {
+    group = groups.find((g) => Array.isArray(g.buckets) && (
+      g.buckets.some((b) => /^3p[-_]/i.test(String(b?.bucketId ?? b?.bucket_id ?? ''))) ||
+      (/\b(?:claude|gpt)\b/i.test(`${g.displayName || ''} ${g.description || ''}`) && !/^gemini\b/i.test(String(g.displayName || '')))
+    ));
+  }
   if (!group || !Array.isArray(group.buckets)) return null;
 
-  const bucketOf = (window) => group.buckets.find(
-    (b) => b.window === window || String(b.bucketId ?? b.bucket_id ?? '').includes(window),
-  );
-  const fiveHourUsage = normalizeAntigravityBucket(bucketOf('5h'));
-  const weeklyUsage = normalizeAntigravityBucket(bucketOf('weekly'));
+  const isWeekly = (b) => b?.window === 'weekly' || /weekly|7d/i.test(String(b?.bucketId ?? b?.bucket_id ?? ''));
+  const isFiveHour = (b) => b?.window === '5h' || /5h|five[_-]?hour/i.test(String(b?.bucketId ?? b?.bucket_id ?? ''));
+  const fiveHourUsage = normalizeAntigravityBucket(group.buckets.find(isFiveHour));
+  const weeklyUsage = normalizeAntigravityBucket(group.buckets.find(isWeekly));
   // The language server sometimes reports only the weekly bucket: that is then the one window there is.
   const primary = fiveHourUsage ?? weeklyUsage;
   if (!primary) return null;
@@ -342,9 +358,9 @@ function withRefills(usage, nowMs) {
  * Live Antigravity model pools, Claude Code and Codex readings.
  * @param {{ readAntigravity?: () => Promise<object>, readGemini?: () => Promise<object|null> }} [sources] swap the language-server read (tests).
  */
-async function getQuotas({ readAntigravity = readAntigravityUsage, readGemini } = {}) {
-  const [antigravity, claudeState, codexUsage] = await Promise.all([
-    readGemini ? readGemini().then(gemini => ({ gemini })) : readAntigravity(), readClaudeState(), readCodexUsage(),
+async function getQuotas({ readAntigravity = readAntigravityUsage, readGemini, readCopilot = readGemini ? async () => null : readCopilotUsage } = {}) {
+  const [antigravity, claudeState, codexUsage, copilotUsage] = await Promise.all([
+    readGemini ? readGemini().then(gemini => ({ gemini })) : readAntigravity(), readClaudeState(), readCodexUsage(), readCopilot().catch(() => null),
   ]);
   const claudeUsage = await readClaudeUsage(claudeState);
   const now = Date.now();
@@ -361,6 +377,7 @@ async function getQuotas({ readAntigravity = readAntigravityUsage, readGemini } 
     claudeWeekly: weekly('seven_day'),
     claudeOpus: weekly('seven_day_opus'),
     codex: withRefills(codexUsage, now),
+    copilot: copilotUsage,
   };
 }
 

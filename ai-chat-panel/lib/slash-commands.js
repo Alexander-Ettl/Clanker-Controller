@@ -291,13 +291,13 @@ class SlashCommandCatalog {
       ...this.claude().filter((command) => command.name !== 'remote-control'),
       ...codex,
       ...this.gemini(),
-    ];
+    ].filter((command) => command.name.toLowerCase() !== 'compact');
   }
 
   /** Which CLI runs "/name ...": an explicit model never borrows another provider's command. */
   async owner(text, preferred) {
     const name = /^\/([^\s]+)/.exec(String(text || '').trim())?.[1]?.toLowerCase();
-    if (!name) return null;
+    if (!name || name === 'compact') return null;
     if (preferred === 'codex') return (await this.codexCommands.list()).some((command) => command.name.toLowerCase() === name) ? 'codex' : null;
     if (preferred === 'claude') {
       const refreshing = this.refreshClaude();

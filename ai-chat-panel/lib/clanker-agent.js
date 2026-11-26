@@ -1,6 +1,6 @@
 'use strict';
 
-// clanker-agent: lets an AI agent hand a task to a model from another vendor (Claude <-> Codex <-> Gemini/Antigravity) and get
+// clanker-agent: lets an AI agent hand a task to Claude, Codex, Antigravity or Copilot and get
 // the answer back as a file. Every agent already has a shell, so this is a shell command, not a tool of any one vendor.
 //
 //   start  --to "<model>" --task <name> --prompt-file <file>   begin in the background, return at once
@@ -23,7 +23,8 @@ const HEARTBEAT_MS = 5000;
 const NEVER_STARTED_MS = 30000;
 const WAIT_SECONDS = 540; // under the 10 minutes a shell tool usually allows
 const TERMINAL = new Set(['done', 'failed', 'cancelled']);
-const AGENTS = ['claude', 'codex', 'gemini'];
+const AGENTS = ['claude', 'codex', 'gemini', 'copilot'];
+const VENDOR_TARGET = new RegExp(`^(${AGENTS.join('|')})(?::(.*))?$`, 'i');
 const homeDir = () => process.env.CLANKER_HOME || path.join(os.homedir(), '.clanker');
 const now = () => new Date().toISOString();
 const readJson = (file, fallback = null) => { try { return JSON.parse(fs.readFileSync(file, 'utf8')); } catch { return fallback; } };
@@ -48,14 +49,13 @@ const effortOf = (entry) => entry.effort || /-(low|medium|high|xhigh|max|ultra)$
 function resolveTarget(query, catalog) {
   const text = String(query || '').trim();
   if (!text) throw new Error('No model given. Use --to "<model>"; `models` lists the names.');
-  const only = /^(claude|codex|gemini):?$/i.exec(text); // a vendor alone: its default model
-  if (only) {
-    const own = catalog.filter((entry) => entry.agent === only[1].toLowerCase());
+  const named = VENDOR_TARGET.exec(text);
+  if (named && !named[2]) {
+    const own = catalog.filter((entry) => entry.agent === named[1].toLowerCase());
     const pick = own.find((entry) => entry.isDefault) || own[0];
-    if (!pick) throw new Error(`No ${only[1]} models are known. Name one: --to "${only[1].toLowerCase()}:<model>".`);
+    if (!pick) throw new Error(`No ${named[1]} models are known. Name one: --to "${named[1].toLowerCase()}:<model>".`);
     return { agent: pick.agent, model: pick.model, effort: pick.effort || null, label: pick.label || pick.model };
   }
-  const named = /^(claude|codex|gemini):(.+)$/i.exec(text);
   const scope = named ? named[1].toLowerCase() : null;
   const pool = scope ? catalog.filter((entry) => entry.agent === scope) : catalog;
   const wanted = words(named ? named[2] : text);
@@ -66,7 +66,7 @@ function resolveTarget(query, catalog) {
     const medium = found.filter((entry) => effortOf(entry) === 'medium');
     if (medium.length) found = medium;
   }
-  if (found.length > 1) { const native = found.filter((entry) => !String(entry.id).includes(':')); if (native.length) found = native; }
+  if (found.length > 1) { const native = found.filter((entry) => entry.agent !== 'copilot' && !String(entry.id).includes(':')); if (native.length) found = native; }
   if (found.length === 1) { const { agent, model, effort, label } = found[0]; return { agent, model, effort: effort || null, label: label || model }; }
   if (scope && (named[2] || '').trim()) return { agent: scope, model: named[2].trim(), effort: null, label: named[2].trim() };
   if (!found.length) throw new Error(`No model matches "${text}". Run \`models\` to list the names, or write agent:model (for example codex:gpt-6.1-sol).`);
@@ -101,7 +101,7 @@ function publish({ models = [], faults = {}, home = homeDir(), script = __filena
     'cli.main(process.argv.slice(2)).then((code) => { process.exitCode = code; }, (error) => { console.error(error.message); process.exitCode = 1; });',
     '',
   ].join('\n');
-  const catalog = models.map(({ id, agent, model, effort, label, company }) => ({ id, agent, model, effort: effort || null, label, company }));
+  const catalog = models.filter(({ agent }) => AGENTS.includes(agent)).map(({ id, agent, model, effort, label, company, isDefault }) => ({ id, agent, model, effort: effort || null, label, company, ...(isDefault ? { isDefault: true } : {}) }));
   const write = (name, body) => { const file = path.join(home, name); try { if (fs.readFileSync(file, 'utf8') === body) return; } catch { /* new file */ } fs.writeFileSync(file, body); };
   write('clanker-agent.js', launcher);
   // `faults`: agent -> { title, detail } for a CLI the sidebar shows as unusable (signed out, plan ended). `start` refuses these at once.
@@ -418,6 +418,6 @@ async function main(argv, io = {}) {
   }
 }
 
-module.exports = { publishedFault, indexedJobs, readJobMetadata, main, start, runJob, readStatus, cancel, resolveTarget, readCatalog, publish, wrapPrompt, parseArgs, jobDir, describe };
+module.exports = { AGENTS, publishedFault, indexedJobs, readJobMetadata, main, start, runJob, readStatus, cancel, resolveTarget, readCatalog, publish, wrapPrompt, parseArgs, jobDir, describe };
 
 if (require.main === module) main(process.argv.slice(2)).then((code) => { process.exitCode = code; });

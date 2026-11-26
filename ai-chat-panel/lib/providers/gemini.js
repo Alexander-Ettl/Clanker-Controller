@@ -34,6 +34,7 @@ async function entitlement({ languageServer }) {
 
 module.exports = {
   id: 'gemini',
+  nativeAutoCompaction: true,
   name: 'Antigravity',
   accountName: 'Gemini / Antigravity',
   company: 'Google',

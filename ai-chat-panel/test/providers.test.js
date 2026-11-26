@@ -72,6 +72,8 @@ test('copilot descriptor builds commands and normalizes events', async () => {
   const engine = new StreamEngine({ cwd: 'C:/Repo', models: { copilot: 'claude-sonnet-4.5' } });
   try {
     const spec = engine.commandFor('copilot', 'Fix tests', [], { model: 'gpt-5', resume: 'sess-1', permissionMode: 'fullAccess' });
+    const skillDir = spec.env.COPILOT_SKILLS_DIRS.split(',').at(-1);
+    assert.ok(require('node:fs').existsSync(require('node:path').join(skillDir, 'clanker-load-agent', 'SKILL.md')));
     assert.deepEqual(spec.args, ['-p', 'Fix tests', '--output-format', 'json', '--stream', 'off', '--model', 'gpt-5', '--resume', 'sess-1', '--allow-all-tools', '--add-dir', 'C:/Repo']);
     // `copilot -p --output-format json` session events (SDK shapes).
     const event = (type, data) => normalizeEvent({ type, data, id: 'e', timestamp: '2026-11-17T00:00:00Z' }, 'copilot');
@@ -79,7 +81,7 @@ test('copilot descriptor builds commands and normalizes events', async () => {
     assert.deepEqual(event('assistant.message', { messageId: 'm1', content: 'Line one.\n\n- item', toolRequests: [] }), { type: 'delta', text: 'Line one.\n\n- item', block: true, model: 'copilot', agent: 'copilot' });
     assert.equal(event('assistant.message', { messageId: 'm2', content: '', toolRequests: [{}] }), null);
     assert.deepEqual(event('tool.execution_start', { toolCallId: 't1', toolName: 'bash', arguments: { command: 'npm test', description: 'Run tests' } }),
-      { type: 'tool_start', toolId: 't1', agent: 'copilot', name: 'bash', command: 'npm test', file: '', diff: '' });
+      { type: 'tool_start', toolId: 't1', agent: 'copilot', name: 'bash', command: 'npm test', file: '', diff: '', summary: 'Run tests' });
     assert.deepEqual(event('tool.execution_start', { toolCallId: 't2', toolName: 'edit', arguments: { path: 'a.js', old_str: 'x = 1', new_str: 'x = 2' } }),
       { type: 'tool_start', toolId: 't2', agent: 'copilot', name: 'edit', command: 'a.js', file: 'a.js', diff: '-x = 1\n+x = 2' });
     assert.equal(event('tool.execution_start', { toolCallId: 't3', toolName: 'report_intent', arguments: { intent: 'Testing' } }), null);
@@ -95,6 +97,27 @@ test('copilot descriptor builds commands and normalizes events', async () => {
 test('model lists still parse through the providers (Codex sample)', () => {
   const text = JSON.stringify({ models: [{ slug: 'gpt-x', display_name: 'GPT X', visibility: 'list', is_default: true, default_reasoning_level: 'medium', supported_reasoning_levels: [{ effort: 'low' }, { effort: 'medium' }] }] });
   assert.deepEqual(parseCodexModels(text).map((entry) => entry.id), ['gpt-x-low', 'gpt-x-medium']);
+});
+
+test('Copilot routes its own events to chat and native subagent events to the Agents viewer', () => {
+  const engine = new StreamEngine();
+  const events = [];
+  engine.on('event', event => events.push(event));
+  try {
+    for (const raw of require('./fixtures/copilot-events.json')) engine.consumeLine(JSON.stringify(raw), 'copilot');
+    assert.deepEqual(events.find(event => event.type === 'usage'), { type: 'usage', contextTokens: 2048, contextWindow: 128000, agent: 'copilot' });
+    assert.equal(events.find(event => event.toolId === 'skill-1').command, 'clanker-load-agent');
+    assert.ok(!JSON.stringify(events).includes('Private skill body'));
+    assert.equal(events.find(event => event.toolId === 'patch-1').diff, '-pending\n+checked');
+    assert.match(events.find(event => event.type === 'tool_end' && event.toolId === 'mcp-1').output, /Access denied\n\nThe docs service/);
+    assert.equal(events.find(event => event.type === 'tool_end' && event.toolId === 'shell-1').output, 'Starting checks\nChecks passed');
+    assert.deepEqual(events.filter(event => event.type === 'subagent_event').map(event => [event.id, event.event.type]),
+      [['agent-1', 'task'], ['agent-1', 'tool_start'], ['agent-1', 'tool_end'], ['agent-1', 'delta']]);
+    assert.deepEqual(events.filter(event => event.type === 'delta').map(event => event.text), ['The patch and checks passed.\n\n- Status updated\n- Checks passed']);
+    assert.equal(events.find(event => event.type === 'subagent_start').description, 'Explorer');
+    assert.equal(events.find(event => event.type === 'subagent_end').error, false);
+    assert.equal(events.at(-1).totalTokens, 175);
+  } finally { engine.dispose(); }
 });
 
 test('copilot models come only from the CLI\'s ACP session (account list); a failure is an error, not a fallback list', async () => {

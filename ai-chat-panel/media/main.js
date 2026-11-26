@@ -291,9 +291,15 @@
   }
   function closeModal(el) {
     if (el.hidden) return;
-    el.querySelector('.history-card input, .project-gallery input')?.blur();
+    el.querySelector('.history-card input, .history-folder-card input.title-edit, .project-gallery input')?.blur();
     el.hidden = true;
-    if (el.id === 'historyModal') { historyModal.body.replaceChildren(); reusableHistoryCards.clear(); }
+    if (el.id === 'historyModal') {
+      closeFolderMenu();
+      closeFolderCreator();
+      editingFolderChatsId = null;
+      historyModal.body.replaceChildren();
+      reusableHistoryCards.clear();
+    }
     if (el.id === 'agentsModal') { agentPane.replaceChildren(); agentLog = null; }
     if (el.id === 'projectsModal') projectModal.body.querySelector('.project-gallery').replaceChildren();
     if (el.id === 'loopsModal') document.getElementById('loopsBtn')?.setAttribute('aria-expanded', 'false');
@@ -396,6 +402,7 @@
   }
   // P17-X: 24h unless the user picks '12h', or 'auto' (the editor language's own convention).
   const TIME_PREFS = window.TIME_PREFS || {};
+  const TOOL_PREFS = { openFailed: false, ...(window.TOOL_PREFS || {}) }; // aiChatPanel.openFailedToolCards, kept current by the 'toolPrefs' message
   const HOUR_CYCLE = { '24h': 'h23', '12h': 'h12' }[TIME_PREFS.timeFormat || '24h'];
   const clockParts = (extra) => ({ ...extra, hour: '2-digit', minute: '2-digit', ...(HOUR_CYCLE ? { hourCycle: HOUR_CYCLE } : {}) });
   function formatWhen(iso) {
@@ -481,6 +488,8 @@
       if ((state.queueSkeletonCount || 0) !== next) vscode.setState({ ...state, queueSkeletonCount: next });
     } catch {}
   }
+  const hasQueuedTransport = () => !isChatSwitching && (turnQueue.length > 0 || scheduledHere().some(dueNow));
+  const hasPausedDue = () => queuePaused && !isChatSwitching && scheduledHere().some(dueNow);
   function turnQueueTitle() {
     const loading = loadingQueueCount();
     const scheduled = isChatSwitching ? [] : scheduledHere();
@@ -551,6 +560,11 @@
     });
     const heading = document.querySelector('.turn-queue-head > span');
     if (heading && heading.textContent !== turnQueueTitle()) heading.textContent = turnQueueTitle();
+    const transport = document.querySelector('.turn-queue-head > .queue-transport');
+    if (transport) {
+      const showTransport = hasQueuedTransport();
+      if (transport.hidden !== !showTransport) transport.hidden = !showTransport;
+    }
     queueBtn.classList.toggle('is-pill', Boolean(next));
     renderSchedPill(); // refresh countdowns; close only when no chats remain
   }
@@ -1406,7 +1420,7 @@
       return await canvas.convertToBlob({ type: file.type, quality: 0.92 }); // PNG stays lossless; a JPEG is re-encoded once
     } catch { return file; }
   }
-  function readAttachment(file) {
+  function readAttachment(file, fallbackUri = '') {
     if (!file) return;
     const chatId = currentChatId;
     const requestId = crypto.randomUUID();
@@ -1418,12 +1432,20 @@
     pendingAttachments.set(requestId, pending);
     attachments.push(preview);
     renderAttachments(); // paint and start the dock animation before decoding or resizing
+    const fallbackOrFail = (msg) => {
+      if (fallbackUri) {
+        attachmentFinished(requestId, null, '');
+        vscode.postMessage({ type: 'attachUris', uris: [fallbackUri], chatId });
+        return;
+      }
+      attachmentFinished(requestId, null, msg);
+    };
     void capImage(file).then((image) => {
       const reader = new FileReader();
       reader.onload = () => { if (pendingAttachments.has(requestId)) vscode.postMessage({ type: 'attachmentData', requestId, chatId, name: file.name || 'image.png', mime: file.type || 'application/octet-stream', data: reader.result }); };
-      reader.onerror = () => attachmentFinished(requestId, null, 'Could not read the attachment. Please paste it again.');
+      reader.onerror = () => fallbackOrFail('Could not read the attachment. Please paste it again.');
       reader.readAsDataURL(image);
-    }).catch(() => attachmentFinished(requestId, null, 'Could not prepare the attachment. Please paste it again.'));
+    }).catch(() => fallbackOrFail('Could not prepare the attachment. Please paste it again.'));
   }
   function attachmentFinished(requestId, attachment, error) {
     const pending = pendingAttachments.get(requestId);
@@ -1437,13 +1459,26 @@
     if (error) showToast(error, { error: true });
   }
   attachBtn.addEventListener('click', () => vscode.postMessage({ type: 'pickAttachments', chatId: currentChatId }));
-  promptInput.addEventListener('paste', (event) => { const files = [...(event.clipboardData?.items || [])].filter(item => item.kind === 'file'); if (files.length) { event.preventDefault(); for (const item of files) readAttachment(item.getAsFile()); } });
-  // The whole window is one drop zone. The IDE only hands a drag to a webview while Shift is held, so the
-  // attach tooltip explains the gesture; the overlay itself only shows once the drag has already arrived.
+  promptInput.addEventListener('paste', (event) => {
+    const files = [...(event.clipboardData?.items || [])].filter(item => item.kind === 'file');
+    if (files.length) {
+      event.preventDefault();
+      for (const item of files) readAttachment(item.getAsFile());
+      return;
+    }
+    // Linux file managers (Dolphin/GTK) copy files onto the clipboard as text/uri-list rather than File items.
+    const types = event.clipboardData?.types ? [...event.clipboardData.types] : [];
+    if (types.some(t => /(?:uri-?list|gnome-copied-files)/i.test(t))) {
+      const uris = window.dropZone?.droppedUris?.(event.clipboardData) || [];
+      if (uris.length) { event.preventDefault(); vscode.postMessage({ type: 'attachUris', uris, chatId: currentChatId }); }
+    }
+  });
+  // The whole window is one drop zone. External OS file drops land directly when dragged onto the chat panel;
+  // drags starting inside VS Code (Explorer / editor tabs) still require Shift because VS Code's outer workbench captures them.
   const dropOverlay = document.createElement('div');
   dropOverlay.className = 'drop-overlay';
   dropOverlay.setAttribute('aria-hidden', 'true');
-  dropOverlay.innerHTML = '<div class="drop-overlay-card"><svg viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M8 2.5v8M4.75 7.25 8 10.5l3.25-3.25M3 13.5h10" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg><span>Drop to reference in this chat</span></div>';
+  dropOverlay.innerHTML = '<div class="drop-overlay-card"><svg viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M8 2.5v8M4.75 7.25 8 10.5l3.25-3.25M3 13.5h10" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg><span>Drop files to attach or reference</span></div>';
   document.body.appendChild(dropOverlay);
   // drop-zone.js ends the overlay on its own when the IDE swallows the drag (Shift released, Esc, drop elsewhere).
   window.dropZone.createDropZone({
@@ -1451,13 +1486,15 @@
     win: window,
     setActive: (on) => document.body.classList.toggle('attachment-dragging', on),
     onDrop: (event) => {
-      // P17-Q: Explorer drags carry URIs, not file blobs; the host turns them into workspace-relative @-mentions.
-      const uris = window.dropZone.droppedUris(event.dataTransfer);
-      if (uris.length) { vscode.postMessage({ type: 'mentionUris', uris }); return; }
-      for (const file of event.dataTransfer?.files || []) readAttachment(file);
+      const result = window.dropZone.classifyDrop(event.dataTransfer);
+      if (result.kind === 'mentions') { vscode.postMessage({ type: 'mentionUris', uris: result.uris }); return; }
+      if (result.kind === 'uris') { vscode.postMessage({ type: 'attachUris', uris: result.uris, chatId: currentChatId }); return; }
+      if (result.kind === 'files') {
+        result.files.forEach((file, i) => readAttachment(file, result.uris.length === result.files.length ? result.uris[i] : ''));
+      }
     },
   });
-  attachBtn.title = 'Attach files (or hold Shift while dragging files in)';
+  attachBtn.title = 'Attach files (drop files in, or hold Shift from Explorer)';
 
   // ---------- P17-Q: @-mentions ----------
   // The textarea keeps plain `@relative/path` tokens (what the CLI receives);
@@ -2042,8 +2079,16 @@
     syncComposerShape();
   }
   promptInput.addEventListener('input', autoGrow);
-  window.addEventListener('resize', syncComposerShape);
-  if (typeof ResizeObserver === 'function') new ResizeObserver(syncComposerShape).observe(composerEl); // a width change re-wraps the text
+  // A width change re-wraps the text and can crowd the bar. The composer also changes height on every wrapped line and every animation
+  // frame of its growth; neither re-wraps anything, so only a new width runs the two measurements (each one forces a layout).
+  let composerWidth = -1;
+  const onComposerResize = (entries) => {
+    const width = entries[entries.length - 1].contentRect.width;
+    if (width === composerWidth) return;
+    composerWidth = width;
+    syncComposerShape();
+    fitComposerBar();
+  };
 
   // The bar is always one line. Too tight, it sheds text in steps (permission text, model name, the clock's time, then the buttons
   // shrink and the agents count goes) until it fits; wider again, the text returns in the reverse order. The steps are the
@@ -2051,13 +2096,30 @@
   const FIT_STEPS = ['fit-perm', 'fit-model', 'fit-time', 'fit-tight', 'fit-bare'];
   const composerBar = composerEl.querySelector('.composer-bar');
   const composerTools = composerEl.querySelector('.composer-tools');
+  // The bar is measured from layout geometry (offsetLeft/offsetWidth), never scrollWidth or getBoundingClientRect: those count
+  // transforms. The right-hand buttons sit flush with the bar's edge and scale and rotate on entering and on hover, so a 1px
+  // overshoot mid-animation read as "too tight" and shrank every control, and nothing measured again once it ended.
+  // Everything in the bar shares the composer as offset parent; hidden items have none and are skipped.
+  const composerActionsBar = composerEl.querySelector('.composer-actions');
+  const barItems = (box) => [...box.querySelectorAll(':scope > *, :scope > .mic-wrap > *')].filter((item) => item.offsetParent);
+  const rightEdge = (item) => item.offsetLeft + item.offsetWidth;
+  const tight = () => {
+    const toolsLimit = composerTools.offsetLeft + composerTools.clientWidth, barLimit = composerBar.offsetLeft + composerBar.clientWidth;
+    return barItems(composerTools).some((item) => rightEdge(item) > toolsLimit + 1) || barItems(composerActionsBar).some((item) => rightEdge(item) > barLimit + 1);
+  };
   function fitComposerBar() {
     composerEl.classList.remove(...FIT_STEPS);
-    const tight = () => composerTools.scrollWidth > composerTools.clientWidth + 0.5 || composerBar.scrollWidth > composerBar.clientWidth + 0.5;
     for (const step of FIT_STEPS) { if (!tight()) break; composerEl.classList.add(step); }
+    fitWatch?.takeRecords(); // our own class changes are not news
   }
-  if (typeof ResizeObserver === 'function') new ResizeObserver(fitComposerBar).observe(composerEl);
-  if (typeof MutationObserver === 'function') new MutationObserver(fitComposerBar).observe(composerBar, { childList: true, characterData: true, subtree: true, attributes: true, attributeFilter: ['hidden'] });
+  if (typeof ResizeObserver === 'function') new ResizeObserver(onComposerResize).observe(composerEl);
+  // The bar's content and any class on the bar or the composer (is-voice hides the polish button, has-time widens the clock) can change its width.
+  let fitWatch = null;
+  if (typeof MutationObserver === 'function') {
+    fitWatch = new MutationObserver(fitComposerBar);
+    fitWatch.observe(composerBar, { childList: true, characterData: true, subtree: true, attributes: true, attributeFilter: ['hidden', 'class'] });
+    fitWatch.observe(composerEl, { attributes: true, attributeFilter: ['class'] });
+  }
   document.fonts?.ready.then(fitComposerBar);
   fitComposerBar();
 
@@ -2103,9 +2165,21 @@
     else { queueOrder = received; pendingQueueOrder = null; }
   }
   let composerDraft = null;
+  /** Deletes the queued or scheduled prompt being edited and closes the edit. */
+  function dropQueueEdit() {
+    const { taskId, chatId, turn } = editingQueue;
+    queueAction(taskId ? 'cancelScheduledTask' : 'removeQueuedTurn', { chatId, taskId, id: turn.id });
+    if (!taskId) { const at = turnQueue.findIndex(item => item.id === turn.id); if (at >= 0) turnQueue.splice(at, 1); }
+    editingQueue = null;
+  }
   function saveQueueEdit(finish = false, { submit = false } = {}) {
     if (attachments.some(file => file.pending)) return;
     if (!editingQueue) return;
+    // Everything removed (text, files and pictures) and the edit is being closed: the prompt is gone, not saved empty.
+    if (finish && !promptInput.value.trim() && !attachments.length) {
+      dropQueueEdit();
+      return;
+    }
     const turn = { ...editingQueue.turn, text: promptInput.value, modelId: pendingModelId || activeModelId, attachments: attachments.map(file => file.path), files: attachments.slice() };
     if (!editingQueue.taskId) {
       const original = turnQueue.find(item => item.id === turn.id);
@@ -2172,12 +2246,13 @@
 
   function renderComposerState() {
     const unscheduling = Boolean(editingQueue?.taskId && editingQueue.scheduleTouched && !scheduleArmed);
-    const queueing = (!editingQueue && (busy || turnQueue.length > 0) && !scheduleArmed && Boolean(promptInput.value.trim()))
-      || (unscheduling && (busy || turnQueue.length > 0));
+    const held = busy || turnQueue.length > 0 || hasPausedDue();
+    const queueing = (!editingQueue && held && !scheduleArmed && Boolean(promptInput.value.trim()))
+      || (unscheduling && held);
     const hasText = Boolean(promptInput.value.trim());
     // Dictation owns the composer until it ends (the microphone again, or Esc): sending now would send a half-finished draft.
-    // Another window's recording (is-voice-mirror) is only echoed here and does not lock this one.
-    const dictating = composerEl.classList.contains('is-voice') && !composerEl.classList.contains('is-voice-mirror');
+    // Only the window the text lands in shows dictation (the host tells every other window `idle`), so it alone is locked.
+    const dictating = composerEl.classList.contains('is-voice');
     // The bottom-right slot holds exactly one of the two, so the bar never reshuffles under the pointer: send whenever there is
     // something to send (or an edit to save), stop only while a turn runs and there is nothing typed.
     const sending = Boolean(editingQueue) || !busy || hasText || unscheduling;
@@ -2194,13 +2269,14 @@
       : unscheduling
       ? (queueing ? 'Remove schedule and queue after this turn (Enter). Ctrl+Enter sends now.' : 'Remove schedule and send now (Enter)')
       : queueing ? (queuePaused ? 'Add to the paused queue (Enter). Ctrl+Enter sends now.' : 'Queue for after this turn (Enter). Ctrl+Enter sends now.')
-      : editingQueue ? 'Save queue edits (Enter). Ctrl+Enter sends now.' : 'Send';
+      : editingQueue ? (promptInput.value.trim() || attachments.length ? 'Save queue edits (Enter). Ctrl+Enter sends now.' : 'Nothing left: delete this queued prompt (Enter)') : 'Send';
     polishBtn.disabled = micWrap.classList.contains('is-polishing') || !promptInput.value.trim();
     autoGrow(); // Stop/Queue buttons change the text column's width, so re-measure
   }
   function setBusy(next) {
     const changed = busy !== next;
     busy = next;
+    document.body.classList.toggle('is-turn-busy', next); // Halo draws its glow round the composer from this
     if (!next) railWorking = null;
     renderComposerState(); syncPending(); renderProjectList();
     if (changed) renderTurnQueue();
@@ -2213,11 +2289,10 @@
   const pendingEl = document.createElement('div');
   pendingEl.className = 'msg-pending';
   pendingEl.setAttribute('role', 'status');
-  pendingEl.innerHTML = '<span class="pending-orb" aria-hidden="true"></span><span class="pending-label">Thinking</span><span class="pending-time" aria-hidden="true"></span><span class="pending-tokens"></span><span class="pending-thought"></span>';
+  pendingEl.innerHTML = '<span class="pending-orb" aria-hidden="true"></span><span class="pending-label">Thinking</span><span class="pending-time" aria-hidden="true"></span><span class="pending-tokens"></span>';
   const pendingLabel = pendingEl.querySelector('.pending-label');
   const pendingTime = pendingEl.querySelector('.pending-time');
   const pendingTokens = pendingEl.querySelector('.pending-tokens');
-  const pendingThought = pendingEl.querySelector('.pending-thought');
   // Monetary comparisons live in Settings, including the current chat's estimate.
   function renderChatCost(usd) {
     chatSettings.chatCost(usd);
@@ -2242,43 +2317,140 @@
       const total = Number(wait.dataset.waitSecs) * 1000;
       if (total > ms) ms = total - ms;
     }
+    if (liveThought) { const t = Date.now() - liveThought.startedAt >= 1000 ? formatDuration(Date.now() - liveThought.startedAt) : ''; if (liveThought.time.textContent !== t) liveThought.time.textContent = t; }
     const clock = (wait || turnStartedAt) && ms >= 1000 ? formatDuration(ms) : '';
     if (pendingTime.textContent !== clock) pendingTime.textContent = clock; // the pill sits inside the observed transcript: only a real change may mutate it
   }
   // The running clock for the turn; it becomes the "Worked for" figure at the end.
   setInterval(renderPendingClock, 1000);
 
-  // P17-T: live reasoning. Streams into the pending pill's second line (the
-  // plain "Thinking" pill when a model sends none), then folds into a closed
-  // drawer above whatever comes next.
-  let turnThought = '';
-  function appendThought(text) {
-    turnThought += text;
-    pendingEl.classList.add('has-thought');
-    pendingThought.textContent = turnThought.replace(/\s+/g, ' ').trim().slice(-220);
-    syncPending();
+  // Live reasoning. It stays open while the model thinks and while its tools run, so you can read what it is working out
+  // and steer it. When the next thought arrives, the previous thought collapses to one line and the completed tool calls
+  // between them bundle into a collapsed "N steps" row. When reply text arrives or the turn ends, all thoughts and their
+  // tool groups fold together into one summary above the answer.
+  // Digital circuit brain icon: airy wired-brain silhouette using the full 16x16 box so circuit traces stay legible at 15-16px.
+  const THOUGHT_ICON = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7.2 2.4c-1.7-.4-3.4.6-3.7 2.2-1.2.4-2 1.6-1.9 3 .1 1.2.9 2.2 2 2.5.2 1.8 1.6 3.2 3.6 3.3V2.4Z"/><path d="M8.8 2.4c1.7-.4 3.4.6 3.7 2.2 1.2.4 2 1.6 1.9 3-.1 1.2-.9 2.2-2 2.5-.2 1.8-1.6 3.2-3.6 3.3V2.4Z"/><path d="M7.2 5.6H5.2M7.2 9.4H5.4M8.8 5.6h2M8.8 9.4h1.8" stroke-width="1.05"/><circle cx="4.4" cy="5.6" r=".9" fill="currentColor" stroke="none"/><circle cx="4.7" cy="9.4" r=".9" fill="currentColor" stroke="none"/><circle cx="11.6" cy="5.6" r=".9" fill="currentColor" stroke="none"/><circle cx="11.3" cy="9.4" r=".9" fill="currentColor" stroke="none"/></svg>';
+  let liveThought = null; // { fold, body, preview, time, text, startedAt, pinned } — currently streaming thought chunks
+  let openThought = null; // last shown thought, kept open across tool steps until the next thought, reply text, or turn end
+  const thoughtPreview = (text) => {
+    const flat = String(text || '')
+      .replace(/```[\s\S]*?```/g, ' ')
+      .replace(/`([^`]+)`/g, '$1')
+      .replace(/\[([^\]]+)\]\([^)]+\)/g, '$1')
+      .replace(/(^|\n)\s{0,3}(?:#{1,6}\s+|[-*+]\s+|\d+[.)]\s+|>\s*)/g, '$1')
+      .replace(/(\*\*|__|~~)(?=\S)([\s\S]*?\S)\1/g, '$2')
+      .replace(/(^|[^*\w])\*(?=\S)([^*]*?\S)\*(?![*\w])/g, '$1$2')
+      .replace(/(^|[^_\w])_(?=\S)([^_]*?\S)_(?![_\w])/g, '$1$2')
+      .replace(/\s+/g, ' ')
+      .trim();
+    return flat.length > 110 ? `${flat.slice(0, 109)}…` : flat;
+  };
+  function syncThoughtFade(body) {
+    if (!body) return;
+    body.dataset.fadeTop = body.scrollTop > 4 ? '1' : '0';
+    body.dataset.fadeBottom = body.scrollHeight - body.scrollTop - body.clientHeight > 6 ? '1' : '0';
   }
-  function foldThought() {
-    if (!turnThought.trim()) return;
+  function startThought() {
+    // A new thought closes the previous open thought and bundles the completed tool steps between them.
+    foldThought();
+    foldToolSteps();
     const fold = document.createElement('details');
-    fold.className = 'thought-fold';
+    fold.className = 'thought-fold is-live';
+    fold.open = true;
     const summary = document.createElement('summary');
-    summary.textContent = 'Thought process';
+    summary.setAttribute('aria-label', 'Thought process');
+    const icon = document.createElement('span');
+    icon.className = 'thought-icon';
+    icon.innerHTML = THOUGHT_ICON;
+    const label = document.createElement('span');
+    label.className = 'thought-label';
+    label.textContent = 'Thought process';
+    const preview = document.createElement('span');
+    preview.className = 'thought-preview';
+    const time = document.createElement('span');
+    time.className = 'thought-time';
+    summary.append(icon, label, preview, time);
     const body = document.createElement('div');
     body.className = 'thought-body';
-    body.textContent = turnThought.trim();
     fold.append(summary, body);
-    turnHost().insertBefore(fold, pendingEl.isConnected && pendingEl.parentNode === turnHost() ? pendingEl : null);
-    resetThought();
+    const host = turnHost();
+    host.insertBefore(fold, pendingEl.isConnected && pendingEl.parentNode === host ? pendingEl : null);
+    liveThought = { fold, body, preview, time, text: '', startedAt: Date.now(), pinned: true };
+    body.addEventListener('scroll', () => {
+      if (liveThought && liveThought.body === body) liveThought.pinned = body.scrollHeight - body.scrollTop - body.clientHeight < 8;
+      syncThoughtFade(body);
+    }, { passive: true });
+    fold.addEventListener('toggle', () => { if (fold.open) requestAnimationFrame(() => syncThoughtFade(body)); });
+    syncPending();
   }
-  function resetThought() {
-    turnThought = '';
-    pendingEl.classList.remove('has-thought');
-    pendingThought.textContent = '';
+  function appendThought(text) {
+    if (!text) return;
+    if (!liveThought) {
+      if (!text.trim()) return;
+      startThought();
+    }
+    liveThought.text += text;
+    liveThought.body.replaceChildren(buildMessageBody(liveThought.text.trim()));
+    if (liveThought.pinned) liveThought.body.scrollTop = liveThought.body.scrollHeight; // the newest words stay in view unless you scrolled up to re-read
+    syncThoughtFade(liveThought.body);
+    scrollTranscriptToEnd();
   }
+  /** Ends the live shimmer when tool usage starts, while keeping the thought card open to read. */
+  function settleThought() {
+    if (!liveThought) return;
+    const thought = liveThought;
+    liveThought = null;
+    if (!thought.text.trim()) { thought.fold.remove(); syncPending(); return; }
+    thought.fold.classList.remove('is-live');
+    thought.fold.querySelector('.thought-label').textContent = 'Thought process';
+    thought.preview.textContent = thoughtPreview(thought.text);
+    const ms = Date.now() - thought.startedAt;
+    thought.time.textContent = ms >= 1000 ? formatDuration(ms) : '';
+    openThought = thought;
+    syncPending();
+  }
+  /** Closes the live or last-open thought (or Update Steps checklist card) into its one-line form. */
+  function foldThought({ immediate = false } = {}) {
+    const thought = liveThought || openThought;
+    if (!thought) return;
+    const wasLive = thought === liveThought;
+    liveThought = null;
+    openThought = null;
+    const { fold, body, preview, time, text, startedAt, isCard } = thought;
+    if (!isCard) {
+      if (!text.trim()) { fold.remove(); syncPending(); return; }
+      if (wasLive) {
+        fold.classList.remove('is-live');
+        fold.querySelector('.thought-label').textContent = 'Thought process';
+        preview.textContent = thoughtPreview(text);
+        const ms = Date.now() - startedAt;
+        time.textContent = ms >= 1000 ? formatDuration(ms) : '';
+      }
+      body.scrollTop = 0;
+    }
+    if (!fold.open) { syncPending(); return; } // you closed it yourself
+    if (immediate || REDUCED_MOTION.matches || !fold.isConnected || !body) {
+      fold.open = false;
+      fold.classList.remove('is-closing');
+      if (body) body.style.maxHeight = '';
+      syncPending();
+      return;
+    }
+    // Fold shut, not snap shut: the body's height runs down to nothing, then the details closes.
+    const height = body.getBoundingClientRect().height;
+    body.style.maxHeight = `${height}px`;
+    void body.offsetHeight;
+    fold.classList.add('is-closing');
+    body.style.maxHeight = '0px';
+    const done = () => { fold.open = false; fold.classList.remove('is-closing'); body.style.maxHeight = ''; syncPending(); };
+    body.addEventListener('transitionend', done, { once: true });
+    setTimeout(() => { if (fold.classList.contains('is-closing')) done(); }, 420); // a missed transitionend must not leave it half-open
+  }
+  /** Drops what a thought was showing without folding (a new turn starts): what was streamed stays as the one-line card. */
+  function resetThought() { foldThought({ immediate: true }); }
   function syncPending() {
     const last = [...turnHost().children].reverse().find((el) => el !== pendingEl);
-    const show = busy && !isCompacting && Boolean(last) && !last.matches('.approval-card, .question-card');
+    const show = busy && !isCompacting && !liveThought && Boolean(last) && !last.matches('.approval-card, .question-card');
     if (show && turnHost().lastElementChild !== pendingEl) {
       pendingEl.classList.toggle('is-entering', !pendingEl.isConnected);
       turnHost().appendChild(pendingEl);
@@ -2331,7 +2503,7 @@
       finishToolCard(card, { output: rawToolOutput(card) });
       card.classList.add('is-cancelled');
     });
-    foldThought(); // what it was thinking when stopped stays readable
+    foldThought({ immediate: true }); // what it was thinking when stopped stays readable
     appendInterruptedPill();
     endAssistantTurn();
     collapseTurn(turnAnchor, Date.now() - turnStartedAt);
@@ -2713,7 +2885,8 @@
     const title = head.querySelector('span'), label = turnQueueTitle();
     if (title.textContent !== label) title.textContent = label;
     const transport = head.querySelector('.queue-transport');
-    if (transport.hidden !== !queued.length) transport.hidden = !queued.length;
+    const showTransport = queued.length + scheduled.filter(dueNow).length > 0;
+    if (transport.hidden !== !showTransport) transport.hidden = !showTransport;
     if (transport.dataset.paused !== String(queuePaused)) {
       transport.dataset.paused = String(queuePaused);
       transport.innerHTML = queuePaused ? QUEUE_ICONS.play : QUEUE_ICONS.pause;
@@ -2771,7 +2944,7 @@
       return sendPrompt({ steer }); // include any further paste that arrived while waiting
     }
     if (polishing) return; // the draft is being rewritten; sending now would send the old text
-    if (composerEl.classList.contains('is-voice') && !composerEl.classList.contains('is-voice-mirror')) return; // dictating: finish or cancel it first
+    if (composerEl.classList.contains('is-voice')) return; // dictating: finish or cancel it first
     let text = promptInput.value.trim();
     if (editingQueue && !steer) { finishQueueEdit({ schedule: scheduleArmed, submit: true }); return; }
     if (!text) return;
@@ -2824,8 +2997,7 @@
     flushVoiceDraft(text);
     const turn = { id: crypto.randomUUID(), text, modelId: pendingModelId || activeModelId, attachments: attachments.map((attachment) => attachment.path), files: attachments.slice(), verify: autoVerify, pipeline };
     if (editingQueue) {
-      queueAction(editingQueue.taskId ? 'cancelScheduledTask' : 'removeQueuedTurn', { chatId: editingQueue.chatId, taskId: editingQueue.taskId, id: editingQueue.turn.id });
-      editingQueue = null;
+      dropQueueEdit();
       if (!scheduleArmed) { scheduleChoice = null; scheduleTimer.clear(); if (!composerDraft) refreshScheduleDefault(); }
     }
     if (scheduleArmed) {
@@ -2833,7 +3005,7 @@
       scheduleChoice = null;
       scheduleTimer.clear(); // the pick was for this prompt; the next one starts from the default again
       refreshScheduleDefault(); // stays on while the model is out of usage, so the next prompt queues too
-    } else if ((busy || turnQueue.length) && !steer) {
+    } else if ((busy || turnQueue.length || hasPausedDue()) && !steer) {
       turnQueue.push(turn);
       queueAction('queueTurn', { turn });
       renderTurnQueue();
@@ -2870,7 +3042,13 @@
     }
   });
 
+  // A click on the mic of a chat that is not recording, while another chat is, only moves the dictation here. The pointerdown
+  // already made this window the target (windowActive), and the host's answer can land before the click does, so the click
+  // must not read it as "recording, so stop". It is decided on pointerdown, from what this window knew before the press.
+  let micMoveOnly = false;
+  micBtn.addEventListener('pointerdown', () => { micMoveOnly = micElsewhere === 'recording'; });
   micBtn.addEventListener('click', () => {
+    if (micMoveOnly || micElsewhere) { micMoveOnly = false; return; } // moved here, or another chat is transcribing: nothing to start or stop
     warmMicCue(); // a click is the gesture that lets the start cue play the instant the microphone is live
     if (!micBtn.classList.contains('recording')) applyMicState({ state: 'starting' }); // answer now; the host confirms a moment later
     vscode.postMessage({ type: 'micToggle' });
@@ -3025,10 +3203,14 @@
   function checkVoiceCorrections(edited = promptInput.value) {
     clearTimeout(voiceEditTimer);
     if (!lastVoiceDraft || !edited.trim()) return;
-    // Text typed before dictation is outside the learning region. Editing that prefix abandons learning.
+    // Text outside the dictated region (before prefix or after suffix) is excluded from learning.
     if (!edited.startsWith(lastVoiceDraft.prefix)) return;
+    const suffix = lastVoiceDraft.suffix || '';
+    if (suffix && !edited.endsWith(suffix)) return;
+    const editedEnd = suffix ? edited.length - suffix.length : edited.length;
+    if (editedEnd < lastVoiceDraft.prefix.length) return;
     resetVoiceCorrections(true);
-    voiceEditSnapshot = { original: lastVoiceDraft.original, edited: edited.slice(lastVoiceDraft.prefix.length) };
+    voiceEditSnapshot = { original: lastVoiceDraft.original, edited: edited.slice(lastVoiceDraft.prefix.length, editedEnd) };
     vscode.postMessage({ type: 'voiceDraftEdited', ...voiceEditSnapshot, requestId: ++voiceEditRequest });
   }
   function showVoiceCorrections(terms) {
@@ -3093,7 +3275,18 @@
     voiceDictionaryBud.hidden = !voiceDictionaryBud.childElementCount;
   }
   const REDUCED_MOTION = matchMedia('(prefers-reduced-motion: reduce)');
+  // The meter was redrawn on every display frame: 31 bars restyled (height forces a layout) and a custom property written on
+  // the whole composer, which repainted its blurred glow. That was the dictation lag. Now it draws at most ~30 times a second,
+  // and only what changed: a quiet room costs nothing once the bars have settled.
+  const WAVE_FRAME_MS = 30;
+  const WAVE_LEVEL_STEPS = 40; // --mic-level moves in 1/40 steps; a finer change is not visible
+  const waveDrawn = new Array(WAVE_BARS).fill(''); // what each bar was last given, so an unchanged bar is not touched
+  let waveDrawnAt = 0;
+  let waveLevelDrawn = -1;
   function waveStep(now) {
+    waveFrame = requestAnimationFrame(waveStep);
+    if (now - waveDrawnAt < WAVE_FRAME_MS) return;
+    waveDrawnAt = now;
     const target = now - micLevelAt < 300 ? micLevel : 0;
     waveLevel += (target - waveLevel) * (target > waveLevel ? 0.35 : 0.1);
     const t = now / 1000;
@@ -3113,18 +3306,27 @@
       const s = Math.min(1, waveLevel * swell * 1.15);
       const meter = WAVE_MIN + (WAVE_MAX - WAVE_MIN) * s;
       const shut = 0.34 + 0.3 * Math.exp(-((((i / (WAVE_BARS - 1)) - glint) / 0.12) ** 2));
-      waveBars[i].style.height = `${(WAVE_DASH + (meter - WAVE_DASH) * settle).toFixed(1)}px`;
-      waveBars[i].style.transform = turn < 1 ? `rotate(${(90 * (1 - turn)).toFixed(1)}deg)` : '';
-      waveBars[i].style.opacity = (shut + (0.3 + 0.7 * s - shut) * settle).toFixed(2);
+      const height = `${(WAVE_DASH + (meter - WAVE_DASH) * settle).toFixed(1)}px`;
+      const transform = turn < 1 ? `rotate(${(90 * (1 - turn)).toFixed(1)}deg)` : '';
+      const opacity = (shut + (0.3 + 0.7 * s - shut) * settle).toFixed(2);
+      const drawn = `${height}|${transform}|${opacity}`;
+      if (waveDrawn[i] === drawn) continue;
+      waveDrawn[i] = drawn;
+      const style = waveBars[i].style;
+      style.height = height; style.transform = transform; style.opacity = opacity;
     }
-    micBtn.style.setProperty('--mic-level', waveLevel.toFixed(3));
-    composerEl.style.setProperty('--mic-level', waveLevel.toFixed(3));
-    waveFrame = requestAnimationFrame(waveStep);
+    const level = Math.round(waveLevel * WAVE_LEVEL_STEPS) / WAVE_LEVEL_STEPS;
+    if (level !== waveLevelDrawn) {
+      waveLevelDrawn = level;
+      micBtn.style.setProperty('--mic-level', level.toFixed(3));
+      composerEl.style.setProperty('--mic-level', level.toFixed(3));
+    }
   }
   let micStartingTimer;
-  // One microphone, every window animated in step. The window the text will land in (the one used last) is the target and
-  // gets the full treatment; the others echo it quietly (.is-voice-mirror). A click or focus here makes this window the target.
-  let voiceMirror = false;
+  // One microphone, and only the window the text will land in (the one used last) shows it: the host sends every other window
+  // `idle`, with `elsewhere` set while a recording or transcription runs in another chat. A click or focus here makes this window
+  // the target, and a recording that is still running then moves here.
+  let micElsewhere = ''; // '' | 'recording' | 'processing': what another chat is doing with the microphone
   for (const type of ['pointerdown', 'focusin']) document.addEventListener(type, () => vscode.postMessage({ type: 'windowActive' }), true);
   window.addEventListener('focus', () => vscode.postMessage({ type: 'windowActive' }));
   function applyMicState(message) {
@@ -3132,16 +3334,17 @@
     clearTimeout(micStartingTimer);
     if (state === 'starting') micStartingTimer = setTimeout(() => applyMicState({ state: 'idle' }), 8000); // the host always answers; this only unlocks a lost reply
     if (state === 'recording') voiceHold = Boolean(message.hold);
-    voiceMirror = message.target === false && state !== 'idle';
+    micElsewhere = state === 'idle' ? message.elsewhere || '' : '';
     if (message.cue && (state === 'recording' || state === 'processing')) playMicCue(state === 'recording' ? 'start' : 'stop');
     micBtn.classList.toggle('recording', state === 'recording');
     micBtn.classList.toggle('is-starting', state === 'starting');
     micBtn.classList.toggle('is-busy', state === 'starting' || state === 'processing');
-    micBtn.classList.toggle('is-mirror', voiceMirror);
     micBtn.disabled = state === 'processing' || state === 'starting';
     micBtn.title =
-      state === 'recording' && voiceMirror
-        ? 'Listening for another chat. Click here to stop and transcribe into this chat instead'
+      micElsewhere === 'recording'
+        ? 'Another chat is recording. Click to move dictation to this chat'
+      : micElsewhere === 'processing'
+        ? 'Another chat is transcribing'
       : state === 'recording'
         ? `Listening${message.device ? ` on ${message.device}` : ''}\u2026 ${message.hold ? 'release the hotkey to transcribe' : window.VOICE_SILENCE_MS ? 'stops by itself after a pause. Click to stop now' : 'click or press the hotkey again to stop and transcribe'}, Esc to cancel`
         : state === 'processing'
@@ -3156,12 +3359,11 @@
     const recording = state === 'recording';
     const processing = state === 'processing';
     emptyMascot?.setListening?.(recording);
-    composerEl.classList.toggle('is-voice-mirror', voiceMirror && (starting || recording || processing));
     if (starting && composerEl.classList.contains('is-voice-starting')) return; // the host's confirmation of the click's own start
     if (starting || recording) {
       voiceOverlay.hidden = false;
       micLevelAt = 0; micLevel = 0; speechMs = 0; lastSpeechAt = 0; lastVolumeAt = 0; voiceStopSent = false;
-      if (starting) { waveLevel = 0; waveLiveAt = 0; }
+      if (starting) { waveLevel = 0; waveLiveAt = 0; waveDrawn.fill(''); waveLevelDrawn = -1; } // the bars may have been cleared since the last recording
       else if (!waveLiveAt) waveLiveAt = performance.now(); // the closed dashes open into the live meter from here
       // One loop serves both: opening the microphone and listening are the same animation, one fading into the other.
       if (!REDUCED_MOTION.matches && !waveRunning) { waveRunning = true; waveFrame = requestAnimationFrame(waveStep); }
@@ -3172,9 +3374,9 @@
       micBtn.style.removeProperty('--mic-level');
       composerEl.style.removeProperty('--mic-level');
     }
-    if (processing) waveBars.forEach((bar) => { bar.style.opacity = ''; bar.style.height = ''; bar.style.transform = ''; }); // CSS collapses them to the 4px baseline
-    // Written text stays visible: the meter and then the ghost lines take a row under it (the window that receives the text only).
-    if ((starting || recording || processing) && !voiceMirror) { clearTimeout(voiceRowTimer); openVoiceRow(); }
+    if (processing) { waveDrawn.fill(''); waveBars.forEach((bar) => { bar.style.opacity = ''; bar.style.height = ''; bar.style.transform = ''; }); } // CSS collapses them to the 4px baseline
+    // Written text stays visible: the meter and then the ghost lines take a row under it .
+    if (starting || recording || processing) { clearTimeout(voiceRowTimer); openVoiceRow(); }
     composerEl.classList.toggle('is-voice', starting || recording || processing);
     composerEl.classList.toggle('is-voice-starting', starting);
     composerEl.classList.toggle('is-voice-processing', processing);
@@ -3187,27 +3389,79 @@
     renderComposerState(); // send is greyed out while dictating
   }
   let voiceInserting = false;
-  // The transcript lands as an editable draft after what is already written, on a new line. It goes in through the editing stack
-  // (execCommand), so one Ctrl+Z takes the whole dictation back. The old text never moves: the new lines wipe in under it
-  // where the ghost lines stood, and the composer springs to its new height.
+  // Last cursor/selection position placed in the composer, paired with the draft value it belongs to so a chat switch,
+  // send, or programmatic replacement can never apply a stale offset.
+  let voiceCursor = null;
+  function rememberVoiceCursor() {
+    if (typeof promptInput.selectionStart !== 'number') return;
+    voiceCursor = { start: promptInput.selectionStart, end: promptInput.selectionEnd, value: promptInput.value };
+  }
+  for (const eventName of ['select', 'keyup', 'mouseup', 'pointerup', 'click', 'focus', 'blur']) {
+    promptInput.addEventListener(eventName, rememberVoiceCursor);
+  }
+  function resolveVoiceSelection(value) {
+    if (document.activeElement === promptInput && typeof promptInput.selectionStart === 'number') {
+      return { start: promptInput.selectionStart, end: promptInput.selectionEnd };
+    }
+    if (voiceCursor && voiceCursor.value === value) {
+      return {
+        start: Math.max(0, Math.min(voiceCursor.start, value.length)),
+        end: Math.max(0, Math.min(voiceCursor.end, value.length)),
+      };
+    }
+    return { start: value.length, end: value.length };
+  }
+  // Computes where and how a dictated transcript lands inside `currentValue` for the given cursor/selection range.
+  // Empty box replaces whitespace; collapsed cursor at the end keeps the new-line landing (unless already preceded by
+  // whitespace); cursor in the middle or over a selection inserts right there with smart spacing.
+  function planVoiceInsertion(currentValue, selStart, selEnd, text) {
+    if (!currentValue.trim()) {
+      return { start: 0, end: currentValue.length, lead: '', trail: '', added: text, atEnd: true, cursorAfter: text.length };
+    }
+    const start = Math.max(0, Math.min(selStart, currentValue.length));
+    const end = Math.max(start, Math.min(selEnd, currentValue.length));
+    if (start === end && start === currentValue.length) {
+      const lead = /\s$/.test(currentValue) ? '' : '\n';
+      const added = `${lead}${text}`;
+      return { start, end, lead, trail: '', added, atEnd: true, cursorAfter: start + added.length };
+    }
+    const before = currentValue.slice(0, start);
+    const after = currentValue.slice(end);
+    const lead = !before || /\s$/.test(before) || /^[,.;:!?)\]}]/.test(text) ? '' : ' ';
+    const trail = !after || /^\s/.test(after) || /^[,.;:!?)\]}]/.test(after) ? '' : ' ';
+    const added = `${lead}${text}${trail}`;
+    return { start, end, lead, trail, added, atEnd: false, cursorAfter: start + lead.length + text.length };
+  }
+  // The transcript lands at the user's blinking cursor (or replaces the active selection). It goes in through the editing
+  // stack (execCommand), so one Ctrl+Z takes the whole dictation back. When appending at the end, the new lines wipe in
+  // where the ghost lines stood and the composer springs to its new height.
   function insertVoiceDraft(text) {
     clearTimeout(voiceRowTimer);
-    const had = promptInput.value.trim();
+    const currentValue = promptInput.value;
+    const had = currentValue.trim();
+    const { start, end } = resolveVoiceSelection(currentValue);
+    const plan = planVoiceInsertion(currentValue, start, end, text);
     const from = promptInput.offsetHeight;
-    const keep = had ? promptInput.scrollHeight - (voiceRowOpen ? VOICE_ROW : 0) : 0; // where the old text ends
+    const keep = had && plan.atEnd ? promptInput.scrollHeight - (voiceRowOpen ? VOICE_ROW : 0) : 0; // where the old text ends
     voiceRowOpen = false;
     composerEl.classList.remove('has-voice-row');
     promptInput.focus();
-    if (had) promptInput.setSelectionRange(promptInput.value.length, promptInput.value.length); else promptInput.select();
+    promptInput.setSelectionRange(plan.start, plan.end);
     voiceInserting = true;
-    const added = had ? `\n${text}` : text;
-    if (!document.execCommand('insertText', false, added)) promptInput.value = had ? `${promptInput.value}${added}` : added; // no undo, but the text lands
+    if (!document.execCommand('insertText', false, plan.added)) {
+      promptInput.value = `${currentValue.slice(0, plan.start)}${plan.added}${currentValue.slice(plan.end)}`;
+    }
     voiceInserting = false;
     autoGrow(); renderComposerState();
-    promptInput.setSelectionRange(promptInput.value.length, promptInput.value.length);
-    promptInput.scrollTop = promptInput.scrollHeight;
+    promptInput.setSelectionRange(plan.cursorAfter, plan.cursorAfter);
+    voiceCursor = { start: plan.cursorAfter, end: plan.cursorAfter, value: promptInput.value };
+    if (plan.atEnd) promptInput.scrollTop = promptInput.scrollHeight;
     animateComposerHeight(from);
-    revealFrom(keep);
+    if (plan.atEnd) revealFrom(keep);
+    return {
+      prefix: `${currentValue.slice(0, plan.start)}${plan.lead}`,
+      suffix: `${plan.trail}${currentValue.slice(plan.end)}`,
+    };
   }
   // Sending ends edit monitoring; detected corrections retain their visible cancel window.
   function flushVoiceDraft(sent) {
@@ -3218,6 +3472,7 @@
   }
   promptInput.addEventListener('input', (event) => {
     if (voiceInserting) return; // the dictation landing is not an edit of it
+    rememberVoiceCursor();
     resetVoiceCorrections(!!promptInput.value.trim());
     // Ctrl+Z / Ctrl+Y over a dictation is not a correction either; learning from it would read "everything deleted".
     if (!promptInput.value.trim() || event.inputType === 'historyUndo' || event.inputType === 'historyRedo') { lastVoiceDraft = null; resetVoiceCorrections(); }
@@ -3378,8 +3633,27 @@
     'json', 'py', 'ps1', 'sh', 'bash', 'yml', 'yaml', 'md', 'txt', 'toml', 'env',
     'png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'avif', 'pdf'
   ]);
+  const CHAT_IMAGE_EXTS = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'avif']);
+  const CHAT_IMAGE_CAP = 4; // sweet spot: 1 featured, 2 side-by-side before/after, or up to 2x2 grid; extra fold behind a pill
+  const STANDALONE_IMAGE_RE = /^\s*!\[([^\]\r\n]*)\]\((?:<([^<>\r\n]+)>|([^\r\n)]+))\)\s*$/;
   // Dotenv files (.env, .env.local, .env.production) have no real extension, so they get their own test.
   const ENV_FILE = /(?:^|[\\/])\.env(?:\.[\w-]+)*$/i;
+  function parseLocalImageRef(ref) {
+    if (!ref || /^(https?|mailto):/i.test(ref)) return null;
+    const match = FILE_REF.exec(ref);
+    if (!match) return null;
+    let file = match[1];
+    try { file = decodeURIComponent(file); } catch { /* keep as written */ }
+    if (!file || file.includes('\u0000')) return null;
+    const ext = match[2].toLowerCase();
+    if (!CHAT_IMAGE_EXTS.has(ext)) return null;
+    return { file, ext, base: file.split(/[\\/]/).pop() || file };
+  }
+  const normImageKey = (file) => String(file || '').replaceAll('\\', '/').replace(/\/+/g, '/').trim();
+  function chatImageCardHtml({ file, ext, label, explicit }) {
+    const shown = label || file.split(/[\\/]/).pop() || file;
+    return `<figure class="chat-image-card is-loading${ext === 'svg' ? ' is-svg' : ''}" data-path="${escapeHtml(file)}" data-label="${escapeHtml(shown)}" data-ext="${escapeHtml(ext)}" data-explicit="${explicit ? '1' : '0'}"${explicit ? '' : ' hidden'}><div class="chat-image-head"><figcaption class="chat-image-caption" title="${escapeHtml(shown)}">${escapeHtml(shown)}</figcaption><button type="button" class="chat-image-popout" title="Open in VS Code" aria-label="Open ${escapeHtml(shown)} in VS Code">${OPEN_ICON}</button></div><button type="button" class="chat-image-stage" aria-label="Preview ${escapeHtml(shown)}"><span class="chat-image-skeleton" aria-hidden="true"></span></button></figure>`;
+  }
   function fileBadge(ref, label) {
     const match = ENV_FILE.test(ref) ? [ref, ref.replace(/^file:\/\/\/?/i, ''), 'env'] : FILE_REF.exec(ref);
     if (!match || /^(https?|mailto):/i.test(ref)) return null;
@@ -3394,15 +3668,54 @@
     const browser = /^html?$/.test(ext) && !line;
     return `<button type="button" class="file-badge" data-ext="${escapeHtml(ext)}" data-path="${escapeHtml(file)}" data-line="${line}" title="${escapeHtml((ext === 'pdf' ? 'Open in editor: ' : browser ? 'Open in browser: ' : '') + shown + (line ? `:${line}` : ''))}">${FILE_ICONS[FILE_KIND[ext] || 'doc']}<span>${escapeHtml(label || base)}${line ? `<small>:${line}</small>` : ''}</span></button>`;
   }
+  function openChatImageCard(card) {
+    const path = card?.dataset.path;
+    if (!path) return;
+    const open = (reply) => {
+      if (!reply || reply.error || !reply.uri) { showToast(`${reply?.error || 'Could not preview image'}: ${baseName(path)}`, { error: true }); return; }
+      const label = card.dataset.label || reply.name || baseName(path);
+      openLightbox(reply.uri, label, false, { uri: reply.uri, name: reply.name || baseName(path), path: reply.path || path }, null, { openPath: reply.path || path });
+    };
+    if (card._preview) { open(card._preview); return; }
+    void loadPreview(path).then(open);
+  }
   transcriptEl.addEventListener('click', (event) => {
+    const popout = event.target.closest?.('.chat-image-popout');
+    if (popout) {
+      event.stopPropagation();
+      const card = popout.closest('.chat-image-card');
+      if (card) vscode.postMessage({ type: 'openFile', path: card._preview?.path || card.dataset.path });
+      return;
+    }
+    const stage = event.target.closest?.('.chat-image-stage');
+    if (stage) {
+      const card = stage.closest('.chat-image-card');
+      if (card) openChatImageCard(card);
+      return;
+    }
+    const more = event.target.closest?.('.chat-image-more');
+    if (more) {
+      expandChatImageOverflow(more);
+      return;
+    }
     const badge = event.target.closest?.('.file-badge');
     if (badge) vscode.postMessage({ type: 'openFile', path: badge.dataset.path, line: Number(badge.dataset.line) || null });
-    const link = event.target.closest?.('.msg a[href]');
-    if (link && /^(https?:|mailto:)/i.test(link.getAttribute('href'))) {
+    const link = event.target.closest?.('a[data-external-url]');
+    if (link) vscode.postMessage({ type: 'openUrl', url: link.dataset.externalUrl });
+  });
+  transcriptEl.addEventListener('keydown', (event) => {
+    const link = event.target.closest?.('a[data-external-url]');
+    if (event.key === 'Enter' && !event.repeat && link) {
       event.preventDefault();
-      vscode.postMessage({ type: 'openUrl', url: link.getAttribute('href') });
+      link.click();
     }
   });
+
+  // External URLs go through the extension host. An href also lets the editor's webview
+  // opener handle the click, which can prompt even after Clanker has opened the link.
+  function externalLink(url, label, className = '') {
+    return `<a role="link" tabindex="0" data-external-url="${url}" title="${url}"${className ? ` class="${className}"` : ''}>${label}</a>`;
+  }
 
   function renderInline(text, notes) {
     const slots = [];
@@ -3414,9 +3727,13 @@
       .replace(/(`+)([\s\S]*?[^`])\1(?!`)/g, (_, _ticks, code) => {
         const ref = code.trim();
         // A bare URL in backticks (how agents usually print dev-server addresses) stays code-styled but clickable.
-        if (/^https?:\/\/[^\s<>"]+$/i.test(ref)) return hold(`<a class="code-link" href="${escapeHtml(ref)}" title="${escapeHtml(ref)}"><code>${escapeHtml(ref)}</code></a>`);
+        if (/^https?:\/\/[^\s<>"]+$/i.test(ref)) return hold(externalLink(escapeHtml(ref), `<code>${escapeHtml(ref)}</code>`, 'code-link'));
         const badge = /[\\/]|\.pdf$/i.test(ref) ? fileBadge(ref) : null;
         return hold(badge || `<code>${escapeHtml(ref)}</code>`, ref);
+      })
+      .replace(/!\[([^\]\r\n]*)\]\((?:<([^<>\r\n]+)>|([^\r\n)]+))\)/g, (whole, alt, wrapped, target) => {
+        const badge = fileBadge((wrapped || target).trim(), plain(alt));
+        return badge ? hold(badge) : whole;
       })
       .replace(/\[([^\]\r\n]+)\]\((?:<([^<>\r\n]+)>|([^\r\n)]+))\)/g, (whole, label, wrapped, target) => { const badge = fileBadge((wrapped || target).trim(), plain(label)); return badge ? hold(badge) : whole; })
       .replace(/\$\$([^$]+?)\$\$/g, (_, tex) => hold(renderMath(tex, true)))
@@ -3426,8 +3743,8 @@
         return pre + hold(renderMath(tex, false));
       });
     s = escapeHtml(s)
-      .replace(/\[([^\]]+)\]\(((?:https?:\/\/|mailto:)[^\s)\u0000]+)\)/g, (_, label, url) => hold(`<a href="${url}" title="${url}">${renderEmphasis(label)}</a>`))
-      .replace(/(^|[\s(])(https?:\/\/[^\s<\u0000]*[^\s<\u0000.,;:!?)\]'"])/g, (_, pre, url) => pre + hold(`<a href="${url}">${url}</a>`))
+      .replace(/\[([^\]]+)\]\(((?:https?:\/\/|mailto:)[^\s)\u0000]+)\)/g, (_, label, url) => hold(externalLink(url, renderEmphasis(label))))
+      .replace(/(^|[\s(])(https?:\/\/[^\s<\u0000]*[^\s<\u0000.,;:!?)\]'"])/g, (_, pre, url) => pre + hold(externalLink(url, url)))
       .replace(/(^|[\s(])((?:(?:\.{1,2}[\\/])|[a-zA-Z]:[\\/]|[\w@-]{2,}[\\/])(?:[\w.@-]+[\\/])*[\w@-]+\.[a-z][a-z0-9]{0,7}(?::\d+(?::\d+)?)?)(?=[\s),;!?]|[.:](?:\s|$)|$)/gi, (whole, pre, ref) => {
         const badge = fileBadge(ref);
         return badge ? pre + hold(badge) : whole;
@@ -3451,7 +3768,7 @@
   const indentOf = (line) => line.match(/^\s*/)[0].replace(/\t/g, '    ').length;
   const isTableStart = (line, next) => line.includes('|') && next !== undefined && next.includes('|') && TABLE_SEP_RE.test(next);
   const startsBlock = (line, next) => /^\s{0,3}#{1,6}\s/.test(line) || HR_RE.test(line) || /^\s*>/.test(line)
-    || LIST_RE.test(line) || MATH_OPEN_RE.test(line) || FOOTNOTE_RE.test(line) || isTableStart(line, next);
+    || LIST_RE.test(line) || MATH_OPEN_RE.test(line) || FOOTNOTE_RE.test(line) || STANDALONE_IMAGE_RE.test(line) || isTableStart(line, next);
 
   function dedent(lines) {
     const min = Math.min(...lines.filter((line) => line.trim()).map(indentOf));
@@ -3530,6 +3847,23 @@
       }
       if (isTableStart(line, lines[i + 1])) { const [html, next] = renderTable(lines, i, notes); out.push(html); i = next; continue; }
       if (LIST_RE.test(line)) { const [html, next] = renderList(lines, i, notes); out.push(html); i = next; continue; }
+      if (STANDALONE_IMAGE_RE.test(line)) {
+        const cards = [];
+        let j = i;
+        while (j < lines.length) {
+          const im = lines[j].match(STANDALONE_IMAGE_RE);
+          if (!im) break;
+          const parsed = parseLocalImageRef((im[2] || im[3] || '').trim());
+          if (!parsed) break;
+          cards.push(chatImageCardHtml({ file: parsed.file, ext: parsed.ext, label: im[1].trim() || parsed.base, explicit: true }));
+          j += 1;
+        }
+        if (cards.length) {
+          out.push(`<div class="chat-image-grid" data-inline-images="explicit" data-count="${cards.length}">${cards.join('')}</div>`);
+          i = j;
+          continue;
+        }
+      }
       // Paragraph: single newlines stay line breaks, as in any chat.
       const para = [];
       while (i < lines.length && lines[i].trim() && (!para.length || !startsBlock(lines[i], lines[i + 1]))) para.push(lines[i++].trim());
@@ -3997,6 +4331,11 @@
       const body = bubble.querySelector('.msg-body');
       body.textContent = '';
       body.appendChild(buildMessageBody(bubble.dataset.raw));
+    } else if (event.type === 'notice' && event.text) {
+      const notice = document.createElement('div');
+      notice.className = 'msg msg-notice';
+      notice.textContent = event.text;
+      log.appendChild(notice);
     } else if (event.type === 'thought' && event.text) {
       const thought = document.createElement('details');
       thought.className = 'agents-thought';
@@ -4005,7 +4344,7 @@
       log.appendChild(thought);
     } else if (event.type === 'tool_start') {
       const command = event.command || event.file;
-      const card = appendToolCard({ name: event.name, command, output: { text: '' }, done: event.done, diff: event.diff, startedAt: event.startedAt ?? event.at, durationMs: event.durationMs, host: log });
+      const card = appendToolCard({ name: event.name, command, intent: event.summary, output: { text: '' }, done: event.done, diff: event.diff, startedAt: event.startedAt ?? event.at, durationMs: event.durationMs, host: log });
       // The summary line truncates; opening the step shows the whole command above its output.
       if (command) {
         const full = document.createElement('div');
@@ -4014,6 +4353,8 @@
         card.insertBefore(full, card.querySelector('.tool-body'));
       }
       if (event.toolId) agentLog.cards.set(event.toolId, card);
+    } else if (event.type === 'tool_progress') {
+      updateToolProgress(agentLog.cards.get(event.toolId), event);
     } else if (event.type === 'tool_end') {
       finishToolCard(agentLog.cards.get(event.toolId), { output: event.output, error: event.error, durationMs: event.durationMs });
     }
@@ -4044,6 +4385,7 @@
     el.innerHTML = `<div class="empty-mark"></div>
       <h2 class="empty-title">What are we working on?</h2>
       <p class="empty-lead">Claude, Codex and Gemini share this chat. Pick a model below, or leave it on Auto.</p>
+      <div class="halo-hello"><h2>${window.CLANKER_GREETING_NAME ? `Hi ${escapeHtml(window.CLANKER_GREETING_NAME)}` : 'Hello'}</h2><p>What are we making today?</p></div>
       <ul class="empty-tips"><li><button type="button" data-mascot-action="mention"><kbd>@</kbd>mention a file</button></li><li><button type="button" data-mascot-action="action"><kbd>/</kbd>run an action</button></li><li><button type="button" data-mascot-action="image"><kbd>+</kbd>attach an image</button></li></ul>`;
     emptyMascot = window.createClankerMascot({ root: el, input: promptInput, modelPicker: modelPickerBtn, attach: attachBtn, mic: micBtn, schedule: scheduleBtn, transcript: transcriptEl });
     return el;
@@ -4078,7 +4420,10 @@
     if (isTranscriptNearBottom()) stickToEnd = true;
     else if (scrollingUp) stickToEnd = false;
     lastScrollTop = top;
-    if (scrollingUp) loadEarlierHistory(true);
+    if (!chatFind?.isJumping) {
+      if (scrollingUp) loadEarlierHistory(true);
+      loadVisibleGaps(scrollingUp);
+    }
   }, { passive: true });
   function scrollTranscriptToEnd(force = false) {
     if (restoringHistory) return;
@@ -4320,6 +4665,8 @@
   document.body.insertAdjacentHTML('beforeend', '<svg width="0" height="0" style="position:absolute" aria-hidden="true" focusable="false"><filter id="msg-goo" x="-10%" y="-10%" width="120%" height="130%" color-interpolation-filters="sRGB"><feGaussianBlur in="SourceGraphic" stdDeviation="5" result="blur"/><feColorMatrix in="blur" mode="matrix" values="1 0 0 0 0  0 1 0 0 0  0 0 1 0 0  0 0 0 18 -7" result="goo"/><feComposite in="SourceGraphic" in2="goo" operator="atop"/></filter><filter id="tip-goo" filterUnits="userSpaceOnUse" x="-320" y="-40" width="420" height="140" color-interpolation-filters="sRGB"><feGaussianBlur in="SourceGraphic" stdDeviation="5" result="blur"/><feColorMatrix in="blur" mode="matrix" values="1 0 0 0 0  0 1 0 0 0  0 0 1 0 0  0 0 0 18 -7" result="goo"/><feComposite in="SourceGraphic" in2="goo" operator="atop"/></filter></svg>'); // tip-goo: same goo, a wide fixed region for a tag hanging off a 32px button
 
   // P17-K: a prompt longer than three lines clamps behind a fade with a Show more / Show less toggle.
+  // Dynamic: the clamp follows the text. Resizing the panel, loading a font or revealing a hidden chat re-measures it, so the
+  // toggle appears only while there is more to show, and goes away when the whole prompt fits in three lines.
   function clampUserBubble(bubble, body) {
     bubble.classList.add('is-clamped');
     const toggle = document.createElement('button');
@@ -4336,25 +4683,82 @@
     bubble.querySelector('.msg-user-content').append(toggle);
   }
 
-  const pendingUserClamps = [];
+  function unclampUserBubble(bubble) {
+    bubble.classList.remove('is-clamped', 'is-expanded');
+    bubble.querySelector('.msg-clamp-toggle')?.remove();
+  }
+
+  const userClampBubbles = new Map(); // body -> bubble, for every prompt the observer is watching
+  const dirtyUserClamps = new Set();
   let userClampFrame = 0;
-  function queueUserClamp(bubble, body) {
-    pendingUserClamps.push({ bubble, body });
-    if (userClampFrame) return;
-    userClampFrame = requestAnimationFrame(() => {
-      userClampFrame = 0;
-      // Read all heights before changing any classes: one layout for the whole page.
-      const overflowing = pendingUserClamps.filter(({ bubble, body }) => bubble.isConnected && body.scrollHeight > (parseFloat(getComputedStyle(body).lineHeight) || 20) * 3 + 4);
-      pendingUserClamps.length = 0;
-      for (const { bubble, body } of overflowing) clampUserBubble(bubble, body);
+  function settleUserClamps() {
+    userClampFrame = 0;
+    const bodies = [...dirtyUserClamps];
+    dirtyUserClamps.clear();
+    // Read every height first, then change classes: one layout for the whole batch.
+    const verdicts = bodies.map((body) => {
+      const bubble = userClampBubbles.get(body);
+      const hidden = !bubble?.isConnected || !body.clientWidth; // hidden (another tab, collapsed): nothing to measure, keep as is
+      return { body, bubble, hidden, overflows: !hidden && body.scrollHeight > (parseFloat(getComputedStyle(body).lineHeight) || 20) * 3 + 4 };
     });
+    for (const { body, bubble, hidden, overflows } of verdicts) {
+      if (!bubble?.isConnected) { userClampObserver.unobserve(body); userClampBubbles.delete(body); continue; }
+      if (hidden) continue;
+      const clamped = bubble.classList.contains('is-clamped');
+      if (overflows && !clamped) clampUserBubble(bubble, body);
+      else if (!overflows && clamped) unclampUserBubble(bubble);
+    }
+  }
+  const userClampObserver = new ResizeObserver((records) => {
+    for (const { target } of records) dirtyUserClamps.add(target);
+    if (!userClampFrame) userClampFrame = requestAnimationFrame(settleUserClamps); // not in the observer: a class change resizes the box
+  });
+  function queueUserClamp(bubble, body) {
+    userClampBubbles.set(body, bubble);
+    userClampObserver.observe(body); // also reports once straight away, which does the first measurement
   }
 
   // Claude woke up on its own (a background agent reported back). Nobody typed it, so it is a quiet divider, not a bubble.
   const isBackgroundPrompt = (message) => Boolean(message?.background || (message?.remote && message.text === 'Background work continued'));
 
-  function appendUserMessage(text, at = new Date().toISOString(), files = [], { scheduled = false, clientTurnId = null, background = false } = {}) {
-    if (clientTurnId && [...transcriptEl.querySelectorAll('.msg-group-user')].some(group => group.dataset.clientTurnId === clientTurnId)) return;
+  function insertContextHandoff(turn, handoff) {
+    if (!handoff?.from?.label || !handoff?.to?.label || turn.previousElementSibling?.classList.contains('model-handoff-divider')) return;
+    const divider = document.createElement('div');
+    divider.className = 'model-handoff-divider';
+    divider.setAttribute('role', 'note');
+    divider.setAttribute('aria-label', `Context handoff from ${handoff.from.label} to ${handoff.to.label}`);
+    const capsule = document.createElement('div');
+    capsule.className = 'model-handoff-status';
+    const title = document.createElement('span');
+    title.className = 'model-handoff-title';
+    title.textContent = 'Context handoff';
+    const route = document.createElement('span');
+    route.className = 'model-handoff-route';
+    const model = ({ agent, label }) => {
+      const node = document.createElement('span');
+      node.className = 'model-handoff-model';
+      node.dataset.agent = agent;
+      node.textContent = label;
+      node.title = label;
+      return node;
+    };
+    const arrow = document.createElement('span');
+    arrow.className = 'model-handoff-arrow';
+    arrow.setAttribute('aria-hidden', 'true');
+    arrow.textContent = '→';
+    route.append(model(handoff.from), arrow, model(handoff.to));
+    capsule.append(title, route);
+    divider.append(capsule);
+    turn.before(divider);
+  }
+
+  function appendUserMessage(text, at = new Date().toISOString(), files = [], { scheduled = false, clientTurnId = null, background = false, contextHandoff } = {}) {
+    const existing = clientTurnId && [...transcriptEl.querySelectorAll('.msg-group-user')].find(group => group.dataset.clientTurnId === clientTurnId);
+    if (existing) {
+      insertContextHandoff(existing.parentElement, contextHandoff);
+      if (contextHandoff) scrollTranscriptToEnd();
+      return;
+    }
     clearEmptyState();
     const group = document.createElement('div');
     group.className = 'msg-group msg-group-user';
@@ -4412,6 +4816,7 @@
     turn.className = 'turn';
     turn.appendChild(group);
     transcriptEl.appendChild(turn); // always top level, never inside the previous turn
+    insertContextHandoff(turn, contextHandoff);
     queueUserClamp(bubble, body);
     currentTurnEl = turn;
     turnAnchor = group;
@@ -4536,11 +4941,230 @@
     }
     return Math.max(cut, paragraphCut(text, start, text.length));
   }
+  // ---------- Inline chat images (shared lightbox + VS Code pop-out + smart 4-image cap) ----------
+  const chatImagePendingBubbles = new WeakMap(); // bubble -> Set<card> awaiting viewport intersection
+  const chatImageObserver = new IntersectionObserver((entries) => {
+    for (const { target, isIntersecting } of entries) {
+      if (!isIntersecting) continue;
+      chatImageObserver.unobserve(target);
+      const cards = chatImagePendingBubbles.get(target);
+      if (!cards) continue;
+      chatImagePendingBubbles.delete(target);
+      for (const card of cards) hydrateSingleChatImage(card);
+    }
+  }, { root: transcriptEl, rootMargin: '240px' });
+
+  function updateChatImageGridCount(grid) {
+    if (!grid) return;
+    const visible = [...grid.querySelectorAll(':scope > .chat-image-card:not([hidden])')].length;
+    if (visible > 0) grid.dataset.count = String(visible);
+    const gallery = grid.closest('.chat-image-gallery');
+    if (gallery) {
+      const moreBtn = gallery.querySelector('.chat-image-more');
+      const hasMore = Boolean(moreBtn && !moreBtn.hidden);
+      gallery.hidden = visible === 0 && !hasMore;
+    }
+  }
+
+  function hydrateSingleChatImage(card) {
+    if (!card || !card.isConnected || card.dataset.hydrated) return;
+    card.dataset.hydrated = '1';
+    const file = card.dataset.path;
+    const explicit = card.dataset.explicit === '1';
+    const grid = card.closest('.chat-image-grid');
+    void loadPreview(file).then((reply) => {
+      if (!card.isConnected) return;
+      card.classList.remove('is-loading');
+      if (!reply || reply.error || !reply.uri) {
+        if (explicit) {
+          // Explicit ![alt](missing.png) degrades cleanly to a clickable file link instead of a broken box.
+          const fallback = fileBadge(file, card.dataset.label);
+          if (fallback) {
+            const tmp = document.createElement('span');
+            tmp.innerHTML = fallback;
+            card.replaceWith(tmp.firstElementChild);
+          } else card.remove();
+          if (grid && !grid.querySelector('.chat-image-card')) grid.remove();
+          else updateChatImageGridCount(grid);
+        } else {
+          const gallery = card.closest('.chat-image-gallery');
+          card.remove();
+          // Promote the next overflow image if one is queued so a non-existent example path never steals a slot.
+          if (gallery?._overflow?.length) {
+            const next = gallery._overflow.shift();
+            const tmp = document.createElement('div');
+            tmp.innerHTML = chatImageCardHtml({ file: next.file, ext: next.ext, label: next.label, explicit: false });
+            const nextCard = tmp.firstElementChild;
+            grid.append(nextCard);
+            observeChatImage(nextCard);
+            syncChatImageMoreButton(gallery);
+          }
+          updateChatImageGridCount(grid);
+        }
+        return;
+      }
+      card._preview = reply;
+      const stage = card.querySelector('.chat-image-stage');
+      if (stage) {
+        const img = document.createElement('img');
+        img.src = reply.uri;
+        img.alt = card.dataset.label || reply.name || baseName(file);
+        img.draggable = false;
+        img.loading = 'lazy';
+        stage.replaceChildren(img);
+      }
+      if (!explicit) card.hidden = false;
+      card.classList.add('is-ready');
+      updateChatImageGridCount(grid);
+    });
+  }
+
+  function observeChatImage(card, immediate = false) {
+    if (!card || card.dataset.observed) return;
+    card.dataset.observed = '1';
+    if (immediate) { hydrateSingleChatImage(card); return; }
+    const anchor = card.closest('.msg-assistant') || card;
+    let queue = chatImagePendingBubbles.get(anchor);
+    if (!queue) {
+      queue = new Set();
+      chatImagePendingBubbles.set(anchor, queue);
+      chatImageObserver.observe(anchor);
+    }
+    queue.add(card);
+  }
+
+  function syncChatImageMoreButton(gallery) {
+    const remaining = gallery?._overflow?.length || 0;
+    let btn = gallery.querySelector('.chat-image-more');
+    if (remaining <= 0) { btn?.remove(); return; }
+    if (!btn) {
+      btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'chat-image-more';
+      gallery.append(btn);
+    }
+    btn.textContent = `Show ${remaining} more ${remaining === 1 ? 'image' : 'images'}`;
+  }
+
+  function expandChatImageOverflow(moreBtn) {
+    const gallery = moreBtn.closest('.chat-image-gallery');
+    const grid = gallery?.querySelector('.chat-image-grid');
+    if (!gallery || !grid) return;
+    const extras = gallery._overflow || [];
+    gallery._overflow = [];
+    moreBtn.remove();
+    const frag = document.createDocumentFragment();
+    const touchedGrids = new Set([grid]);
+    const toHydrate = [];
+    for (const item of extras) {
+      if (item.card) {
+        item.card.hidden = false;
+        toHydrate.push(item.card);
+        const parentGrid = item.card.closest('.chat-image-grid');
+        if (parentGrid) touchedGrids.add(parentGrid);
+      } else {
+        const tmp = document.createElement('div');
+        tmp.innerHTML = chatImageCardHtml({ file: item.file, ext: item.ext, label: item.label, explicit: false });
+        const card = tmp.firstElementChild;
+        frag.append(card);
+        toHydrate.push(card);
+      }
+    }
+    if (frag.childNodes.length) grid.append(frag);
+    for (const card of toHydrate) observeChatImage(card, true);
+    for (const g of touchedGrids) updateChatImageGridCount(g);
+  }
+
+  function hydrateChatImages(bubble) {
+    if (!bubble?.isConnected) return;
+    const body = bubble.querySelector('.msg-body');
+    if (!body) return;
+    const seen = new Set();
+    let visibleBudget = CHAT_IMAGE_CAP;
+
+    // 1. Explicit ![alt](path) cards placed directly between paragraphs.
+    const explicitCards = [...body.querySelectorAll('.chat-image-card[data-explicit="1"]')];
+    const explicitOverflow = [];
+    for (const card of explicitCards) {
+      const key = normImageKey(card.dataset.path);
+      if (seen.has(key)) { card.remove(); continue; }
+      seen.add(key);
+      if (visibleBudget > 0) {
+        visibleBudget -= 1;
+        observeChatImage(card);
+      } else {
+        card.hidden = true;
+        explicitOverflow.push({ card });
+      }
+    }
+    for (const grid of body.querySelectorAll('.chat-image-grid[data-inline-images="explicit"]')) {
+      updateChatImageGridCount(grid);
+    }
+
+    // 2. Linked local image files ([before.png](...), etc.) embedded cleanly below the prose up to the 4-image cap.
+    const autoCandidates = [];
+    for (const badge of body.querySelectorAll('.file-badge')) {
+      const ext = (badge.dataset.ext || '').toLowerCase();
+      if (!CHAT_IMAGE_EXTS.has(ext)) continue;
+      const file = badge.dataset.path;
+      const key = normImageKey(file);
+      if (!key || seen.has(key)) continue;
+      seen.add(key);
+      const label = badge.querySelector('span')?.textContent?.trim() || baseName(file);
+      autoCandidates.push({ file, ext, label });
+    }
+
+    const totalAutoSig = autoCandidates.map((item) => item.file).join('\n') + '|' + explicitOverflow.length;
+    let gallery = bubble.querySelector(':scope > .chat-image-gallery');
+    if (gallery && gallery.dataset.sig === totalAutoSig) return;
+    if (!autoCandidates.length && !explicitOverflow.length) { gallery?.remove(); return; }
+
+    if (!gallery) {
+      gallery = document.createElement('div');
+      gallery.className = 'chat-image-gallery';
+      gallery.hidden = true;
+      const grid = document.createElement('div');
+      grid.className = 'chat-image-grid is-auto';
+      grid.dataset.count = '0';
+      gallery.append(grid);
+      const actions = bubble.querySelector(':scope > .msg-actions');
+      if (actions) bubble.insertBefore(gallery, actions);
+      else bubble.append(gallery);
+    }
+    gallery.dataset.sig = totalAutoSig;
+    const grid = gallery.querySelector('.chat-image-grid');
+    const existingKeys = new Set([...grid.querySelectorAll('.chat-image-card')].map((c) => normImageKey(c.dataset.path)));
+    let gridSlots = Math.max(0, visibleBudget - existingKeys.size);
+    const overflow = [...explicitOverflow];
+    for (const item of autoCandidates) {
+      const key = normImageKey(item.file);
+      if (existingKeys.has(key)) continue;
+      if (gridSlots > 0) {
+        gridSlots -= 1;
+        const tmp = document.createElement('div');
+        tmp.innerHTML = chatImageCardHtml({ file: item.file, ext: item.ext, label: item.label, explicit: false });
+        const card = tmp.firstElementChild;
+        grid.append(card);
+        observeChatImage(card);
+      } else {
+        overflow.push(item);
+      }
+    }
+    gallery._overflow = overflow;
+    syncChatImageMoreButton(gallery);
+    updateChatImageGridCount(grid);
+  }
+
   function renderAssistantBody(bubble) {
     const body = bubble.querySelector('.msg-body');
     const raw = bubble.dataset.raw;
     let inc = bubble._incremental;
-    if (restoringHistory || NO_INCREMENTAL.test(raw)) { bubble._incremental = null; body.replaceChildren(buildMessageBody(raw)); return; }
+    if (restoringHistory || NO_INCREMENTAL.test(raw)) {
+      bubble._incremental = null;
+      body.replaceChildren(buildMessageBody(raw));
+      hydrateChatImages(bubble);
+      return;
+    }
     if (!inc || inc.body !== body || !raw.startsWith(inc.prefix)) {
       inc = bubble._incremental = { body, prefix: '', cut: 0, count: 0 };
       body.replaceChildren();
@@ -4553,6 +5177,7 @@
       inc.cut = cut;
       inc.prefix = raw.slice(0, cut);
       body.appendChild(stable);
+      hydrateChatImages(bubble);
     }
     if (raw.length > inc.cut) body.appendChild(buildMessageBody(raw.slice(inc.cut)));
   }
@@ -4570,6 +5195,7 @@
   let restoringHistory = false; // old limit replies in a restored transcript get no button; only the last may
   let nextUserIndex = 0;
   let historyStart = 0;
+  let historyUserStart = 0;
   let historyRequest = 0;
   let loadingHistory = false;
   let continueSentAfterLimit = false;
@@ -4595,6 +5221,7 @@
   }
 
   function endAssistantTurn(at = new Date().toISOString()) {
+    for (const bubble of turnBubbles) hydrateChatImages(bubble);
     const last = turnBubbles[turnBubbles.length - 1];
     if (last && !last.querySelector('.msg-actions')) last.append(messageActions(at, () => last.dataset.raw.trim(), []));
     const limitHit = limitHitThisTurn || isLimitNotice(last?.dataset.raw);
@@ -4637,9 +5264,10 @@
     return h ? `${h}h ${m}m` : m ? `${m}m${s ? ` ${s}s` : ''}` : `${s}s`;
   }
 
-  function workSummary(label, steps = []) {
+  function workSummary(label, steps = [], { thoughtSteps = false, count = steps.length } = {}) {
     const block = document.createElement('details');
-    block.className = `work-summary${steps.length ? '' : ' is-empty'}`;
+    block.className = `work-summary${steps.length ? '' : ' is-empty'}${thoughtSteps ? ' is-thought-steps' : ''}`;
+    if (steps.length) block.dataset.stepCount = String(count);
     const summary = document.createElement('summary');
     summary.innerHTML = `<span class="work-label"></span>${steps.length ? CHEVRON : ''}`;
     summary.firstChild.textContent = label;
@@ -4651,22 +5279,55 @@
     return block;
   }
 
-  // Steps stay in order with the reply text: the tool calls (and thinking,
-  // approvals, questions) since the last text fold into one "N steps" row the
-  // moment new text arrives, and once more when the turn ends.
-  const STEP = '.tool-card, .thought-fold, .approval-card, .question-card';
+  // Steps stay in order with the reply text: tool calls between thoughts or update_steps checklists
+  // bundle into a collapsed "N steps" row when the next thought/checklist arrives; when reply text
+  // arrives or the turn ends, the thoughts, checklists and their tool bundles fold into one summary.
+  const TOOL_STEP = '.tool-card:not(.tool-todo), .approval-card, .question-card';
+  const CHECKPOINT = '.thought-fold, .tool-todo';
+  const STEP = '.tool-card, .thought-fold, .work-summary.is-thought-steps, .approval-card, .question-card';
+  function foldToolSteps(host = turnHost()) {
+    const steps = [];
+    for (let el = host.lastElementChild; el; el = el.previousElementSibling) {
+      if (el === pendingEl) continue;
+      if (!el.matches(TOOL_STEP) || el.matches('.is-running')) break;
+      steps.unshift(el);
+    }
+    const waiting = new Set(pendingCards.values());
+    if (!steps.length || steps.some((el) => waiting.has(el))) return;
+    const next = steps[steps.length - 1].nextElementSibling;
+    host.insertBefore(workSummary(`${steps.length} step${steps.length === 1 ? '' : 's'}`, steps, { thoughtSteps: true }), next);
+  }
   function foldSteps(host = turnHost()) {
     const steps = [];
     for (let el = host.lastElementChild; el; el = el.previousElementSibling) {
       if (el === pendingEl) continue;
-      if (!el.matches(STEP) || el.matches('.is-running')) break;
+      if (!el.matches(STEP) || el.matches('.is-running, .is-live')) break;
       steps.unshift(el);
     }
     // A card still waiting on your click never folds away.
     const waiting = new Set(pendingCards.values());
     if (!steps.length || steps.some((el) => waiting.has(el))) return;
+    // When earlier thoughts/checklists already bundled their tools, bundle trailing tools after the last one too.
+    const hasThoughtGroups = steps.some((el) => el.matches('.work-summary.is-thought-steps'));
+    const lastCheckpointIndex = steps.findLastIndex((el) => el.matches(CHECKPOINT));
+    if (hasThoughtGroups && lastCheckpointIndex >= 0 && lastCheckpointIndex < steps.length - 1) {
+      const trailing = steps.slice(lastCheckpointIndex + 1);
+      if (trailing.every((el) => el.matches(TOOL_STEP))) {
+        const bundle = workSummary(`${trailing.length} step${trailing.length === 1 ? '' : 's'}`, trailing, { thoughtSteps: true });
+        steps.splice(lastCheckpointIndex + 1, trailing.length, bundle);
+      }
+    }
+    for (const el of steps) {
+      if (el.matches(CHECKPOINT) && el.open) {
+        el.open = false;
+        el.classList.remove('is-closing');
+        const body = el.querySelector('.thought-body, .tool-body');
+        if (body) body.style.maxHeight = '';
+      }
+    }
+    const total = steps.reduce((sum, el) => sum + (el.matches('.work-summary.is-thought-steps') ? (Number(el.dataset.stepCount) || 1) : 1), 0);
     const next = steps[steps.length - 1].nextElementSibling;
-    host.insertBefore(workSummary(`${steps.length} step${steps.length === 1 ? '' : 's'}`, steps), next);
+    host.insertBefore(workSummary(`${total} step${total === 1 ? '' : 's'}`, steps, { count: total }), next);
   }
 
   function collapseTurn(anchor, ms) {
@@ -4687,8 +5348,8 @@
   // Tool cards, matched to their result by toolId (Claude tool_use id, Codex
   // item id, agy step) so parallel or interleaved tools never cross wires.
   const toolCards = new Map();
-  const SHELL_TOOLS = /^(bash|powershell|shell|run_command|command_execution)$/i;
-  const EDIT_TOOLS = /^(edit|write|multiedit|notebookedit|write_to_file|(multi_)?replace_file_content|file_change|edit_file|create_file)$/i;
+  const SHELL_TOOLS = /^(bash|powershell|shell|run_command|command_execution|(?:read|write|list)_(?:bash|powershell))$/i;
+  const EDIT_TOOLS = /^(edit|write|multiedit|notebookedit|write_to_file|write_file|(multi_)?replace_file_content|file_change|edit_file|create_file)$/i;
   const READ_TOOLS = /^(read|view_file|view|list_dir|view_content|read_file)$/i;
   const SEARCH_TOOLS = /^(glob|grep|grep_search|find_by_name|search_in_file|find_file)$/i;
   const WEB_TOOLS = /^(web_?(fetch|search)|search_?web|read_?url_?content|read_?browser_?page|browser_?page)$/i;
@@ -4729,8 +5390,8 @@
     ['message', /^(send_?message|push_?notification)$/i],
     ['web', /^(web_?(fetch|search)|search_?web|read_?url_?content|read_?browser_?page|browser_?page)$/i],
     ['image', /^(generate_?image|image_?generate)$/i],
-    ['question', /^(ask_?question|ask_?user_?question|ask_?followup_?question)$/i],
-    ['todo', /^(todowrite|task(create|update|list|get)|update_plan)$/i],
+    ['question', /^(ask_?question|ask_?user(?:_?question)?|ask_?followup_?question)$/i],
+    ['todo', /^(todowrite|task(create|update|list|get)|update_plan|update_?steps)$/i],
     ['plan', /^(enter|exit)planmode$/i],
     ['skill', /^(skill|load[ _-]?skill)$/i],
     ['schedule', /^(schedule|cron(create|delete|list)|schedulewakeup)$/i],
@@ -4759,7 +5420,7 @@
     if (/^(sendmessage|pushnotification)$/i.test(clean)) return 'Message';
     if (/^(subagenthandback|handback)$/i.test(clean)) return 'Handback';
     if (/^(generateimage|imagegenerate)$/i.test(clean)) return 'Image';
-    if (/^(askquestion|askuserquestion|askfollowupquestion)$/i.test(clean)) return 'Question';
+    if (kind === 'question') return 'Question';
     if (/^(schedule|schedulewakeup|croncreate|crondelete|cronlist)$/i.test(clean)) return 'Schedule';
     if (/^(grepsearch|searchinfile|grep)$/i.test(clean)) return 'Grep';
     if (/^(findbyname|findfile|glob)$/i.test(clean)) return 'Glob';
@@ -4769,7 +5430,7 @@
     if (/^(taskstop|killshell|killbash)$/i.test(clean)) return 'Stop';
     if (/^(enterworktree|exitworktree)$/i.test(clean)) return 'Worktree';
     if (/^(remotetrigger)$/i.test(clean)) return 'Remote';
-    if (/^mcp__/i.test(raw)) return raw.replace(/^mcp__/, '');
+    if (/^mcp__/i.test(raw)) return raw.slice(5).replace('__', ' · ');
     if (raw.includes('_') || raw.includes('-')) {
       return raw.split(/[-_]+/).map((w) => w.charAt(0).toUpperCase() + w.slice(1)).join(' ');
     }
@@ -4828,7 +5489,7 @@
       const timer = setTimeout(() => { previewWaiting.delete(requestId); resolve({ error: 'The preview took too long' }); }, 15000);
       previewWaiting.set(requestId, (reply) => {
         clearTimeout(timer);
-        if (!reply.error) { previewCache.set(file, reply); if (previewCache.size > 8) previewCache.delete(previewCache.keys().next().value); }
+        if (!reply.error) { previewCache.set(file, reply); if (previewCache.size > 20) previewCache.delete(previewCache.keys().next().value); }
         resolve(reply);
       });
       vscode.postMessage({ type: 'previewFile', path: file, requestId });
@@ -5111,6 +5772,48 @@
     return tvFrame({ left: [tvChip('JSON')], content: rows.el, painters: [rows.paint], copy: pretty, expand: big ? null : expand });
   }
 
+  const TODO_STATE_ICONS = {
+    done: '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="8" cy="8" r="6" stroke-width="1.3" opacity="0.45"/><path d="m5.4 8.2 1.8 1.8 3.5-3.8"/></svg>',
+    active: '<svg viewBox="0 0 16 16" fill="none" aria-hidden="true"><circle cx="8" cy="8" r="6" stroke="currentColor" stroke-width="1.4" opacity="0.4"/><circle cx="8" cy="8" r="3" fill="currentColor"/></svg>',
+    pending: '<svg viewBox="0 0 16 16" fill="none" aria-hidden="true"><circle cx="8" cy="8" r="5.6" stroke="currentColor" stroke-width="1.3"/></svg>',
+  };
+
+  function viewChecklist(text) {
+    const lines = String(text || '').split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+    if (!lines.length) return null;
+    const list = document.createElement('ul');
+    list.className = 'todo-steps';
+    lines.forEach((raw, index) => {
+      let state = 'pending';
+      let title = raw;
+      if (/^(?:✓|✔|☑|\[x\]|-\s*\[x\])\s*/i.test(raw)) {
+        state = 'done';
+        title = raw.replace(/^(?:✓|✔|☑|\[x\]|-\s*\[x\])\s*/i, '');
+      } else if (/^(?:▸|▶|►|→|•|\[-\]|-\s*\[-\])\s*/.test(raw)) {
+        state = 'active';
+        title = raw.replace(/^(?:▸|▶|►|→|•|\[-\]|-\s*\[-\])\s*/, '');
+      } else if (/^(?:○|◯|☐|\[ \]|-\s*\[ \])\s*/.test(raw)) {
+        state = 'pending';
+        title = raw.replace(/^(?:○|◯|☐|\[ \]|-\s*\[ \])\s*/, '');
+      }
+      const item = document.createElement('li');
+      item.className = `todo-step is-${state}`;
+      const mark = document.createElement('span');
+      mark.className = 'todo-step-mark';
+      mark.setAttribute('aria-hidden', 'true');
+      mark.innerHTML = TODO_STATE_ICONS[state];
+      const num = document.createElement('span');
+      num.className = 'todo-step-num';
+      num.textContent = `${index + 1}.`;
+      const label = document.createElement('span');
+      label.className = 'todo-step-text';
+      label.textContent = title || raw;
+      item.append(mark, num, label);
+      list.append(item);
+    });
+    return list;
+  }
+
   // The view for one card, or null to leave its plain text. `big` is the expanded copy in the viewer.
   function buildToolView(card, big = false) {
     const info = toolInfo.get(card);
@@ -5121,6 +5824,7 @@
     const running = card.classList.contains('is-running'), failed = card.classList.contains('is-error');
     if (info.kind === 'shell') return viewShell(info, text, running, failed, big, expand);
     if (!text.trim()) return null;
+    if (!failed && info.kind === 'todo') return viewChecklist(text);
     const format = window.toolFormat;
     const display = toolDisplayName(info.name, info.kind);
     if (info.kind === 'read') { const parsed = format.parseNumbered(text); if (parsed) return viewRead(info, parsed, big, expand); }
@@ -5191,10 +5895,11 @@
   }
 
   // `host`: where the card goes (the agents viewer passes its own pane); default, the running turn.
-  function appendToolCard({ name, command, output, toolId, done, error, diff, cancelled, startedAt, durationMs, host = null }) {
+  function appendToolCard({ name, command, intent = '', output, toolId, done, error, diff, cancelled, startedAt, durationMs, host = null }) {
     if (!host) clearEmptyState();
     const skills = loadedSkillNames(name, command || '');
     const kind = skills.length ? 'skill' : toolKind(name);
+    if (kind === 'stop') command = window.toolFormat?.stopTarget?.(output?.text, command) || command || '';
     // An edit's own "-"/"+" lines become its body and its +N -N count.
     const diffLines = kind === 'edit' && diff ? diff.split('\n') : null;
     if (diffLines) output = { ...output, added: diffLines.filter((l) => l[0] === '+').length, removed: diffLines.filter((l) => l[0] === '-').length };
@@ -5234,6 +5939,11 @@
       dir.className = 'tool-dir';
       dir.textContent = (path[1] || '').replace(/[\\/]$/, '');
       label.append(file, dir);
+    } else if (intent && (kind === 'shell' || kind === 'other') && !skills.length) {
+      // Gemini says in its own words what a step is for. That is the row; the command itself is the first thing inside the card.
+      label.textContent = intent;
+      label.title = `${intent}\n\n${command || ''}`.trim();
+      details.classList.add('has-summary');
     } else {
       label.textContent = skills.length ? skills.join(', ') : command || '';
     }
@@ -5288,6 +5998,12 @@
       full.textContent = command;
       details.appendChild(full);
     }
+    if (details.classList.contains('has-summary') && command && kind !== 'shell') { // a shell card's own view starts with `$ command`
+      const full = document.createElement('div');
+      full.className = 'agents-tool-command';
+      full.textContent = command;
+      details.appendChild(full);
+    }
     if (diffLines) details.dataset.diff = '1'; // the diff is drawn when the card opens (ensureToolView)
     else body.textContent = (output && output.text) || '';
     // A long output arrives as a preview; the rest is fetched when the card opens (see 'toolOutput').
@@ -5317,6 +6033,18 @@
     scrollTranscriptToEnd();
     return details;
   }
+  function updateToolProgress(card, { output, sequence }) {
+    if (!card?.classList.contains('is-running') || card.dataset.diff) return;
+    const info = toolInfo.get(card);
+    if (Number.isInteger(sequence)) {
+      if (sequence <= (info.outputSequence ?? -1)) return;
+      output = ((info.outputSequence == null ? '' : info.progressOutput) + output).slice(-16000);
+      info.outputSequence = sequence;
+    } else if (info.outputSequence != null) return; // Copilot sends both formats during migration.
+    info.progressOutput = output;
+    resetToolView(card, output);
+  }
+
   function finishToolCard(card, { output, error, durationMs }) {
     if (!card) return;
     const startedAt = Number(card.dataset.startedAt);
@@ -5328,6 +6056,17 @@
     syncPending(); // a finished wait turns the Timer back into "Thinking"
     card.classList.toggle('is-error', Boolean(error));
     const body = card.querySelector('.tool-body');
+    output ||= toolInfo.get(card)?.progressOutput;
+    // TaskStop/KillShell returns the stopped command in its result; show it on the row once the step finishes.
+    if (card.classList.contains('tool-stop')) {
+      const info = toolInfo.get(card);
+      const stopped = window.toolFormat?.stopTarget?.(output, info?.command || '');
+      if (stopped) {
+        if (info) info.command = stopped;
+        const label = card.querySelector('.tool-label');
+        if (label) { label.textContent = stopped; label.title = stopped; }
+      }
+    }
     // A diff card keeps its diff; only a failure replaces it with the reason.
     if (error && output && toolInfo.get(card)) toolInfo.get(card).diffLines = null;
     if (body && (!card.dataset.diff || (error && output))) resetToolView(card, output || '');
@@ -5337,8 +6076,10 @@
     if (meta && !error && lines && (card.classList.contains('tool-read') || card.classList.contains('tool-search'))) {
       meta.textContent = card.classList.contains('tool-read') ? `${lines} ${lines === 1 ? 'line' : 'lines'}` : `${lines} ${lines === 1 ? 'result' : 'results'}`;
     }
-    // Errors stay open so the reason is visible; successes fold away.
-    card.open = Boolean(error && output);
+    // A failure shows in the row (red, "Failed"); it opens by itself only if the user asked for that (Settings > General).
+    // Active Update Steps checklists stay open (like the active thought) until the next thought, update_steps, reply text, or turn end.
+    const keepOpen = openThought?.fold === card && card.open;
+    card.open = keepOpen || Boolean(TOOL_PREFS.openFailed && error && output);
     if (card.open) ensureToolView(card);
   }
 
@@ -5747,30 +6488,17 @@
 
 
   // ---------- P17-R: context window, one number ----------
-  // How full the context window is right now. It shows in the Thinking pill
-  // while the agent works, and as a warning above the composer from 75% on.
-  // Every model in the picker runs a 1M-token window (Opus 5.5 and Sonnet 5.5 per Anthropic's model table; Gemini's is 2^20).
+  // The Thinking pill shows the active context while the agent works.
   const CONTEXT_LIMITS = { claude: 1000000, codex: 1000000, gemini: 1048576 };
-  const CONTEXT_WARN_PCT = 75;
-  const contextWarning = document.createElement('div');
-  contextWarning.className = 'context-warning island-bud';
-  contextWarning.hidden = true;
-  contextWarning.innerHTML = `${WARN_SVG}<span class="context-warning-text"></span><button type="button" class="context-compact">Compact</button>`;
-  // A bud of the dock right above the pill; the dock's goo fuses the two (docs/dynamic-island-composer-spec.md).
-  composerEl.before(contextWarning);
   const kTokens = (n) => (n >= 1e6 ? `${(n / 1e6).toFixed(n >= 1e7 ? 0 : 1)}M` : `${Math.max(1, Math.round(n / 1000))}k`);
   function renderContextGauge(context) {
     const tokens = context?.tokens || 0;
-    const limit = CONTEXT_LIMITS[context?.agent] || 1000000;
+    const limit = context?.limit > 0 ? context.limit : CONTEXT_LIMITS[context?.agent] || 1000000; // the CLI's own window when it named one
     const remaining = Math.max(0, limit - tokens);
     const pct = Math.min(100, Math.round((tokens / limit) * 100));
     const isEst = context?.estimated ? '~' : '';
     pendingTokens.textContent = tokens ? `${isEst}${kTokens(tokens)} / ${kTokens(limit)} Token Context` : '';
     pendingTokens.title = `${context?.agent ? AGENT_NAMES[context.agent] || context.agent : 'Model'} context: ${tokens.toLocaleString()} tokens used (${pct}%), ${remaining.toLocaleString()} tokens remaining in ${limit.toLocaleString()} window.`;
-    contextWarning.hidden = pct < CONTEXT_WARN_PCT;
-    if (contextWarning.hidden) return;
-    contextWarning.querySelector('.context-warning-text').textContent = `Context ${pct}% full (${kTokens(remaining)} left)`;
-    contextWarning.title = `${AGENT_NAMES[context.agent] || context.agent} context window: ${context.estimated ? 'approximately ' : ''}${tokens.toLocaleString()} of ${limit.toLocaleString()} tokens (${remaining.toLocaleString()} left). Compacting retains up to roughly 100,000 tokens in a detailed checkpoint.`;
   }
   const COMPACT_SVG = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path class="compact-arrow-top" d="M4 2.5 8 6l4-3.5"/><path class="compact-arrow-bottom" d="M4 13.5 8 10l4 3.5"/></svg>';
   const compactVisibility = new IntersectionObserver((entries) => {
@@ -5789,6 +6517,19 @@
     if (active) compactVisibility.observe(divider);
     scrollTranscriptToEnd();
   }
+  /** A reset nobody asked for (the CLI compacted itself, or Clanker started a fresh session): the compaction divider, with the reason under it. */
+  function appendContextReset(record) {
+    clearEmptyState();
+    const divider = document.createElement('div');
+    divider.className = 'compact-divider is-settled';
+    divider.dataset.kind = record.kind || '';
+    divider.setAttribute('role', 'status');
+    divider.innerHTML = `<span class="compact-status">${COMPACT_SVG}<span class="compact-label"></span></span><small></small>`;
+    divider.querySelector('.compact-label').textContent = record.title || 'Context reset';
+    divider.querySelector('small').textContent = record.detail || '';
+    turnHost().appendChild(divider);
+    scrollTranscriptToEnd();
+  }
   function finishCompactDivider(outcome = 'complete') {
     if (!activeCompactDivider) return;
     const divider = activeCompactDivider;
@@ -5799,12 +6540,6 @@
     divider.querySelector('.compact-thinking').hidden = true;
     divider.querySelector('.compact-label').textContent = outcome === 'complete' && !divider.dataset.failed ? divider.dataset.completeLabel : `Context compaction ${divider.dataset.failed ? 'failed' : outcome}`;
   }
-  contextWarning.querySelector('.context-compact').addEventListener('click', () => {
-    if (busy) { showToast('Compaction runs once the current turn is done.'); return; }
-    renderContextGauge(null);
-    setBusy(true);
-    vscode.postMessage({ type: 'compact' }); // the host answers with 'compacting'
-  });
 
   /** `running`: the host's routing message for a turn still in progress. Its reply
    * so far stays open, and the stream picks up where it is. */
@@ -5829,8 +6564,10 @@
     turnBubbles = [];
     const messages = chat.messages || [];
     historyStart = chat.historyStart || 0;
+    historyUserStart = chat.historyUserStart || 0;
     loadingHistory = false;
     historyRequest++;
+    settleFindLoad(false);
     pendingAssistantBodies.clear();
     toolCards.clear(); pendingCards.clear(); openToolCard = null;
     currentTurnEl = null;
@@ -5881,7 +6618,7 @@
     const flush = () => { if (anchor) collapseTurn(anchor, startedAt && endedAt ? Date.parse(endedAt) - Date.parse(startedAt) : null); anchor = null; };
     const storedTool = (message, at) => message.event?.type === 'question_required' && message.event.deferred
       ? appendQuestionCard(message.event)
-      : appendToolCard({ name: message.event?.name, command: message.event?.command || message.event?.file, output: { text: message.event?.output || '', ...(message.event?.outputTruncated ? { lazy: { index: firstIndex + at, toolId: message.event.toolId, length: message.event.outputTruncated } } : {}) }, toolId: message.event?.toolId, done: message.done !== false || !running || message.interrupted, cancelled: message.interrupted, error: message.error, diff: message.event?.diff, startedAt: message.startedAt ?? message.event?.startedAt ?? (message.done === false && running ? (running.startedAt || Date.parse(startedAt)) : undefined), durationMs: message.durationMs ?? message.event?.durationMs });
+      : appendToolCard({ name: message.event?.name, command: message.event?.command || message.event?.file, intent: message.event?.summary, output: { text: message.event?.output || '', ...(message.event?.outputTruncated ? { lazy: { index: firstIndex + at, toolId: message.event.toolId, length: message.event.outputTruncated } } : {}) }, toolId: message.event?.toolId, done: message.done !== false || !running || message.interrupted, cancelled: message.interrupted, error: message.error, diff: message.event?.diff, startedAt: message.startedAt ?? message.event?.startedAt ?? (message.done === false && running ? (running.startedAt || Date.parse(startedAt)) : undefined), durationMs: message.durationMs ?? message.event?.durationMs });
     const placed = new Set();
     let hiddenCompactTurn = false;
     restoringHistory = true;
@@ -5898,12 +6635,13 @@
           if (active) { currentTurnEl = null; currentAssistantBubble = null; }
           return;
         }
-        appendUserMessage(message.text || '', message.at || null, message.files, { scheduled: message.scheduled, clientTurnId: message.clientTurnId, background: isBackgroundPrompt(message) });
+        appendUserMessage(message.text || '', message.at || null, message.files, { scheduled: message.scheduled, clientTurnId: message.clientTurnId, background: isBackgroundPrompt(message), contextHandoff: message.contextHandoff });
         anchor = currentTurnEl.firstElementChild; startedAt = message.at; endedAt = null;
       }
       else if (hiddenCompactTurn) return;
       else if (message.role === 'assistant') {
         if (message.agent) ensureTurnRole(message.agent, message.modelLabel, message.roleName);
+        for (const record of message.contextResets || []) appendContextReset(record);
         // The tools that follow a reply record where in its text they ran, so
         // text and steps come back in the order they happened (older chats: tools last).
         const text = message.text || '';
@@ -5935,35 +6673,146 @@
     vscode.postMessage({ type: 'requestChatHistory', chatId: currentChatId, before: historyStart, requestId: ++historyRequest });
   }
 
-  function prependHistory(page) {
-    if (!loadingHistory || page.chatId !== currentChatId || page.requestId !== historyRequest || page.historyEnd !== historyStart) return;
-    const first = transcriptEl.firstElementChild;
-    const top = first?.getBoundingClientRect().top;
-    const tail = transcriptEl.lastElementChild;
-    // Render only the incoming page. Keep the live tail's nodes, event handlers and renderer state intact.
+  // Find in chat (media/chat-find.js). A match in history the window has not loaded fetches a small window around its turn,
+  // leaving any skipped stretch as a lazy .history-gap button so jumping around a huge chat never bloats the DOM.
+  let findLoad = null;
+  const settleFindLoad = (loaded) => { const done = findLoad; findLoad = null; done?.(loaded); };
+  function createHistoryGap(start, end, userStart, userEnd) {
+    const count = Math.max(1, userEnd - userStart);
+    const label = `Show ${count} skipped ${count === 1 ? 'turn' : 'turns'}`;
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'history-gap';
+    btn.dataset.start = String(start);
+    btn.dataset.end = String(end);
+    btn.dataset.userStart = String(userStart);
+    btn.dataset.userEnd = String(userEnd);
+    btn.setAttribute('aria-label', label);
+    btn.innerHTML = `<span>${label}</span>`;
+    btn.addEventListener('click', () => loadGap(btn, 'down'));
+    return btn;
+  }
+  function findUnloadedRegion(turn) {
+    if (historyStart > 0 && turn < historyUserStart) return { after: 0, before: historyStart };
+    for (const gap of transcriptEl.querySelectorAll('.history-gap')) {
+      const userStart = Number(gap.dataset.userStart);
+      const userEnd = Number(gap.dataset.userEnd);
+      if (turn >= userStart && turn < userEnd) return { after: Number(gap.dataset.start), before: Number(gap.dataset.end) };
+    }
+    return null;
+  }
+  function loadGap(gap, direction = 'down') {
+    if (!gap?.isConnected || loadingHistory || restoringHistory || transcriptScrollFrame || !currentChatId) return;
+    loadingHistory = true;
+    gap.disabled = true;
+    vscode.postMessage({ type: 'requestChatHistory', chatId: currentChatId, after: Number(gap.dataset.start), before: Number(gap.dataset.end), direction, requestId: ++historyRequest });
+  }
+  function loadVisibleGaps(scrollingUp) {
+    if (loadingHistory || restoringHistory || transcriptScrollFrame || !currentChatId) return;
+    const gaps = transcriptEl.querySelectorAll('.history-gap');
+    if (!gaps.length) return;
+    const box = transcriptEl.getBoundingClientRect();
+    for (const gap of gaps) {
+      const rect = gap.getBoundingClientRect();
+      if (rect.bottom >= box.top - 260 && rect.top <= box.bottom + 260) {
+        loadGap(gap, scrollingUp ? 'up' : 'down');
+        break;
+      }
+    }
+  }
+  function loadHistoryFrom(turn) {
+    const region = findUnloadedRegion(turn);
+    if (!region || !currentChatId) return Promise.resolve(false);
+    settleFindLoad(false);
+    return new Promise((resolve) => {
+      const timer = setTimeout(() => { if (findLoad === settle) { loadingHistory = false; settleFindLoad(false); } }, 8000);
+      const settle = (loaded) => { clearTimeout(timer); resolve(loaded); };
+      findLoad = settle;
+      stickToEnd = false;
+      loadingHistory = true;
+      vscode.postMessage({ type: 'requestChatHistory', chatId: currentChatId, after: region.after, before: region.before, fromTurn: turn, requestId: ++historyRequest });
+    });
+  }
+  const chatFind = window.createChatFind?.({
+    transcript: transcriptEl,
+    post: (message) => vscode.postMessage({ ...message, chatId: currentChatId }),
+    releaseStick: () => { stickToEnd = false; },
+    loadFromTurn: loadHistoryFrom,
+  });
+  document.getElementById('findBtn')?.addEventListener('click', () => chatFind?.open());
+
+  // Renders stored records away from the live tail and hands them back as a fragment: the tail's nodes, handlers and renderer
+  // state stay as they were. A marker, not the last element, says where the new nodes begin, so an empty transcript works too.
+  function renderHistoryFragment(records, userStart, start) {
+    const mark = document.createComment('history');
+    transcriptEl.append(mark);
     const saved = { currentTurnEl, currentAssistantBubble, turnBubbles, turnAnchor, turnStartedAt, nextUserIndex, turnRoutedAgent, limitHitThisTurn };
     const cards = new Map(toolCards);
-    const followTail = stickToEnd;
-    stickToEnd = false;
     currentTurnEl = null; currentAssistantBubble = null; turnBubbles = []; turnRoutedAgent = null;
     try {
-      const { flush } = renderStoredMessages(page.messages, null, page.historyUserStart, page.historyStart);
+      const { flush } = renderStoredMessages(records, null, userStart, start);
       flush();
       const fragment = document.createDocumentFragment();
-      while (tail.nextSibling) fragment.append(tail.nextSibling);
-      transcriptEl.insertBefore(fragment, first);
+      while (mark.nextSibling) fragment.append(mark.nextSibling);
+      return fragment;
     } finally {
+      mark.remove();
       ({ currentTurnEl, currentAssistantBubble, turnBubbles, turnAnchor, turnStartedAt, nextUserIndex, turnRoutedAgent, limitHitThisTurn } = saved);
       for (const [id, card] of cards) toolCards.set(id, card);
       restoringHistory = false;
-      loadingHistory = false;
     }
-    historyStart = page.historyStart;
-    if (first && Number.isFinite(top)) transcriptEl.scrollTop += first.getBoundingClientRect().top - top;
+  }
+
+  function prependHistory(page) {
+    if (!loadingHistory || page.chatId !== currentChatId || page.requestId !== historyRequest) return;
+    const rangeStart = Number.isSafeInteger(page.rangeStart) ? page.rangeStart : 0;
+    const rangeEnd = Number.isSafeInteger(page.rangeEnd) ? page.rangeEnd : page.historyEnd;
+    const pageUserEnd = Number.isSafeInteger(page.historyUserEnd)
+      ? page.historyUserEnd
+      : page.historyUserStart + (page.messages || []).filter((entry) => entry.role === 'user').length;
+    const wasFindLoad = Boolean(findLoad);
+
+    if (rangeStart === 0 && rangeEnd === historyStart) {
+      const first = transcriptEl.firstElementChild;
+      const top = first?.getBoundingClientRect().top;
+      const followTail = stickToEnd;
+      stickToEnd = false;
+      let fragment;
+      try { fragment = renderHistoryFragment(page.messages, page.historyUserStart, page.historyStart); }
+      finally { loadingHistory = false; }
+      const gap = page.historyEnd < historyStart ? createHistoryGap(page.historyEnd, historyStart, pageUserEnd, historyUserStart) : null;
+      if (gap) transcriptEl.insertBefore(gap, first);
+      transcriptEl.insertBefore(fragment, gap || first);
+      historyStart = page.historyStart;
+      historyUserStart = page.historyUserStart;
+      if (first && Number.isFinite(top)) transcriptEl.scrollTop += first.getBoundingClientRect().top - top;
+      lastScrollTop = transcriptEl.scrollTop;
+      updateTranscriptFade();
+      if (followTail) scrollTranscriptToEnd(true);
+      else if (!wasFindLoad) requestAnimationFrame(() => loadEarlierHistory());
+      settleFindLoad(true);
+      return;
+    }
+
+    const gap = [...transcriptEl.querySelectorAll('.history-gap')].find((el) => Number(el.dataset.start) === rangeStart && Number(el.dataset.end) === rangeEnd);
+    if (!gap) { loadingHistory = false; settleFindLoad(false); return; }
+    const afterEl = gap.nextElementSibling;
+    const box = transcriptEl.getBoundingClientRect();
+    const anchorBelow = !wasFindLoad && afterEl && gap.getBoundingClientRect().bottom <= box.top + box.height * 0.5;
+    const afterTop = anchorBelow ? afterEl.getBoundingClientRect().top : NaN;
+    const gapUserStart = Number(gap.dataset.userStart);
+    const gapUserEnd = Number(gap.dataset.userEnd);
+    let fragment;
+    try { fragment = renderHistoryFragment(page.messages, page.historyUserStart, page.historyStart); }
+    finally { loadingHistory = false; }
+    if (page.historyStart > rangeStart) transcriptEl.insertBefore(createHistoryGap(rangeStart, page.historyStart, gapUserStart, page.historyUserStart), gap);
+    transcriptEl.insertBefore(fragment, gap);
+    if (page.historyEnd < rangeEnd) transcriptEl.insertBefore(createHistoryGap(page.historyEnd, rangeEnd, pageUserEnd, gapUserEnd), gap);
+    gap.remove();
+    if (anchorBelow && Number.isFinite(afterTop)) transcriptEl.scrollTop += afterEl.getBoundingClientRect().top - afterTop;
     lastScrollTop = transcriptEl.scrollTop;
     updateTranscriptFade();
-    if (followTail) scrollTranscriptToEnd(true);
-    else requestAnimationFrame(() => loadEarlierHistory());
+    settleFindLoad(true);
   }
 
   // Inline rename: the name turns into a field. Enter or clicking away saves,
@@ -6025,16 +6874,137 @@
   filterBtn.setAttribute('aria-expanded', 'false');
   filterBtn.setAttribute('aria-controls', 'historyFilterPanel');
   filterBtn.innerHTML = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" aria-hidden="true"><path d="M2.5 4.5h11M4.5 8h7M6.5 11.5h3"/></svg><span>Filter</span><b class="history-filter-badge" hidden></b>';
+  const FOLDER_SVG = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.35" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2 5.2A1.7 1.7 0 0 1 3.7 3.5h2.2l1.4 1.6h5A1.7 1.7 0 0 1 14 6.8v4.5a1.7 1.7 0 0 1-1.7 1.7H3.7A1.7 1.7 0 0 1 2 11.3z"/></svg>';
+  const FOLDER_PLUS_SVG = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.35" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2 5.2A1.7 1.7 0 0 1 3.7 3.5h2.2l1.4 1.6h5A1.7 1.7 0 0 1 14 6.8v4.5a1.7 1.7 0 0 1-1.7 1.7H3.7A1.7 1.7 0 0 1 2 11.3z"/><path d="M8 7.1v3.4M6.3 8.8h3.4"/></svg>';
+  const CHEVRON_SVG = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 4 4 4-4 4"/></svg>';
+  const CHECK_SVG = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m3.5 8.5 3 3 6-7"/></svg>';
+  const newFolderBtn = document.createElement('button');
+  newFolderBtn.type = 'button';
+  newFolderBtn.className = 'history-folder-add-btn';
+  newFolderBtn.title = 'New folder';
+  newFolderBtn.setAttribute('aria-label', 'New folder');
+  newFolderBtn.setAttribute('aria-expanded', 'false');
+  newFolderBtn.setAttribute('aria-controls', 'historyFolderCreator');
+  newFolderBtn.innerHTML = FOLDER_PLUS_SVG;
   const filterPanel = document.createElement('div');
   filterPanel.className = 'history-filter-panel';
   filterPanel.id = 'historyFilterPanel';
   filterPanel.hidden = true;
-  historyTools.append(historySearch, filterBtn);
-  historyModal.body.before(historyTools, filterPanel);
+  const folderCreator = document.createElement('form');
+  folderCreator.className = 'history-folder-creator';
+  folderCreator.id = 'historyFolderCreator';
+  folderCreator.hidden = true;
+  historyTools.append(historySearch, filterBtn, newFolderBtn);
+  historyModal.body.before(historyTools, filterPanel, folderCreator);
   let historySessions = [];
+  let historyFolders = [];
+  let chatFoldersEnabled = window.CHAT_FOLDERS_ENABLED !== false;
+  const expandedManageFolders = new Set();
+  let editingFolderChatsId = null;
+  let activeFolderMenu = null;
   const reusableHistoryCards = new Map();
+  let draggedChatId = null;
+  function closeFolderMenu() {
+    if (!activeFolderMenu) return;
+    activeFolderMenu.menu.remove();
+    activeFolderMenu.trigger?.setAttribute('aria-expanded', 'false');
+    activeFolderMenu = null;
+  }
+  function closeFolderCreator() {
+    if (folderCreator.hidden) return;
+    folderCreator.hidden = true;
+    folderCreator.replaceChildren();
+    newFolderBtn.setAttribute('aria-expanded', 'false');
+  }
+  document.addEventListener('pointerdown', (event) => {
+    if (activeFolderMenu && !activeFolderMenu.menu.contains(event.target) && !activeFolderMenu.trigger.contains(event.target)) closeFolderMenu();
+  });
+  document.addEventListener('keydown', (event) => {
+    if (event.key === 'Escape' && activeFolderMenu) {
+      const trigger = activeFolderMenu.trigger;
+      closeFolderMenu();
+      trigger?.focus();
+    }
+  });
+  function openFolderCreator() {
+    if (!chatFoldersEnabled) return;
+    if (!folderCreator.hidden) { closeFolderCreator(); return; }
+    filterPanel.hidden = true;
+    filterBtn.setAttribute('aria-expanded', 'false');
+    closeFolderMenu();
+    const picked = new Set();
+    const row = document.createElement('div');
+    row.className = 'history-folder-creator-row';
+    const nameInput = document.createElement('input');
+    nameInput.type = 'text';
+    nameInput.className = 'cs-field history-folder-name-input';
+    nameInput.placeholder = 'Folder name…';
+    nameInput.maxLength = 60;
+    nameInput.setAttribute('aria-label', 'Folder name');
+    const createBtn = document.createElement('button');
+    createBtn.type = 'submit';
+    createBtn.className = 'cs-btn is-primary history-folder-submit';
+    createBtn.textContent = 'Create';
+    createBtn.disabled = true;
+    const cancelBtn = document.createElement('button');
+    cancelBtn.type = 'button';
+    cancelBtn.className = 'cs-btn is-quiet';
+    cancelBtn.textContent = 'Cancel';
+    cancelBtn.addEventListener('click', () => { closeFolderCreator(); newFolderBtn.focus(); });
+    nameInput.addEventListener('input', () => { createBtn.disabled = !nameInput.value.trim(); });
+    nameInput.addEventListener('keydown', (event) => {
+      if (event.key === 'Escape') { event.preventDefault(); closeFolderCreator(); newFolderBtn.focus(); }
+    });
+    row.append(nameInput, createBtn, cancelBtn);
+    folderCreator.replaceChildren(row);
+    if (historySessions.length) {
+      const folderByChat = new Map();
+      for (const folder of historyFolders) for (const id of folder.chatIds || []) folderByChat.set(id, folder.name);
+      const pickWrap = document.createElement('div');
+      pickWrap.className = 'history-folder-pick-wrap';
+      const pickLabel = document.createElement('span');
+      pickLabel.className = 'history-filter-label';
+      pickLabel.textContent = 'Bundle chats (optional)';
+      const pickList = document.createElement('div');
+      pickList.className = 'history-folder-pick-list';
+      for (const session of historySessions.slice(0, 40)) {
+        const option = document.createElement('label');
+        option.className = 'history-folder-pick-row';
+        const box = document.createElement('input');
+        box.type = 'checkbox';
+        box.value = session.id;
+        box.addEventListener('change', () => { if (box.checked) picked.add(session.id); else picked.delete(session.id); });
+        const title = document.createElement('span');
+        title.className = 'history-folder-pick-title';
+        title.textContent = session.title || session.preview || 'New chat';
+        option.append(box, title);
+        const existingFolder = folderByChat.get(session.id);
+        if (existingFolder) {
+          const tag = document.createElement('span');
+          tag.className = 'history-folder-pick-tag';
+          tag.textContent = existingFolder;
+          option.append(tag);
+        }
+        pickList.append(option);
+      }
+      pickWrap.append(pickLabel, pickList);
+      folderCreator.append(pickWrap);
+    }
+    folderCreator.onsubmit = (event) => {
+      event.preventDefault();
+      const name = nameInput.value.trim();
+      if (!name) return;
+      vscode.postMessage({ type: 'createChatFolder', name, chatIds: [...picked] });
+      closeFolderCreator();
+    };
+    folderCreator.hidden = false;
+    newFolderBtn.setAttribute('aria-expanded', 'true');
+    nameInput.focus();
+  }
+  newFolderBtn.addEventListener('click', openFolderCreator);
   historySearch.addEventListener('input', () => renderHistory(historySessions));
   filterBtn.addEventListener('click', () => {
+    closeFolderCreator();
     filterPanel.hidden = !filterPanel.hidden;
     filterBtn.setAttribute('aria-expanded', String(!filterPanel.hidden));
     if (!filterPanel.hidden) renderFilterPanel();
@@ -6104,26 +7074,33 @@
     historyModal.body.querySelectorAll('.history-when[data-at]').forEach((label) => { const text = chatWhen(label.dataset.at); if (label.textContent !== text) label.textContent = text; });
   }, 30000);
 
-  function renderHistory(sessions) {
+  function renderHistory(sessions, folders = historyFolders) {
     historySessions = sessions || [];
+    historyFolders = Array.isArray(folders) ? folders : [];
+    const activeFolders = chatFoldersEnabled ? historyFolders : [];
     const all = historySessions;
     const working = all.filter((session) => session.state).length;
     historyBtn.title = working ? `${working} chat${working === 1 ? '' : 's'} running` : 'Manage chats';
-    if (historyModal.el.hidden || document.hidden || historyModal.body.querySelector('input')) return;
+    newFolderBtn.hidden = !chatFoldersEnabled;
+    if (!chatFoldersEnabled) { closeFolderCreator(); closeFolderMenu(); editingFolderChatsId = null; }
+    if (historyModal.el.hidden || document.hidden || historyModal.body.querySelector('input.title-edit')) return;
+    closeFolderMenu();
     const query = historySearch.value.trim().toLowerCase();
     const { projects, models, status, sort } = historyFilter;
     // Dates search too: "yesterday", "oct 29", "october", "29.10." all find the chats last active then.
     const dateText = (session) => [chatWhen(session.updatedAt), window.chatTime.chatDayGroup(session.updatedAt, timeOptions()), fullWhen(session.updatedAt), window.chatTime.formatDate(new Date(session.updatedAt), TIME_PREFS.locale, { year: 'numeric', month: 'numeric', day: 'numeric' })];
     const matches = fields => fields.some(field => String(field || '').toLowerCase().includes(query));
-    const list = all.filter((session) => (!query || matches([session.title, session.projectName, ...(session.projectNames || []), session.preview, session.lastMessage?.text]) || matches(dateText(session)))
-      && (!projects.size || sessionProjectIds(session).some((id) => projects.has(id)))
+    const matchesFilters = (session) => (!projects.size || sessionProjectIds(session).some((id) => projects.has(id)))
       && (!models.size || (session.models || []).some((model) => models.has(model)))
-      && (status === 'all' || (status === 'active' ? session.active : session.state === 'waiting')));
+      && (status === 'all' || (status === 'active' ? session.active : session.state === 'waiting'));
+    const matchesQuery = (session) => !query || matches([session.title, session.projectName, ...(session.projectNames || []), session.preview, session.lastMessage?.text]) || matches(dateText(session));
+    const list = all.filter((session) => matchesQuery(session) && matchesFilters(session));
     if (sort !== 'recent') list.sort(HISTORY_SORTS.find(([key]) => key === sort)[2]);
     const narrowed = Boolean(query) || projects.size > 0 || models.size > 0 || status !== 'all';
+    const hasNonQueryFilter = projects.size > 0 || models.size > 0 || status !== 'all';
     historyModal.count.textContent = narrowed ? `${list.length} of ${all.length}` : String(all.length);
     historyTools.hidden = !all.length;
-    if (!all.length) filterPanel.hidden = true;
+    if (!all.length) { filterPanel.hidden = true; closeFolderCreator(); }
     renderFilterPanel();
     const scrolled = historyModal.body.scrollTop; // a live refresh keeps your place
     const focused = document.activeElement;
@@ -6132,7 +7109,33 @@
     for (const id of reusableHistoryCards.keys()) if (!known.has(id)) reusableHistoryCards.delete(id);
     for (const card of historyModal.body.querySelectorAll('.history-card')) reusableHistoryCards.set(card.dataset.id, card);
     historyModal.body.replaceChildren();
-    if (!list.length) {
+
+    const sessionById = new Map(all.map(session => [session.id, session]));
+    const folderOfChat = new Map();
+    for (const folder of activeFolders) {
+      for (const id of folder.chatIds || []) if (sessionById.has(id) && !folderOfChat.has(id)) folderOfChat.set(id, folder);
+    }
+    if (editingFolderChatsId && !activeFolders.some(folder => folder.id === editingFolderChatsId)) editingFolderChatsId = null;
+
+    // Resolve each folder's visible member chats and derived activity timestamp.
+    const sortFn = sort !== 'recent' ? HISTORY_SORTS.find(([key]) => key === sort)[2] : null;
+    const folderEntries = [];
+    for (const folder of activeFolders) {
+      const allMembers = (folder.chatIds || []).map(id => sessionById.get(id)).filter(Boolean);
+      const nameMatches = Boolean(query) && folder.name.toLowerCase().includes(query);
+      const visibleMembers = allMembers.filter(session => matchesFilters(session) && (!query || nameMatches || matchesQuery(session)));
+      if (narrowed && !visibleMembers.length && !(nameMatches && !hasNonQueryFilter)) continue;
+      if (sortFn) visibleMembers.sort(sortFn);
+      else visibleMembers.sort((a, b) => {
+        if (a.pinned || b.pinned) return a.pinned && b.pinned ? a.pinOrder - b.pinOrder : a.pinned ? -1 : 1;
+        return String(b.updatedAt || '').localeCompare(String(a.updatedAt || ''));
+      });
+      const latestUpdatedAt = allMembers.reduce((best, s) => (String(s.updatedAt || '') > best ? String(s.updatedAt || '') : best), folder.updatedAt || folder.createdAt || '');
+      folderEntries.push({ folder, allMembers, visibleMembers, latestUpdatedAt, autoExpand: narrowed && visibleMembers.length > 0 });
+    }
+
+    const standaloneList = activeFolders.length ? list.filter(session => !folderOfChat.has(session.id)) : list;
+    if (!standaloneList.length && !folderEntries.length) {
       const empty = document.createElement('p');
       empty.className = 'fs-modal-empty';
       empty.textContent = !all.length ? 'No conversations yet.' : query ? `No chats match “${historySearch.value.trim()}”.` : 'No chats match the filter.';
@@ -6140,34 +7143,537 @@
       if (!all.length) reusableHistoryCards.clear();
       return;
     }
-    // Pinned chats stand on top whatever the sort, in the order they were pinned; each chat shows once.
-    const pinned = list.filter((session) => session.pinned).sort((a, b) => a.pinOrder - b.pinOrder);
-    if (pinned.length) historyModal.body.append(historySection('Pinned', pinned));
-    const unpinned = list.filter((session) => !session.pinned);
-    if (sort !== 'recent') { if (unpinned.length) historyModal.body.append(historySection(HISTORY_SORTS.find(([key]) => key === sort)[1], unpinned)); }
+
+    const pinnedFolders = folderEntries.filter(entry => entry.folder.pinned).sort((a, b) => (a.folder.pinnedAt ?? 0) - (b.folder.pinnedAt ?? 0));
+    const unpinnedFolders = folderEntries.filter(entry => !entry.folder.pinned).sort((a, b) => String(b.latestUpdatedAt).localeCompare(String(a.latestUpdatedAt)));
+
+    // Pinned folders and pinned chats stand on top whatever the sort, in pin order; each chat shows once.
+    const pinnedChats = standaloneList.filter((session) => session.pinned).sort((a, b) => a.pinOrder - b.pinOrder);
+    if (pinnedFolders.length || pinnedChats.length) {
+      const section = document.createElement('section');
+      section.className = 'history-section';
+      const heading = document.createElement('h3');
+      heading.className = 'history-section-label';
+      heading.textContent = 'Pinned';
+      const wrap = document.createElement('div');
+      wrap.className = 'queue-list';
+      for (const entry of pinnedFolders) wrap.append(buildFolderCard(entry, all, folderOfChat, activeFolders));
+      for (const session of pinnedChats) wrap.append(buildHistoryCard(session, folderOfChat, activeFolders));
+      section.append(heading, wrap);
+      historyModal.body.append(section);
+    }
+
+    if (unpinnedFolders.length) {
+      const section = document.createElement('section');
+      section.className = 'history-section';
+      const heading = document.createElement('h3');
+      heading.className = 'history-section-label';
+      heading.textContent = 'Folders';
+      const wrap = document.createElement('div');
+      wrap.className = 'queue-list';
+      for (const entry of unpinnedFolders) wrap.append(buildFolderCard(entry, all, folderOfChat, activeFolders));
+      section.append(heading, wrap);
+      historyModal.body.append(section);
+    }
+
+    const unpinned = standaloneList.filter((session) => !session.pinned);
+    const makeUngroupedSection = (label, entries) => {
+      const section = historySection(label, entries, folderOfChat, activeFolders);
+      if (activeFolders.length) wireUngroupedDrop(section, folderOfChat);
+      return section;
+    };
+    if (sort !== 'recent') { if (unpinned.length) historyModal.body.append(makeUngroupedSection(HISTORY_SORTS.find(([key]) => key === sort)[1], unpinned)); }
     else {
       const active = unpinned.filter((session) => session.active);
-      if (active.length) historyModal.body.append(historySection('Active Chats', active));
+      if (active.length) historyModal.body.append(makeUngroupedSection('Active Chats', active));
       const groups = [];
       for (const session of unpinned.filter((entry) => !entry.active)) {
         const label = window.chatTime.chatDayGroup(session.updatedAt, timeOptions());
         if (groups.at(-1)?.label === label) groups.at(-1).sessions.push(session); else groups.push({ label, sessions: [session] });
       }
-      for (const group of groups) historyModal.body.append(historySection(group.label || 'Older', group.sessions));
+      for (const group of groups) historyModal.body.append(makeUngroupedSection(group.label || 'Older', group.sessions));
     }
     if (focused?.isConnected && focused !== document.activeElement) focused.focus({ preventScroll: true });
     historyModal.body.scrollTop = scrolled;
   }
 
+  function wireUngroupedDrop(section, folderOfChat) {
+    section.addEventListener('dragover', (event) => {
+      if (!draggedChatId || !folderOfChat.has(draggedChatId)) return;
+      event.preventDefault();
+      event.dataTransfer.dropEffect = 'move';
+      section.classList.add('is-drop-ungroup');
+    });
+    section.addEventListener('dragleave', (event) => {
+      if (!section.contains(event.relatedTarget)) section.classList.remove('is-drop-ungroup');
+    });
+    section.addEventListener('drop', (event) => {
+      section.classList.remove('is-drop-ungroup');
+      const chatId = draggedChatId || event.dataTransfer?.getData('text/plain');
+      if (!chatId || !folderOfChat.has(chatId)) return;
+      event.preventDefault();
+      draggedChatId = null;
+      vscode.postMessage({ type: 'setChatFolder', chatId, folderId: null });
+    });
+  }
+
   const CHAT_ICONS = {
     stop: '<svg viewBox="0 0 16 16" fill="none" aria-hidden="true"><rect x="4.5" y="4.5" width="7" height="7" rx="1.5" fill="currentColor"/></svg>',
     pin: PIN_SVG, // the project pin's pushpin
+    folder: FOLDER_SVG,
+    plus: PLUS_SVG,
     rename: PENCIL_SVG,
     // The Source Control mark: one trunk, one branch splitting off, a node on each end.
     fork: '<svg viewBox="0 0 16 16" fill="none" aria-hidden="true"><circle cx="4.5" cy="3.5" r="1.6" stroke="currentColor" stroke-width="1.3"/><circle cx="4.5" cy="12.5" r="1.6" stroke="currentColor" stroke-width="1.3"/><circle cx="11.5" cy="4.5" r="1.6" stroke="currentColor" stroke-width="1.3"/><path d="M4.5 5.1v5.8M11.5 6.1c0 2.6-2 3.4-4.3 3.9-1.5.3-2.7.7-2.7 1" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>',
     delete: TRASH_SVG,
   };
-  function historySection(label, sessions) {
+
+  function openChatFolderMenu(trigger, session, currentFolder, folders) {
+    if (activeFolderMenu?.trigger === trigger) { closeFolderMenu(); return; }
+    closeFolderMenu();
+    const menu = document.createElement('div');
+    menu.className = 'history-folder-menu';
+    menu.setAttribute('role', 'menu');
+    menu.setAttribute('aria-label', `Move ${session.title || 'chat'} to folder`);
+    for (const folder of folders) {
+      const item = document.createElement('button');
+      item.type = 'button';
+      item.className = 'history-folder-menu-item';
+      item.setAttribute('role', 'menuitemradio');
+      const selected = currentFolder?.id === folder.id;
+      item.setAttribute('aria-checked', String(selected));
+      const check = document.createElement('span');
+      check.className = 'history-folder-menu-check';
+      check.innerHTML = selected ? CHECK_SVG : '';
+      const name = document.createElement('span');
+      name.className = 'history-folder-menu-name';
+      name.textContent = folder.name;
+      item.append(check, name);
+      item.addEventListener('click', (event) => {
+        event.stopPropagation();
+        closeFolderMenu();
+        vscode.postMessage({ type: 'setChatFolder', chatId: session.id, folderId: selected ? null : folder.id });
+      });
+      menu.append(item);
+    }
+    if (currentFolder) {
+      const divider = document.createElement('div');
+      divider.className = 'history-folder-menu-sep';
+      const remove = document.createElement('button');
+      remove.type = 'button';
+      remove.className = 'history-folder-menu-item is-remove';
+      remove.setAttribute('role', 'menuitem');
+      remove.textContent = 'Remove from folder';
+      remove.addEventListener('click', (event) => {
+        event.stopPropagation();
+        closeFolderMenu();
+        vscode.postMessage({ type: 'setChatFolder', chatId: session.id, folderId: null });
+      });
+      menu.append(divider, remove);
+    }
+    menu.addEventListener('click', (event) => event.stopPropagation());
+    document.body.append(menu);
+    const rect = trigger.getBoundingClientRect();
+    const menuRect = menu.getBoundingClientRect();
+    const left = Math.max(10, Math.min(rect.right - menuRect.width, window.innerWidth - menuRect.width - 10));
+    const top = rect.bottom + 6 + menuRect.height > window.innerHeight - 10 ? Math.max(10, rect.top - menuRect.height - 6) : rect.bottom + 6;
+    menu.style.left = `${left}px`;
+    menu.style.top = `${top}px`;
+    trigger.setAttribute('aria-expanded', 'true');
+    activeFolderMenu = { menu, trigger };
+    menu.querySelector('button')?.focus();
+  }
+
+  function folderMiniMark(session) {
+    const cell = document.createElement('span');
+    cell.className = 'history-folder-mini';
+    const project = session.projectId && railProjects.find(item => item.id === session.projectId);
+    if (project) {
+      cell.classList.add('is-project');
+      cell.style.setProperty('--hue', projectHue(project.id));
+      cell.append(projectMark(project));
+      return cell;
+    }
+    const agent = session.latestAgent || (session.models || []).at(-1);
+    if (agent && window.AGENT_ICONS?.[agent]) {
+      cell.innerHTML = window.AGENT_ICONS[agent];
+      return cell;
+    }
+    cell.classList.add('is-slot');
+    return cell;
+  }
+
+  function buildFolderCard(entry, allSessions, folderOfChat, activeFolders) {
+    const { folder, allMembers, visibleMembers, latestUpdatedAt, autoExpand } = entry;
+    const isExpanded = autoExpand || expandedManageFolders.has(folder.id) || editingFolderChatsId === folder.id;
+    const hasCurrent = allMembers.some(s => s.id === currentChatId);
+    const hasWaiting = allMembers.some(s => s.state === 'waiting');
+    const hasRunning = allMembers.some(s => s.state === 'running');
+    const hasRecent = allMembers.some(s => s.active);
+    const latestAgent = (allMembers.find(s => s.state === 'waiting') || allMembers.find(s => s.state === 'running') || allMembers[0])?.latestAgent
+      || (allMembers[0]?.models || []).at(-1);
+
+    const card = document.createElement('article');
+    card.className = `history-folder-card${isExpanded ? ' is-expanded' : ''}${folder.pinned ? ' is-pinned' : ''}${hasRunning ? ' is-running' : ''}${hasWaiting ? ' is-waiting' : ''}${hasRecent ? ' is-recent' : ''}${hasCurrent ? ' is-current' : ''}`;
+    card.dataset.folderId = folder.id;
+    if (latestAgent) card.dataset.agent = latestAgent;
+
+    if (hasRunning && !isExpanded) {
+      const orb = document.createElement('span');
+      orb.className = 'pending-orb history-spinner';
+      orb.setAttribute('aria-hidden', 'true');
+      card.append(orb);
+    }
+
+    const head = document.createElement('div');
+    head.className = 'history-folder-head';
+    head.tabIndex = 0;
+    head.setAttribute('role', 'button');
+    head.setAttribute('aria-expanded', String(isExpanded));
+    head.setAttribute('aria-label', `${folder.pinned ? 'Pinned folder' : 'Folder'}: ${folder.name}, ${allMembers.length} chat${allMembers.length === 1 ? '' : 's'}`);
+
+    const thumb = document.createElement('span');
+    thumb.className = `history-folder-thumb${allMembers.length ? '' : ' is-empty'}`;
+    thumb.setAttribute('aria-hidden', 'true');
+    if (allMembers.length) {
+      for (const member of allMembers.slice(0, 4)) thumb.append(folderMiniMark(member));
+    } else {
+      thumb.innerHTML = FOLDER_SVG;
+    }
+
+    const info = document.createElement('div');
+    info.className = 'history-folder-info';
+    const titleRow = document.createElement('div');
+    titleRow.className = 'history-folder-title-row';
+    const titleEl = document.createElement('span');
+    titleEl.className = 'history-folder-title';
+    titleEl.textContent = folder.name;
+    titleEl.title = folder.name;
+    const countEl = document.createElement('span');
+    countEl.className = 'history-folder-count';
+    countEl.textContent = allMembers.length ? `${allMembers.length} chat${allMembers.length === 1 ? '' : 's'}` : 'Empty';
+    titleRow.append(titleEl, countEl);
+
+    const meta = document.createElement('div');
+    meta.className = 'history-folder-meta';
+    if (allMembers.length) {
+      const when = document.createElement('time');
+      when.className = 'history-when';
+      when.dateTime = latestUpdatedAt;
+      when.dataset.at = latestUpdatedAt;
+      when.textContent = chatWhen(latestUpdatedAt);
+      const names = document.createElement('span');
+      names.className = 'history-folder-preview';
+      names.textContent = allMembers.slice(0, 3).map(s => s.title || s.preview || 'New chat').join(', ');
+      meta.append(when, names);
+    } else {
+      meta.textContent = 'No chats yet';
+    }
+    info.append(titleRow, meta);
+
+    const actions = document.createElement('div');
+    actions.className = 'history-actions';
+    const action = (icon, label, handler, cls = '') => {
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = `history-icon-btn ${cls}`;
+      btn.innerHTML = CHAT_ICONS[icon];
+      btn.title = label;
+      btn.setAttribute('aria-label', label);
+      btn.addEventListener('click', (event) => { event.stopPropagation(); handler(btn); });
+      actions.append(btn);
+      return btn;
+    };
+    const bundleBtn = action('plus', 'Add or remove chats', () => {
+      editingFolderChatsId = editingFolderChatsId === folder.id ? null : folder.id;
+      if (editingFolderChatsId === folder.id) expandedManageFolders.add(folder.id);
+      renderHistory(historySessions, historyFolders);
+    }, 'is-bundle');
+    bundleBtn.setAttribute('aria-pressed', String(editingFolderChatsId === folder.id));
+    const pinBtn = action('pin', `${folder.pinned ? 'Unpin' : 'Pin'} folder`, () => {
+      vscode.postMessage({ type: 'pinChatFolder', id: folder.id, pinned: !folder.pinned });
+    }, 'is-pin');
+    pinBtn.setAttribute('aria-pressed', String(Boolean(folder.pinned)));
+    action('rename', 'Rename folder', () => editTitle(titleEl, folder.name, (name) => vscode.postMessage({ type: 'renameChatFolder', id: folder.id, name })));
+    action('delete', 'Delete folder (keeps chats)', () => {
+      expandedManageFolders.delete(folder.id);
+      if (editingFolderChatsId === folder.id) editingFolderChatsId = null;
+      vscode.postMessage({ type: 'deleteChatFolder', id: folder.id });
+    }, 'is-danger');
+
+    const chevron = document.createElement('span');
+    chevron.className = 'history-folder-chevron';
+    chevron.setAttribute('aria-hidden', 'true');
+    chevron.innerHTML = CHEVRON_SVG;
+
+    head.append(thumb, info, actions, chevron);
+    const toggle = (event) => {
+      if (event?.target?.closest('.history-actions') || event?.target?.tagName === 'INPUT') return;
+      if (expandedManageFolders.has(folder.id)) {
+        expandedManageFolders.delete(folder.id);
+        if (editingFolderChatsId === folder.id) editingFolderChatsId = null;
+      } else {
+        expandedManageFolders.add(folder.id);
+      }
+      renderHistory(historySessions, historyFolders);
+    };
+    head.addEventListener('click', toggle);
+    head.addEventListener('keydown', (event) => {
+      if (event.target === head && (event.key === 'Enter' || event.key === ' ')) { event.preventDefault(); toggle(); }
+    });
+    card.append(head);
+
+    if (editingFolderChatsId === folder.id) {
+      const editor = document.createElement('div');
+      editor.className = 'history-folder-editor';
+      const selected = new Set(folder.chatIds || []);
+      const pickList = document.createElement('div');
+      pickList.className = 'history-folder-pick-list';
+      for (const session of allSessions.slice(0, 60)) {
+        const option = document.createElement('label');
+        option.className = 'history-folder-pick-row';
+        const box = document.createElement('input');
+        box.type = 'checkbox';
+        box.checked = selected.has(session.id);
+        box.addEventListener('change', () => { if (box.checked) selected.add(session.id); else selected.delete(session.id); });
+        const title = document.createElement('span');
+        title.className = 'history-folder-pick-title';
+        title.textContent = session.title || session.preview || 'New chat';
+        option.append(box, title);
+        const owner = folderOfChat.get(session.id);
+        if (owner && owner.id !== folder.id) {
+          const tag = document.createElement('span');
+          tag.className = 'history-folder-pick-tag';
+          tag.textContent = owner.name;
+          option.append(tag);
+        }
+        pickList.append(option);
+      }
+      const footer = document.createElement('div');
+      footer.className = 'history-folder-editor-actions';
+      const saveBtn = document.createElement('button');
+      saveBtn.type = 'button';
+      saveBtn.className = 'cs-btn is-primary';
+      saveBtn.textContent = 'Done';
+      saveBtn.addEventListener('click', () => {
+        editingFolderChatsId = null;
+        vscode.postMessage({ type: 'setFolderChats', id: folder.id, chatIds: [...selected] });
+      });
+      const cancelBtn = document.createElement('button');
+      cancelBtn.type = 'button';
+      cancelBtn.className = 'cs-btn is-quiet';
+      cancelBtn.textContent = 'Cancel';
+      cancelBtn.addEventListener('click', () => {
+        editingFolderChatsId = null;
+        renderHistory(historySessions, historyFolders);
+      });
+      footer.append(saveBtn, cancelBtn);
+      editor.append(pickList, footer);
+      card.append(editor);
+    }
+
+    if (isExpanded) {
+      const body = document.createElement('div');
+      body.className = 'history-folder-body';
+      if (visibleMembers.length) {
+        const listWrap = document.createElement('div');
+        listWrap.className = 'queue-list';
+        for (const session of visibleMembers) listWrap.append(buildHistoryCard(session, folderOfChat, activeFolders));
+        body.append(listWrap);
+      } else if (editingFolderChatsId !== folder.id) {
+        const empty = document.createElement('div');
+        empty.className = 'history-folder-empty';
+        empty.textContent = 'No chats in this folder yet.';
+        const addLink = document.createElement('button');
+        addLink.type = 'button';
+        addLink.className = 'history-filter-reset';
+        addLink.textContent = 'Add chats';
+        addLink.addEventListener('click', () => {
+          editingFolderChatsId = folder.id;
+          renderHistory(historySessions, historyFolders);
+        });
+        empty.append(addLink);
+        body.append(empty);
+      }
+      card.append(body);
+    }
+
+    card.addEventListener('dragover', (event) => {
+      if (!draggedChatId) return;
+      event.preventDefault();
+      event.dataTransfer.dropEffect = 'move';
+      card.classList.add('is-drop-target');
+    });
+    card.addEventListener('dragleave', (event) => {
+      if (!card.contains(event.relatedTarget)) card.classList.remove('is-drop-target');
+    });
+    card.addEventListener('drop', (event) => {
+      card.classList.remove('is-drop-target');
+      const chatId = draggedChatId || event.dataTransfer?.getData('text/plain');
+      if (!chatId) return;
+      event.preventDefault();
+      event.stopPropagation();
+      draggedChatId = null;
+      expandedManageFolders.add(folder.id);
+      vscode.postMessage({ type: 'setChatFolder', chatId, folderId: folder.id });
+    });
+
+    return card;
+  }
+
+  function buildHistoryCard(session, folderOfChat = new Map(), activeFolders = []) {
+    const currentFolder = folderOfChat.get(session.id) || null;
+    const folderSig = activeFolders.length ? [currentFolder?.id || '', activeFolders.map(f => `${f.id}:${f.name}`).join('|')] : '';
+    const signature = JSON.stringify([session, currentChatId, railMarks, timeOptions(), folderSig]);
+    const existing = reusableHistoryCards.get(session.id);
+    if (existing?.dataset.signature === signature) return existing;
+    const card = document.createElement('article');
+    card.dataset.signature = signature;
+    reusableHistoryCards.set(session.id, card);
+    // The same look as the rail's Recent tiles: a chat bubble whose rim is white for the chat in this window, blue for
+    // one that ran in the last minutes, orange when it waits for you; a running chat wears the orb on its top right.
+    card.className = `history-card${session.state ? ` is-${session.state}` : ''}${session.active ? ' is-recent' : ''}${session.id === currentChatId ? ' is-current' : ''}`;
+    card.dataset.id = session.id;
+    if (activeFolders.length) {
+      card.draggable = true;
+      card.addEventListener('dragstart', (event) => {
+        draggedChatId = session.id;
+        card.classList.add('is-dragging');
+        event.dataTransfer?.setData('text/plain', session.id);
+        if (event.dataTransfer) event.dataTransfer.effectAllowed = 'move';
+      });
+      card.addEventListener('dragend', () => {
+        draggedChatId = null;
+        card.classList.remove('is-dragging');
+        historyModal.body.querySelectorAll('.is-drop-target, .is-drop-ungroup').forEach(el => el.classList.remove('is-drop-target', 'is-drop-ungroup'));
+      });
+    }
+    const head = document.createElement('div');
+    head.className = 'queue-card-head';
+    // (A chat waiting for you says so with its yellow, pulsing rim, not in words.)
+    // The providers that answered, as their marks (the name is the tooltip), like the tile in the rail.
+    for (const model of session.models || []) {
+      const mark = document.createElement('span');
+      mark.className = 'agent-mark';
+      mark.title = MODEL_LABELS[model] || model;
+      mark.setAttribute('aria-label', mark.title);
+      mark.innerHTML = (window.AGENT_ICONS && window.AGENT_ICONS[model]) || '';
+      head.append(mark);
+    }
+    const latest = (session.models || []).at(-1);
+    if (latest) card.dataset.agent = latest; // the orb's colour
+    if (session.state === 'running') {
+      const orb = document.createElement('span');
+      orb.className = 'pending-orb history-spinner';
+      orb.setAttribute('aria-hidden', 'true');
+      card.append(orb);
+    }
+    const titleEl = document.createElement('span');
+    titleEl.className = 'history-title';
+    titleEl.textContent = session.title || session.preview || 'New chat';
+    titleEl.title = session.title || session.preview || 'New chat';
+    head.append(titleEl);
+
+    // Under the title, left-aligned with every other card's: when it was last active, in the messenger style of
+    // chat-time.js, then how long the chat is. The label ages ("5 minutes ago"), so it is refreshed (see below).
+    const meta = document.createElement('div');
+    meta.className = 'history-meta';
+    // Every project the chat worked in, the latest first (they follow the chat as its tools touch other projects).
+    const projectNames = session.projectNames?.length ? session.projectNames : [session.projectName].filter(Boolean);
+    // Their icons lead the line (up to three, overlapping), the same marks as the rail's tiles.
+    const projectIcons = [...new Set([...(session.touchedProjectIds || []), session.projectId])].map(id => railProjects.find(item => item.id === id)).filter(Boolean).slice(0, 3);
+    if (projectIcons.length) {
+      const icons = document.createElement('span');
+      icons.className = 'history-project-icons'; icons.setAttribute('aria-hidden', 'true');
+      for (const item of projectIcons) {
+        const icon = document.createElement('span'); icon.className = 'history-project-icon'; icon.style.setProperty('--hue', projectHue(item.id));
+        icon.append(projectMark(item)); icons.append(icon);
+      }
+      meta.append(icons);
+    }
+    if (projectNames.length) {
+      const project = document.createElement('span');
+      project.className = 'history-projects';
+      project.textContent = projectNames.join(', ');
+      project.title = projectNames.join('\n');
+      meta.append(project);
+    }
+    const when = document.createElement('time');
+    when.className = 'history-when';
+    when.dateTime = session.updatedAt || '';
+    when.dataset.at = session.updatedAt || '';
+    when.textContent = chatWhen(session.updatedAt);
+    when.title = fullWhen(session.updatedAt);
+    const count = document.createElement('span');
+    count.className = 'history-count';
+    count.textContent = `${session.messageCount || 0} message${session.messageCount === 1 ? '' : 's'}`;
+    meta.append(when, count);
+
+    const preview = document.createElement('div');
+    preview.className = 'queue-prompt history-preview';
+    if (session.lastMessage && session.lastMessage.text) {
+      const sender = document.createElement('span');
+      sender.className = 'history-preview-sender';
+      const senderName = session.lastMessage.role === 'user'
+        ? 'You'
+        : (session.lastMessage.agent ? (session.lastMessage.agent.charAt(0).toUpperCase() + session.lastMessage.agent.slice(1)) : 'AI');
+      sender.textContent = `${senderName}: `;
+      const text = document.createElement('span');
+      text.className = 'history-preview-text';
+      text.textContent = session.lastMessage.text;
+      preview.append(sender, text);
+    } else {
+      preview.textContent = 'No messages yet';
+    }
+
+    const actions = document.createElement('div');
+    actions.className = 'history-actions';
+    const action = (icon, label, handler, cls = '') => {
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = `history-icon-btn ${cls}`;
+      btn.innerHTML = CHAT_ICONS[icon];
+      btn.title = label;
+      btn.setAttribute('aria-label', label);
+      btn.addEventListener('click', (event) => { event.stopPropagation(); handler(btn); });
+      actions.append(btn);
+      return btn;
+    };
+    if (session.state) action('stop', 'Stop', () => vscode.postMessage({ type: 'stopChat', id: session.id }));
+    // Pin keeps the chat at the top of Manage Chats and of the rail's Recent list; it is also the mark of a pinned chat.
+    const pin = action('pin', `${session.pinned ? 'Unpin' : 'Pin'} chat`, () => vscode.postMessage({ type: 'pinChat', id: session.id, pinned: !session.pinned }), 'is-pin');
+    pin.setAttribute('aria-pressed', String(Boolean(session.pinned)));
+    card.classList.toggle('is-pinned', Boolean(session.pinned));
+    if (activeFolders.length) {
+      const moveBtn = action('folder', currentFolder ? `Folder: ${currentFolder.name}` : 'Move to folder', (btn) => openChatFolderMenu(btn, session, currentFolder, activeFolders), currentFolder ? 'is-folder is-in-folder' : 'is-folder');
+      moveBtn.setAttribute('aria-haspopup', 'menu');
+      moveBtn.setAttribute('aria-expanded', 'false');
+    }
+    action('rename', 'Rename', () => editTitle(titleEl, session.title || session.preview || '', (title) => vscode.postMessage({ type: 'renameChat', id: session.id, title })));
+    action('rename', 'Choose work category', () => vscode.postMessage({ type: 'setChatCategory', id: session.id }));
+    action('fork', 'Fork into a new chat', () => { vscode.postMessage({ type: 'forkChat', id: session.id }); closeModal(historyModal.el); });
+    action('delete', 'Delete', () => { card.classList.add('is-leaving'); vscode.postMessage({ type: 'deleteChat', id: session.id }); }, 'is-danger');
+    head.append(actions);
+    // The whole card opens the chat; whatever runs in the current one keeps going in the background.
+    card.tabIndex = 0;
+    card.setAttribute('role', 'button');
+    card.setAttribute('aria-label', `Open chat${session.state === 'waiting' ? ' (waiting for your input)' : ''}: ${session.title || session.preview || 'New chat'}`);
+    if (session.state === 'waiting') card.title = 'Waiting for your input';
+    const open = (event) => {
+      if (event?.target?.closest('.history-actions') || event?.target?.tagName === 'INPUT') return;
+      if (session.id !== currentChatId) vscode.postMessage({ type: 'restoreChat', id: session.id });
+      closeModal(historyModal.el);
+    };
+    card.addEventListener('click', open);
+    card.addEventListener('keydown', (event) => {
+      if (event.target === card && (event.key === 'Enter' || event.key === ' ')) { event.preventDefault(); open(); }
+    });
+    card.prepend(head, meta, preview);
+    window.shapeBubbleCard?.(card);
+    return card;
+  }
+
+  function historySection(label, sessions, folderOfChat = new Map(), activeFolders = []) {
     const section = document.createElement('section');
     section.className = 'history-section';
     if (label) {
@@ -6178,136 +7684,7 @@
     }
     const wrap = document.createElement('div');
     wrap.className = 'queue-list';
-    for (const session of sessions) {
-      const signature = JSON.stringify([session, currentChatId, railMarks, timeOptions()]);
-      const existing = reusableHistoryCards.get(session.id);
-      if (existing?.dataset.signature === signature) { wrap.append(existing); continue; }
-      const card = document.createElement('article');
-      card.dataset.signature = signature;
-      reusableHistoryCards.set(session.id, card);
-      // The same look as the rail's Recent tiles: a chat bubble whose rim is white for the chat in this window, blue for
-      // one that ran in the last minutes, orange when it waits for you; a running chat wears the orb on its top right.
-      card.className = `history-card${session.state ? ` is-${session.state}` : ''}${session.active ? ' is-recent' : ''}${session.id === currentChatId ? ' is-current' : ''}`;
-      card.dataset.id = session.id;
-      const head = document.createElement('div');
-      head.className = 'queue-card-head';
-      // (A chat waiting for you says so with its yellow, pulsing rim, not in words.)
-      // The providers that answered, as their marks (the name is the tooltip), like the tile in the rail.
-      for (const model of session.models || []) {
-        const mark = document.createElement('span');
-        mark.className = 'agent-mark';
-        mark.title = MODEL_LABELS[model] || model;
-        mark.setAttribute('aria-label', mark.title);
-        mark.innerHTML = (window.AGENT_ICONS && window.AGENT_ICONS[model]) || '';
-        head.append(mark);
-      }
-      const latest = (session.models || []).at(-1);
-      if (latest) card.dataset.agent = latest; // the orb's colour
-      if (session.state === 'running') {
-        const orb = document.createElement('span');
-        orb.className = 'pending-orb history-spinner';
-        orb.setAttribute('aria-hidden', 'true');
-        card.append(orb);
-      }
-      const titleEl = document.createElement('span');
-      titleEl.className = 'history-title';
-      titleEl.textContent = session.title || session.preview || 'New chat';
-      titleEl.title = session.title || session.preview || 'New chat';
-      head.append(titleEl);
-
-      // Under the title, left-aligned with every other card's: when it was last active, in the messenger style of
-      // chat-time.js, then how long the chat is. The label ages ("5 minutes ago"), so it is refreshed (see below).
-      const meta = document.createElement('div');
-      meta.className = 'history-meta';
-      // Every project the chat worked in, the latest first (they follow the chat as its tools touch other projects).
-      const projectNames = session.projectNames?.length ? session.projectNames : [session.projectName].filter(Boolean);
-      // Their icons lead the line (up to three, overlapping), the same marks as the rail's tiles.
-      const projectIcons = [...new Set([...(session.touchedProjectIds || []), session.projectId])].map(id => railProjects.find(item => item.id === id)).filter(Boolean).slice(0, 3);
-      if (projectIcons.length) {
-        const icons = document.createElement('span');
-        icons.className = 'history-project-icons'; icons.setAttribute('aria-hidden', 'true');
-        for (const item of projectIcons) {
-          const icon = document.createElement('span'); icon.className = 'history-project-icon'; icon.style.setProperty('--hue', projectHue(item.id));
-          icon.append(projectMark(item)); icons.append(icon);
-        }
-        meta.append(icons);
-      }
-      if (projectNames.length) {
-        const project = document.createElement('span');
-        project.className = 'history-projects';
-        project.textContent = projectNames.join(', ');
-        project.title = projectNames.join('\n');
-        meta.append(project);
-      }
-      const when = document.createElement('time');
-      when.className = 'history-when';
-      when.dateTime = session.updatedAt || '';
-      when.dataset.at = session.updatedAt || '';
-      when.textContent = chatWhen(session.updatedAt);
-      when.title = fullWhen(session.updatedAt);
-      const count = document.createElement('span');
-      count.className = 'history-count';
-      count.textContent = `${session.messageCount || 0} message${session.messageCount === 1 ? '' : 's'}`;
-      meta.append(when, count);
-
-      const preview = document.createElement('div');
-      preview.className = 'queue-prompt history-preview';
-      if (session.lastMessage && session.lastMessage.text) {
-        const sender = document.createElement('span');
-        sender.className = 'history-preview-sender';
-        const senderName = session.lastMessage.role === 'user'
-          ? 'You'
-          : (session.lastMessage.agent ? (session.lastMessage.agent.charAt(0).toUpperCase() + session.lastMessage.agent.slice(1)) : 'AI');
-        sender.textContent = `${senderName}: `;
-        const text = document.createElement('span');
-        text.className = 'history-preview-text';
-        text.textContent = session.lastMessage.text;
-        preview.append(sender, text);
-      } else {
-        preview.textContent = 'No messages yet';
-      }
-
-      const actions = document.createElement('div');
-      actions.className = 'history-actions';
-      const action = (icon, label, handler, cls = '') => {
-        const btn = document.createElement('button');
-        btn.type = 'button';
-        btn.className = `history-icon-btn ${cls}`;
-        btn.innerHTML = CHAT_ICONS[icon];
-        btn.title = label;
-        btn.setAttribute('aria-label', label);
-        btn.addEventListener('click', (event) => { event.stopPropagation(); handler(); });
-        actions.append(btn);
-        return btn;
-      };
-      if (session.state) action('stop', 'Stop', () => vscode.postMessage({ type: 'stopChat', id: session.id }));
-      // Pin keeps the chat at the top of Manage Chats and of the rail's Recent list; it is also the mark of a pinned chat.
-      const pin = action('pin', `${session.pinned ? 'Unpin' : 'Pin'} chat`, () => vscode.postMessage({ type: 'pinChat', id: session.id, pinned: !session.pinned }), 'is-pin');
-      pin.setAttribute('aria-pressed', String(Boolean(session.pinned)));
-      card.classList.toggle('is-pinned', Boolean(session.pinned));
-      action('rename', 'Rename', () => editTitle(titleEl, session.title || session.preview || '', (title) => vscode.postMessage({ type: 'renameChat', id: session.id, title })));
-      action('rename', 'Choose work category', () => vscode.postMessage({ type: 'setChatCategory', id: session.id }));
-      action('fork', 'Fork into a new chat', () => { vscode.postMessage({ type: 'forkChat', id: session.id }); closeModal(historyModal.el); });
-      action('delete', 'Delete', () => { card.classList.add('is-leaving'); vscode.postMessage({ type: 'deleteChat', id: session.id }); }, 'is-danger');
-      head.append(actions);
-      // The whole card opens the chat; whatever runs in the current one keeps going in the background.
-      card.tabIndex = 0;
-      card.setAttribute('role', 'button');
-      card.setAttribute('aria-label', `Open chat${session.state === 'waiting' ? ' (waiting for your input)' : ''}: ${session.title || session.preview || 'New chat'}`);
-      if (session.state === 'waiting') card.title = 'Waiting for your input';
-      const open = (event) => {
-        if (event?.target?.closest('.history-actions') || event?.target?.tagName === 'INPUT') return;
-        if (session.id !== currentChatId) vscode.postMessage({ type: 'restoreChat', id: session.id });
-        closeModal(historyModal.el);
-      };
-      card.addEventListener('click', open);
-      card.addEventListener('keydown', (event) => {
-        if (event.target === card && (event.key === 'Enter' || event.key === ' ')) { event.preventDefault(); open(); }
-      });
-      card.prepend(head, meta, preview);
-      wrap.append(card);
-      window.shapeBubbleCard?.(card);
-    }
+    for (const session of sessions) wrap.append(buildHistoryCard(session, folderOfChat, activeFolders));
     section.append(wrap);
     return section;
   }
@@ -6332,7 +7709,11 @@
         } else { attachments.push(message.attachment); renderAttachments(); }
         break;
       }
-      case 'attachmentFailed': attachmentFinished(message.requestId, null, message.error || 'Could not attach the image.'); break;
+      case 'attachmentFailed': {
+        if (!message.requestId) { showToast(message.error || 'Could not attach the file.', { error: true }); break; }
+        attachmentFinished(message.requestId, null, message.error || 'Could not attach the image.');
+        break;
+      }
       case 'attachmentRenamed': {
         const at = attachments.findIndex((item) => item.path === message.from);
         if (at >= 0) {
@@ -6370,7 +7751,8 @@
       }
       case 'history': {
         // A rename in progress would lose its text to a live refresh; its own save refreshes again.
-        renderHistory(message.sessions);
+        if (typeof message.chatFoldersEnabled === 'boolean') chatFoldersEnabled = message.chatFoldersEnabled;
+        renderHistory(message.sessions, Array.isArray(message.folders) ? message.folders : []);
         railSessions = message.sessions || []; renderProjectList();
         break;
       }
@@ -6386,7 +7768,7 @@
         renderProjectList();
         const marks = JSON.stringify(railProjects.map((item) => [item.id, item.name, item.iconUri]));
         if (marks !== railMarks) { railMarks = marks; window.dispatchEvent(new Event('rail-projects')); } // the Recent previews redraw their project icons
-        if (historySessions.length &&!historyModal.body.querySelector('input')) renderHistory(historySessions); // the chats' project icons follow a rename or a new icon
+        if (historySessions.length && !historyModal.body.querySelector('input.title-edit')) renderHistory(historySessions, historyFolders); // the chats' project icons follow a rename or a new icon
         projectBtn.title = message.project ? (message.project.root || 'Planning project — attach a folder through Manage projects') : 'Select a project before sending this chat';
         projectBtn.classList.toggle('needs-project', Boolean(message.required));
         break;
@@ -6409,7 +7791,8 @@
       case 'editorTheme': editorTheme = message.theme; void applyEditorTheme().catch(() => {}); break;
       // A chat switch has started: the old thread goes, shimmering placeholders stand in until chatLoaded renders the new one.
       case 'chatLoading': {
-        historyStart = 0; loadingHistory = false; historyRequest++;
+        historyStart = 0; historyUserStart = 0; loadingHistory = false; historyRequest++;
+        settleFindLoad(false);
         isChatSwitching = true;
         chatLoadingQueueCount = message.queueCount === null ? null : Math.max(0, Number(message.queueCount) || 0);
         renderTurnQueue();
@@ -6459,12 +7842,14 @@
         resetThought();
         resetAgents(); // the new chat's own agents follow in a subagentReplay
         restoreChat(message.chat, message.running, message.type === 'chatSynced');
+        chatFind?.reset(); // matches belong to the chat on screen
         renderTurnQueue();
         restoreAgents();
         setBusy(Boolean(message.running));
         break;
       }
       case 'chatHistory': prependHistory(message); break;
+      case 'findResults': if (message.chatId === currentChatId) chatFind?.onResults(message); break;
       case 'toolOutput': receiveToolOutput(message); break;
       case 'filePreview': {
         const resolve = previewWaiting.get(message.requestId);
@@ -6536,7 +7921,7 @@
         // Hands-free end: once real speech has been heard, a pause of VOICE_SILENCE_MS stops and transcribes, like a click would.
         if (level > VOICE_SPEECH) { speechMs += lastVolumeAt ? Math.min(now - lastVolumeAt, 100) : 40; lastSpeechAt = now; }
         lastVolumeAt = now;
-        if (window.VOICE_SILENCE_MS && !voiceHold && !voiceMirror && !voiceStopSent && speechMs >= VOICE_MIN_SPEECH_MS && now - lastSpeechAt > window.VOICE_SILENCE_MS) {
+        if (window.VOICE_SILENCE_MS && !voiceHold && !voiceStopSent && speechMs >= VOICE_MIN_SPEECH_MS && now - lastSpeechAt > window.VOICE_SILENCE_MS) {
           voiceStopSent = true;
           vscode.postMessage({ type: 'micToggle' });
         }
@@ -6552,9 +7937,8 @@
         if (message.warning) showToast(message.warning, { error: true });
         if (text) {
           resetVoiceCorrections(); dismissedVoiceTerms.clear();
-          const prefix = promptInput.value.trim() ? `${promptInput.value}\n` : '';
-          insertVoiceDraft(text);
-          lastVoiceDraft = { original: text, prefix, raw: message.rawTranscript || '' };
+          const { prefix, suffix } = insertVoiceDraft(text);
+          lastVoiceDraft = { original: text, prefix, suffix, raw: message.rawTranscript || '' };
         }
         break;
       }
@@ -6643,22 +8027,38 @@
           }
           break;
         }
-        foldThought();
+        foldThought({ immediate: true });
         appendAssistantDelta(message.text, message.model || turnRoutedAgent, turnModelLabel, turnRoleName);
         break;
       }
       case 'tool_start': {
         if (isCompacting) break;
-        foldThought();
+        const isTodo = toolKind(message.name) === 'todo';
+        if (isTodo) {
+          foldThought();
+          foldToolSteps();
+        } else {
+          settleThought();
+        }
         noteWorkingFile(message.file);
-        openToolCard = appendToolCard({ name: message.name, command: message.command || message.file, output: { text: '' }, toolId: message.toolId, done: message.done, diff: message.diff, startedAt: message.startedAt, durationMs: message.durationMs });
+        openToolCard = appendToolCard({ name: message.name, command: message.command || message.file, intent: message.summary, output: { text: '' }, toolId: message.toolId, done: message.done, diff: message.diff, startedAt: message.startedAt, durationMs: message.durationMs });
+        if (isTodo && openToolCard) {
+          openToolCard.open = true;
+          openThought = { fold: openToolCard, body: openToolCard.querySelector('.tool-body'), isCard: true };
+          ensureToolView(openToolCard);
+          syncPending();
+        }
         break;
       }
       case 'tool_end': {
         if (isCompacting) break;
-        const card = (message.toolId && toolCards.get(message.toolId)) || openToolCard;
+        const card = message.toolId ? toolCards.get(message.toolId) : openToolCard;
         finishToolCard(card, { output: message.output, error: message.error, durationMs: message.durationMs });
         if (card === openToolCard) openToolCard = null;
+        break;
+      }
+      case 'tool_progress': {
+        if (!isCompacting) updateToolProgress(toolCards.get(message.toolId), message);
         break;
       }
       case 'question_required': {
@@ -6715,6 +8115,10 @@
         appendBinaryMissingCard({ agent: message.agent, checked: Array.isArray(message.checked) ? message.checked : [] });
         break;
       }
+      case 'contextReset': {
+        appendContextReset(message);
+        break;
+      }
       case 'compacting': {
         // The handoff streams invisibly; its thinking and compaction share one live status.
         nextUserIndex++;
@@ -6728,7 +8132,7 @@
         break;
       }
       case 'usage': {
-        renderContextGauge({ agent: message.agent, tokens: message.contextTokens, estimated: message.estimated });
+        renderContextGauge({ agent: message.agent, tokens: message.contextTokens, limit: message.contextWindow, estimated: message.estimated });
         break;
       }
       case 'workspaceFiles': {
@@ -6770,7 +8174,7 @@
             finishToolCard(card, { output: rawToolOutput(card) });
             if (message.interrupted) card.classList.add('is-cancelled');
           });
-          foldThought();
+          foldThought({ immediate: true });
           if (message.interrupted) appendInterruptedPill(); // interrupted host-side (a voice turn)
           endAssistantTurn(undefined);
           collapseTurn(turnAnchor, Date.now() - turnStartedAt);
@@ -6820,6 +8224,7 @@
       case 'permission': receivePermission(message); break;
       case 'apiValue': chatSettings.apiValue(message); break;
       case 'voice': chatSettings.voice(message.voice); break;
+      case 'toolPrefs': TOOL_PREFS.openFailed = message.openFailed === true; break;
       case 'micDevices': chatSettings.micDevices(message.devices, message.automatic); break;
       case 'projectIcons': chatSettings.projectIcons(message.projects); break;
       case 'voiceDictionary': chatSettings.voiceDictionary(message); break;
@@ -6865,7 +8270,7 @@
           continueSentAfterLimit = true;
           transcriptEl.querySelectorAll('.continue-at-reset').forEach(button => button.remove());
         }
-        appendUserMessage(message.text || '', message.at || undefined, message.files || [], { scheduled: message.scheduled, clientTurnId: message.clientTurnId, background: isBackgroundPrompt(message) });
+        appendUserMessage(message.text || '', message.at || undefined, message.files || [], { scheduled: message.scheduled, clientTurnId: message.clientTurnId, background: isBackgroundPrompt(message), contextHandoff: message.contextHandoff });
         break;
       }
       case 'taskScheduled': {

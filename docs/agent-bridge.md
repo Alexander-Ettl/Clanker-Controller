@@ -1,6 +1,6 @@
 # Cross-vendor agents (`clanker-agent` and the `clanker-load-agent` skill)
 
-An agent in Claude, Codex or Antigravity can hand a task to a model of **another** vendor and get the answer back as a
+An agent in Claude, Codex, Antigravity or GitHub Copilot can hand a task to a model of **another** vendor and get the answer back as a
 file, from any chat, terminal or scheduled run. Built 2026-11-11 after a Claude chat asked a second session to start
 "Gemini 4 Argon Medium" and "Codex Sol 6.1 Medium" for a web search. That session reported it had done so, but nothing came
 back: the only link between the two was a peer-session message, with no agreed place for the result, no status and no
@@ -37,7 +37,8 @@ agent (any vendor) --shell--> clanker-agent start --to "<model>" ... --> detache
   next to `readerSpec`/`fixerSpec`: Claude gets `dontAsk` with only WebSearch, WebFetch, Read, Glob and Grep allowed (and
   `--safe-mode`, so the user's chime hooks and CLAUDE.md stay out); Codex runs `exec` in its read-only sandbox with live web
   search; Antigravity runs in plan mode inside its sandbox. Effort is passed as `--effort` (Claude) and
-  `model_reasoning_effort` (Codex). `--mode edit` uses the existing `fixerSpec` (edits real files in `--cwd`).
+  `model_reasoning_effort` (Codex). Copilot accepts `--to copilot` for the default and `--to "copilot:<model-id>"` for a specific model.
+  Its research mode exposes file reads and web tools. `--mode edit` uses `fixerSpec` and enables Copilot's file editing tools in the workspace.
 - **One folder per task**, `<cwd>/_work/clanker/<task>/`:
 
   | File | Holds |
@@ -51,7 +52,7 @@ agent (any vendor) --shell--> clanker-agent start --to "<model>" ... --> detache
 - **Agents button.** A task started from a chat (`CLANKER_CHAT_ID`, set by the extension for every engine) also leaves a
   pointer `~/.clanker/jobs/<chat>/<task>.json` (`{ "dir": ... }`). The chat's agents viewer follows its own `_work/clanker`
   plus these pointers, because `--cwd` can name any folder (a Codex chat once used a research folder outside the project,
-  and the robot button never appeared). Tasks started before the pointers existed are not listed.
+  and the robot button never appeared). For Copilot tasks it also follows tool activity from `log.jsonl`. Tasks started before the pointers existed are not listed.
 - **Rules sent with every task.** One reply, no questions back; findings, then `Sources`, then `Blocked or not found`; every
   source tagged `[READ]` (original page opened), `[SNIPPET]` (search excerpt only) or `[BLOCKED]` (with the reason).
   An answer with URLs and no tags gets a `warning` in `status.json`.
@@ -68,28 +69,23 @@ The skill recommends **Gemini 4 Hydrogen High** for bulk searching, scraping and
 agents with different topic prompts and one shared output format, wait for all, and let one stronger agent merge the `result.md` files.
 Hydrogen is a reader here, not an editor. Reasons and numbers are in the [loop guide](loops.md#who-does-what).
 
-`ClaudeConfig/skills/clanker-load-agent/SKILL.md` is the single copy. Claude reads that folder as its skills, Antigravity
-through the `~/.gemini/config/skills` junction, and Codex through a junction in `~/.agents/skills` (`codex-skill-links.ps1`
-of `claude-config-sync` creates it on a new machine). The name is `clanker-load-agent` because skill names allow only
-lower case, digits and hyphens. The description is written so each vendor's skill list offers it for "let Gemini do this",
-"spawn an agent", "second opinion", or a blocked site.
+Clanker bundles `ai-chat-panel/skills/clanker-load-agent/SKILL.md` and adds its directory to `COPILOT_SKILLS_DIRS` for Copilot chats in any project.
+`copilot skill list` checks discovery without sending a prompt. Other providers can use the personal copy distributed through ClaudeConfig.
+The launcher takes the same `--cwd`, `start`, `wait` and `result` arguments from each provider.
 
 ## Checks
 
-`node --test ai-chat-panel/test/clanker-agent.test.js` (name matching, the three recipes, partial text, done/failed/cancel,
+`node --test ai-chat-panel/test/clanker-agent.test.js` (name matching, provider recipes, partial text, done/failed/cancel,
 the detached worker, a vanished worker, the launcher). The vendor CLIs are never started: `test/clanker-agent-fake.js` stands
 in, and `CLANKER_AGENT_SPEC_MODULE` is the test seam that lets the detached worker use it.
 
 ## Not verified yet
 
-Tracked as AGENT-01 in the [backlog](../TODO.md). No prompt has been sent to a real CLI through this path (project rule);
-the flags below come from `--help` and existing recipes. First live check, a few tokens each:
-`node ~/.clanker/clanker-agent.js run --to "Gemini 4 Argon Medium" --task smoke --prompt "Reply with the word OK."`
-and the same with `"Codex Sol 6.1 Medium"` and a Claude model.
+Tracked as AGENT-01 in the [backlog](../TODO.md). Tests replay Copilot JSONL for skill invocation, tool output, patches, MCP results,
+usage and native subagents. The project checks use fixtures in place of model prompts.
 
 - Antigravity `--mode plan` may answer with a plan instead of the findings; Codex `-c web_search="live"` may be a different
   key in this CLI version.
 - A Codex agent in its workspace sandbox may not be allowed to start background processes or reach the other CLIs' sign-in
   files. `run` (foreground) is the fallback; the failure is then written to `status.json` rather than lost.
-- A task is not yet shown in the chat's Agents sheet, and a finished task does not queue a message into the chat that
-  started it.
+- A finished task does not queue a message into the chat that started it.

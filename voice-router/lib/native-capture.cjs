@@ -25,6 +25,9 @@ const { MediaPause } = require('./media-pause.cjs');
 const STARTUP_TIMEOUT_MS = 2500;
 // DirectShow's default device buffer is ~500 ms and delays the first sample by that much; 50 ms lets it through at once.
 const DSHOW_BUFFER_MS = 50;
+// The PulseAudio/PipeWire equivalent: ffmpeg's default 4096-byte fragment delays the first sample. 2048 got the first audio in ~120 ms
+// instead of ~200 ms (median of 10 starts); 1024 was no faster and wakes the process twice as often.
+const PULSE_FRAGMENT_BYTES = '2048';
 // The media pause may trail the device opening, but the start cue should not play over music for long.
 const MEDIA_PAUSE_GRACE_MS = 250;
 // A recording is written as consecutive WAV files of this length, so there is no length limit. 16 kHz mono 16-bit is
@@ -215,6 +218,12 @@ class VoiceCapture {
     // Windows lists devices through an ffmpeg launch, so it keeps the cached answer.
     const followsSystem = this.platform === 'linux' && !this.preferred;
     if (this.device && !refresh && !followsSystem) return this.device;
+    if (this.device && !refresh && this.devices?.length) {
+      // Only the default's name is asked (~10 ms); the whole device list (a second pactl call, ~40 ms) is read again
+      // only when the default is something this machine had not listed. This sits on the path between the click and the start cue.
+      const current = await Promise.resolve(this.readDefaultMic()).catch(() => '');
+      if (current && this.devices.includes(current)) { this.device = current; return current; }
+    }
     this.resolving ||= this.probe().finally(() => { this.resolving = null; }); // a warm-up and a start share one probe
     const { devices, automatic } = await this.resolving;
     this.devices = devices;
@@ -242,7 +251,7 @@ class VoiceCapture {
     if (this.platform === 'win32') return ['-f', 'dshow', '-audio_buffer_size', String(DSHOW_BUFFER_MS), '-i', `audio=${device}`];
     const id = this.ids.get(device);
     if (this.platform === 'darwin') return ['-f', 'avfoundation', '-i', `:${id ?? 'default'}`];
-    return ['-f', 'pulse', '-i', id || SYSTEM_DEFAULT];
+    return ['-fragment_size', PULSE_FRAGMENT_BYTES, '-f', 'pulse', '-i', id || SYSTEM_DEFAULT];
   }
 
   /** Resolves once ffmpeg is really recording; rejects with AudioCaptureError if it can't. */

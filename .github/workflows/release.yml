@@ -1,7 +1,8 @@
 name: Release
 
 # Push a tag `v<version>` that matches ai-chat-panel/package.json to publish all three
-# extensions (chat, usage, theme) to Open VSX and, when VSCE_PAT is set, the VS Code Marketplace.
+# extensions (chat, usage, theme) to Open VSX and the VS Code Marketplace.
+# Open VSX uses the OVSX_PAT repository secret. The Marketplace uses Trusted Publishing.
 # workflow_dispatch only builds the packages and uploads them as an artifact.
 on:
   push:
@@ -34,14 +35,22 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write # attach the .vsix files to the GitHub release
+      id-token: write # authenticate to the VS Code Marketplace
     env:
-      VSCE_PAT: ${{ secrets.VSCE_PAT }}
       OVSX_PAT: ${{ secrets.OVSX_PAT }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: 22
+
+      - name: Check the Open VSX publishing secret
+        if: github.ref_type == 'tag'
+        run: |
+          if [ -z "$OVSX_PAT" ]; then
+            echo "::error::Missing OVSX_PAT. Add it under Settings > Secrets and variables > Actions (see docs/publishing.md)."
+            exit 1
+          fi
 
       - name: Tag must match the extension version
         if: github.ref_type == 'tag'
@@ -68,14 +77,20 @@ jobs:
           done
 
       - name: Publish to the VS Code Marketplace
-        if: github.ref_type == 'tag' && env.VSCE_PAT != ''
+        if: github.ref_type == 'tag'
         run: |
           for f in "$RUNNER_TEMP"/clanker-publish/out/*.vsix; do
-            npx --yes @vscode/vsce publish --packagePath "$f" --skip-duplicate
+            npx --yes @vscode/vsce publish --oidc --packagePath "$f" --skip-duplicate
           done
 
       - name: Attach to the GitHub release
         if: github.ref_type == 'tag'
-        run: gh release create "$GITHUB_REF_NAME" "$RUNNER_TEMP"/clanker-publish/out/*.vsix --title "$GITHUB_REF_NAME" --generate-notes
+        # A re-run of a tag (to publish what an earlier run could not) finds the release already there: add the files to it.
+        run: |
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" "$RUNNER_TEMP"/clanker-publish/out/*.vsix --clobber
+          else
+            gh release create "$GITHUB_REF_NAME" "$RUNNER_TEMP"/clanker-publish/out/*.vsix --title "$GITHUB_REF_NAME" --generate-notes
+          fi
         env:
           GH_TOKEN: ${{ github.token }}

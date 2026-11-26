@@ -4,6 +4,7 @@ const path = require('node:path');
 const { execFile } = require('node:child_process');
 const { Router, config, redact, windowOf, privateProject } = require('./routing');
 const { NeuronLedger, WorkContextClassifier } = require('./work-context');
+const { SOURCES: BENCHMARK_SOURCES, VERIFIED: BENCHMARKS_VERIFIED, FEED_MAX_AGE_MS, fetchArtificialAnalysis, loadOverrideFile } = require('./model-benchmarks');
 
 // Native image copy (PowerShell on Windows, ffmpeg elsewhere). The destination receives the original attachment.
 function imageCopy(state, c) {
@@ -36,9 +37,25 @@ function runtime(context, getModels, dir) {
     let lines=[]; try { lines=fs.readFileSync(file,'utf8').split('\n').filter(Boolean).filter(l=>{try{return Date.parse(JSON.parse(l).at)>cutoff;}catch{return false;}}).slice(-9999); } catch {}
     fs.writeFileSync(file,[...lines,JSON.stringify(record)].join('\n')+'\n');
   };
-  const secretEnv={groqApiKey:'GROQ_API_KEY',routingCloudflareAccount:'CLOUDFLARE_ACCOUNT_ID',routingCloudflareToken:'CLOUDFLARE_API_TOKEN'};
+  const secretEnv={groqApiKey:'GROQ_API_KEY',routingCloudflareAccount:'CLOUDFLARE_ACCOUNT_ID',routingCloudflareToken:'CLOUDFLARE_API_TOKEN',routingArtificialAnalysisKey:'ARTIFICIAL_ANALYSIS_API_KEY'};
   const secrets={get:async key=>await context.secrets.get(key)||process.env[secretEnv[key]]||''};
-  const router=new Router({getConfig,secrets,store:{get:()=>context.globalState.get('routingUsage',{}),set:u=>void context.globalState.update('routingUsage',u)},image:imageCopy,log});
+  const benchmarksFile = path.join(dir, 'routing-benchmarks.json');
+  let liveBenchmarks = context.globalState.get('routingLiveBenchmarks', null);
+  const refreshLiveBenchmarks = async () => {
+    try {
+      const apiKey = await secrets.get('routingArtificialAnalysisKey');
+      if (!apiKey) return;
+      if (liveBenchmarks?.fetchedAt && Date.now() - liveBenchmarks.fetchedAt < FEED_MAX_AGE_MS) return;
+      const models = await fetchArtificialAnalysis(apiKey);
+      if (models && Object.keys(models).length) {
+        liveBenchmarks = { fetchedAt: Date.now(), models };
+        void context.globalState.update('routingLiveBenchmarks', liveBenchmarks);
+      }
+    } catch { /* bundled table and custom overrides remain active */ }
+  };
+  void refreshLiveBenchmarks();
+  const getBenchmarks = () => ({ ...(liveBenchmarks?.models || {}), ...loadOverrideFile(benchmarksFile) });
+  const router=new Router({getConfig,getBenchmarks,secrets,store:{get:()=>context.globalState.get('routingUsage',{}),set:u=>void context.globalState.update('routingUsage',u)},image:imageCopy,log});
   // Off until the extension confirms the free-plan setting (extension.js wires enabled/isLive/onChange).
   const workContext=new WorkContextClassifier({router,ledger:new NeuronLedger(path.join(dir,'work-context-usage.json')),enabled:()=>false});
   const summaryPending=new WeakSet();
@@ -72,7 +89,7 @@ function runtime(context, getModels, dir) {
     async mode(){return {mode:getConfig().router_mode,connected:await connected()};},
     async setMode(mode){settings.save({...getConfig(),router_mode:mode});changed();return this.mode();},
     onDidChange(listener){listeners.add(listener);return {dispose:()=>listeners.delete(listener)};},
-    async snapshot(){return {config:getConfig(),configFile:settings.file,configError:settings.error,usage:router.usage(),models:getModels(),connected:await connected(),reset:new Date(new Date().setUTCHours(24,0,0,0)).toISOString()};},
+    async snapshot(){return {config:getConfig(),configFile:settings.file,configError:settings.error,benchmarks:{verified:BENCHMARKS_VERIFIED,sources:[...BENCHMARK_SOURCES],file:benchmarksFile,liveAt:liveBenchmarks?.fetchedAt?new Date(liveBenchmarks.fetchedAt).toISOString():null},usage:router.usage(),models:getModels(),connected:await connected(),reset:new Date(new Date().setUTCHours(24,0,0,0)).toISOString()};},
     async handle(message){
       if(message.type==='routingSave'){settings.save(message.config);changed();return {ok:true};}
       if(message.type==='routingReset'){settings.save(config({}));changed();return {ok:true};}

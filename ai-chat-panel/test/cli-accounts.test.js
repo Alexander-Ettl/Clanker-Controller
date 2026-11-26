@@ -314,3 +314,70 @@ test('VS Code\'s copilot shim without the real CLI is "not installed", and sign-
   await accounts.pendingCheck;
   assert.equal(accounts.fault('copilot'), null, 'closing the sign-in terminal ends the expired state');
 });
+
+// ---- a machine too busy to answer is not a signed-out CLI (2026-11-25: every ring went red in one swap-thrashing check) ----
+function busyFixture(answers) {
+  const queue = [...answers];
+  const accounts = new CliAccounts({
+    languageServer: async () => null, home: require('node:path').join(require('node:os').tmpdir(), 'clanker-no-home'), recheckMs: [20, 40],
+    store: { get: () => ({ enabled: ['claude', 'codex'], completed: true }), set: async () => {} },
+    vscode: { window: { terminals: [], createTerminal: () => ({ show() {}, dispose() {} }) } },
+    find: (agent) => ({ path: `C:/bin/${agent}.exe` }), reset() {}, broadcast() {},
+    run: async () => queue.length > 1 ? queue.shift() : queue[0],
+  });
+  return accounts;
+}
+const OK = { ok: true, code: 0, stdout: '{"loggedIn":true}' };
+const TIMED_OUT = { ok: false, code: null, stdout: '', stderr: 'Command failed: claude auth status', timedOut: true, signal: 'SIGTERM' };
+const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+test('a status check that timed out leaves no red ring and asks again; the real answer then stands', async () => {
+  const accounts = busyFixture([TIMED_OUT, TIMED_OUT, OK]);
+  await accounts.check();
+  assert.equal(accounts.fault('claude'), null, 'not "Not signed in": nobody got to answer');
+  assert.equal(accounts.fault('codex'), null);
+  assert.match(accounts.notes.claude, /too busy/);
+  assert.ok(accounts.recheckTimer, 'a recheck is scheduled');
+  await wait(120);
+  assert.equal(accounts.auth.claude, 'connected', 'the recheck got a real answer');
+  assert.equal(accounts.recheckTimer, null);
+  assert.equal(accounts.recheckCount, 0, 'and the schedule starts over');
+  accounts.dispose();
+});
+
+test('a CLI that was fine stays fine through a busy check, and a signed-out one stays signed out', async () => {
+  const accounts = busyFixture([OK]);
+  await accounts.check();
+  assert.equal(accounts.auth.claude, 'connected');
+  const run = accounts.run; accounts.run = async () => TIMED_OUT;
+  await accounts.check();
+  assert.equal(accounts.auth.claude, 'connected', 'one starved check does not undo a known sign-in');
+  assert.equal(accounts.fault('claude'), null);
+  accounts.run = async () => ({ ok: false, code: 1, stdout: '', stderr: 'Not logged in' });
+  clearTimeout(accounts.recheckTimer); accounts.recheckTimer = null;
+  await accounts.check();
+  assert.equal(accounts.fault('claude')?.kind, 'signin', 'a real "not logged in" still shows');
+  accounts.run = run;
+  accounts.dispose();
+});
+
+test('killed or out of memory to start counts as busy; a CLI that is not there does not', async () => {
+  for (const answer of [{ ok: false, code: null, stderr: 'spawn ENOMEM', spawnError: 'ENOMEM' }, { ok: false, code: null, stderr: 'killed', signal: 'SIGKILL' }]) {
+    const accounts = busyFixture([answer]);
+    await accounts.check();
+    assert.equal(accounts.fault('claude'), null);
+    assert.ok(accounts.inconclusive.has('claude'));
+    accounts.dispose();
+  }
+});
+
+test('the wait between rechecks grows and holds at the last one', () => {
+  const accounts = busyFixture([OK]);
+  accounts.recheckMs = [1, 2, 3];
+  const waits = [];
+  const real = global.setTimeout;
+  global.setTimeout = (fn, ms) => { waits.push(ms); return { unref() {} }; };
+  try { for (let i = 0; i < 5; i++) { accounts.recheckTimer = null; accounts.scheduleRecheck(); } } finally { global.setTimeout = real; }
+  assert.deepEqual(waits, [1, 2, 3, 3, 3]);
+  accounts.dispose();
+});

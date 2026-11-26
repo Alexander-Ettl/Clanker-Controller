@@ -94,6 +94,7 @@ You can see your own number under **Chat Settings > General > API value**.
 - **Telegram and a Cloudflare tunnel** to check on a long task from your phone.
 - **Loops.** Unattended review and fix runs with their own token budgets.
 - **Liquid Glass UI.** Movable chat windows, a launcher rail, and a composer that behaves like a Dynamic Island.
+- **Two looks.** Clanker shows every control; **Halo** (Settings > General > Look) is a minimal look: a slim header instead of the rail, each turn's steps folded into one pill, and a glow round the message box while a reply is written.
 
 ## Install
 

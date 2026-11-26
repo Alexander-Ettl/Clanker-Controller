@@ -1,6 +1,6 @@
 # Interaction performance, 2026-11-17
 
-`node ai-chat-panel/test/interaction-performance.mjs` benchmarks the real webview against the fake host in headed Edge at 2x scale. It visits all 113 current browser scenarios sequentially: theme changes, startup/page opening, composer states, paste and attachments, previews/markup, queue editing/reordering, scheduling, model menus, provider changes, sidebar previews, chat/history operations, settings/search and Investigations. The Investigations scenarios use the sidebar layout, where their launcher is visible.
+`node ai-chat-panel/test/interaction-performance.mjs` benchmarks the real webview against the fake host headlessly at 2x scale. Pass `--headed` to reproduce the historical desktop measurements. It visits all 113 current browser scenarios sequentially: theme changes, startup/page opening, composer states, paste and attachments, previews/markup, queue editing/reordering, scheduling, model menus, provider changes, sidebar previews, chat/history operations, settings/search and Investigations. The Investigations scenarios use the sidebar layout, where their launcher is visible.
 
 Reports and CPU profiles live outside the synced source tree, under `C:/Dev/clanker-glass/`. The runner defaults there. Select actions with `--only=model-menu,chat-dialog-budget`, use `--repeat=3`, `--width=420`, `--theme=light`, or `--profile` for Chrome CPU profiles. `--out=...` chooses a report directory. Do not run GPU benchmarks concurrently.
 

@@ -126,6 +126,27 @@ try {
   assert.equal(converted.turn.text, 'Schedule the edited task');
   assert.equal(converted.task.dispatchTrigger, 'quota-reset');
 
+  // Emptying a queued prompt (no text, no files) and saving it deletes the prompt; it is never saved or sent empty.
+  await send({ type: 'turnQueue', chatId: 'queue-chat', turns, paused: true });
+  await page.evaluate(() => { window.sent = []; });
+  await edit('qt');
+  await input.fill('');
+  await page.locator('#sendBtn').click(); // the picture is still attached, so this saves instead of deleting
+  assert.equal(await page.evaluate(() => window.sent.filter(item => item.type === 'removeQueuedTurn').length), 0, 'a prompt with only a picture is kept');
+  assert.equal(await page.evaluate(() => window.sent.filter(item => item.type === 'editQueuedTurn' && !item.editing).length), 1);
+  await send({ type: 'turnQueue', chatId: 'queue-chat', turns, paused: true });
+  await edit('qt');
+  await input.fill('');
+  await page.getByRole('button', { name: /^Remove qt\.png/ }).click();
+  await page.locator('#sendBtn').click();
+  assert.deepEqual(await page.evaluate(() => window.sent.filter(item => item.type === 'removeQueuedTurn').map(item => item.id)), ['qt']);
+  assert.equal(await page.evaluate(() => window.sent.filter(item => item.type === 'editQueuedTurn' && !item.editing).length), 1, 'the emptied prompt is not saved');
+  await send({ type: 'turnQueue', chatId: 'queue-chat', turns: [turns[1]], paused: true });
+  await edit('other');
+  await input.fill('');
+  await input.press('Enter');
+  assert.deepEqual(await page.evaluate(() => window.sent.filter(item => item.type === 'removeQueuedTurn').map(item => item.id)), ['qt', 'other']);
+
   const limit = { role: 'assistant', agent: 'claude', text: 'I was checking the code. '.repeat(25) + "\nYou've hit your session limit · resets 2:10pm" };
   await send({ type: 'chatLoaded', chat: { id: 'queue-chat', modelId: 'claude-sonnet-5-5-high', messages: [{ role: 'user', text: 'Original task' }, limit] } });
   assert.equal(await page.locator('.continue-at-reset').count(), 1, 'partial replies also offer Continue after reload');

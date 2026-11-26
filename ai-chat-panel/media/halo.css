@@ -1,0 +1,388 @@
+/* Halo: the minimal appearance (aiChatPanel.appearance = "halo"; design and mockups in docs/plans/minimal-appearance).
+   Every rule here is scoped to body.ui-halo, so the Clanker look is untouched while it is off. Colours come only from the
+   tokens theme-palette.js derives from the IDE theme (--ink, --text-*, --accent, --chat-bg), so Halo follows every theme
+   with the same contrast guarantees as the classic look. Personality is one gradient made from the theme's accent: the
+   greeting, the reply spark and the halo round the composer while a turn runs. Surfaces separate by tint, not borders;
+   high contrast swaps the tints for the theme's own border colour. */
+
+body.ui-halo {
+  --halo-b: color-mix(in oklch, var(--accent) 45%, #b36bff);
+  --halo-c: color-mix(in oklch, var(--accent) 40%, #ff6fae);
+  --halo-grad: linear-gradient(100deg, var(--accent), var(--halo-b) 55%, var(--halo-c));
+  --halo-ring: conic-gradient(from var(--halo-angle, 0deg), var(--accent), var(--halo-b), var(--halo-c), var(--accent));
+  --halo-t1: rgb(var(--ink) / 0.045);
+  --halo-t2: rgb(var(--ink) / 0.075);
+  --halo-t3: rgb(var(--ink) / 0.12);
+  --halo-line: transparent;
+  --halo-spark: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath d='M12 2.5c.5 4.6 2.4 6.9 7 7.5v.9c-4.6.6-6.5 2.9-7 7.6h-.9c-.6-4.7-2.5-7-7.1-7.6V10c4.6-.6 6.5-2.9 7.1-7.5z'/%3E%3C/svg%3E");
+}
+body.ui-halo.vscode-high-contrast,
+body.ui-halo.vscode-high-contrast-light {
+  --halo-grad: linear-gradient(var(--text-primary), var(--text-primary));
+  --halo-ring: linear-gradient(var(--vscode-contrastActiveBorder, var(--accent)), var(--vscode-contrastActiveBorder, var(--accent)));
+  --halo-t1: transparent;
+  --halo-t2: transparent;
+  --halo-t3: transparent;
+  --halo-line: var(--vscode-contrastBorder, var(--text-primary));
+}
+@property --halo-angle { syntax: '<angle>'; inherits: false; initial-value: 0deg; }
+
+/* ---------- Shell: no rail; one slim header with Chats, New chat and More ---------- */
+
+.halo-top, .halo-menu { display: none; }
+body.ui-halo > .topbar,
+body.ui-halo > .rail,
+body.ui-halo > .rail-glass { display: none; }
+/* Without the rail the sidebar chat is the same single column as an editor tab. */
+body.ui-halo.has-rail { display: flex; flex-direction: column; }
+body.ui-halo.has-rail > .fs-modal { right: 0; }
+body.ui-halo { gap: 4px; }
+
+body.ui-halo .halo-top {
+  position: relative;
+  z-index: 30;
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  height: 34px;
+  margin: -4px -2px 0;
+}
+.halo-top .halo-spacer { flex: 1; }
+.halo-btn {
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: background 0.15s var(--eo-ease), color 0.15s var(--eo-ease);
+}
+.halo-btn:hover, .halo-btn[aria-expanded='true'] { background: rgb(var(--ink) / 0.08); color: var(--text-primary); }
+.halo-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.halo-btn svg { width: 17px; height: 17px; }
+/* Something needs a look (queued prompts, a running loop, a CLI update): a dot on More, never a new button. */
+.halo-btn .halo-dot { position: absolute; top: 6px; right: 6px; width: 6px; height: 6px; border-radius: 50%; background: var(--halo-grad); }
+.halo-btn .halo-dot[hidden] { display: none; }
+body.ui-halo.vscode-high-contrast .halo-btn:hover,
+body.ui-halo.vscode-high-contrast-light .halo-btn:hover { outline: 1px dashed var(--vscode-contrastActiveBorder, var(--accent)); background: transparent; }
+
+/* More: a glass list under its button. */
+body.ui-halo .halo-menu:not([hidden]) {
+  position: fixed;
+  z-index: 45;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  width: 236px;
+  max-width: calc(100vw - 20px);
+  padding: 6px;
+  border: 1px solid var(--halo-line);
+  border-radius: 20px;
+  background: color-mix(in srgb, var(--chat-bg) 72%, transparent);
+  backdrop-filter: blur(24px) saturate(170%);
+  -webkit-backdrop-filter: blur(24px) saturate(170%);
+  box-shadow: inset 0 1px 0 var(--glass-edge), var(--shadow-menu);
+  animation: halo-pop 0.22s var(--eo-ease);
+  transform-origin: top right;
+}
+.halo-item {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  min-height: 36px;
+  padding: 6px 12px;
+  border: 0;
+  border-radius: 13px;
+  background: transparent;
+  color: var(--text-primary);
+  font: 400 13px var(--font-text);
+  text-align: left;
+  cursor: pointer;
+}
+.halo-item[hidden] { display: none; }
+.halo-item:disabled { cursor: default; color: var(--text-secondary); }
+.halo-item:disabled:hover { background: transparent; }
+.halo-item:hover, .halo-item:focus-visible { background: rgb(var(--ink) / 0.08); outline: none; }
+.halo-item svg { flex: none; width: 16px; height: 16px; color: var(--text-secondary); }
+.halo-item .halo-meta { margin-left: auto; color: var(--text-secondary); font-size: 12px; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.halo-item .halo-count { margin-left: auto; min-width: 20px; height: 20px; padding: 0 6px; border-radius: 10px; background: var(--halo-t3); display: inline-grid; place-items: center; font-size: 11px; color: var(--text-primary); }
+.halo-sep { height: 1px; margin: 4px 10px; background: rgb(var(--ink) / 0.07); }
+body.ui-halo.vscode-high-contrast .halo-item:focus-visible,
+body.ui-halo.vscode-high-contrast-light .halo-item:focus-visible { outline: 1px solid var(--vscode-contrastActiveBorder, var(--accent)); }
+@keyframes halo-pop { from { opacity: 0; transform: translateY(-4px) scale(0.97); } }
+
+/* ---------- Transcript: one column, a spark beside each reply, no timeline ---------- */
+
+body.ui-halo .transcript { padding-inline: 6px 2px; gap: 12px; }
+/* The editor tab's classic layout slides the transcript 52px up under its floating round buttons; Halo's header is in the
+   flow, so the transcript starts below it (style.css: body.lg-on:not(.has-rail, ...) .transcript). */
+body.ui-halo:not(.has-rail) .transcript { margin-top: 0; padding-top: 6px; }
+/* A wide editor tab reads like a page: one centred column for the conversation and the composer under it. */
+body.ui-halo .transcript > :is(.turn, .empty-state, .msg-pending) { width: 100%; max-width: 760px; margin-inline: auto; }
+body.ui-halo > .compose-row { width: 100%; max-width: 780px; margin-inline: auto; }
+body.ui-halo .turn > .work-summary[open]:not(.is-empty) { align-self: stretch; }
+body.ui-halo .turn { padding-left: 34px; gap: 10px; background: none; }
+body.ui-halo .turn::before,
+body.ui-halo .turn::after { content: none; }
+body.ui-halo .transcript > .turn + .turn { margin-top: 18px; }
+
+/* Your message: a tinted bubble with one tucked corner, no outline or shadow. */
+body.ui-halo .msg-group-user { background-image: none !important; filter: none; margin-left: -34px; }
+body.ui-halo .msg-group-user .msg-user {
+  padding: 10px 16px;
+  border-radius: 22px 22px 6px 22px;
+  background: var(--halo-t2);
+  outline: 1px solid var(--halo-line);
+  outline-offset: -1px;
+}
+/* Clanker tucks the dock 10px into the bubble's tail; Halo's bubble has none, so the dock sits just under it. */
+body.ui-halo .msg-group-user .msg-actions { margin-top: 2px; padding-right: 4px; }
+
+/* Reply header: the theme-tinted spark in the gutter, then the agent's name. */
+body.ui-halo .turn > .msg-role {
+  margin: 4px 0 -2px -34px;
+  padding: 0;
+  gap: 12px;
+  font: 500 12.5px var(--font-text);
+  color: var(--text-secondary);
+}
+body.ui-halo .msg-role > .agent-logo { display: none; }
+body.ui-halo .turn > .msg-role::before,
+body.ui-halo .halo-spark {
+  content: '';
+  flex: none;
+  width: 22px;
+  height: 22px;
+  background: var(--halo-grad);
+  -webkit-mask: var(--halo-spark) center / 100% no-repeat;
+  mask: var(--halo-spark) center / 100% no-repeat;
+}
+body.ui-halo .turn:not(.is-done) > .msg-role::before { animation: halo-spin 2.4s linear infinite; }
+@keyframes halo-spin { to { transform: rotate(360deg); } }
+
+/* Working: the spark turns and the label shimmers. No pill, no orb. */
+/* .turn in the selector: glass-ui.css gives .msg-pending its card material at a higher specificity than body.ui-halo .msg-pending. */
+body.ui-halo .turn .msg-pending,
+body.ui-halo .transcript > .msg-pending {
+  gap: 10px;
+  margin-left: 0;
+  padding: 2px 0;
+  border: 0;
+  background: none;
+  box-shadow: none;
+}
+body.ui-halo .msg-pending .pending-orb {
+  width: 16px;
+  height: 16px;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+  background: var(--halo-grad);
+  -webkit-mask: var(--halo-spark) center / 100% no-repeat;
+  mask: var(--halo-spark) center / 100% no-repeat;
+  animation: halo-spin var(--pending-loop) linear infinite;
+}
+body.ui-halo .msg-pending .pending-orb::before,
+body.ui-halo .msg-pending .pending-orb::after { content: none; }
+
+/* Work: one quiet pill per turn; opened, every step sits in one soft panel (no card inside a card). */
+body.ui-halo .turn > .work-summary { margin: 0; }
+body.ui-halo .turn > .work-summary > summary {
+  gap: 6px;
+  height: 28px;
+  padding: 0 10px 0 12px;
+  border-radius: 14px;
+  background: var(--halo-t1);
+  outline: 1px solid var(--halo-line);
+  outline-offset: -1px;
+  font: 500 12px var(--font-text);
+  color: var(--text-secondary);
+}
+body.ui-halo .turn > .work-summary > summary:hover { background: var(--halo-t2); color: var(--text-primary); }
+body.ui-halo .turn > .work-summary.is-empty > summary { height: auto; padding: 0; background: none; outline: 0; }
+body.ui-halo .work-summary[open] > summary > .work-chevron { transform: rotate(90deg); }
+body.ui-halo .turn > .work-summary > .work-steps {
+  gap: 1px;
+  margin: 8px 0 2px;
+  padding: 8px 8px;
+  border-left: 0;
+  border-radius: 18px;
+  background: var(--halo-t1);
+  outline: 1px solid var(--halo-line);
+  outline-offset: -1px;
+}
+body.ui-halo .work-steps .work-summary { margin: 0; }
+body.ui-halo .work-steps .work-summary > summary { padding: 4px 6px; font: 500 12px var(--font-text); }
+body.ui-halo .work-steps .work-steps { margin: 2px 0 2px 8px; padding-left: 10px; border-left: 1.5px solid var(--halo-t3); gap: 1px; }
+
+/* A step: one row, sentence-case verb, the target beside it. */
+body.ui-halo .work-steps .tool-card { border: 0; border-radius: 10px; background: transparent; box-shadow: none; overflow: visible; animation: none; }
+body.ui-halo .tool-card .tool-icon { background: none; box-shadow: none; }
+body.ui-halo .work-steps .tool-card .tool-body { border-radius: 12px; }
+body.ui-halo .work-steps .tool-card + .tool-card { margin-top: 0; }
+body.ui-halo .work-steps .tool-card summary {
+  gap: 8px;
+  padding: 4px 6px;
+  border-radius: 10px;
+  font: 400 12.5px var(--font-text);
+  color: var(--text-secondary);
+}
+body.ui-halo .work-steps .tool-card summary:hover { background: rgb(var(--ink) / 0.05); }
+body.ui-halo .work-steps .tool-card[open] summary { border-bottom: 0; }
+body.ui-halo .work-steps .tool-card .tool-name { font: 500 12.5px var(--font-text); color: var(--text-secondary); }
+body.ui-halo .work-steps .tool-card .tool-label { font: 400 12px var(--font-mono); color: var(--text-primary); }
+body.ui-halo .work-steps .tool-card .tool-icon { opacity: 0.75; }
+body.ui-halo .work-steps .tool-card > .tool-body,
+body.ui-halo .work-steps .tool-card > :not(summary) { margin: 2px 0 6px 28px; border-radius: 12px; }
+body.ui-halo .work-steps .tool-card.is-error summary .tool-name { color: var(--destructive); }
+/* Thoughts inside the steps read as an italic line, not a box. */
+body.ui-halo .work-steps .thought-fold { margin: 0; border: 0; border-radius: 10px; background: transparent; }
+body.ui-halo .work-steps .thought-fold > summary { padding: 4px 6px; border-radius: 10px; }
+body.ui-halo .work-steps .thought-fold .thought-preview { font-style: italic; }
+body.ui-halo .work-steps .thought-body { padding: 0 8px 8px 29px; font-style: italic; }
+
+/* A thought that is still being written stays a soft panel of its own. */
+body.ui-halo .turn > .thought-fold { margin: 0; border: 0; border-radius: 18px; background: var(--halo-t1); outline: 1px solid var(--halo-line); outline-offset: -1px; }
+body.ui-halo .turn > .thought-fold > summary { border-radius: 18px; padding: 8px 14px 8px 12px; }
+body.ui-halo .thought-icon { color: var(--halo-b); }
+
+/* A step outside a group (rare: a single card) loses its box too. */
+body.ui-halo .turn > .tool-card { border-color: transparent; border-radius: 16px; background: var(--halo-t1); box-shadow: none; outline: 1px solid var(--halo-line); outline-offset: -1px; }
+body.ui-halo .turn > .tool-card summary { font-family: var(--font-text); font-weight: 400; }
+body.ui-halo .turn > .tool-card[open] summary { border-bottom-color: transparent; }
+
+body.ui-halo .msg-assistant { padding-inline: 0; font-size: 13.5px; line-height: 1.62; }
+body.ui-halo .msg-assistant .code-block,
+body.ui-halo .msg-assistant pre { border-radius: 14px; }
+
+/* ---------- Empty chat: a greeting in the gradient, the tips as chips, no mascot ---------- */
+
+.halo-hello { display: none; }
+body.ui-halo .empty-state {
+  align-items: flex-start;
+  justify-content: flex-end;
+  text-align: left;
+  gap: 0;
+  padding: 0 10px 8px;
+}
+body.ui-halo .empty-state > .empty-mark,
+body.ui-halo .empty-state > .empty-title,
+body.ui-halo .empty-state > .empty-lead { display: none; }
+body.ui-halo .halo-hello { display: block; margin: 0 0 14vh; }
+body.ui-halo .halo-hello h2,
+body.ui-halo .halo-hello p { margin: 0; font: 600 26px/1.25 var(--font-text); letter-spacing: -0.02em; }
+body.ui-halo .halo-hello h2 {
+  width: fit-content;
+  background: var(--halo-grad);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+body.ui-halo .halo-hello p { color: var(--text-tertiary); }
+body.ui-halo .empty-tips { justify-content: flex-start; gap: 8px; margin: 0; }
+body.ui-halo .empty-tips button {
+  height: 34px;
+  padding: 0 14px 0 8px;
+  border: 0;
+  border-radius: 17px;
+  background: var(--halo-t1);
+  outline: 1px solid var(--halo-line);
+  outline-offset: -1px;
+  color: var(--text-primary);
+  font-size: 12.5px;
+}
+body.ui-halo .empty-tips button:hover { background: var(--halo-t2); }
+body.ui-halo .empty-tips kbd { border: 0; background: var(--halo-t2); color: var(--accent); }
+
+/* ---------- Composer: a rounder slab; extra controls only when they are in use ---------- */
+
+body.ui-halo .composer { border-radius: 28px; padding: 14px 10px 8px 12px; row-gap: 8px; }
+body.ui-halo #promptInput { font-size: 14px; }
+/* The clock shows only once a send time is armed; arm it from More (Schedule next message) or /schedule. */
+body.ui-halo #scheduleBtn:not(.is-scheduled):not(.has-time) { display: none; }
+body.ui-halo .model-picker {
+  height: 32px;
+  padding: 0 10px 0 9px;
+  border: 0;
+  border-radius: 16px;
+  background: transparent;
+  font-weight: 500;
+}
+body.ui-halo .model-picker:hover,
+body.ui-halo .model-picker[aria-expanded='true'] { background: rgb(var(--ink) / 0.08); }
+body.ui-halo .perm-chip { border-radius: 14px; padding: 0 8px; }
+body.ui-halo .perm-chip-label { display: none; }
+/* Polish rewrites what you typed: nothing to polish in an empty box. */
+body.ui-halo .composer:not(.is-polishing):has(> #promptInput:placeholder-shown) .polish-btn { display: none; }
+body.ui-halo .composer-icon-btn { border-radius: 50%; }
+body.ui-halo .send-btn:not(.is-queue) { border-color: transparent; background: rgb(var(--ink) / 0.12); }
+body.ui-halo .send-btn:not(.is-queue):hover { background: rgb(var(--ink) / 0.18); }
+body.ui-halo .stop-btn {
+  border-color: transparent;
+  background: var(--text-primary);
+  color: var(--chat-bg);
+  box-shadow: none;
+}
+body.ui-halo .stop-btn:hover { background: var(--text-primary); color: var(--chat-bg); }
+body.ui-halo.vscode-high-contrast .stop-btn,
+body.ui-halo.vscode-high-contrast-light .stop-btn { outline: 1px solid var(--halo-line); }
+
+/* The halo: a turning gradient rim, and a soft glow under the slab, only while a turn runs. */
+body.ui-halo.is-turn-busy .composer::before {
+  content: '';
+  position: absolute;
+  inset: -1.5px;
+  z-index: 2;
+  padding: 1.5px;
+  border-radius: inherit;
+  background: var(--halo-ring);
+  -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+  mask-composite: exclude;
+  pointer-events: none;
+  animation: halo-turn 3s linear infinite;
+}
+body.ui-halo.is-turn-busy .compose-row::after {
+  content: '';
+  position: absolute;
+  left: 18%;
+  right: 18%;
+  bottom: 4px;
+  height: 40px;
+  z-index: -1;
+  border-radius: 50%;
+  background: var(--halo-grad);
+  filter: blur(26px);
+  opacity: 0.22;
+  pointer-events: none;
+}
+body.ui-halo .compose-row { position: relative; }
+body.ui-halo.vscode-high-contrast .compose-row::after,
+body.ui-halo.vscode-high-contrast-light .compose-row::after { content: none; }
+@keyframes halo-turn { to { --halo-angle: 360deg; } }
+
+/* Queued prompts: rows tinted on the strip's glass, not a bordered card each. .compose-row outranks glass-ui.css's card material. */
+body.ui-halo .compose-row .turn-queue-item { border-color: transparent; border-radius: 14px; background: var(--halo-t1); box-shadow: none; outline: 1px solid var(--halo-line); outline-offset: -1px; }
+body.ui-halo .compose-row .turn-queue-strip { border-radius: 22px; }
+
+/* ---------- Menus and sheets: rounder, flatter ---------- */
+body.ui-halo .chat-find { border-color: var(--halo-line); background: color-mix(in srgb, var(--chat-bg) 72%, transparent); box-shadow: inset 0 1px 0 var(--glass-edge), var(--shadow-menu); }
+body.ui-halo .history-gap span { border-color: var(--halo-line); background: var(--halo-t1); }
+body.ui-halo .history-gap:hover:not(:disabled) span { background: var(--halo-t2); }
+
+body.ui-halo .model-menu { border-radius: 22px; }
+body.ui-halo .fs-modal-sheet { border-radius: 24px; }
+body.ui-halo .cs-card { border-radius: 20px; }
+
+@media (prefers-reduced-motion: reduce) {
+  body.ui-halo .turn:not(.is-done) > .msg-role::before,
+  body.ui-halo .msg-pending .pending-orb,
+  body.ui-halo.is-turn-busy .composer::before,
+  body.ui-halo .halo-menu { animation: none; }
+}

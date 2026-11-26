@@ -3,7 +3,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const { parseAntigravityQuota } = require('../lib/quota-sources');
 const { shapeQuotas } = require('../lib/quota-bridge');
-const { pickLanguageServer } = require('../lib/antigravity-quota');
+const { pickLanguageServer, hubCommand } = require('../lib/antigravity-quota');
 const { normalizeModels } = require('../lib/model-catalog');
 const { capped } = require('../lib/routing');
 
@@ -63,4 +63,55 @@ test('Antigravity Claude/GPT pool keeps its own 5h and weekly quota through the 
   assert.equal(parseAntigravityQuota({ groups: [] }, 'Claude and GPT models'), null);
   const weeklyOnly = parseAntigravityQuota({ groups: [{ ...data.response.groups[1], buckets: [data.response.groups[1].buckets[1]] }] }, 'Claude and GPT models');
   assert.equal(shapeQuotas({ antigravityClaudeGpt: weeklyOnly }).antigravityClaudeGpt.windowLabel, '7d');
+});
+
+test('with only the agy CLI running, the quota comes from a hub Clanker starts under a pty', () => {
+  const { file, args } = hubCommand("/home/me/it's/agy", 45871, 'abc-123');
+  assert.equal(file, 'script');
+  assert.deepEqual([args[0], args[2]], ['-qfc', '/dev/null']);
+  assert.equal(args[1], `'/home/me/it'\\''s/agy' --hub --hub-port 45871 --csrf_token abc-123`);
+  // The hub is found again by its own command line, so a leftover one is reused rather than started twice.
+  const found = pickLanguageServer([{ ProcessId: 7, CommandLine: '/home/me/.local/bin/agy --hub --hub-port 45871 --csrf_token abc-123' }]);
+  assert.equal(found.hubPort, 45871);
+  assert.equal(found.csrfToken, 'abc-123');
+});
+
+test('Claude/GPT pool parses proto3 zero-omitted 0%, untouched buckets without resetTime, and renamed 3p groups', () => {
+  const future = new Date(Date.now() + 3600000).toISOString();
+  // Proto3 JSON omits 0-valued remainingFraction when the 5h window is exhausted.
+  const protoZero = {
+    response: {
+      groups: [{
+        displayName: 'Claude and GPT models',
+        buckets: [
+          { bucketId: '3p-5h', window: '5h', resetTime: future, description: 'You have hit your 5-hour limit, it will refresh in 4 hours, 36 minutes.' },
+          { bucketId: '3p-weekly', window: 'weekly', remainingFraction: 0.5, resetTime: future },
+        ],
+      }],
+    },
+  };
+  const spent = parseAntigravityQuota(protoZero, 'Claude and GPT models');
+  assert.equal(spent.remaining, 0);
+  assert.equal(spent.used, 100);
+  assert.ok(spent.resetsAt > 0);
+  assert.equal(spent.secondary.remaining, 50);
+
+  // Untouched bucket with remainingFraction: 1 and no resetTime still reads as 100% (not null / "—").
+  const untouched = {
+    response: {
+      groups: [{
+        displayName: 'Third-party models',
+        description: 'Models within this group: Claude Opus 5.5, GPT-OSS 120B',
+        buckets: [
+          { bucketId: '3p-5h', window: '5h', remainingFraction: 1 },
+          { bucketId: '3p-weekly', window: 'weekly', remainingFraction: 1 },
+        ],
+      }],
+    },
+  };
+  const fresh = parseAntigravityQuota(untouched, 'Claude and GPT models');
+  assert.equal(fresh.remaining, 100);
+  assert.equal(fresh.resetsAt, null);
+  assert.equal(fresh.secondary.remaining, 100);
+  assert.equal(fresh.secondary.resetsAt, null);
 });

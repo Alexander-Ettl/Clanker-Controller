@@ -127,18 +127,22 @@ const TRIM_MIN_BYTES = 45 * 32000; // a short prompt is sent as it is: nothing t
 const SILENT_SECONDS = 0.4; // less than this is left of a part that was only silence (a FLAC header alone is 8 KB, so the length is read from ffmpeg's own report)
 
 /**
- * Re-encodes a WAV part as FLAC without its pauses. Resolves `{ file, temp }` (send `file`, then delete it if `temp`),
- * `{ silent: true }` when nothing but silence is left, or the original WAV if ffmpeg can't do it: sending more is safe.
+ * Re-encodes a WAV part as FLAC (or 16 kHz mono WAV when `format: 'wav'`) without its pauses.
+ * Resolves `{ file, temp }` (send `file`, then delete it if `temp`), `{ silent: true }` when nothing
+ * but silence is left, or the original WAV if ffmpeg can't do it: sending more is safe.
  */
-function trimSilence(wav, { ffmpeg = 'ffmpeg', spawnImpl = spawn, minBytes = TRIM_MIN_BYTES } = {}) {
+function trimSilence(wav, { ffmpeg = 'ffmpeg', spawnImpl = spawn, minBytes = TRIM_MIN_BYTES, format = 'flac' } = {}) {
   const original = { file: wav, temp: false };
   try { if (fs.statSync(wav).size < minBytes) return Promise.resolve(original); } catch { return Promise.resolve(original); }
+  const isWav = format === 'wav';
+  const ext = isWav ? '.wav' : '.flac';
+  const codecArgs = isWav ? ['-c:a', 'pcm_s16le'] : ['-c:a', 'flac'];
   return new Promise((resolve) => {
-    const out = path.join(os.tmpdir(), `clanker-${process.pid}-${Date.now()}-${path.basename(wav, '.wav')}.flac`);
+    const out = path.join(os.tmpdir(), `clanker-${process.pid}-${Date.now()}-${path.basename(wav, '.wav')}${ext}`);
     const fail = () => { fs.rm(out, { force: true }, () => {}); resolve(original); };
     let child;
     try {
-      child = spawnImpl(ffmpeg, ['-y', '-loglevel', 'error', '-stats', '-i', wav, '-af', SILENCE_FILTER, '-ar', '16000', '-ac', '1', '-c:a', 'flac', out], { stdio: ['ignore', 'ignore', 'pipe'], windowsHide: true });
+      child = spawnImpl(ffmpeg, ['-y', '-loglevel', 'error', '-stats', '-i', wav, '-af', SILENCE_FILTER, '-ar', '16000', '-ac', '1', ...codecArgs, out], { stdio: ['ignore', 'ignore', 'pipe'], windowsHide: true });
     } catch { return fail(); }
     let report = '';
     child.stderr?.on('data', (chunk) => { report = (report + chunk.toString('utf8')).slice(-1000); });

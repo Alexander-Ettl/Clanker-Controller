@@ -60,3 +60,28 @@ test('a job started under another --cwd than the chat folder still shows in that
     assert.equal(fs.existsSync(path.join(path.dirname(statusFile), 'result.md')), false);
   } finally { fs.rmSync(root, { recursive: true, force: true }); }
 });
+
+test('the Copilot bridge viewer streams tool activity once and restores split JSON lines', async () => {
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'bridge-copilot-'));
+  try {
+    const home = path.join(cwd, 'home');
+    const { dir } = await start({ cwd, from: 'chat-a', to: 'copilot:auto', task: 'Copilot check', prompt: 'Check' }, { inline: true, catalog: [], home });
+    const log = path.join(dir, 'log.jsonl');
+    const sample = require('./fixtures/copilot-events.json');
+    const lines = sample.map(record => JSON.stringify(record)).join('\n') + '\n';
+    const split = lines.indexOf('Checks passed');
+    const events = [];
+    const viewer = new BridgeAgents('chat-a', event => events.push(event), { home });
+    fs.writeFileSync(log, lines.slice(0, split));
+    viewer.poll(cwd);
+    fs.appendFileSync(log, `${lines.slice(split)}{"type":"unfinished`);
+    fs.writeFileSync(path.join(dir, 'status.json'), JSON.stringify({ state: 'done', resultFile: 'result.md' }));
+    viewer.poll(cwd);
+    assert.deepEqual(events.filter(event => event.event?.type === 'tool_start').map(event => event.event.name), ['skill', 'powershell', 'edit', 'mcp__docs__lookup']);
+    assert.equal(events.find(event => event.event?.type === 'tool_end' && event.event.toolId === 'shell-1').event.output, 'Starting checks\nChecks passed');
+    assert.equal(events.at(-2).status, 'completed');
+    const count = events.length;
+    viewer.poll(cwd);
+    assert.equal(events.length, count);
+  } finally { fs.rmSync(cwd, { recursive: true, force: true }); }
+});

@@ -146,9 +146,11 @@ test('CLI hub refresh updates cached names, preserves favorites and survives a p
   const codex = parseCodexModels(JSON.stringify({ models: [{ slug: 'gpt-9-sol', display_name: 'GPT-9-Sol', visibility: 'list', default_reasoning_level: 'medium', supported_reasoning_levels: [{ effort: 'medium' }, { effort: 'high' }] }] }));
   const store = memory([{ ...codex[1], label: 'old-name' }]);
   const cacheStore = memory(codex);
+  const seenProvidersStore = memory([]);
   const broadcasts = [];
   let discovered = { codex, claude: null, gemini: null };
-  const hub = new CliHub({ store, cacheStore, promptStore: memory({}), broadcast: (message) => broadcasts.push(message), discover: async () => discovered });
+  const options = { store, cacheStore, seenProvidersStore, promptStore: memory({}), broadcast: (message) => broadcasts.push(message), discover: async () => discovered };
+  const hub = new CliHub(options);
   await hub.refreshModels();
   assert.equal(MODEL_CATALOG[0].label, 'GPT 9 Sol High');
   assert.equal(defaultModel('codex').effort, 'high');
@@ -160,10 +162,16 @@ test('CLI hub refresh updates cached names, preserves favorites and survives a p
   assert.equal(MODEL_CATALOG.length, 0, 'every model can be removed');
   await hub.refreshModels();
   assert.equal(MODEL_CATALOG.length, 0, 'refresh never re-adds removed favorites');
-  hub.toggleFavorite(codex[0].id);
+  discovered = { codex: { error: 'discovery failed' } };
+  await hub.refreshModels();
+  const restored = new CliHub(options);
+  assert.equal(restored.fetched.length, 0, 'restart has an empty discovery cache');
+  discovered = { codex };
+  await restored.refreshModels();
+  assert.equal(MODEL_CATALOG.length, 0, 'rediscovery after restart respects the empty favorites');
+  restored.toggleFavorite(codex[0].id);
   assert.equal(MODEL_CATALOG[0].label, 'GPT 9 Sol Medium');
-  const restored = new CliHub({ store, cacheStore, promptStore: memory({}), broadcast() {} });
-  assert.equal(restored.fetched.length, 2, 'restart loads dynamic cache before discovery');
+  assert.equal(new CliHub(options).fetched.length, 2, 'restart loads dynamic cache before discovery');
   assert.equal(MODEL_CATALOG[0].effort, 'medium');
 });
 

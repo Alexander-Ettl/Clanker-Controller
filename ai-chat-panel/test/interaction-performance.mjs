@@ -21,7 +21,9 @@ const theme = option('theme', 'dark');
 const repeats = Number(option('repeat', '1'));
 if (!Number.isInteger(repeats) || repeats < 1 || repeats > 10) throw new Error('--repeat must be 1..10');
 fs.mkdirSync(out, { recursive: true });
-const browser = await chromium.launch({ channel: process.platform === 'win32' ? 'msedge' : undefined, headless: false, args: ['--enable-gpu-rasterization', '--ignore-gpu-blocklist'] });
+const headed = args.includes('--headed');
+const renderer = `${headed ? 'headed' : 'headless'} ${process.platform === 'win32' ? 'Edge' : 'Chromium'}`;
+const browser = await chromium.launch({ channel: process.platform === 'win32' ? 'msedge' : undefined, headless: !headed, args: ['--enable-gpu-rasterization', '--ignore-gpu-blocklist'] });
 const results = [];
 const round = n => Math.round(n * 10) / 10;
 const distribution = values => {
@@ -30,11 +32,11 @@ const distribution = values => {
     p95: round(sorted[Math.min(sorted.length - 1, Math.floor(sorted.length * .95))] || 0), max: round(sorted.at(-1) || 0) };
 };
 function save() {
-  fs.writeFileSync(path.join(out, 'benchmark.json'), JSON.stringify({ generatedAt: new Date().toISOString(), width, theme, renderer: 'headed Edge, scale 2, fake host', results }, null, 2));
+  fs.writeFileSync(path.join(out, 'benchmark.json'), JSON.stringify({ generatedAt: new Date().toISOString(), width, theme, renderer: `${renderer}, scale 2, fake host`, results }, null, 2));
   const table = ['| Action/scenario | Status | Main thread ms | Style ms | Layout ms | Frame p95/max ms | >33ms | Input→rAF p95 ms | Long tasks |',
     '|---|---|---:|---:|---:|---|---:|---:|---:|',
     ...results.map(r => `| ${r.id} | ${r.error ? 'FAILED' : 'pass'} | ${r.mainThreadMs ?? '-'} | ${r.styleMs ?? '-'} | ${r.layoutMs ?? '-'} | ${r.frames ? `${r.frames.p95}/${r.frames.max}` : 'clock changed'} | ${r.over33ms ?? '-'} | ${r.inputToFrame?.p95 ?? '-'} | ${r.longTasks?.length ?? '-'} |`)];
-  fs.writeFileSync(path.join(out, 'report.md'), `# Interaction performance\n\n${results.length}/${selected.length * repeats} scenarios, ${width}px, ${theme}, headed Edge at 2x scale. No real model calls.\n\nSetup includes scripted waits. Input→rAF measures event-handler entry to the next animation frame, not physical display latency. Frame times are omitted when a scenario changes the test clock. Failed scenarios are coverage gaps, not successful performance measurements.\n\n${table.join('\n')}\n\n${results.filter(r => r.error).map(r => `- ${r.id}: ${r.error.replaceAll('\n', ' ').slice(0, 400)}`).join('\n')}\n`);
+  fs.writeFileSync(path.join(out, 'report.md'), `# Interaction performance\n\n${results.length}/${selected.length * repeats} scenarios, ${width}px, ${theme}, ${renderer} at 2x scale. No real model calls.\n\nSetup includes scripted waits. Input→rAF measures event-handler entry to the next animation frame, not physical display latency. Frame times are omitted when a scenario changes the test clock. Failed scenarios are coverage gaps, not successful performance measurements.\n\n${table.join('\n')}\n\n${results.filter(r => r.error).map(r => `- ${r.id}: ${r.error.replaceAll('\n', ' ').slice(0, 400)}`).join('\n')}\n`);
 }
 try {
   for (const scenario of Array.from({ length: repeats }, () => selected).flat()) {

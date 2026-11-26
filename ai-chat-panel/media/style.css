@@ -200,6 +200,12 @@ body {
   overflow: hidden;
 }
 
+/* Editor-tab pop-out chats reach flush to the pane bottom, while VS Code's Secondary Side Bar keeps a ~4px
+   bottom inset outside the sidebar webview. Matching that here lines up both composers on the same baseline. */
+body:not(.has-rail) {
+  padding-bottom: 14px;
+}
+
 .glass {
   background: linear-gradient(180deg, rgb(var(--sheen) / 0.09), rgb(var(--sheen) / 0) 28%), var(--eo-surface);
   backdrop-filter: blur(24px) saturate(180%);
@@ -256,6 +262,7 @@ body:not(.vscode-high-contrast, .vscode-high-contrast-light) .agent-logo path[fi
 
 .topbar {
   display: flex;
+  align-items: center;
   justify-content: flex-end;
   /* The buttons' backdrop-filter traps each hover label in its own layer, so
      the whole row sits above the transcript (below menus and modals). */
@@ -266,7 +273,7 @@ body:not(.vscode-high-contrast, .vscode-high-contrast-light) .agent-logo path[fi
 .topbar-actions {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 8px;
 }
 
 .project-toolbar {
@@ -320,8 +327,8 @@ body:not(.vscode-high-contrast, .vscode-high-contrast-light) .agent-logo path[fi
 .round-btn {
   position: relative;
   flex-shrink: 0;
-  width: 32px;
-  height: 32px;
+  width: 42px;
+  height: 42px;
   display: grid;
   place-items: center;
   padding: 0;
@@ -352,8 +359,8 @@ body:not(.vscode-high-contrast, .vscode-high-contrast-light) .agent-logo path[fi
 }
 
 .round-btn svg {
-  width: 15px;
-  height: 15px;
+  width: 20px;
+  height: 20px;
 }
 
 .round-btn[hidden] {
@@ -1308,6 +1315,344 @@ body:not(.vscode-light) .history-search::-webkit-search-cancel-button { filter: 
 .history-filter-reset[hidden] { display: none; }
 .history-filter-reset:hover { text-decoration: underline; }
 
+/* Manage Chats folders: optional, quiet glass containers that bundle multiple chats together. */
+.history-folder-add-btn {
+  display: inline-grid;
+  place-items: center;
+  flex-shrink: 0;
+  width: 34px;
+  height: 34px;
+  padding: 0;
+  border: 1px solid var(--eo-border);
+  border-radius: var(--pill);
+  background: rgb(var(--ink) / 0.05);
+  color: var(--text-secondary, var(--text-primary));
+  cursor: pointer;
+  transition: border-color 0.15s var(--eo-ease), background-color 0.15s var(--eo-ease), color 0.15s var(--eo-ease);
+}
+.history-folder-add-btn[hidden] { display: none; }
+.history-folder-add-btn svg { width: 15px; height: 15px; }
+.history-folder-add-btn:hover, .history-folder-add-btn[aria-expanded="true"] { background: rgb(var(--ink) / 0.1); color: var(--text-primary); }
+.history-folder-add-btn:focus-visible { outline: 2px solid color-mix(in srgb, var(--accent) 70%, transparent); outline-offset: 2px; }
+
+.history-folder-creator {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin: 10px 14px 0;
+  padding: 12px 14px;
+  border: 1px solid var(--eo-border);
+  border-radius: 18px;
+  background: rgb(var(--ink) / 0.04);
+  animation: history-filter-in 0.18s var(--eo-ease);
+}
+.history-folder-creator[hidden] { display: none; }
+.history-folder-creator-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.history-folder-name-input {
+  flex: 1 1 150px;
+  min-width: 0;
+  padding: 7px 11px;
+  border-radius: 10px;
+  border: 1px solid var(--eo-border);
+  background: rgb(var(--ink) / 0.05);
+  color: var(--text-primary);
+  font: 500 13px var(--font-text);
+  outline: none;
+}
+.history-folder-name-input:focus { border-color: color-mix(in srgb, var(--accent) 65%, transparent); }
+.history-folder-pick-wrap { display: flex; flex-direction: column; gap: 6px; }
+.history-folder-pick-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-height: 152px;
+  overflow-y: auto;
+  padding-right: 4px;
+}
+.history-folder-pick-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 8px;
+  border-radius: 10px;
+  color: var(--text-primary);
+  font: 500 12.5px/1.3 var(--font-text);
+  cursor: pointer;
+  transition: background-color 0.12s var(--eo-ease);
+}
+.history-folder-pick-row:hover { background: rgb(var(--ink) / 0.06); }
+.history-folder-pick-row input[type="checkbox"] {
+  flex: none;
+  width: 14px;
+  height: 14px;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+.history-folder-pick-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.history-folder-pick-tag {
+  flex: none;
+  max-width: 110px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  padding: 2px 7px;
+  border-radius: var(--pill);
+  background: rgb(var(--ink) / 0.08);
+  color: var(--text-secondary);
+  font: 500 10.5px/1.3 var(--font-text);
+}
+
+.history-folder-card {
+  position: relative;
+  border: 1px solid rgb(var(--ink) / 0.12);
+  border-radius: 20px;
+  background: var(--charcoal);
+  box-shadow: var(--shadow-bubble);
+  transition: border-color 0.15s var(--eo-ease), box-shadow 0.15s var(--eo-ease), background-color 0.15s var(--eo-ease);
+}
+.history-folder-card[data-agent='claude'] { --agent: var(--claude-color); }
+.history-folder-card[data-agent='codex'] { --agent: var(--codex-color); }
+.history-folder-card[data-agent='gemini'] { --agent: var(--gemini-color); }
+.history-folder-card.is-recent { border-color: rgba(100, 210, 255, 0.45); }
+.history-folder-card.is-current { border-color: rgb(var(--ink) / 0.68); }
+.history-folder-card.is-waiting { border-color: #ffd60a; box-shadow: var(--shadow-bubble), 0 0 10px rgba(255, 214, 10, 0.32); }
+.history-folder-card.is-drop-target {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 32%, transparent), var(--shadow-bubble);
+}
+.history-section.is-drop-ungroup {
+  border-radius: 16px;
+  outline: 1.5px dashed color-mix(in srgb, var(--accent) 60%, transparent);
+  outline-offset: 6px;
+}
+.history-card.is-dragging { opacity: 0.55; }
+.history-folder-card .history-spinner {
+  position: absolute;
+  top: -5px;
+  right: -5px;
+  width: 16px;
+  height: 16px;
+  pointer-events: none;
+}
+
+.history-folder-head {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  padding: 12px 14px;
+  border-radius: 20px;
+  cursor: pointer;
+  outline: none;
+  min-width: 0;
+  transition: background-color 0.15s var(--eo-ease);
+}
+.history-folder-head:hover { background: rgb(var(--ink) / 0.04); }
+.history-folder-head:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.history-folder-head .history-actions { flex-shrink: 0; }
+
+@media (max-width: 480px) {
+  .history-folder-head {
+    flex-wrap: wrap;
+    row-gap: 6px;
+    column-gap: 9px;
+    padding: 10px 12px;
+  }
+  .history-folder-head .history-folder-info { flex: 1 1 calc(100% - 76px); }
+  .history-folder-head .history-folder-chevron { order: 2; }
+  .history-folder-head .history-actions {
+    order: 3;
+    flex-basis: 100%;
+    margin-left: 0;
+    padding-left: 43px;
+    justify-content: flex-start;
+    gap: 4px;
+  }
+  .history-folder-body { padding: 2px 8px 10px; }
+  .history-folder-body .history-card { padding: 12px 12px 22px; }
+  .history-folder-body .history-card .queue-card-head { gap: 6px; }
+  .history-folder-body .history-card .history-actions { gap: 0; }
+  .history-folder-body .history-card .history-icon-btn { width: 22px; height: 22px; }
+  .history-folder-body .history-card .history-icon-btn svg { width: 13px; height: 13px; }
+}
+
+.history-folder-thumb {
+  flex: none;
+  width: 34px;
+  height: 34px;
+  box-sizing: border-box;
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  grid-template-rows: repeat(2, 1fr);
+  gap: 3px;
+  padding: 4px;
+  border-radius: 10px;
+  background: rgb(var(--ink) / 0.07);
+  box-shadow: inset 0 0 0 1px rgb(var(--ink) / 0.12);
+}
+.history-folder-thumb.is-empty {
+  display: grid;
+  grid-template-columns: 1fr;
+  grid-template-rows: 1fr;
+  place-items: center;
+  color: var(--text-secondary);
+}
+.history-folder-thumb.is-empty svg { width: 18px; height: 18px; }
+.history-folder-mini {
+  display: grid;
+  place-items: center;
+  width: 100%;
+  height: 100%;
+  border-radius: 4px;
+  overflow: hidden;
+  background: rgb(var(--panel-raised));
+}
+.history-folder-mini svg, .history-folder-mini .agent-logo { width: 10px; height: 10px; display: block; }
+.history-folder-mini .project-mark { font: 700 6.5px/1 var(--font-text); letter-spacing: -0.02em; }
+.history-folder-mini .project-icon { width: 10px; height: 10px; border-radius: 2px; }
+.history-folder-mini.is-slot::before { content: ''; width: 4px; height: 4px; border-radius: 50%; background: rgb(var(--ink) / 0.35); }
+
+.history-folder-info {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.history-folder-title-row {
+  display: flex;
+  align-items: baseline;
+  gap: 7px;
+  min-width: 0;
+}
+.history-folder-title {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font: 600 13.5px/1.3 var(--font-text);
+  color: var(--text-primary);
+  letter-spacing: -0.01em;
+}
+.history-folder-card .title-edit {
+  flex: 1;
+  min-width: 80px;
+  max-width: 240px;
+  padding: 2px 6px;
+  font: 600 13px var(--font-text);
+}
+.history-folder-count {
+  flex: none;
+  font: 500 11.5px/1.2 var(--font-text);
+  color: var(--text-tertiary);
+}
+.history-folder-meta {
+  display: flex;
+  align-items: baseline;
+  gap: 7px;
+  min-width: 0;
+  font: 400 12px/1.35 var(--font-text);
+  color: var(--text-secondary);
+}
+.history-folder-meta .history-when { flex: none; font-size: 11.5px; }
+.history-folder-preview {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-tertiary);
+}
+.history-folder-card.is-expanded .history-folder-preview { display: none; }
+.history-folder-chevron {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 18px;
+  height: 18px;
+  color: var(--text-tertiary);
+  transition: transform 0.2s var(--eo-ease), color 0.15s var(--eo-ease);
+}
+.history-folder-chevron svg { width: 14px; height: 14px; }
+.history-folder-card.is-expanded .history-folder-chevron { transform: rotate(90deg); color: var(--text-primary); }
+
+.history-folder-body {
+  padding: 2px 12px 14px;
+  border-top: 1px solid rgb(var(--ink) / 0.07);
+}
+.history-folder-body .queue-list { gap: 12px; margin-top: 10px; }
+.history-folder-empty {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 10px 4px 2px;
+  color: var(--text-tertiary);
+  font: 500 12px var(--font-text);
+}
+
+.history-folder-editor {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 14px 12px;
+  border-top: 1px solid rgb(var(--ink) / 0.08);
+  background: rgb(var(--ink) / 0.03);
+}
+.history-folder-editor-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.history-icon-btn.is-in-folder { color: var(--fg-cyan); }
+.history-icon-btn.is-bundle[aria-pressed='true'] { color: var(--accent); background: color-mix(in srgb, var(--accent) 16%, transparent); }
+
+.history-folder-menu {
+  position: fixed;
+  z-index: 90;
+  min-width: 176px;
+  max-width: 240px;
+  padding: 5px;
+  border: 1px solid var(--eo-border);
+  border-radius: 14px;
+  background: var(--charcoal);
+  box-shadow: 0 16px 36px rgb(0 0 0 / calc(0.45 * var(--shadow-k))), inset 0 1px 0 rgb(var(--sheen) / 0.08);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.history-folder-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 7px 9px;
+  border: 0;
+  border-radius: 9px;
+  background: transparent;
+  color: var(--text-primary);
+  font: 500 12.5px/1.3 var(--font-text);
+  text-align: left;
+  cursor: pointer;
+  transition: background-color 0.12s var(--eo-ease);
+}
+.history-folder-menu-item:hover, .history-folder-menu-item:focus-visible { background: rgb(var(--ink) / 0.09); outline: none; }
+.history-folder-menu-item.is-remove { color: var(--text-secondary); padding-left: 29px; }
+.history-folder-menu-item.is-remove:hover { color: var(--fg-red); background: rgba(255, 69, 58, 0.12); }
+.history-folder-menu-check { flex: none; width: 14px; height: 14px; display: grid; place-items: center; color: var(--fg-cyan); }
+.history-folder-menu-check svg { width: 13px; height: 13px; }
+.history-folder-menu-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.history-folder-menu-sep { height: 1px; margin: 3px 6px; background: rgb(var(--ink) / 0.1); }
+@media (prefers-reduced-motion: reduce) {
+  .history-folder-creator, .history-folder-chevron { animation: none; transition: none; }
+}
+
 .history-card .title-edit {
   flex: 1;
   min-width: 80px;
@@ -1891,27 +2236,24 @@ html:not(.is-window-blurred) .msg-group-user:is(.is-dock-hovered, :has(.msg-acti
 }
 .msg-scheduled-tag svg { width: 12px; height: 12px; color: var(--fg-cyan); }
 
-/* P17-P: inline file badges. */
+/* Inline file references follow the surrounding text and keep their file-type icon. */
 .file-badge {
   display: inline-flex;
   align-items: center;
   gap: 4px;
   max-width: 100%;
-  margin: 0 1px;
-  padding: 1px 7px 1px 5px;
+  margin: 0;
+  padding: 0;
   vertical-align: baseline;
-  border: 1px solid var(--eo-border);
-  border-radius: 999px;
-  background: linear-gradient(180deg, rgb(var(--ink) / 0.08), rgb(var(--ink) / 0.02));
-  box-shadow: inset 0 1px 0 rgb(var(--sheen) / 0.08);
-  color: var(--text-primary);
-  font: 400 0.93em var(--vscode-font-family, var(--font-text)); /* the Explorer's own file-name font */
-  line-height: 1.5;
+  border: 0;
+  background: transparent;
+  color: light-dark(#32658d, #8cb8dc);
+  font: inherit;
+  text-align: start;
   cursor: pointer;
-  transition: background 0.15s var(--eo-ease), transform 0.2s cubic-bezier(0.34, 1.56, 0.64, 1);
 }
-.file-badge:hover { background: rgb(var(--ink) / 0.12); transform: translateY(-1px); }
-.file-badge:active { transform: scale(0.97); }
+.file-badge:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.file-badge:not(.mention-chip *):is(:hover, :focus-visible) > span { text-decoration: underline; text-underline-offset: 0.17em; }
 .file-badge span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .file-badge small { color: var(--text-secondary); font-size: 0.92em; }
 .file-badge svg { width: 13px; height: 13px; flex-shrink: 0; color: light-dark(#515c6b, #9aa4b2); }
@@ -1925,7 +2267,19 @@ html:not(.is-window-blurred) .msg-group-user:is(.is-dock-hovered, :has(.msg-acti
 
 /* P17-Q: @-mention chips and the autocomplete menu. */
 .mention-chip { display: inline-flex; align-items: center; gap: 2px; animation: msg-in 0.24s var(--eo-ease); }
-.mention-chip .file-badge { font-size: 11px; }
+.mention-chip .file-badge {
+  margin: 0 1px;
+  padding: 1px 7px 1px 5px;
+  border: 1px solid var(--eo-border);
+  border-radius: 999px;
+  background: linear-gradient(180deg, rgb(var(--ink) / 0.08), rgb(var(--ink) / 0.02));
+  box-shadow: inset 0 1px 0 rgb(var(--sheen) / 0.08);
+  color: var(--text-primary);
+  font: 400 11px/1.5 var(--vscode-font-family, var(--font-text));
+  transition: background 0.15s var(--eo-ease), transform 0.2s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+.mention-chip .file-badge:hover { background: rgb(var(--ink) / 0.12); transform: translateY(-1px); }
+.mention-chip .file-badge:active { transform: scale(0.97); }
 .mention-chip button { border: 0; background: transparent; color: var(--text-secondary); cursor: pointer; padding: 0 4px; }
 .mention-chip button:hover { color: var(--text-primary); }
 .composer { position: relative; }
@@ -1950,21 +2304,6 @@ html:not(.is-window-blurred) .msg-group-user:is(.is-dock-hovered, :has(.msg-acti
 .mention-name { white-space: nowrap; }
 .mention-dir { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; direction: rtl; text-align: left; color: var(--text-secondary); font-size: 11px; }
 
-/* P17-R: from 75% full, a bud of the dock (see "The dock is a Dynamic Island").
-   Amber lives only in its content; the shape is the dock's charcoal. */
-.context-warning {
-  align-self: center;
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  padding: 4px 4px 4px 12px;
-  border-radius: 999px;
-  color: rgb(255, 179, 64);
-  font: 600 11.5px var(--font-text);
-  font-variant-numeric: tabular-nums;
-  white-space: nowrap;
-}
-.context-warning[hidden] { display: none; }
 .queue-usage-warning {
   display: flex;
   align-items: center;
@@ -2008,7 +2347,6 @@ html:not(.is-window-blurred) .msg-group-user:is(.is-dock-hovered, :has(.msg-acti
 .auth-hold .context-compact:disabled { opacity: 0.6; cursor: default; }
 @media (prefers-reduced-motion: no-preference) { .auth-hold { animation: auth-hold-in 220ms cubic-bezier(0.2, 0.9, 0.3, 1.1); } }
 @keyframes auth-hold-in { from { opacity: 0; transform: translateY(6px) scale(0.985); } }
-.context-warning > svg { width: 14px; height: 14px; flex-shrink: 0; }
 .context-compact {
   height: 22px;
   padding: 0 10px;
@@ -2024,8 +2362,8 @@ html:not(.is-window-blurred) .msg-group-user:is(.is-dock-hovered, :has(.msg-acti
 .context-compact:active { transform: scale(0.96); }
 .context-compact:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 /* ---------- The dock is a Dynamic Island (docs/dynamic-island-composer-spec.md) ----------
-   Everything that belongs to the composer (queued turns, attachments, @-mentions,
-   the context warning) lives in .compose-row with the pill, and the row runs
+   Everything that belongs to the composer (queued turns, attachments, @-mentions)
+   lives in .compose-row with the pill, and the row runs
    the same goo as your message bubble and its time/copy/revert dock (#msg-goo:
    blur, alpha threshold, then the crisp original drawn back on top). The buds
    and the pill share one opaque charcoal, so across the 6px gap they fuse
@@ -2104,8 +2442,9 @@ html:not(.is-window-blurred) .msg-group-user:is(.is-dock-hovered, :has(.msg-acti
   overflow: hidden;
 }
 
-/* Where a compaction happened: the history above stays, the summary follows. */
-.compact-divider {
+/* Context events use a quiet rule between parts of the conversation. */
+.compact-divider,
+.model-handoff-divider {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
@@ -2117,17 +2456,50 @@ html:not(.is-window-blurred) .msg-group-user:is(.is-dock-hovered, :has(.msg-acti
   text-align: center;
   animation: msg-in 0.28s var(--eo-ease);
 }
-.compact-divider::before,
-.compact-divider::after {
+.compact-divider::before, .model-handoff-divider::before,
+.compact-divider::after, .model-handoff-divider::after {
   content: "";
   flex: 1 1 24px;
   height: 1px;
   background: linear-gradient(90deg, transparent, var(--eo-border));
   order: -1;
 }
-.compact-divider::after { order: 1; background: linear-gradient(90deg, var(--eo-border), transparent); }
+.compact-divider::after, .model-handoff-divider::after { order: 1; background: linear-gradient(90deg, var(--eo-border), transparent); }
 .compact-divider svg { width: 14px; height: 14px; }
 .compact-divider small { flex-basis: 100%; order: 2; font-weight: 500; opacity: 0.8; }
+
+.model-handoff-divider { flex-wrap: nowrap; margin: 2px 0; }
+.model-handoff-divider::before, .model-handoff-divider::after { flex-basis: 12px; }
+.model-handoff-status {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: 3px 8px;
+  min-width: 0;
+  padding: 4px 9px;
+  border: 1px solid var(--eo-border);
+  border-radius: var(--pill);
+  background: var(--eo-surface);
+}
+.model-handoff-route { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.model-handoff-title, .model-handoff-arrow { flex-shrink: 0; }
+.model-handoff-model {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  text-wrap: balance;
+  color: var(--text-primary);
+}
+.model-handoff-model::before {
+  content: '';
+  display: inline-block;
+  width: 5px;
+  height: 5px;
+  margin-inline-end: 5px;
+  border-radius: 50%;
+  background: var(--agent, currentColor);
+  vertical-align: 0.15em;
+}
 
 /* The same quiet divider thinks while the context is compressed, then rests. */
 .compact-status { display: inline-flex; align-items: center; gap: 8px; min-width: 0; }
@@ -2168,7 +2540,7 @@ html:not(.is-window-blurred) .msg-group-user:is(.is-dock-hovered, :has(.msg-acti
   35% { transform: translateY(-2px); opacity: 0.9; }
 }
 @media (prefers-reduced-motion: reduce) {
-  .compact-divider, .compact-divider.is-settled .compact-status, .is-compacting .compact-arrow-top, .is-compacting .compact-arrow-bottom, .is-compacting .compact-thinking i { animation: none; will-change: auto; }
+  .compact-divider, .model-handoff-divider, .compact-divider.is-settled .compact-status, .is-compacting .compact-arrow-top, .is-compacting .compact-arrow-bottom, .is-compacting .compact-thinking i { animation: none; will-change: auto; }
 }
 
 /* Replies: no bubble, no rule; typography carries the structure. */
@@ -2563,8 +2935,8 @@ html:not(.is-window-blurred) .msg-group-user:is(.is-dock-hovered, :has(.msg-acti
 
 /* Back-to-back steps stack into one list with hairline dividers instead of a
    column of separate boxes: -11px undoes the turn's 10px gap and overlaps the borders. */
-.tool-card:has(+ .tool-card) { border-bottom-left-radius: 0; border-bottom-right-radius: 0; }
-.tool-card + .tool-card {
+.tool-card:not(.tool-todo):has(+ .tool-card:not(.tool-todo)) { border-bottom-left-radius: 0; border-bottom-right-radius: 0; }
+.tool-card:not(.tool-todo) + .tool-card:not(.tool-todo) {
   margin-top: -11px;
   border-top-color: rgb(var(--ink) / 0.04);
   border-top-left-radius: 0;
@@ -2929,6 +3301,10 @@ html:not(.is-window-blurred) .msg-group-user:is(.is-dock-hovered, :has(.msg-acti
 
 /* The bare "+" attach button starts the bar; the model picker sits right behind it. */
 #attachBtn { flex-shrink: 0; }
+
+/* The voice level is written on the mic button and the composer about 30 times a second. Registered as not inherited, so each write
+   restyles those two elements and not everything inside the composer. */
+@property --mic-level { syntax: '<number>'; inherits: false; initial-value: 0; }
 
 /* Recording: a quiet red tint, and a ring that widens with the voice (--mic-level, set per frame by main.js) instead of a pulse. */
 .mic-pill.recording {
@@ -3741,9 +4117,16 @@ body.vscode-light .turn-diff { --diff-add: #1a7f3c; --diff-del: #c8352d; } /* re
   transition-delay: 0s, 0.12s;
 }
 
-/* Stop: the bars flatten and grow into ghost text lines, shaped like the lines that are about to arrive (the same height as a
-   text line, a long one over a short one), with a soft sheen travelling along them while Whisper and the cleanup pass run.
-   When the words land, the lines are already where the words appear. */
+/* The 22% horizontal edge fade belongs to the live waveform bars; once processing starts, drop it so the
+   full-width loader bar and ghost text lines have crisp, symmetric ends. */
+.composer.is-voice-processing > .voice-overlay {
+  -webkit-mask-image: none;
+  mask-image: none;
+}
+
+/* Stop: in an empty composer the bars flatten into one symmetric full-width shimmer bar; under existing text
+   ([data-row]) they become two staggered ghost text lines (a long one over a short one) while Whisper and
+   cleanup run. */
 .composer:not(.is-polishing) > .voice-overlay::before,
 .composer:not(.is-polishing) > .voice-overlay::after {
   content: '';
@@ -3753,12 +4136,14 @@ body.vscode-light .turn-diff { --diff-add: #1a7f3c; --diff-del: #c8352d; } /* re
   border-radius: 4px;
   opacity: 0;
   transform: scaleX(0.15);
-  transform-origin: left center;
+  transform-origin: center center;
   background: linear-gradient(90deg, transparent, rgb(var(--ink) / 0.3), transparent) 0 0 / 55% 100% no-repeat,
     rgb(var(--ink) / 0.1);
   transition: opacity 0.18s var(--eo-ease), transform 0.2s var(--eo-ease);
 }
-.composer:not(.is-polishing) > .voice-overlay::before { top: calc(50% - 4px); width: 70%; }
+.composer:not(.is-polishing) > .voice-overlay::before { top: calc(50% - 4px); right: 6px; width: auto; }
+.composer:not(.is-polishing) > .voice-overlay[data-row]::before,
+.composer:not(.is-polishing) > .voice-overlay[data-row]::after { right: auto; transform-origin: left center; }
 .composer:not(.is-polishing) > .voice-overlay[data-row]::before { top: 5.8px; width: 78%; }
 .composer:not(.is-polishing) > .voice-overlay[data-row]::after { top: 25.4px; width: 46%; }
 .composer.is-voice-processing:not(.is-polishing) > .voice-overlay::before,
@@ -3797,24 +4182,19 @@ body.vscode-light .turn-diff { --diff-add: #1a7f3c; --diff-del: #c8352d; } /* re
   50% { background-position: 160% 0, 0 0; }
 }
 
-/* One microphone, every window animated in step. The window the text will land in (the one used last) is the dictation target:
-   a red edge that swells with the voice (--mic-level, set per frame on the composer). The other windows echo the same waveform
-   quietly (no red edge, a dimmer wave, a neutral mic button), so it is clear where F9 will send. */
-.composer.is-voice:not(.is-voice-mirror)::after {
+/* Dictation shows in the one chat the text will land in (the one used last): a red edge that swells with the voice
+   (--mic-level, set per frame on the composer). Every other chat looks idle. */
+.composer.is-voice::after {
   content: '';
   position: absolute;
   inset: 0;
   border-radius: inherit;
   pointer-events: none;
-  box-shadow: inset 0 0 0 calc(1px + 0.8px * var(--mic-level, 0)) rgba(255, 69, 58, calc(0.34 + 0.4 * var(--mic-level, 0))),
-    0 0 calc(8px + 16px * var(--mic-level, 0)) rgba(255, 69, 58, calc(0.1 + 0.18 * var(--mic-level, 0)));
-}
-
-.composer.is-voice-mirror > .voice-overlay { opacity: 0.42; }
-.mic-pill.recording.is-mirror {
-  background: color-mix(in srgb, currentColor 8%, transparent);
-  color: var(--text-secondary);
-  box-shadow: 0 0 0 1px color-mix(in srgb, currentColor calc(14% + 24% * var(--mic-level, 0)), transparent);
+  /* Painted once at its loudest; the voice only changes the opacity. Resizing a blurred shadow every frame repainted the whole
+     composer and made the meter lag, while an opacity change is handled by the compositor. */
+  box-shadow: inset 0 0 0 1.8px rgba(255, 69, 58, 0.74), 0 0 24px rgba(255, 69, 58, 0.28);
+  opacity: calc(0.45 + 0.55 * var(--mic-level, 0));
+  will-change: opacity;
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -3866,6 +4246,104 @@ body.vscode-light .turn-diff { --diff-add: #1a7f3c; --diff-del: #c8352d; } /* re
 .tool-card .tool-label { flex: 1; min-width: 0; font: 11.5px var(--font-mono); color: var(--text-secondary); }
 /* No mark on a finished step; the spot only shows a spinner while running or red on error. */
 .tool-card .tool-label.is-path { display: flex; align-items: baseline; gap: 6px; font: 12px var(--vscode-font-family, var(--font-text)); }
+/* Update Steps / Todo checklists belong to the same calm narrative family as thought cards, not monospace code output. */
+.tool-card.tool-todo {
+  border-radius: 14px;
+  border-color: rgb(var(--ink) / 0.08);
+  background: linear-gradient(160deg, rgb(var(--ink) / 0.05), rgb(var(--ink) / 0.018) 70%);
+}
+.tool-card.tool-todo:has(.tool-label:not(:empty)) .tool-name {
+  display: none;
+}
+.tool-card.tool-todo .tool-label {
+  font: 500 12.5px/1.35 var(--font-text);
+  color: var(--text-secondary);
+}
+.tool-card.tool-todo[open] .tool-label {
+  color: var(--text-primary);
+}
+.tool-card.tool-todo .tool-body {
+  font: 400 12.5px/1.5 var(--font-text);
+  background: transparent;
+  border-top: 1px solid rgb(var(--ink) / 0.06);
+  transition: max-height 0.26s var(--eo-ease), padding 0.26s var(--eo-ease), opacity 0.2s var(--eo-ease);
+}
+.tool-card.tool-todo.is-closing .tool-body {
+  padding-top: 0;
+  padding-bottom: 0;
+  opacity: 0;
+  overflow: hidden;
+}
+.todo-steps {
+  list-style: none;
+  margin: 0;
+  padding: 8px 10px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font: 400 12.5px/1.45 var(--font-text);
+}
+.todo-step {
+  display: flex;
+  align-items: baseline;
+  gap: 7px;
+  padding: 4px 8px;
+  border-radius: 9px;
+  color: var(--text-secondary);
+  transition: background-color 0.15s var(--eo-ease), color 0.15s var(--eo-ease);
+}
+.todo-step-mark {
+  flex: none;
+  align-self: center;
+  display: inline-grid;
+  place-items: center;
+  width: 15px;
+  height: 15px;
+  color: var(--text-tertiary);
+}
+.todo-step-mark svg { width: 14px; height: 14px; display: block; }
+.todo-step-num {
+  flex: none;
+  font: 500 11.5px/1.4 var(--font-text);
+  font-variant-numeric: tabular-nums;
+  color: var(--text-tertiary);
+  min-width: 14px;
+}
+.todo-step-text {
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.todo-step.is-done {
+  color: var(--text-tertiary);
+}
+.todo-step.is-done .todo-step-mark {
+  color: var(--fg-green, #30d158);
+  opacity: 0.85;
+}
+.todo-step.is-done .todo-step-text {
+  text-decoration: line-through;
+  text-decoration-color: rgb(var(--ink) / 0.25);
+}
+.todo-step.is-active {
+  background: color-mix(in srgb, var(--accent) 11%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 24%, transparent);
+  color: var(--text-primary);
+  font-weight: 600;
+}
+.todo-step.is-active .todo-step-mark {
+  color: var(--accent);
+}
+.todo-step.is-active .todo-step-num {
+  color: var(--accent);
+  font-weight: 600;
+}
+.todo-step.is-pending .todo-step-mark {
+  opacity: 0.45;
+}
+@media (prefers-reduced-motion: reduce) {
+  .tool-card.tool-todo .tool-body { transition: none; }
+}
 .tool-file { flex-shrink: 0; max-width: 100%; overflow: hidden; text-overflow: ellipsis; color: var(--text-primary); }
 .tool-dir { min-width: 0; overflow: hidden; text-overflow: ellipsis; color: var(--text-tertiary); font-size: 11px; }
 .tool-meta { flex-shrink: 0; font: 11px var(--font-text); font-variant-numeric: tabular-nums; color: var(--text-tertiary); }
@@ -3892,6 +4370,128 @@ body.vscode-light .turn-diff { --diff-add: #1a7f3c; --diff-del: #c8352d; } /* re
 .tool-thumb:hover img { transform: scale(1.01); }
 .tool-thumb:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
 .tool-thumb-note { padding: 8px 10px; background: var(--code-bg); color: var(--text-tertiary); font: 11.5px var(--font-text); }
+
+/* ---------- Inline chat images: featured single or 2-column comparison grid, shared lightbox + VS Code pop-out ---------- */
+.chat-image-gallery { margin-top: 10px; display: flex; flex-direction: column; gap: 8px; }
+.chat-image-gallery[hidden] { display: none; }
+.chat-image-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  margin: 10px 0;
+}
+.chat-image-gallery > .chat-image-grid { margin: 0; }
+.chat-image-grid[data-count='1'] { grid-template-columns: minmax(0, 1fr); max-width: 520px; }
+.chat-image-card {
+  position: relative;
+  margin: 0;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  border-radius: 14px;
+  border: 1px solid var(--eo-border);
+  background: rgb(var(--panel) / 0.36);
+  box-shadow: 0 6px 18px rgb(0 0 0 / calc(0.18 * var(--shadow-k))), inset 0 1px 0 rgb(var(--sheen) / 0.08);
+  overflow: hidden;
+  transition: border-color 0.18s var(--eo-ease), transform 0.2s var(--eo-ease), box-shadow 0.2s var(--eo-ease);
+}
+.chat-image-card[hidden] { display: none; }
+.chat-image-card:hover {
+  border-color: rgb(var(--ink) / 0.22);
+  transform: translateY(-1px);
+  box-shadow: 0 10px 24px rgb(0 0 0 / calc(0.24 * var(--shadow-k))), inset 0 1px 0 rgb(var(--sheen) / 0.12);
+}
+.chat-image-stage {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  min-height: 110px;
+  padding: 0;
+  border: 0;
+  background: rgb(0 0 0 / calc(0.16 * var(--well-k)));
+  cursor: zoom-in;
+  overflow: hidden;
+}
+.chat-image-stage:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.chat-image-stage img {
+  display: block;
+  width: 100%;
+  max-height: 220px;
+  object-fit: contain;
+  transition: transform 0.22s var(--eo-ease);
+}
+.chat-image-grid[data-count='1'] .chat-image-stage img { max-height: 300px; }
+.chat-image-card:hover .chat-image-stage img { transform: scale(1.012); }
+.chat-image-card.is-svg .chat-image-stage { background: #e4e7ed; padding: 12px; }
+.chat-image-skeleton {
+  display: block;
+  width: 100%;
+  height: 120px;
+  background: linear-gradient(100deg, transparent 30%, rgb(var(--ink) / 0.07) 50%, transparent 70%) 0 0 / 220% 100%, var(--code-bg);
+  animation: tool-thumb-shimmer 1.2s linear infinite;
+}
+.chat-image-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 5px 6px 5px 10px;
+  border-bottom: 1px solid rgb(var(--ink) / 0.06);
+  background: linear-gradient(180deg, rgb(var(--sheen) / 0.06), transparent);
+}
+.chat-image-popout {
+  flex: none;
+  width: 24px;
+  height: 24px;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border: 1px solid rgb(var(--ink) / 0.14);
+  border-radius: 50%;
+  background: rgb(var(--panel-raised) / 0.55);
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: color 0.15s var(--eo-ease), background 0.16s var(--eo-ease), border-color 0.16s var(--eo-ease), transform 0.22s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+.chat-image-popout:hover {
+  color: var(--text-primary);
+  background: rgb(var(--panel-raised) / 0.85);
+  border-color: rgb(var(--ink) / 0.24);
+  transform: scale(1.08);
+}
+.chat-image-popout:active { transform: scale(0.94); }
+.chat-image-popout:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.chat-image-popout svg { width: 12.5px; height: 12.5px; }
+.chat-image-caption {
+  flex: 1;
+  min-width: 0;
+  font: 500 11.5px/1.3 var(--font-text);
+  color: var(--text-secondary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.chat-image-more {
+  align-self: flex-start;
+  padding: 5px 12px;
+  border: 1px solid var(--eo-border);
+  border-radius: var(--pill);
+  background: rgb(var(--panel) / 0.42);
+  color: var(--text-primary);
+  font: 500 11.5px var(--font-text);
+  cursor: pointer;
+  transition: background 0.16s var(--eo-ease), border-color 0.16s var(--eo-ease);
+}
+.chat-image-more:hover { background: rgb(var(--panel-raised) / 0.65); border-color: rgb(var(--ink) / 0.22); }
+.chat-image-more:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+@media (max-width: 380px) {
+  .chat-image-grid { grid-template-columns: minmax(0, 1fr); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .chat-image-card, .chat-image-stage img, .chat-image-popout { transition: none; }
+  .chat-image-skeleton { animation: none; }
+}
 .tool-card[data-peek='image'] .tool-body:empty { display: none; }
 .tool-body .tool-hit { color: inherit; text-decoration-color: rgb(var(--ink) / 0.22); }
 .tool-body .tool-hit:hover { color: var(--accent); }
@@ -4243,6 +4843,8 @@ body.vscode-light .tv, body.vscode-high-contrast-light .tv { --tv-blue: #0b5cad;
   transition: text-decoration-color 0.15s var(--eo-ease), color 0.15s var(--eo-ease);
 }
 
+:is(.msg, .tv-md) a[data-external-url] { cursor: pointer; }
+
 .msg a:hover {
   color: var(--accent-hover);
   text-decoration-color: currentColor;
@@ -4470,63 +5072,129 @@ body.vscode-light .tv, body.vscode-high-contrast-light .tv { --tv-blue: #0b5cad;
 .pending-cost::before { content: '·'; display: inline-block; margin-right: 8px; color: var(--text-tertiary); opacity: 0.6; text-decoration: none; }
 .pending-cost:empty { display: none; }
 
-/* P17-T: live reasoning as a second line of the pending pill, then a closed drawer. */
-.pending-thought { display: none; }
-.msg-pending.has-thought {
-  flex-wrap: wrap;
-  max-width: min(100%, 560px);
-  border-radius: 16px;
-  row-gap: 4px;
+/* The model's reasoning: a soft panel of its own, open while the model thinks, closed to one line (with how it began) once
+   the next thing arrives. No rail down the side: a wash of the ink colour and a hairline, so it reads on every theme. */
+.thought-fold {
+  align-self: stretch;
+  max-width: 100%;
+  margin: 0 2px;
+  border: 1px solid rgb(var(--ink) / 0.06);
+  border-radius: 14px;
+  background: linear-gradient(160deg, rgb(var(--ink) / 0.05), rgb(var(--ink) / 0.018) 70%);
+  animation: msg-in 0.28s var(--eo-ease);
+  --thought-ink: var(--text-tertiary);
 }
-.msg-pending.has-thought .pending-thought {
-  display: block;
-  flex-basis: 100%;
+.thought-fold.is-live { border-color: rgb(var(--ink) / 0.09); }
+.thought-fold > summary {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+  padding: 7px 12px 7px 10px;
+  font: 500 12px var(--font-text);
+  color: var(--text-tertiary);
+  cursor: pointer;
+  list-style: none;
+  border-radius: 14px;
+  transition: color 0.15s var(--eo-ease), background 0.15s var(--eo-ease);
+}
+.thought-fold > summary::-webkit-details-marker { display: none; }
+.thought-fold > summary:hover { color: var(--text-secondary); background: rgb(var(--ink) / 0.025); }
+.thought-icon { display: inline-flex; flex: none; width: 16px; height: 16px; color: var(--text-secondary); opacity: 0.85; }
+.thought-icon svg { width: 100%; height: 100%; }
+/* Never flash "Thinking" / "Thought process" text next to the brain icon; summary keeps aria-label="Thought process". */
+.thought-fold > summary > .thought-label { display: none; }
+/* How the thought began, while it is closed. */
+.thought-preview {
+  flex: 1;
   min-width: 0;
   overflow: hidden;
   white-space: nowrap;
   text-overflow: ellipsis;
-  direction: rtl; /* the newest words stay visible; older ones fall off the left */
-  text-align: left;
-  font: italic 400 11.5px/1.4 var(--font-text);
-  color: var(--text-tertiary);
-  -webkit-mask-image: linear-gradient(90deg, transparent, #000 12%);
-  mask-image: linear-gradient(90deg, transparent, #000 12%);
-}
-
-.thought-fold {
-  align-self: flex-start;
-  max-width: 100%;
-  margin-left: 6px;
-  animation: msg-in 0.28s var(--eo-ease);
-}
-.thought-fold > summary {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  font: 500 11.5px var(--font-text);
-  color: var(--text-tertiary);
-  cursor: pointer;
-  list-style: none;
-}
-.thought-fold > summary::-webkit-details-marker { display: none; }
-.thought-fold > summary::before { content: ''; width: 5px; height: 5px; border-right: 1.3px solid currentColor; border-bottom: 1.3px solid currentColor; transform: rotate(-45deg); transition: transform 0.2s var(--eo-ease); }
-.thought-fold[open] > summary::before { transform: rotate(45deg); }
-.thought-fold > summary:hover { color: var(--text-secondary); }
-.thought-body {
-  margin: 6px 0 2px;
-  padding: 8px 12px;
-  max-height: 280px;
-  overflow-y: auto;
-  border-left: 2px solid var(--eo-border);
-  white-space: pre-wrap;
-  font: italic 12px/1.55 var(--font-text);
+  font-weight: 400;
   color: var(--text-secondary);
+}
+.thought-fold[open] > summary > .thought-preview { display: none; }
+.thought-fold[open] > summary { padding-bottom: 4px; }
+.thought-fold[open] > summary:has(> .thought-time:empty)::after { margin-left: auto; }
+.thought-time { flex: none; margin-left: auto; font-variant-numeric: tabular-nums; font-size: 11.5px; opacity: 0.8; }
+.thought-time:empty { display: none; }
+/* A chevron that turns as it opens, on the right where the time is. */
+.thought-fold > summary::after {
+  content: '';
+  flex: none;
+  width: 5px;
+  height: 5px;
+  border-right: 1.3px solid currentColor;
+  border-bottom: 1.3px solid currentColor;
+  transform: rotate(-45deg);
+  transition: transform 0.2s var(--eo-ease);
+  opacity: 0.7;
+}
+.thought-fold[open] > summary::after { transform: rotate(45deg); }
+
+/* Live: the digital brain breathes subtly while streaming, without flashing label text. */
+.thought-fold.is-live .thought-icon { animation: thought-breathe 1.8s ease-in-out infinite; }
+@keyframes thought-breathe { 0%, 100% { transform: scale(0.9); opacity: 0.55; } 50% { transform: scale(1.08); opacity: 1; } }
+
+.thought-body {
+  margin: 0;
+  padding: 2px 14px 11px 32px; /* lines up cleanly beside the brain icon */
+  max-height: 240px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  overflow-wrap: anywhere;
+  font: 400 12.5px/1.6 var(--font-text);
+  color: var(--text-secondary);
+  transition: max-height 0.26s var(--eo-ease), padding 0.26s var(--eo-ease), opacity 0.2s var(--eo-ease);
+  scrollbar-width: thin;
+}
+/* Only fade an edge when the thought actually overflows/scrolls past that edge — never wash out the first line. */
+.thought-body[data-fade-top='1']:not([data-fade-bottom='1']) {
+  -webkit-mask-image: linear-gradient(180deg, transparent 0, #000 10px, #000 100%);
+  mask-image: linear-gradient(180deg, transparent 0, #000 10px, #000 100%);
+}
+.thought-body[data-fade-bottom='1']:not([data-fade-top='1']) {
+  -webkit-mask-image: linear-gradient(180deg, #000 0, #000 calc(100% - 14px), transparent 100%);
+  mask-image: linear-gradient(180deg, #000 0, #000 calc(100% - 14px), transparent 100%);
+}
+.thought-body[data-fade-top='1'][data-fade-bottom='1'] {
+  -webkit-mask-image: linear-gradient(180deg, transparent 0, #000 10px, #000 calc(100% - 14px), transparent 100%);
+  mask-image: linear-gradient(180deg, transparent 0, #000 10px, #000 calc(100% - 14px), transparent 100%);
+}
+.thought-body > :first-child { margin-top: 0; }
+.thought-body > :last-child { margin-bottom: 0; }
+.thought-body p { margin: 0 0 6px; }
+.thought-body :is(h1, h2, h3, h4, h5, h6) { margin: 8px 0 4px; font-size: 12.5px; font-weight: 600; color: var(--text-primary); }
+.thought-body strong { color: var(--text-primary); font-weight: 600; }
+.thought-body :is(ul, ol) { margin: 4px 0 6px; padding-left: 18px; }
+.thought-body li { margin: 2px 0; }
+.thought-body blockquote { margin: 6px 0; padding: 2px 0 2px 10px; border-left: 2px solid rgb(var(--ink) / 0.16); color: var(--text-tertiary); }
+.thought-body code {
+  padding: 1px 5px;
+  border-radius: 5px;
+  background: rgb(var(--ink) / 0.08);
+  font: 500 11.5px var(--font-mono);
+  color: var(--text-primary);
+}
+.thought-body .code-block { margin: 6px 0; font-size: 11.5px; }
+.thought-body .code-block code { padding: 0; background: transparent; font-weight: 400; color: inherit; }
+.thought-fold.is-closing .thought-body { padding-top: 0; padding-bottom: 0; opacity: 0; overflow: hidden; }
+@media (prefers-reduced-motion: reduce) {
+  .thought-fold, .thought-body { animation: none; transition: none; }
+  .thought-fold.is-live .thought-icon { animation: none; }
 }
 
 .work-summary {
   align-self: flex-start;
   max-width: 100%;
   margin: -2px 0 -4px 6px;
+}
+.work-summary.is-thought-steps {
+  margin: -2px 0 -2px 6px;
+}
+.work-steps > .work-summary {
+  margin: -2px 0 -2px 2px;
 }
 
 .work-summary > summary {
@@ -4568,7 +5236,7 @@ body.vscode-light .tv, body.vscode-high-contrast-light .tv { --tv-blue: #0b5cad;
   transition: transform 0.3s var(--eo-ease);
 }
 
-.work-summary[open] .work-chevron {
+.work-summary[open] > summary > .work-chevron {
   transform: rotate(90deg);
 }
 
@@ -4586,7 +5254,7 @@ body.vscode-light .tv, body.vscode-high-contrast-light .tv { --tv-blue: #0b5cad;
   flex-shrink: 0;
 }
 
-.work-summary[open] .work-steps {
+.work-summary[open] > .work-steps {
   animation: work-open 0.32s var(--eo-ease);
 }
 
@@ -4596,7 +5264,7 @@ body.vscode-light .tv, body.vscode-high-contrast-light .tv { --tv-blue: #0b5cad;
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .work-summary[open] .work-steps { animation: none; }
+  .work-summary[open] > .work-steps { animation: none; }
   .work-chevron { transition: none; }
 }
 
@@ -4930,11 +5598,11 @@ body.lg-on:not(.vscode-light, .vscode-high-contrast, .vscode-high-contrast-light
   --lg-top: linear-gradient(150deg, rgb(var(--sheen) / 0.07), rgb(var(--sheen) / 0.01) 42%, rgb(var(--sheen) / 0.025));
 }
 body.lg-island:not(.vscode-light, .vscode-high-contrast, .vscode-high-contrast-light) .ig-light { opacity: 0.4; }
-/* Editor layout: the transcript starts at the window top and fades in from 40%, so text is visible passing under the buttons. */
+/* Editor layout: the transcript starts at the window top, under the buttons, and dissolves into that edge along the same
+   S-curve top fade (the "hat") as the sidebar chat (--mask-fade, .transcript), so scrolled text is gone by the top edge. */
 body.lg-on:not(.has-rail, .vscode-high-contrast, .vscode-high-contrast-light) .transcript {
-  margin-top: -42px;
-  padding-top: 48px;
-  --mask-fade: linear-gradient(to bottom, rgb(0 0 0 / 0.4) 0, rgb(0 0 0 / 0.62) calc(var(--fade) * 0.35), rgb(0 0 0 / 0.88) calc(var(--fade) * 0.7), #000 var(--fade));
+  margin-top: -52px;
+  padding-top: 58px;
 }
 
 body.lg-on:not(.vscode-high-contrast, .vscode-high-contrast-light) :is(.round-btn, .msg-user .msg-clamp-toggle, .rail :is(.project-pill, .history-list, .api-value-figure)) {
@@ -5033,3 +5701,94 @@ body.lg-island:not(.vscode-high-contrast, .vscode-high-contrast-light) .model-me
   -webkit-backdrop-filter: blur(16px) saturate(1.3);
   backdrop-filter: blur(16px) saturate(1.3);
 }
+
+/* Find in chat (media/chat-find.js): a glass pill over the top right of the transcript. Matches are painted with the CSS
+   Custom Highlight API in the editor theme's own find colours, so nothing in the transcript is re-rendered. */
+.chat-find {
+  position: fixed;
+  z-index: 40;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  width: 340px;
+  height: 38px;
+  padding: 0 4px 0 12px;
+  border: 1px solid var(--eo-border);
+  border-radius: var(--pill);
+  background: var(--eo-surface);
+  backdrop-filter: blur(24px) saturate(180%);
+  -webkit-backdrop-filter: blur(24px) saturate(180%);
+  box-shadow: var(--shadow-popover), inset 0 1px 0 var(--glass-edge);
+  animation: chat-find-in 0.18s var(--eo-ease);
+}
+.chat-find[hidden] { display: none; }
+@keyframes chat-find-in { from { opacity: 0; transform: translateY(-4px) scale(0.98); } }
+.chat-find-icon { flex: none; width: 14px; height: 14px; color: var(--text-secondary); }
+.chat-find-input {
+  flex: 1;
+  min-width: 60px;
+  height: 100%;
+  padding: 0 6px;
+  border: 0;
+  outline: none;
+  background: transparent;
+  color: var(--text-primary);
+  font: 400 13px var(--font-text);
+}
+.chat-find-input::placeholder { color: var(--text-tertiary); }
+.chat-find-count { flex: none; padding: 0 6px; color: var(--text-secondary); font: 500 11.5px var(--font-text); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.chat-find.is-empty .chat-find-count { color: var(--destructive); }
+.chat-find-btn {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+.chat-find-btn svg { width: 15px; height: 15px; }
+.chat-find-btn:hover:not(:disabled) { background: rgb(var(--ink) / 0.1); color: var(--text-primary); }
+.chat-find-btn:disabled { opacity: 0.4; cursor: default; }
+.chat-find-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+::highlight(chat-find) { background-color: var(--vscode-editor-findMatchHighlightBackground, rgba(234, 92, 0, 0.33)); }
+::highlight(chat-find-current) { background-color: var(--vscode-editor-findMatchBackground, rgba(255, 214, 10, 0.6)); }
+@media (prefers-reduced-motion: reduce) { .chat-find { animation: none; } }
+
+/* Skipped history stretch left when Find jumps far back: click or scroll near it to load a page on demand. */
+.history-gap {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  margin: 10px 0;
+  padding: 6px 2px;
+  border: 0;
+  background: transparent;
+  color: var(--text-secondary);
+  font: 500 11.5px var(--font-text);
+  cursor: pointer;
+}
+.history-gap::before,
+.history-gap::after {
+  content: '';
+  flex: 1;
+  height: 1px;
+  background: rgb(var(--ink) / 0.14);
+}
+.history-gap span {
+  padding: 3px 10px;
+  border: 1px solid var(--eo-border);
+  border-radius: var(--pill);
+  background: var(--eo-surface);
+  white-space: nowrap;
+  transition: background 140ms var(--eo-ease), color 140ms var(--eo-ease);
+}
+.history-gap:hover:not(:disabled) span { background: var(--eo-surface-raised); color: var(--text-primary); }
+.history-gap:disabled { opacity: 0.65; cursor: default; }
+.history-gap:focus-visible { outline: none; }
+.history-gap:focus-visible span { outline: 2px solid var(--accent); outline-offset: 1px; }

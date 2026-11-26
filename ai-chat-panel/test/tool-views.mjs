@@ -133,7 +133,9 @@ try {
   await open(searchCard);
   assert.equal(await searchCard.locator('.tv-link .tv-file-dir').textContent(), 'developer.mozilla.org');
   assert.deepEqual(await searchCard.locator('.tv-md code').allTextContents(), ['grab', 'cursor']);
-  assert.equal(await searchCard.locator('.tv-md a').getAttribute('href'), 'https://example.org/docs?a=1&b=2');
+  assert.equal(await searchCard.locator('.tv-md a').getAttribute('data-external-url'), 'https://example.org/docs?a=1&b=2');
+  await searchCard.locator('.tv-md a').click();
+  assert.deepEqual(await page.evaluate(() => window.sent.at(-1)), { type: 'openUrl', url: 'https://example.org/docs?a=1&b=2' });
   await searchCard.locator('.tv-link').click();
   assert.deepEqual(await page.evaluate(() => window.sent.at(-1)), { type: 'openUrl', url: 'https://developer.mozilla.org/cursor' });
 
@@ -142,6 +144,31 @@ try {
   await open(odd);
   assert.equal(await odd.locator('.tv').count(), 0);
   assert.equal(await odd.locator('.tool-body').textContent(), 'just a sentence with no numbers');
+
+  // Stop cards (TaskStop / KillShell): live card starts with task id and upgrades to the stopped command on completion;
+  // restored cards saved with an empty command still pull what was stopped from their JSON output.
+  await send({ type: 'tool_start', name: 'TaskStop', command: 'bwclxqqlk', toolId: 'stop-live' });
+  const stopLive = page.locator('.tool-card').last();
+  assert.equal(await stopLive.locator('.tool-name').textContent(), 'Stop');
+  assert.equal(await stopLive.locator('.tool-label').textContent(), 'bwclxqqlk');
+  await send({ type: 'tool_end', toolId: 'stop-live', output: JSON.stringify({ message: 'Successfully stopped task: bwclxqqlk (/home/user/dev/scratch/halo/verify.sh)', task_id: 'bwclxqqlk', command: '/home/user/dev/scratch/halo/verify.sh' }) });
+  assert.equal(await stopLive.locator('.tool-label').textContent(), '/home/user/dev/scratch/halo/verify.sh');
+
+  await send({
+    type: 'chatLoaded',
+    chat: {
+      id: 'stop-restored',
+      modelId: 'auto',
+      messages: [
+        { role: 'user', text: 'stop the old jobs' },
+        { role: 'assistant', text: 'Stopped.', agent: 'claude' },
+        { role: 'tool', offset: 0, done: true, event: { toolId: 'stop-old', name: 'TaskStop', command: '', output: JSON.stringify({ message: 'Successfully stopped task: b7809vj52 (npm run test:ui)', task_id: 'b7809vj52', command: 'npm run test:ui' }) } },
+      ],
+    },
+  });
+  const stopSaved = page.locator('.tool-card.tool-stop').last();
+  assert.equal(await stopSaved.locator('.tool-name').textContent(), 'Stop');
+  assert.equal(await stopSaved.locator('.tool-label').textContent(), 'npm run test:ui');
   assert.deepEqual(errors, []);
 } finally { await browser.close(); }
-console.log('Tool views: code gutter and sideways scroll, wrap, expand, grep, glob, shell, diff, search and plain fallback passed.');
+console.log('Tool views: code gutter and sideways scroll, wrap, expand, grep, glob, shell, diff, search, stop target and plain fallback passed.');

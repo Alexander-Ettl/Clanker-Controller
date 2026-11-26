@@ -6,7 +6,7 @@ One list, one place per capability. The README, the site and the store page copy
 
 - **Claude Code, Codex, Antigravity (Gemini) and GitHub Copilot in one chat**, one model per message. Clanker runs the official CLIs headlessly and parses their structured streams, using your own sign-ins. Code: `ai-chat-panel/lib/providers/`, `lib/stream-engine.js`. Guide: [adding a provider](adding-a-provider.md).
 - **Handoffs with a briefing.** The next agent gets a condensed summary of what the others did; shortened parts point to a full transcript. Code: `lib/chat-history.js`, `lib/chat-recovery.js` ([recovery](chat-recovery.md)).
-- **Cross-vendor agents.** `clanker-load-agent` starts a Claude, Codex or Antigravity task from inside another agent; the chat's **Agents** sheet shows the running tasks. Guide: [agent bridge](agent-bridge.md). Only fake CLIs have been run end to end.
+- **Cross-vendor agents.** `clanker-load-agent` starts a Claude, Codex, Antigravity or GitHub Copilot task from inside another agent. The chat's **Agents** sheet shows the running tasks and Copilot tool activity. Bridge tests use fake CLIs. [Agent bridge guide](agent-bridge.md)
 - **`/architect <task>`**: one model plans and another builds ([`aiChatPanel.architectModel`, `editorModel`](../ai-chat-panel/package.json)). Other slash commands: `/undo`, `/verify`, `/loop` (repeat a prompt, see Quota and scheduling), `/remote-control`, `/grillme`.
 - **Sign-in help.** A signed-out CLI shows a red ring, a card in the chat and a sign-in action (on Linux, Antigravity's browser sign-in runs in a setup terminal). Code: `lib/auth-gate.js`, `lib/cli-accounts.js`.
 

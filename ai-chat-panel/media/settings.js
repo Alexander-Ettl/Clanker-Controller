@@ -192,6 +192,17 @@
 
     <div class="cs-pane" data-pane="general" role="tabpanel">
       <section class="cs-card">
+        <div class="cs-row cs-row-wrap">
+          <span class="cs-icon">${ICON.layers}</span>
+          <div class="cs-info"><span class="cs-title">Look</span><span class="cs-desc">Clanker shows every control. Halo is the minimal look, with fewer buttons and folded steps.</span></div>
+          <div class="time-format-picker look-picker pill-track" role="radiogroup" aria-label="Look">
+            <button class="look-pill" data-look="clanker" type="button" role="radio" aria-checked="true" title="Every control in view">Clanker</button>
+            <button class="look-pill" data-look="halo" type="button" role="radio" aria-checked="false" title="The minimal look">Halo</button>
+          </div>
+        </div>
+      </section>
+
+      <section class="cs-card">
         <div class="cs-row">
           <span class="cs-icon">${ICON.shield}</span>
           <div class="cs-info">
@@ -259,19 +270,39 @@
           <button class="cs-switch" data-role="autoUpdateClis" role="switch" aria-checked="true" aria-label="Automatically update idle CLIs" type="button"></button>
         </div>
         <div class="cs-row">
+          <span class="cs-icon">${ICON.up}</span>
+          <div class="cs-info"><span class="cs-title">Automatically update desktop apps</span><span class="cs-desc">Also update the ChatGPT app and Claude Desktop when they are installed from an apt repository and idle. Each update asks for your system password, so this is off by default. Without it, the provider row shows an Update button.</span></div>
+          <button class="cs-switch" data-role="autoUpdateApps" role="switch" aria-checked="false" aria-label="Automatically update desktop apps" type="button"></button>
+        </div>
+        <div class="cs-row">
+          <span class="cs-icon">${ICON.sliders}</span>
+          <div class="cs-info"><span class="cs-title">Confirm external links</span><span class="cs-desc" id="cs-confirm-links-desc">Ask before opening links from chat. When off, links open directly.</span></div>
+          <button class="cs-switch" data-role="confirmExternalLinks" role="switch" aria-checked="false" aria-label="Confirm external links" aria-describedby="cs-confirm-links-desc" type="button"></button>
+        </div>
+        <div class="cs-row">
           <span class="cs-icon">${ICON.sound}</span>
           <div class="cs-info"><span class="cs-title">Completion sound</span><span class="cs-desc">Play a chime when a reply finishes and nothing you queued is left to run. The notification while the IDE is in the background stays.</span></div>
           <button class="cs-switch" data-role="completionSound" role="switch" aria-checked="true" aria-label="Completion sound" type="button"></button>
         </div>
         <div class="cs-row">
           <span class="cs-icon">${ICON.sliders}</span>
-          <div class="cs-info"><span class="cs-title">CLI telemetry</span><span class="cs-desc" id="cs-cli-telemetry-desc">Allow Codex and Claude Code to use their own telemetry settings. Reload the editor to apply changes to running sessions. For Agy, use Enable Telemetry in /config.</span></div>
+          <div class="cs-info"><span class="cs-title">Open failed steps</span><span class="cs-desc">Unfold a tool step by itself when it fails, so its error is on screen. Off: a failed step stays folded, red and marked Failed, and opens when you click it.</span></div>
+          <button class="cs-switch" data-role="openFailedToolCards" role="switch" aria-checked="false" aria-label="Open failed steps" type="button"></button>
+        </div>
+        <div class="cs-row">
+          <span class="cs-icon">${ICON.sliders}</span>
+          <div class="cs-info"><span class="cs-title">CLI telemetry</span><span class="cs-desc" id="cs-cli-telemetry-desc">Off blocks Codex and Claude Code telemetry and Agy feedback surveys. Reload the editor to apply changes to running sessions. Agy's account-level telemetry has no CLI override in headless mode: toggle Enable Telemetry in agy /config.</span></div>
           <button class="cs-switch" data-role="cliTelemetry" role="switch" aria-checked="false" aria-label="CLI telemetry" aria-describedby="cs-cli-telemetry-desc" type="button"></button>
         </div>
         <div class="cs-row">
           <span class="cs-icon">${ICON.note}</span>
           <div class="cs-info"><span class="cs-title">Work-context icons</span><span class="cs-desc">Classify prompts with the configured free routing service and show category icons beside chats.</span></div>
           <button class="cs-switch" data-role="workContextIcons" role="switch" aria-checked="false" aria-label="Work-context icons" type="button"></button>
+        </div>
+        <div class="cs-row">
+          <span class="cs-icon">${ICON.folder}</span>
+          <div class="cs-info"><span class="cs-title">Chat folders</span><span class="cs-desc">Group chats into folders in Manage Chats and expand them from the sidebar's Recent list. Turn off to hide folder controls and list chats flat.</span></div>
+          <button class="cs-switch" data-role="chatFolders" role="switch" aria-checked="true" aria-label="Chat folders" type="button"></button>
         </div>
         <div class="cs-row">
           <span class="cs-icon">${ICON.sliders}</span>
@@ -396,6 +427,45 @@
             <button class="cs-dd-trigger" type="button" aria-haspopup="listbox" aria-expanded="false" aria-label="Microphone"><span class="cs-dd-value"></span>${ICON.chevron}</button>
             <div class="cs-dd-menu" role="listbox" aria-label="Microphone" hidden></div>
           </div>
+        </div>
+      </section>
+
+      <section class="cs-card cs-voice-engine" data-role="voiceEngine">
+        <div class="cs-row cs-row-wrap">
+          <span class="cs-icon">${ICON.server}</span>
+          <div class="cs-info"><span class="cs-title">Transcription</span><span class="cs-desc" data-role="voiceProviderDesc">Fast cloud transcription via Groq.</span></div>
+          <div class="voice-provider-picker pill-track" role="radiogroup" aria-label="Transcription backend">
+            <button class="provider-pill active" data-provider="groq" type="button">Groq</button>
+            <button class="provider-pill" data-provider="local" type="button">Local</button>
+          </div>
+        </div>
+        <div class="cs-row cs-row-wrap" data-role="voiceGroqModelRow">
+          <span class="cs-icon">${ICON.bolt}</span>
+          <div class="cs-info"><span class="cs-title">Groq Whisper model</span><span class="cs-desc">Large v3 Turbo is fastest; Large v3 offers slightly higher accuracy.</span></div>
+          <select class="cs-select cs-voice-select" data-role="voiceGroqModel" aria-label="Groq Whisper model">
+            <option value="whisper-large-v3-turbo">Large v3 Turbo · Fast</option>
+            <option value="whisper-large-v3">Large v3 · Accurate</option>
+          </select>
+        </div>
+        <div class="cs-voice-local" data-role="voiceLocalPanel" hidden>
+          <div class="cs-row">
+            <span class="cs-icon">${ICON.cube}</span>
+            <div class="cs-info">
+              <div class="cs-title-line"><span class="cs-title">Local model</span><span class="cs-tag" data-role="voiceLocalTag">Not installed</span></div>
+              <span class="cs-desc" data-role="voiceLocalDesc">Nothing is bundled by default. Pick English-only or Multilingual and install on demand.</span>
+            </div>
+          </div>
+          <div class="cs-actions cs-voice-local-controls">
+            <select class="cs-select cs-voice-local-select" data-role="voiceLocalModel" aria-label="Local speech model"></select>
+            <button class="cs-btn is-primary" data-role="voiceLocalInstall" type="button">Install &amp; download</button>
+            <button class="cs-btn is-quiet" data-role="voiceLocalRemove" type="button" hidden>Remove model</button>
+          </div>
+          <div class="cs-progress cs-voice-local-progress" data-role="voiceLocalProgress" hidden>
+            <div class="cs-progress-track"><i class="cs-progress-bar" data-role="voiceLocalBar"></i></div>
+            <span class="cs-progress-line" data-role="voiceLocalProgressLine"></span>
+          </div>
+          <p class="cs-status" data-role="voiceLocalStatus" role="status"></p>
+          <p class="cs-provider-note" data-role="voiceLocalNote">Downloads whisper.cpp and weights outside this workspace. Cloud text cleanup runs only if a Groq or Cloudflare key is connected.</p>
         </div>
       </section>
 
@@ -711,9 +781,9 @@
           setting('Switch models within a provider', 'Lets the router move between models of the same CLI mid-chat.', sw(cfg.switching, (v) => save((c) => { c.switching = v; }), 'Allow switching')),
           setting('Switching threshold', 'How much better a model must fit before the router changes.', percent(cfg.hysteresis, (v) => save((c) => { c.hysteresis = v; }))),
         ]),
-        group('g:session', ICON.layers, 'Chat sessions', `${cfg.session_mode === 'always_new' ? 'Always new' : 'Continues when possible'} · new session at ${pct(cfg.context_threshold)} full`, [
+        group('g:session', ICON.layers, 'Chat sessions', cfg.session_mode === 'always_new' ? 'Always new' : 'Continues when possible', [
           setting('Sessions', 'Continuing keeps the CLI\'s cache warm.', pick([['continue_when_possible', 'Continue when possible'], ['always_new', 'Always start new']], cfg.session_mode, (v) => save((c) => { c.session_mode = v; }), 'Session mode')),
-          setting('Start a new session at', 'How full the model\'s context may get.', percent(cfg.context_threshold, (v) => save((c) => { c.context_threshold = v; }))),
+          setting('Start a new session at', 'Applies to harnesses without native auto-compaction.', percent(cfg.context_threshold, (v) => save((c) => { c.context_threshold = v; }))),
           setting('Prepare a summary at', 'Must be lower than the value above.', percent(cfg.summary_start, (v) => save((c) => { c.summary_start = v; }))),
         ]),
         group('g:image', ICON.image, 'Screenshots', cfg.screenshot ? `Sent downscaled, up to ${cfg.image_width}px` : 'Never sent to the router', [
@@ -852,6 +922,8 @@
     const formatPills = body.querySelectorAll('.format-pill');
     const ringPills = body.querySelectorAll('.ring-source-pill');
     const namesPills = body.querySelectorAll('.names-pill');
+    const lookPills = body.querySelectorAll('.look-pill');
+    const showLook = look => { for (const pill of lookPills) { const on = pill.dataset.look === look; pill.classList.toggle('active', on); pill.setAttribute('aria-checked', String(on)); } };
     const permissionPills = body.querySelectorAll('.permission-pill');
 
     function renderPermissionSupport(mode = 'fullAccess') {
@@ -1030,6 +1102,10 @@
       const updating = status.updating[agent];
       const version = info.version || cli.version;
       const note = status.notes[agent];
+      const app = status.apps?.[agent];
+      const appUpdating = status.appUpdating?.[agent];
+      const appNote = status.appNotes?.[agent];
+      const viaApp = Boolean(app && status.bundled?.includes(agent)); // the copy in use is inside the app: one button updates both
 
       // [dot / text colour, text]: the one thing that most needs your attention comes first.
       const [tone, text] = !cli.path ? ['', 'Not installed']
@@ -1073,7 +1149,11 @@
       };
       if (unavailable) pill(ICON.refresh, 'Try again', true, () => vscode.postMessage({ type: 'restoreCli', agent }));
       else if (connection && !connected) pill(ICON.plug, details.action, true, () => vscode.postMessage({ type: 'connectCli', agent }));
-      else if (cli.path && (info.outdated || updating)) pill(ICON.up, updating ? 'Updating…' : info.latest, !updating, () => vscode.postMessage({ type: 'updateCli', agent }), Boolean(updating));
+      else if (cli.path && (info.outdated || updating) && !(viaApp && (app.outdated || appUpdating))) pill(ICON.up, updating ? 'Updating…' : info.latest, !updating, () => vscode.postMessage({ type: 'updateCli', agent }), Boolean(updating));
+      if (app && !unavailable && (app.outdated || appUpdating)) {
+        pill(ICON.up, appUpdating ? `Updating ${app.name}…` : `${app.name} ${app.latest}`, !appUpdating, () => vscode.postMessage({ type: 'updateApp', agent }), Boolean(appUpdating));
+        actions.lastElementChild.title = `${app.name} ${app.version} → ${app.latest}. Asks for your system password; ${app.name} must be restarted afterwards.`;
+      }
       if (connection?.enabled) {
         const trash = iconButton(ICON.trash, `Remove ${names[agent] || agent}`, 'is-danger');
         trash.addEventListener('click', () => { confirming = agent; removePanel(card, agent); });
@@ -1095,6 +1175,21 @@
         const outcome = document.createElement('p');
         outcome.className = `cs-update-note ${note.ok ? 'is-ok' : 'is-error'} cs-provider-note`;
         outcome.textContent = note.ok ? 'Update complete.' : note.text;
+        card.append(outcome);
+      }
+      if (appUpdating) {
+        const progress = document.createElement('div');
+        progress.className = 'cs-progress';
+        progress.innerHTML = '<div class="cs-progress-track"><i class="cs-progress-bar"></i></div><span class="cs-progress-time"></span><span class="cs-progress-line"></span>';
+        progress.dataset.startedAt = appUpdating.startedAt;
+        progress.dataset.estimateMs = appUpdating.estimateMs;
+        progress.querySelector('.cs-progress-bar').style.animation = `cs-progress ${appUpdating.estimateMs}ms cubic-bezier(0.1, 0.6, 0.3, 1) ${-(Date.now() - appUpdating.startedAt)}ms forwards`;
+        progress.querySelector('.cs-progress-line').textContent = appUpdating.line || `Waiting for the system password for ${app?.name || 'the app'}…`;
+        card.append(progress);
+      } else if (appNote && (!appNote.ok || Date.now() - appNote.completedAt < 15000)) {
+        const outcome = document.createElement('p');
+        outcome.className = `cs-update-note ${appNote.ok ? 'is-ok' : 'is-error'} cs-provider-note`;
+        outcome.textContent = appNote.text;
         card.append(outcome);
       }
       if (connection && !connected && details.description) {
@@ -1369,7 +1464,7 @@
     function cliStatus(next) {
       status = next;
       clearTimeout(updateNoteTimer);
-      const remaining = Object.values(status.notes).filter(note => note?.ok && note.completedAt)
+      const remaining = [...Object.values(status.notes), ...Object.values(status.appNotes || {})].filter(note => note?.ok && note.completedAt)
         .map(note => note.completedAt + 5000 - Date.now()).filter(ms => ms > 0);
       if (remaining.length) updateNoteTimer = setTimeout(() => cliStatus(status), Math.min(...remaining));
       const active = Object.keys(status.updating).length;
@@ -1436,9 +1531,14 @@
       $('statusBar').setAttribute('aria-checked', String(Boolean(services.statusBar)));
       $('autoContinueOnLimit').setAttribute('aria-checked', String(services.autoContinueOnLimit !== false));
       $('autoUpdateClis').setAttribute('aria-checked', String(services.autoUpdateClis !== false));
+      $('autoUpdateApps').setAttribute('aria-checked', String(services.autoUpdateApps === true));
       $('cliTelemetry').setAttribute('aria-checked', String(services.cliTelemetry === true));
+      $('confirmExternalLinks').setAttribute('aria-checked', String(services.confirmExternalLinks === true));
       $('completionSound').setAttribute('aria-checked', String(services.completionSound !== false));
       $('workContextIcons').setAttribute('aria-checked', String(services.workContextIcons === true));
+      $('chatFolders').setAttribute('aria-checked', String(services.chatFolders !== false));
+      $('openFailedToolCards').setAttribute('aria-checked', String(services.openFailedToolCards === true));
+      showLook(services.appearance === 'halo' || (!services.appearance && document.body.classList.contains('ui-halo')) ? 'halo' : 'clanker');
       if (services.rail) for (const [key, value] of [['railProjects', services.rail.projects], ['railChats', services.rail.chats]]) setRailSelect($(key), value);
       renderWarmup(services.sessionWarmup);
       renderCloudWarmup(services.cloudWarmup);
@@ -1470,6 +1570,12 @@
     $('testTelegram').addEventListener('click', () => vscode.postMessage({ type: 'testTelegram' }));
     $('disconnectTelegram').addEventListener('click', () => vscode.postMessage({ type: 'disconnectTelegram' }));
     $('toggleTunnel').addEventListener('click', () => vscode.postMessage({ type: $('toggleTunnel').textContent.startsWith('Stop') ? 'stopTunnel' : 'startTunnel' }));
+    for (const pill of lookPills) {
+      pill.addEventListener('click', () => {
+        showLook(pill.dataset.look);
+        vscode.postMessage({ type: 'setAppearance', appearance: pill.dataset.look });
+      });
+    }
     for (const pill of formatPills) {
       pill.addEventListener('click', () => {
         for (const p of formatPills) p.classList.remove('active');
@@ -1514,10 +1620,20 @@
       $('autoUpdateClis').setAttribute('aria-checked', String(enabled));
       vscode.postMessage({ type: 'setAutoUpdateClis', enabled });
     });
+    $('autoUpdateApps').addEventListener('click', () => {
+      const enabled = $('autoUpdateApps').getAttribute('aria-checked') !== 'true';
+      $('autoUpdateApps').setAttribute('aria-checked', String(enabled));
+      vscode.postMessage({ type: 'setAutoUpdateApps', enabled });
+    });
     $('cliTelemetry').addEventListener('click', () => {
       const enabled = $('cliTelemetry').getAttribute('aria-checked') !== 'true';
       $('cliTelemetry').setAttribute('aria-checked', String(enabled));
       vscode.postMessage({ type: 'setCliTelemetry', enabled });
+    });
+    $('confirmExternalLinks').addEventListener('click', () => {
+      const enabled = $('confirmExternalLinks').getAttribute('aria-checked') !== 'true';
+      $('confirmExternalLinks').setAttribute('aria-checked', String(enabled));
+      vscode.postMessage({ type: 'setConfirmExternalLinks', enabled });
     });
     $('completionSound').addEventListener('click', () => {
       const enabled = $('completionSound').getAttribute('aria-checked') !== 'true';
@@ -1525,10 +1641,20 @@
       vscode.postMessage({ type: 'setCompletionSound', enabled });
     });
     for (const key of ['railProjects', 'railChats']) $(key).addEventListener('change', () => vscode.postMessage({ type: 'setRailLimit', key, value: Number($(key).value) }));
+    $('openFailedToolCards').addEventListener('click', () => {
+      const enabled = $('openFailedToolCards').getAttribute('aria-checked') !== 'true';
+      $('openFailedToolCards').setAttribute('aria-checked', String(enabled));
+      vscode.postMessage({ type: 'setOpenFailedToolCards', enabled });
+    });
     $('workContextIcons').addEventListener('click', () => {
       const enabled = $('workContextIcons').getAttribute('aria-checked') !== 'true';
       $('workContextIcons').setAttribute('aria-checked', String(enabled));
       vscode.postMessage({ type: 'setWorkContextIcons', enabled });
+    });
+    $('chatFolders').addEventListener('click', () => {
+      const enabled = $('chatFolders').getAttribute('aria-checked') !== 'true';
+      $('chatFolders').setAttribute('aria-checked', String(enabled));
+      vscode.postMessage({ type: 'setChatFolders', enabled });
     });
     $('sessionWarmup').addEventListener('click', () => {
       const enabled = $('sessionWarmup').getAttribute('aria-checked') !== 'true';
@@ -1643,13 +1769,25 @@
     }
     renderLoops();
 
-    // ---------- Voice: the hotkey, how it behaves, the sounds, the Groq key and today's usage ----------
+    // ---------- Voice: the hotkey, how it behaves, the sounds, transcription backend, the Groq key and today's usage ----------
     const modePills = body.querySelectorAll('.mode-pill');
+    const providerPills = body.querySelectorAll('.provider-pill');
     const hotkeyBtn = $('hotkeyBtn');
     const MODE_TEXT = {
       toggle: 'Press once to start, press again to send.',
       hold: 'Hold while you speak, release to send.',
     };
+    const PROVIDER_TEXT = {
+      groq: 'Fast cloud transcription via Groq (recommended on low-RAM machines).',
+      local: 'Private on-device transcription via whisper.cpp. Nothing is bundled until installed.',
+    };
+    const FALLBACK_LOCAL_MODELS = [
+      { id: 'base.en', label: 'Base · Fast', group: 'english', sizeMb: 60, ramGb: 0.3, description: 'Quick English transcription with low memory use.' },
+      { id: 'small.en', label: 'Small · Balanced', group: 'english', sizeMb: 190, ramGb: 0.5, description: 'Recommended English default: accurate and light on RAM.' },
+      { id: 'medium.en', label: 'Medium · Accurate', group: 'english', sizeMb: 539, ramGb: 1.5, description: 'Higher English accuracy; needs ~1.5 GB free RAM.' },
+      { id: 'small', label: 'Small · Fast', group: 'multilingual', sizeMb: 190, ramGb: 0.5, description: 'Multilingual (auto-detects 90+ languages) with modest RAM use.' },
+      { id: 'large-v3-turbo', label: 'Large v3 Turbo · Best', group: 'multilingual', sizeMb: 574, ramGb: 1.6, description: 'Best local multilingual quality; needs ~1.6 GB free RAM.' },
+    ];
     const HOTKEY_HINT = 'Press the keys. Esc cancels, Backspace clears.';
     const GROQ_INTRO = 'Paste an API key to connect your account.';
     let voiceState = null;
@@ -1740,6 +1878,81 @@
     });
     document.addEventListener('pointerdown', (event) => { if (!micMenu.hidden && !micRoot.contains(event.target)) setMicOpen(false); });
 
+    function renderVoiceEngine(state) {
+      const provider = state.provider === 'local' ? 'local' : 'groq';
+      for (const pill of providerPills) pill.classList.toggle('active', pill.dataset.provider === provider);
+      $('voiceProviderDesc').textContent = PROVIDER_TEXT[provider];
+      $('voiceGroqModelRow').hidden = provider !== 'groq';
+      $('voiceLocalPanel').hidden = provider !== 'local';
+      $('voiceGroqModel').value = state.groqModel === 'whisper-large-v3' ? 'whisper-large-v3' : 'whisper-large-v3-turbo';
+
+      const local = state.localStt || {};
+      const models = Array.isArray(local.models) && local.models.length ? local.models : FALLBACK_LOCAL_MODELS;
+      const selectedId = state.localModel || local.selectedModel || 'small.en';
+      const select = $('voiceLocalModel');
+      const sig = JSON.stringify(models.map((m) => [m.id, Boolean(m.installed)]));
+      if (select.dataset.sig !== sig) {
+        select.dataset.sig = sig;
+        const groups = [
+          ['English only', models.filter((m) => m.group === 'english')],
+          ['Multilingual', models.filter((m) => m.group === 'multilingual')],
+        ];
+        select.replaceChildren(...groups.map(([label, entries]) => {
+          const group = document.createElement('optgroup');
+          group.label = label;
+          for (const entry of entries) {
+            const option = document.createElement('option');
+            option.value = entry.id;
+            option.textContent = `${entry.label} (~${entry.sizeMb} MB, ~${entry.ramGb} GB RAM)${entry.installed ? ' · Installed' : ''}`;
+            group.append(option);
+          }
+          return group;
+        }));
+      }
+      select.value = selectedId;
+      select.disabled = Boolean(local.busy);
+
+      const chosen = models.find((entry) => entry.id === selectedId) || models[0];
+      const runtimeReady = Boolean(local.runtime?.installed);
+      const modelReady = Boolean(chosen?.installed);
+      const ready = runtimeReady && modelReady;
+      const busy = Boolean(local.busy);
+
+      setTag($('voiceLocalTag'), busy ? '' : ready ? 'ok' : '', busy ? 'Installing…' : ready ? 'Ready' : runtimeReady ? 'Model needed' : 'Not installed');
+      $('voiceLocalDesc').textContent = chosen
+        ? `${chosen.description} (${chosen.group === 'english' ? 'English only' : 'Multilingual'} · ~${chosen.sizeMb} MB disk, ~${chosen.ramGb} GB RAM).`
+        : 'Pick English-only or Multilingual and install on demand.';
+
+      const installBtn = $('voiceLocalInstall');
+      installBtn.hidden = ready && !busy;
+      installBtn.disabled = busy;
+      installBtn.textContent = busy ? 'Installing…' : runtimeReady ? 'Download model' : 'Install & download';
+
+      const removeBtn = $('voiceLocalRemove');
+      removeBtn.hidden = !modelReady || busy;
+      removeBtn.disabled = busy;
+
+      const progressWrap = $('voiceLocalProgress');
+      progressWrap.hidden = !busy || !local.progress;
+      if (busy && local.progress) {
+        const pct = typeof local.progress.percent === 'number' ? Math.max(4, Math.min(100, local.progress.percent)) : 35;
+        $('voiceLocalBar').style.width = `${pct}%`;
+        $('voiceLocalProgressLine').textContent = local.progress.message || 'Installing…';
+      }
+
+      const status = $('voiceLocalStatus');
+      if (local.error) {
+        status.className = 'cs-status is-error';
+        status.textContent = local.error;
+      } else if (ready && !busy) {
+        status.className = 'cs-status is-ok';
+        status.textContent = `Ready on this computer (${local.runtime.source === 'path' ? 'system whisper-cli' : 'managed whisper-cli'}).`;
+      } else {
+        status.className = 'cs-status';
+        status.textContent = '';
+      }
+    }
+
     function renderVoice() {
       const state = voiceState;
       if (!state) return;
@@ -1756,6 +1969,7 @@
       $('voiceSounds').setAttribute('aria-checked', String(state.sounds));
       $('voicePauseMedia').setAttribute('aria-checked', String(state.pauseMedia !== false));
       renderMics();
+      renderVoiceEngine(state);
       renderGroq(state.groq);
     }
 
@@ -1801,6 +2015,33 @@
       $('voicePauseMedia').setAttribute('aria-checked', String(on));
       voiceState = { ...voiceState, pauseMedia: on };
       vscode.postMessage({ type: 'setVoicePauseMedia', enabled: on });
+    });
+    for (const pill of providerPills) {
+      pill.addEventListener('click', () => {
+        const provider = pill.dataset.provider === 'local' ? 'local' : 'groq';
+        voiceState = { ...(voiceState || {}), provider };
+        renderVoiceEngine(voiceState);
+        vscode.postMessage({ type: 'setVoiceProvider', provider });
+      });
+    }
+    $('voiceGroqModel').addEventListener('change', () => {
+      const model = $('voiceGroqModel').value;
+      voiceState = { ...(voiceState || {}), groqModel: model };
+      vscode.postMessage({ type: 'setVoiceGroqModel', model });
+    });
+    $('voiceLocalModel').addEventListener('change', () => {
+      const model = $('voiceLocalModel').value;
+      voiceState = { ...(voiceState || {}), localModel: model };
+      renderVoiceEngine(voiceState);
+      vscode.postMessage({ type: 'setVoiceLocalModel', model });
+    });
+    $('voiceLocalInstall').addEventListener('click', () => {
+      const model = $('voiceLocalModel').value || 'small.en';
+      vscode.postMessage({ type: 'installLocalStt', model });
+    });
+    $('voiceLocalRemove').addEventListener('click', () => {
+      const model = $('voiceLocalModel').value || 'small.en';
+      vscode.postMessage({ type: 'removeLocalSttModel', model });
     });
 
     const groqStatus = (text, state = '') => { $('groqStatus').className = `cs-status${state ? ` is-${state}` : ''}`; $('groqStatus').textContent = text; };

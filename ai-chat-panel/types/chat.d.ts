@@ -32,6 +32,9 @@ export interface ChatMessage {
   interruptionReason?: string;
   compact?: boolean;
   checkpoint?: boolean;
+  /** Context resets this reply's turn went through without the Compact button (lib/context-reset.js), shown as dividers. */
+  contextResets?: { kind: 'native' | 'session' | 'resume' | 'drop'; title: string; detail: string; at: string }[];
+  contextHandoff?: { from: { agent: string; label: string }; to: { agent: string; label: string } };
   event?: ToolEvent;
   done?: boolean;
   [key: string]: unknown;

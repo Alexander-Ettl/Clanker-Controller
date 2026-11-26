@@ -56,7 +56,7 @@
     w = Math.max(1, Math.round(w)); h = Math.max(1, Math.round(h));
     r = Math.max(0, Math.min(r, w / 2, h / 2));
     bezel = Math.max(1, bezel);
-    const map = new Uint8ClampedArray(w * h * 4), spec = new Uint8ClampedArray(w * h * 4);
+    const map = new Uint8ClampedArray(w * h * 4), spec = new Uint8ClampedArray(peak > 0 ? w * h * 4 : 0); // no highlight asked for: no buffer for it
     for (let i = 0; i < map.length; i += 4) { map[i] = 128; map[i + 1] = 128; map[i + 2] = 128; map[i + 3] = 255; }
     const hx = w / 2, hy = h / 2, ix = hx - r, iy = hy - r, deep = r - bezel, rim = RIM_PX * px, glowLen = bezel * 0.45, bloomLen = bezel * 0.5;
     /* A wide shape is mostly straight top and bottom edge, and there every column is the same: the corners and the side
@@ -69,7 +69,7 @@
         if (reuse && x > xFirst && x <= xLast) {
           const from = (y * w + xFirst) * 4, to = (y * w + x) * 4;
           map[to] = map[from]; map[to + 1] = map[from + 1];
-          spec[to] = spec[from]; spec[to + 1] = spec[from + 1]; spec[to + 2] = spec[from + 2]; spec[to + 3] = spec[from + 3];
+          if (peak > 0) { spec[to] = spec[from]; spec[to + 1] = spec[from + 1]; spec[to + 2] = spec[from + 2]; spec[to + 3] = spec[from + 3]; }
           continue;
         }
         const pxx = x + 0.5 - hx, pyy = y + 0.5 - hy;
@@ -108,6 +108,86 @@
   /* Just the displacement map (kept as the small, stable entry point the tests use). */
   const buildMap = (w, h, r, bezel) => buildLens(w, h, r, bezel, { spec: 0 }).map;
 
+  /* ---------- Lens tiles and the island's rim pieces ----------
+     The island bends the backdrop along the rim only (see refract() in island()). It needs, for each thin box along a shape's
+     edge, three images: the displacement map (what the SVG filter reads), the ring (how much of each pixel is rim; the frost steps
+     out of it) and the solid (the ring's footprint at full strength; the strip shows through it).
+     All three are the same in every column between the two ends of a wide shape, so a tile keeps only the ends and one middle
+     column (lensTile), and a box is cut straight from it (composeBox) without a canvas in between. That is what makes releasing
+     the window's edge cheap: the work no longer grows with the width, and a new width finds its tile already built. */
+  const RING_GAIN = 3.2, RING_BIAS = 8; // the ring is the lens's strength, minus its faint tail (under ~3%), stretched
+  const PACKED_GRAY = new Uint32Array(new Uint8ClampedArray([128, 128, 128, 255]).buffer)[0]; // the same four bytes, whatever the byte order
+
+  /* Boxes that cover exactly what the given ones cover, but never overlap. The frost steps out of the ring by taking the union of the
+     ring pieces from the silhouette; where two pieces overlapped, a soft edge would be counted twice. A box is cut by each earlier
+     one into at most four rectangles. */
+  function disjointBoxes(boxes) {
+    const out = [];
+    boxes.forEach((box, i) => {
+      let parts = [box];
+      for (const [ax, ay, aw, ah] of boxes.slice(0, i)) {
+        parts = parts.flatMap(([x, y, w, h]) => {
+          const x0 = Math.max(x, ax), x1 = Math.min(x + w, ax + aw), y0 = Math.max(y, ay), y1 = Math.min(y + h, ay + ah);
+          if (x0 >= x1 || y0 >= y1) return [[x, y, w, h]]; // clear of it
+          const cut = [];
+          if (y0 > y) cut.push([x, y, w, y0 - y]); // above the overlap
+          if (y1 < y + h) cut.push([x, y1, w, y + h - y1]); // below it
+          if (x0 > x) cut.push([x, y0, x0 - x, y1 - y0]); // left of it
+          if (x1 < x + w) cut.push([x1, y0, x + w - x1, y1 - y0]); // right of it
+          return cut;
+        });
+      }
+      out.push(...parts);
+    });
+    return out;
+  }
+
+  function lensTile(w, h, r, bezel, cache) {
+    w = Math.max(1, Math.round(w)); h = Math.max(1, Math.round(h));
+    const rr = Math.max(0, Math.min(r, w / 2, h / 2)), bz = Math.max(1, bezel), edge = Math.max(rr, bz);
+    const keep = Math.ceil(edge) + 2, wr = Math.min(w, 2 * keep + 2); // wr: the width that is really computed
+    const key = `${wr}|${h}|${Math.round(rr * 4)}|${Math.round(bz * 4)}`;
+    let body = cache && cache.get(key);
+    if (!body) {
+      const map = buildLens(wr, h, rr, bz, { spec: 0 }).map;
+      const ring = new Uint8ClampedArray(map.length), solid = new Uint8ClampedArray(map.length);
+      ring.fill(255); solid.fill(255);
+      for (let i = 0; i < map.length; i += 4) {
+        const dx = map[i] - 128, dy = map[i + 1] - 128;
+        if (dx === 0 && dy === 0) { ring[i + 3] = solid[i + 3] = 0; continue; } // most of a tile: no bend, no ring
+        ring[i + 3] = Math.max(0, Math.min(255, (Math.sqrt(dx * dx + dy * dy) * RING_GAIN - RING_BIAS) * 1.032));
+        solid[i + 3] = ring[i + 3] > 0 ? 255 : 0;
+      }
+      body = { wr, h, map: new Uint32Array(map.buffer), ring: new Uint32Array(ring.buffer), solid: new Uint32Array(solid.buffer), bytes: map.length * 3 };
+      if (cache) { if (cache.size >= 24) cache.delete(cache.keys().next().value); cache.set(key, body); }
+    }
+    // Column x of the full-width tile is column col(x) of the stored one: the left end as it is, the identical middle as its
+    // first column, the right end shifted back by what was left out (buildLens' own reuse rule, same edge, same bytes).
+    const first = Math.ceil(edge - 0.5), lastFull = Math.floor(w - edge - 0.5), shift = w - wr;
+    return { w, h, body, col: shift === 0 ? (x) => x : (x) => (x <= first ? x : x <= lastFull ? first : x - shift) };
+  }
+
+  /* The three images of one box ([x, y, w, h] in CSS px of the dock, `px` pixels to the CSS pixel) cut from the tiles of the
+     shapes it overlaps. Shapes are painted in order, a later one overwriting an earlier one wherever it has a pixel, even a clear
+     one (the pill's own rim wins where the menu's foot overlaps it). Where no shape reaches: map grey (no bend), ring and solid clear. */
+  function composeBox(shapes, tileOf, px, box) {
+    const [bx, by, bw, bh] = box, W = bw * px, H = bh * px, X = bx * px, Y = by * px;
+    const map = new Uint32Array(W * H).fill(PACKED_GRAY), ring = new Uint32Array(W * H), solid = new Uint32Array(W * H);
+    for (const s of shapes) {
+      const t = tileOf(s), sx = Math.round(s.x * px), sy = Math.round(s.y * px);
+      const x0 = Math.max(X, sx), x1 = Math.min(X + W, sx + t.w), y0 = Math.max(Y, sy), y1 = Math.min(Y + H, sy + t.h);
+      for (let y = y0; y < y1; y++) {
+        const into = (y - Y) * W - X, from = (y - sy) * t.body.wr;
+        for (let x = x0; x < x1; x++) {
+          const c = from + t.col(x - sx);
+          map[into + x] = t.body.map[c]; ring[into + x] = t.body.ring[c]; solid[into + x] = t.body.solid[c];
+        }
+      }
+    }
+    const bytes = (a) => new Uint8ClampedArray(a.buffer);
+    return { w: W, h: H, map: bytes(map), ring: bytes(ring), solid: bytes(solid) };
+  }
+
   /* One role per surface kind: bezel = lens width in px, depth = peak background shift in px, chroma = colour split
      (0..1; 0 means one displacement pass instead of three), spec = rim highlight strength, blur / saturate /
      brightness = the glass body. Sized to the element, not the viewport: strong on small buttons, gentle on menus,
@@ -120,7 +200,7 @@
     { sel: '.msg-clamp-toggle', bezel: 13, depth: 9, chroma: 0.15, spec: 0.85, frost: 1.5, blur: 0, saturate: 1.5, brightness: 1.08 },
     { sel: '.history-list', bezel: 24, depth: 8, chroma: 0, spec: 0.5, blur: 0.6, saturate: 1.7, brightness: 1.08 },
     // Floating popup bars and pills (glass-ui.css): frosted interior before the lens, crisp curved rim and specular edge.
-    { sel: '.cs-settings-search, .history-tools .history-search, .history-filter-btn, .project-gallery-search, .project-gallery-quota, .inv-bar, .cs-route-status', bezel: 18, depth: 16, chroma: 0, spec: 0.85, frost: 2.2, blur: 0, saturate: 1.55, brightness: 1.04 },
+    { sel: '.cs-settings-search, .history-tools .history-search, .history-filter-btn, .history-folder-add-btn, .project-gallery-search, .project-gallery-quota, .inv-bar, .cs-route-status', bezel: 18, depth: 16, chroma: 0, spec: 0.85, frost: 2.2, blur: 0, saturate: 1.55, brightness: 1.04 },
   ];
 
   /* The island's rim refraction (see island() below): the lens is BEZEL px wide and bends the backdrop by up to DEPTH px. */
@@ -329,7 +409,8 @@
     let scanTimer = 0;
     // Only a new or removed surface matters. The transcript (every streamed word adds nodes) and the island's own layers
     // never hold one, so they must not wake the scan.
-    const quiet = (node) => !!node.closest && !!node.closest('#transcript, .island-glass');
+    // The filter graphs this script keeps in its own <defs> are no surface either: every refraction adds and drops a few.
+    const quiet = (node) => node === defs || (!!node.closest && !!node.closest('#transcript, .island-glass'));
     // A "Show more" toggle is added inside the transcript once a prompt has been measured, so it is the one node that may wake it.
     const isToggle = (node) => !!node.classList && node.classList.contains('msg-clamp-toggle');
     const mutations = new MutationObserver((list) => {
@@ -388,7 +469,7 @@
         const shaped = active.matches('.project-peek, .history-peek');
         if (shaped && window.bubbleOutline && outline !== sig) {
           outline = sig;
-          const tail = active.matches('.history-peek') ? 6 : 0;
+          const tail = active.matches('.history-peek:not(.is-folder-peek)') ? 6 : 0;
           const svg = `<svg xmlns="${NS}" width="${b.width}" height="${b.height}"><path fill="white" d="${window.bubbleOutline(b.width, b.height, tail)}"/></svg>`;
           surface.style.maskImage = `url("data:image/svg+xml,${encodeURIComponent(svg)}")`;
           surface.style.maskSize = '100% 100%';
@@ -539,32 +620,20 @@
       reader.readAsDataURL(blob);
     }, 'image/png'));
     let rimNodes = [], rimSeq = 0;
-    function tileFor(s, px) {
-      const key = [Math.round(s.w), Math.round(s.h), Math.round(s.rx), px].join('|');
-      let t = tiles.get(key);
-      if (!t) {
-        const w = Math.round(s.w) * px, h = Math.round(s.h) * px;
-        const map = buildLens(w, h, s.rx * px, Math.min(BEZEL, Math.min(s.w, s.h) / 2) * px, { spec: 0 }).map;
-        const ring = new Uint8ClampedArray(map.length), solid = new Uint8ClampedArray(map.length);
-        // ring: how much of each pixel is rim (soft). solid: the same footprint at full strength (see refract()).
-        // The faint tail of the lens (under ~3%) is dropped, so the strips can end where the ring does.
-        ring.fill(255); solid.fill(255);
-        for (let i = 0; i < map.length; i += 4) {
-          const dx = map[i] - 128, dy = map[i + 1] - 128;
-          if (dx === 0 && dy === 0) { ring[i + 3] = solid[i + 3] = 0; continue; } // most of a tile: no bend, no ring
-          ring[i + 3] = Math.max(0, Math.min(255, (Math.sqrt(dx * dx + dy * dy) * 3.2 - 8) * 1.032));
-          solid[i + 3] = ring[i + 3] > 0 ? 255 : 0;
-        }
-        t = { w, h, map, ring, solid };
-        if (tiles.size >= 8) tiles.delete(tiles.keys().next().value);
-        tiles.set(key, t);
-      }
-      return t;
-    }
+    // A shape's lens tile. Cached by what is really computed, which for a wide shape is its two ends: a new width is a cache hit.
+    const tileFor = (s, px) => lensTile(Math.round(s.w) * px, Math.round(s.h) * px, s.rx * px, Math.min(BEZEL, Math.min(s.w, s.h) / 2) * px, tiles);
     function clearRim() {
       for (const n of rimNodes) n.remove();
       rimNodes = [];
     }
+    // A box's three images as PNG data URLs. The canvases are CPU-backed (nothing is read back from a GPU), small (one box, not the
+    // whole dock), and encoded together.
+    const png = (pixels, w, h) => {
+      const canvas = doc.createElement('canvas');
+      canvas.width = w; canvas.height = h;
+      canvas.getContext('2d', { willReadFrequently: true }).putImageData(new ImageData(pixels, w, h), 0, 0);
+      return encode(canvas);
+    };
     async function refract(shapes, w, h, token) {
       if (token !== last || !row.isConnected) return;
       // Strip masks need an image with CSS positioning; SVG mask references use local user coordinates.
@@ -575,45 +644,34 @@
       const cacheKey = JSON.stringify([Math.floor(w), Math.floor(h), px, shapes], (key, value) => typeof value === 'number' && key !== 'o' && key !== '2' ? Math.floor(value) : value);
       let encoded = refractions.get(cacheKey);
       if (!encoded) {
-        const mapC = doc.createElement('canvas'); mapC.width = w * px; mapC.height = h * px;
-        const mapX = mapC.getContext('2d');
-        mapX.fillStyle = 'rgb(128,128,128)'; mapX.fillRect(0, 0, mapC.width, mapC.height);
-        const ringC = doc.createElement('canvas'); ringC.width = w * px; ringC.height = h * px;
-        const ringX = ringC.getContext('2d');
-        const solidC = doc.createElement('canvas'); solidC.width = w * px; solidC.height = h * px;
-        const solidX = solidC.getContext('2d');
-        const boxes = [];
         // The menu first, the pill and buds after, so the pill's own rim wins where the menu's foot overlaps it.
-        for (const s of [...shapes.filter((q) => q.flat), ...shapes.filter((q) => !q.flat)]) {
-          if (s.o < 0.99 || s.w < 24 || s.h < 24) continue;
-          const t = tileFor(s, px), x = Math.round(s.x * px), y = Math.round(s.y * px);
-          mapX.putImageData(new ImageData(t.map, t.w, t.h), x, y);
-          ringX.putImageData(new ImageData(t.ring, t.w, t.h), x, y);
-          solidX.putImageData(new ImageData(t.solid, t.w, t.h), x, y);
-          boxes.push(...rimBoxes(s));
-        }
-        const crops = boxes.map(([bx, by, bw, bh]) => {
-          const crop = doc.createElement('canvas'); crop.width = bw * px; crop.height = bh * px;
-          crop.getContext('2d').drawImage(mapC, bx * px, by * px, bw * px, bh * px, 0, 0, bw * px, bh * px);
-          return crop;
-        });
-        const images = [];
-        for (const canvas of [ringC, solidC, ...crops]) {
+        const painted = [...shapes.filter((q) => q.flat), ...shapes.filter((q) => !q.flat)].filter((q) => !(q.o < 0.99 || q.w < 24 || q.h < 24));
+        const boxes = painted.flatMap(rimBoxes);
+        const pieces = [], rings = [];
+        for (const box of boxes) {
           if (token !== last) return;
-          images.push(await encode(canvas)); // yield between canvas snapshots instead of blocking startup with the whole batch
+          const { w: bw, h: bh, map, solid } = composeBox(painted, (q) => tileFor(q, px), px, box);
+          const [mapUri, solidUri] = await Promise.all([png(map, bw, bh), png(solid, bw, bh)]); // yields between boxes: a long dock never blocks input
+          pieces.push({ map: mapUri, solid: solidUri });
         }
-        const [ring, solid, ...maps] = images;
+        // The frost's ring: the same pixels, in pieces that do not overlap (see disjointBoxes).
+        for (const rect of disjointBoxes(boxes)) {
+          if (token !== last) return;
+          const { w: rw, h: rh, ring } = composeBox(painted, (q) => tileFor(q, px), px, rect);
+          rings.push({ rect, uri: await png(ring, rw, rh) });
+        }
         if (token !== last) return; // a later geometry owns the masks, even if encoding finishes out of order
-        encoded = { ring, solid, boxes, maps };
+        encoded = { boxes, pieces, rings };
         if (refractions.size >= 8) refractions.delete(refractions.keys().next().value);
         refractions.set(cacheKey, encoded);
       }
       if (token !== last) return;
       clearRim();
-      const ringUrl = `url("${encoded.ring}")`, solidUrl = `url("${encoded.solid}")`;
-      // The frost shows the silhouette minus the soft ring; each strip shows the solid ring's footprint inside the silhouette.
-      // Both masks are the full dock's size, shifted so they line up inside a strip.
-      setMask(frost, `${layerMask(silhouette, 0, 0, '100%', '100%')}, ${layerMask(ringUrl, 0, 0, '100%', '100%')}`, ['source-out', 'subtract']);
+      // The frost shows the silhouette minus the soft ring: layer 0 is taken away from the union of the ring pieces beneath it.
+      // Each strip shows its own solid piece, inside the silhouette.
+      const rings = encoded.rings.map(({ rect: [bx, by, bw, bh], uri }) => layerMask(`url("${uri}")`, bx, by, `${bw}px`, `${bh}px`));
+      const more = rings.length;
+      setMask(frost, [layerMask(silhouette, 0, 0, '100%', '100%'), ...rings].join(', '), ['source-out' + ', source-over'.repeat(more), 'subtract' + ', add'.repeat(more)]);
       for (const [index, [bx, by, bw, bh]] of encoded.boxes.entries()) {
         const id = `${prefix}-rim-${++rimSeq}`;
         const f = doc.createElementNS(gl.NS, 'filter');
@@ -621,7 +679,7 @@
         f.setAttribute('filterUnits', 'userSpaceOnUse'); f.setAttribute('primitiveUnits', 'userSpaceOnUse');
         f.setAttribute('color-interpolation-filters', 'sRGB');
         f.setAttribute('x', '0'); f.setAttribute('y', '0'); f.setAttribute('width', String(bw)); f.setAttribute('height', String(bh));
-        f.innerHTML = `<feImage href="${encoded.maps[index]}" x="0" y="0" width="${bw}" height="${bh}" preserveAspectRatio="none" result="map"/>` +
+        f.innerHTML = `<feImage href="${encoded.pieces[index].map}" x="0" y="0" width="${bw}" height="${bh}" preserveAspectRatio="none" result="map"/>` +
           `<feDisplacementMap in="SourceGraphic" in2="map" scale="${DEPTH * 2}" xChannelSelector="R" yChannelSelector="G"/>`;
         gl.defs.appendChild(f);
         const el = doc.createElement('div');
@@ -629,7 +687,7 @@
         el.style.cssText = `left:${bx}px;top:${by}px;width:${bw}px;height:${bh}px;`;
         const bd = `url(#${id}) brightness(1.06)`; // no saturate(): it turned a navy theme's dock a much bluer navy (see --ig-blur)
         el.style.webkitBackdropFilter = bd; el.style.backdropFilter = bd;
-        setMask(el, `${layerMask(solidUrl, -bx, -by, `${w}px`, `${h}px`)}, ${layerMask(silhouette, -bx, -by, `${w}px`, `${h}px`)}`, ['source-in', 'intersect']);
+        setMask(el, `${layerMask(`url("${encoded.pieces[index].solid}")`, 0, 0, '100%', '100%')}, ${layerMask(silhouette, -bx, -by, `${w}px`, `${h}px`)}`, ['source-in', 'intersect']);
         glass.insertBefore(el, frost); // below the frost, so it bends the sharp backdrop, not the blurred one
         rimNodes.push(f, el);
       }
@@ -672,7 +730,7 @@
     kick();
   }
 
-  const api = { buildLens, buildMap, strength, KINDS, islandMask, islandLight, rimBoxes, BEZEL, DEPTH, RIM_FRAC };
+  const api = { buildLens, buildMap, strength, KINDS, islandMask, islandLight, rimBoxes, lensTile, composeBox, disjointBoxes, BEZEL, DEPTH, RIM_FRAC };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   else {
     root.LiquidGlass = api;

@@ -1,19 +1,24 @@
 # Publishing to the Marketplace and Open VSX
 
-Two extensions ship from this repo: **Clanker Controller** (`ai-chat-panel/`) and **Gemini, Claude & Codex Usage** (`antigravity-usage-statusbar/`). The repo keeps `"publisher": "local"` so your installed dev junctions keep their extension ID (`local.ai-chat-panel`) and chat storage. `scripts/package-marketplace.mjs` builds the real packages from a staging copy under `C:\Dev`, with your publisher ID swapped in.
+This repo ships **Clanker Controller** (`ai-chat-panel/`), **Gemini, Claude & Codex Usage** (`antigravity-usage-statusbar/`) and **Clanker Paper & Ink** (`clanker-theme/`). The repo keeps `"publisher": "local"` so your installed dev junctions keep their extension ID (`local.ai-chat-panel`) and chat storage. `scripts/package-marketplace.mjs` sets the publisher ID in a staging copy.
 
 ## One-time setup
 
-1. Create an Azure DevOps organisation and a **Personal Access Token** with scope *Marketplace > Manage* and organisation *All accessible organizations*.
-2. Create a publisher at <https://marketplace.visualstudio.com/manage>. Its ID is the value for `--publisher` below.
-3. For Open VSX (Antigravity installs from there): sign in at <https://open-vsx.org>, create a token, and run `npx ovsx create-namespace <publisher> -p <token>` once. The namespace should match the publisher ID.
-4. The GitHub repo must be **public**. The README images and links point at `raw.githubusercontent.com/Alexander-Ettl/Clanker-Controller/main/...`, and the Marketplace page shows the repository link. On a private repo the images are broken.
+1. The `clanker-controller` publisher already has an active policy named **Release workflow** under **Trusted Publishing**. It authorizes `Alexander-Ettl/Clanker-Controller` and `release.yml`, with the environment blank. [Marketplace publisher management](https://marketplace.visualstudio.com/manage) · [Microsoft's Trusted Publishing instructions](https://code.visualstudio.com/api/working-with-extensions/publishing-extension#publish-with-github-actions-and-trusted-publishing)
+2. Open VSX uses the `clanker-controller` namespace and the `OVSX_PAT` repository secret under **Settings → Secrets and variables → Actions**. [Open VSX publishing](https://github.com/eclipse/openvsx/wiki/Publishing-Extensions)
+3. Keep the GitHub repo public so the Marketplace can display README images hosted on `raw.githubusercontent.com/Alexander-Ettl/Clanker-Controller/main/`.
+
+## Releasing from GitHub
+
+Pushing a tag `v<version>` that matches `ai-chat-panel/package.json` runs `.github/workflows/release.yml`. It checks the code, builds all three packages, publishes them to Open VSX and the VS Code Marketplace, and attaches the `.vsix` files to a GitHub release. GitHub Actions uses the Trusted Publishing policy to authenticate to the Marketplace.
+
+A tag build checks `OVSX_PAT` before packaging. A retry uses the workflow from the original tagged commit, skips already published packages and updates the existing GitHub release assets. Use a new version tag to pick up workflow changes. A manual run on a branch builds and uploads packages for inspection.
 
 ## Every release
 
 1. Bump `version` in the manifest of each extension you are shipping.
 2. Check that everything is clean: `npm run check`, `npm run typecheck`, `npm test`.
-3. Build both packages:
+3. To package locally, run this command:
 
    ```bash
    node scripts/package-marketplace.mjs --publisher <publisher>
@@ -21,14 +26,7 @@ Two extensions ship from this repo: **Clanker Controller** (`ai-chat-panel/`) an
 
    The `.vsix` files land in `~/dev/clanker-publish/out` on Linux and `C:\Dev\clanker-publish\out` on Windows (`--stage <dir>` changes it; staging inside Nextcloud or OneDrive is refused). Don't pass `--target win32-x64`: Linux is supported, and a platform target hides the extension from Linux users. Only the system-wide dictation hotkey is Windows-only; on Linux a desktop shortcut runs `scripts/linux/clanker-dictate`. `--only chat`, `--only usage` or `--only theme` builds one (`theme` is the Clanker Paper & Ink colour themes in `clanker-theme/`).
 4. Look inside before publishing: `cd ~/dev/clanker-publish/ai-chat-panel && npx @vscode/vsce ls --tree`. No `test/`, `.env*`, `types/` or dev `.ps1`/`.sh` scripts should be listed.
-5. Publish:
-
-   ```bash
-   npx @vscode/vsce publish --packagePath ~/dev/clanker-publish/out/ai-chat-panel-<version>.vsix -p <PAT>
-   npx ovsx publish ~/dev/clanker-publish/out/antigravity-usage-statusbar-<version>.vsix -p <token>
-   ```
-
-   Keep tokens out of the repo and out of shell history where you can (`$VSCE_PAT`, `$OVSX_PAT`; PowerShell: `$env:VSCE_PAT`).
+5. Push the version tag to publish through GitHub Actions. To upload an existing `.vsix` by hand, use the publisher management page. [Visual Studio Marketplace publisher management](https://marketplace.visualstudio.com/manage)
 
 ## What the packager changes in the staging copy
 

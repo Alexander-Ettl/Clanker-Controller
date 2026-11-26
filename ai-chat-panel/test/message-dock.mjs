@@ -21,6 +21,8 @@ export async function messageDock(page, { expanded = false, dock = false } = {})
   await send(page, { type: 'chatLoaded', chat });
   await page.clock.runFor(80);
   const group = page.locator('.msg-group-user').first(), bubble = group.locator('.msg-user');
+  // Halo (aiChatPanel.appearance = 'halo') draws a flat bubble: no fused outline is ever painted, everything else holds.
+  const outline = !(await page.evaluate(() => document.body.classList.contains('ui-halo')));
   await group.locator('.msg-clamp-toggle').waitFor({ state: 'attached' });
   await page.waitForTimeout(400);
   // Attachment focus must not paint an empty dock after the pointer leaves (the attached screenshot).
@@ -44,7 +46,7 @@ export async function messageDock(page, { expanded = false, dock = false } = {})
   // Shape and content must follow the same CSS state on pointer enter/leave.
   await bubble.hover();
   await page.waitForTimeout(180);
-  assert.equal((await dockState(page)).painted, true);
+  assert.equal((await dockState(page)).painted, outline);
   assert.equal((await dockState(page)).opacity, 1);
   await page.waitForTimeout(400);
   assert.equal(await group.locator('.msg-actions button').evaluateAll(buttons => buttons.every(button => {
@@ -60,7 +62,7 @@ export async function messageDock(page, { expanded = false, dock = false } = {})
   await page.keyboard.press('Tab');
   await group.getByRole('button', { name: 'Copy', exact: true }).focus();
   await page.waitForTimeout(180);
-  assert.deepEqual(await dockState(page), { painted: true, opacity: 1 });
+  assert.deepEqual(await dockState(page), { painted: outline, opacity: 1 });
   await page.locator('#promptInput').focus();
   await page.waitForTimeout(180);
   assert.deepEqual(await dockState(page), { painted: false, opacity: 0 });

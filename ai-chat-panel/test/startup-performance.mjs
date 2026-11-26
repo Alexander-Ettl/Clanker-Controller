@@ -1,4 +1,4 @@
-// Cold-document startup in the real webview, fake host, headed Edge. No real model calls.
+// Cold-document startup in the real webview, fake host, headless by default (--headed for desktop profiling). No real model calls.
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -7,7 +7,7 @@ import { chromium } from 'playwright';
 import { openChat } from './ui-tester/boot.mjs';
 const out = path.resolve(process.argv.find(arg => arg.startsWith('--out='))?.slice(6) || devDir('clanker-glass/startup'));
 fs.mkdirSync(out, { recursive: true });
-const browser = await chromium.launch({ channel: process.platform === 'win32' ? 'msedge' : undefined, headless: false });
+const browser = await chromium.launch({ channel: process.platform === 'win32' ? 'msedge' : undefined, headless: !process.argv.includes('--headed') });
 const results = [];
 try {
   for (const sidebar of [false, true]) for (let run = 0; run < 3; run++) {

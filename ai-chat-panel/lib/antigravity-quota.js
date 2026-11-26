@@ -3,7 +3,9 @@
 // Antigravity's own language server knows the Gemini quota. Find its process, its CSRF token and its
 // listening port, then ask it over Connect RPC. Ported from the retired usage status-bar extension.
 
-const { execFile } = require('node:child_process');
+const { execFile, spawn } = require('node:child_process');
+const crypto = require('node:crypto');
+const net = require('node:net');
 const http = require('node:http');
 const { discoverLinux } = require('./process-scan');
 
@@ -14,6 +16,8 @@ const DISCOVERY_RETRY_MS = 30_000;
 let cachedConnection = null;
 let discoveryInProgress = false;
 let nextDiscovery = 0;
+let ownHub = null; // { child, port, csrfToken } while the hub Clanker started itself is alive
+const OWN_HUB_RETRY_MS = 10 * 60_000; // a hub that never signed in is not tried again for a while
 
 function postConnectRpc(port, path, csrfToken, postData = '{}', timeoutMs = 1200) {
   return new Promise((resolve, reject) => {
@@ -119,6 +123,65 @@ async function probeAndConnect({ candidatePorts, csrfToken, pid }) {
   return null;
 }
 
+// ---- Own hub (Linux) ----------------------------------------------------------------------------------------
+// The `agy` CLI keeps its CSRF token to itself (it is in no command line and no file), so with only the CLI running
+// there is no language server to ask. `agy --hub --hub-port <p> --csrf_token <t>` serves the same RPCs on a port and
+// token we choose, and sends no prompt. It insists on a terminal, so it runs under `script`, which supplies a pty.
+
+function freePort() {
+  return new Promise((resolve, reject) => {
+    const server = net.createServer();
+    server.once('error', reject);
+    server.listen(0, '127.0.0.1', () => { const { port } = server.address(); server.close(() => resolve(port)); });
+  });
+}
+
+const shellQuote = (text) => `'${String(text).replace(/'/g, `'\\''`)}'`;
+
+/** The `script -qfc` command line that runs the hub under a pty. */
+function hubCommand(agyPath, port, csrfToken) {
+  return { file: 'script', args: ['-qfc', `${shellQuote(agyPath)} --hub --hub-port ${port} --csrf_token ${csrfToken}`, '/dev/null'] };
+}
+
+function locateAgy() {
+  try { return require('./binary-locator.js').locate('gemini')?.path || null; } catch { return null; }
+}
+
+function stopOwnHub() {
+  const hub = ownHub;
+  ownHub = null;
+  if (!hub) return;
+  if (cachedConnection?.pid === `own:${hub.child.pid}`) cachedConnection = null;
+  // The hub was started as a process-group leader: `script` and the `agy` under it both get the signal.
+  try { process.kill(-hub.child.pid, 'SIGTERM'); } catch { try { hub.child.kill('SIGTERM'); } catch { /* already gone */ } }
+}
+
+async function startOwnHub({ agyPath = locateAgy(), spawnFn = spawn } = {}) {
+  if (process.platform !== 'linux' || !agyPath) return null;
+  if (ownHub) return ownHub; // already serving: the caller asks it for the quota itself
+  const port = await freePort();
+  const csrfToken = crypto.randomUUID();
+  const { file, args } = hubCommand(agyPath, port, csrfToken);
+  let child;
+  try { child = spawnFn(file, args, { stdio: 'ignore', detached: true, env: { ...process.env, AGY_CLI_DISABLE_AUTO_UPDATE: '1' } }); } catch { return null; }
+  const hub = { child, port, csrfToken };
+  for (const event of ['error', 'exit']) child.on(event, () => { if (ownHub === hub) ownHub = null; });
+  ownHub = hub;
+  // Ready once the quota RPC answers; the hub needs a few seconds to sign in.
+  for (let attempt = 0; attempt < 20 && ownHub === hub; attempt += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 750));
+    try {
+      const data = await postConnectRpc(port, QUOTA_RPC, csrfToken, '{}', 1500);
+      if (data && (data.response?.groups || data.groups)) return { ...hub, initialData: data };
+    } catch { /* not listening yet */ }
+  }
+  stopOwnHub();
+  nextDiscovery = Date.now() + OWN_HUB_RETRY_MS;
+  return null;
+}
+
+process.once('exit', stopOwnHub);
+
 async function fetchQuotaSummary() {
   if (cachedConnection) {
     try {
@@ -132,9 +195,15 @@ async function fetchQuotaSummary() {
   discoveryInProgress = true;
   try {
     const discovery = await discoverLanguageServer();
-    const connection = discovery?.candidatePorts?.length ? await probeAndConnect(discovery) : null;
-    if (!connection) { nextDiscovery = Date.now() + DISCOVERY_RETRY_MS; return null; }
+    let connection = discovery?.candidatePorts?.length ? await probeAndConnect(discovery) : null;
+    if (!connection) {
+      // Nothing to ask (only the CLI is running): serve the quota from a hub of our own.
+      const hub = await startOwnHub();
+      if (hub) connection = { port: hub.port, csrfToken: hub.csrfToken, pid: `own:${hub.child.pid}`, initialData: hub.initialData };
+    }
+    if (!connection) { nextDiscovery = Math.max(nextDiscovery, Date.now() + DISCOVERY_RETRY_MS); return null; }
     cachedConnection = { port: connection.port, csrfToken: connection.csrfToken, pid: connection.pid };
+    connection.initialData ??= await postConnectRpc(connection.port, QUOTA_RPC, connection.csrfToken, '{}', 1500).catch(() => undefined);
     return { data: connection.initialData, port: connection.port, pid: connection.pid };
   } finally {
     discoveryInProgress = false;
@@ -148,4 +217,4 @@ async function callLanguageServer(rpc) {
   try { return await postConnectRpc(cachedConnection.port, `/exa.language_server_pb.LanguageServerService/${rpc}`, cachedConnection.csrfToken, '{}', 2500); } catch { return null; }
 }
 
-module.exports = { fetchQuotaSummary, callLanguageServer, pickLanguageServer };
+module.exports = { fetchQuotaSummary, callLanguageServer, pickLanguageServer, stopOwnHub, hubCommand };

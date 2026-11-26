@@ -21,9 +21,18 @@ function withShim(agent, found, args, input) {
 const claudeModel = (model, effort) => [...(model && model !== 'claude' ? ['--model', model] : []), ...(effort ? ['--effort', effort] : [])];
 const codexModel = (model, effort) => [...(model ? ['-m', model] : []), ...(effort ? ['-c', `model_reasoning_effort="${effort}"`] : [])];
 
+function copilotTask(found, { cwd, model, prompt }, edit) {
+  const { commandFor } = require('./providers/copilot.js');
+  const { args, input } = commandFor({ fullPrompt: prompt, model, cwd });
+  const tools = edit ? 'view,glob,grep,edit,create,apply_patch' : 'view,glob,grep,web_fetch,web_search';
+  return withShim('copilot', found, [...args, '--no-ask-user', '--disable-builtin-mcps', `--available-tools=${tools}`,
+    ...(edit ? ['--allow-tool=read,write'] : ['--allow-tool=read', '--deny-tool=write,shell', '--allow-all-urls'])], input);
+}
+
 function fixerSpec(agent, { model, effort, cwd, prompt }) {
   const found = locate(agent).path;
   if (!found) throw new Error(`The ${agent} CLI is not installed.`);
+  if (agent === 'copilot') return copilotTask(found, { cwd, model, prompt }, true);
   let args, input = `${prompt}\n`;
   if (agent === 'claude') {
     args = ['-p', '--output-format', 'stream-json', '--verbose', '--permission-mode', 'acceptEdits', '--no-session-persistence', ...claudeModel(model, effort)];
@@ -61,6 +70,7 @@ function readerSpec(agent, { model, cwd, prompt }) {
 function researchSpec(agent, { model, effort, cwd, prompt }) {
   const found = locate(agent).path;
   if (!found) throw new Error(`The ${agent} CLI is not installed.`);
+  if (agent === 'copilot') return copilotTask(found, { cwd, model, prompt }, false);
   let args, input = `${prompt}\n`;
   if (agent === 'claude') {
     let safe = []; // keeps the user's hooks (completion chimes), CLAUDE.md and MCP servers out of a delegated run, when this CLI has it
@@ -77,8 +87,30 @@ function researchSpec(agent, { model, effort, cwd, prompt }) {
   return withShim(agent, found, args, input);
 }
 
-function parseLine(line, state) {
+function parseLine(line, state, agent) {
   let raw; try { raw = JSON.parse(line); } catch { return; }
+  if (!raw || typeof raw !== 'object') return;
+  if (agent === 'copilot') {
+    const { normalizeEvent, usage } = require('./providers/copilot.js');
+    if (raw.agentId || raw.data?.parentToolCallId) return;
+    if (raw.type === 'session.error') {
+      state.providerError = normalizeEvent(raw)?.text;
+      state.errored = true;
+    } else if (raw.type === 'result' && raw.exitCode) {
+      state.errored = true;
+    } else if (raw.type === 'assistant.message') {
+      const answer = normalizeEvent(raw)?.text;
+      if (answer) {
+        state.partial = state.partial ? `${state.partial}\n\n${answer}` : answer;
+        if (!raw.data.toolRequests?.length) state.reply = answer;
+        state.errored = false;
+        state.providerError = null;
+      }
+    }
+    const counts = usage(raw);
+    if (counts) state.tokens = (state.tokens || 0) + counts.input + counts.output;
+    return;
+  }
   if (raw.type === 'result') { if (typeof raw.result === 'string') state.reply = raw.result; if (raw.is_error) state.errored = true; state.tokens = usageTotal(raw.usage) ?? state.tokens; } // claude
   else if (raw.type === 'assistant' && !raw.parent_tool_use_id) { // claude, mid-run: the text so far, kept in case the run dies before its result
     const text = (raw.message?.content || []).filter((part) => part?.type === 'text').map((part) => part.text).join('');
@@ -101,12 +133,15 @@ async function runSpec(spec, agent, { cwd, signal, timeoutMs, idleMs, logFile, o
     result = await processOutput(spec.command, spec.args, { cwd, signal, timeoutMs, idleMs, onActivity, onSpawn, env: spec.env, input: spec.input, maxBytes: 8 * 1024 * 1024,
       onLine: line => {
         if (logFile) try { fs.appendFileSync(logFile, line.slice(0, 100000) + '\n'); } catch { /* the log is a diagnostic aid only */ }
-        parseLine(line, state);
+        parseLine(line, state, agent);
         if (state.reply) onStatus?.('running');
         onProgress?.(state);
       } });
   } catch (error) { throw Object.assign(error, { state }); }
-  if (result.code !== 0 || state.errored) throw Object.assign(new Error(`${agent} did not finish${result.stderr ? `: ${result.stderr.trim().split(/\r?\n/).pop().slice(0, 200)}` : '.'}`), { state, stderr: result.stderr });
+  if (result.code !== 0 || state.errored) {
+    const detail = state.providerError || result.stderr?.trim().split(/\r?\n/).pop();
+    throw Object.assign(new Error(`${agent} did not finish${detail ? `: ${detail.slice(0, 200)}` : '.'}`), { state, stderr: result.stderr });
+  }
   if (agent === 'gemini' && !state.reply.trim()) {
     const info = state.providerResult;
     const denied = info?.deniedActions.map(action => action.display_name || action.action).join(', ');

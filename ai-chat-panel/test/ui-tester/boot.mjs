@@ -19,7 +19,7 @@ function chatHtml(sidebar) {
   const uri = file => ({ fsPath: file, toString: () => file });
   const originalLoad = Module._load;
   Module._load = function (request, parent, isMain) {
-    if (request === 'vscode') return { env: { language: 'en' }, Uri: { file: uri, joinPath: (base, ...parts) => uri(path.join(String(base), ...parts)) }, workspace: { getConfiguration: () => ({ get: (_key, fallback) => fallback }) } };
+    if (request === 'vscode') return { env: { language: 'en' }, Uri: { file: uri, joinPath: (base, ...parts) => uri(path.join(String(base), ...parts)) }, workspace: { getConfiguration: () => ({ get: (key, fallback) => key === 'appearance' && process.env.CLANKER_UI_APPEARANCE ? process.env.CLANKER_UI_APPEARANCE : fallback }) } };
     return originalLoad.call(this, request, parent, isMain);
   };
   try {
@@ -31,7 +31,7 @@ function chatHtml(sidebar) {
 }
 
 /** A page showing the chat window. `problems` collects page errors, console errors and failed requests as they happen. */
-export async function openChat(browser, { width, height, sidebar = false, scale = 1, queueLoading }) {
+export async function openChat(browser, { width, height, sidebar = false, scale = 1, queueLoading, realTime = false }) {
   const page = await browser.newPage({ viewport: { width, height }, deviceScaleFactor: scale });
   const problems = [];
   page.on('pageerror', error => problems.push({ kind: 'page-error', detail: error.message.slice(0, 300) }));
@@ -44,9 +44,12 @@ export async function openChat(browser, { width, height, sidebar = false, scale 
     return route.fulfill({ contentType: TYPES[path.extname(file)] || 'application/octet-stream', body: fs.readFileSync(file) });
   });
   // A pinned wall clock, so times and "in 20m" read the same on every run and pictures and trees can be compared.
-  await page.clock.install({ time: new Date(2026, 2, 2, 8, 0, 0) });
+  if (!realTime) await page.clock.install({ time: new Date(2026, 2, 2, 8, 0, 0) }); // realTime: benchmarks measure the real timers, not a fake clock's wrapper
   await page.addInitScript(installFakeHost);
   await page.goto(origin);
   await page.locator('#stopBtn').waitFor({ state: 'attached' });
+  // The page stays inert (and invisible) until its styles are confirmed, two frames after start-up. Typing or clicking before
+  // that goes nowhere: scenarios that filled the composer straight away lost the text in about one run in four.
+  await page.waitForFunction(() => !document.body.inert && !document.documentElement.hasAttribute('data-ui-loading'));
   return { page, problems };
 }

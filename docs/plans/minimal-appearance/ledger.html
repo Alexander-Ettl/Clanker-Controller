@@ -1,0 +1,215 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Minimal appearance · C · Ledger</title>
+<link rel="stylesheet" href="shared/base.css">
+<script src="../../../ai-chat-panel/media/agent-icons.js"></script>
+<script src="shared/clanker-mark.js"></script>
+<script src="shared/mock.js"></script>
+<style>
+/* C · Ledger. Typographic and flat, for people who live in the editor. No bubbles and no fills in the transcript:
+   prompts carry a › mark, each turn's work is one monospace line, the composer is docked to the edge, and the chat
+   title doubles as the chat switcher. The only glass is the composer's backdrop and the menus. */
+.app { position: relative; height: 100%; display: flex; flex-direction: column; }
+.top { display: flex; align-items: center; gap: 6px; height: 40px; padding: 0 8px 0 10px; flex: none; }
+.switch { display: inline-flex; align-items: center; gap: 4px; height: 28px; padding: 0 6px; margin-left: -2px; min-width: 0; font-size: 12.5px; font-weight: 600; }
+.switch span:first-child { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.switch .ico-s { width: 13px; height: 13px; color: var(--muted); }
+.spacer { flex: 1; }
+.txt { height: 26px; padding: 0 7px; font-size: 12px; color: var(--muted); display: inline-flex; align-items: center; gap: 5px; white-space: nowrap; }
+.txt:hover, .txt.is-hover { color: var(--fg); }
+.txt .ico-s { width: 14px; height: 14px; }
+.kbd { font-family: var(--mono); font-size: 10.5px; color: var(--muted); }
+
+main { flex: 1; min-height: 0; overflow: hidden; display: flex; flex-direction: column; justify-content: flex-end; }
+.col { width: 100%; max-width: 700px; margin: 0 auto; padding: 0 16px 14px 16px; }
+.turn + .turn { margin-top: 30px; }
+.u { display: grid; grid-template-columns: 14px minmax(0, 1fr); font-weight: 600; font-size: 13.5px; line-height: 1.5; }
+.u::before { content: "›"; font-family: var(--mono); color: var(--accent); font-weight: 700; }
+.meta { display: flex; align-items: center; gap: 0; margin: 12px 0 8px 14px; font-family: var(--mono); font-size: 11.5px; color: var(--muted); white-space: nowrap; overflow: hidden; }
+.meta > * + *::before { content: "·"; margin: 0 7px; opacity: .7; }
+.meta .logo { width: 12px; height: 12px; margin-right: 6px; }
+.meta .who { display: inline-flex; align-items: center; }
+.meta .who::before { display: none; }
+.meta .open { margin-left: auto; padding-left: 10px; display: inline-flex; align-items: center; gap: 3px; color: var(--accent); }
+.meta .open::before { display: none; }
+.meta .open .ico-s { width: 12px; height: 12px; transition: transform .2s ease; }
+body[data-state="steps"] .meta .open .ico-s { transform: rotate(90deg); }
+.log { margin: -2px 0 12px 14px; padding: 0; list-style: none; font-family: var(--mono); font-size: 11.5px; line-height: 1.75; color: var(--muted); }
+.log li { display: flex; gap: 8px; min-width: 0; }
+.log .k { flex: none; width: 3.6em; }
+.log .tgt { color: var(--fg); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.log .end { margin-left: auto; padding-left: 8px; white-space: nowrap; }
+.log .thought { font-family: var(--sans); font-style: italic; font-size: 12px; line-height: 1.5; padding: 2px 0 4px; }
+.a { margin-left: 14px; font-size: 13.5px; line-height: 1.65; }
+.a p { margin: 0 0 10px; }
+.diff { margin: 2px 0 0 14px; font-family: var(--mono); font-size: 11.5px; color: var(--muted); display: flex; flex-wrap: wrap; gap: 2px 14px; }
+.diff a { color: var(--fg); text-decoration: none; }
+.diff a:hover { text-decoration: underline; }
+.live { margin: 12px 0 0 14px; font-family: var(--mono); font-size: 11.5px; color: var(--muted); display: flex; align-items: center; gap: 0; }
+.live > * + *::before { content: "·"; margin: 0 7px; opacity: .7; }
+.live .logo { width: 12px; height: 12px; margin-right: 6px; }
+.live .who { display: inline-flex; align-items: center; }
+.cursor { display: inline-block; width: 7px; height: 13px; margin-left: 6px; background: var(--accent); animation: blink 1.1s steps(1) infinite; vertical-align: -2px; }
+.cursor::before { display: none; }
+@keyframes blink { 50% { opacity: 0; } }
+
+/* Composer: docked to the bottom edge, no card. A fade lets the transcript slide under it. */
+.dock { flex: none; position: relative; }
+.dock::before { content: ""; position: absolute; left: 0; right: 0; bottom: 100%; height: 26px; background: linear-gradient(to top, var(--bg), transparent); pointer-events: none; }
+body.vscode-high-contrast .dock { border-top: 1px solid var(--hc); }
+.composer { max-width: 700px; margin: 0 auto; padding: 10px 14px 10px 16px; }
+.field { display: grid; grid-template-columns: 14px minmax(0, 1fr); font-size: 13.5px; min-height: 40px; }
+.field::before { content: "›"; font-family: var(--mono); font-weight: 700; color: var(--muted); }
+.field span { color: var(--muted); }
+.crow { display: flex; align-items: center; gap: 2px; margin: 4px 0 0 7px; }
+.crow .txt .logo { width: 12px; height: 12px; }
+.go { height: 28px; padding: 0 10px; border-radius: 7px; display: inline-flex; align-items: center; gap: 6px; font-size: 12px; background: var(--t2); color: var(--fg); }
+.go .kbd { color: var(--muted); }
+.go.stop { background: var(--fg); color: var(--bg); }
+.go.stop .kbd { color: var(--bg); opacity: .75; }
+body.vscode-high-contrast .go { outline: 1px solid var(--hc); }
+
+/* Empty */
+.hello { padding: 0 16px 0 30px; max-width: 700px; width: 100%; margin: 0 auto 26px; }
+.hello .k { font-family: var(--mono); font-size: 11.5px; color: var(--muted); margin: 0 0 10px; }
+.hello h1 { margin: 0 0 14px; font-size: 18px; font-weight: 600; letter-spacing: -.01em; line-height: 1.35; }
+.hello ul { list-style: none; margin: 0; padding: 0; display: grid; gap: 2px; }
+.hello li a { color: var(--muted); text-decoration: none; font-size: 13px; display: inline-flex; gap: 8px; align-items: center; height: 26px; }
+.hello li a::before { content: "→"; font-family: var(--mono); color: var(--accent); }
+.hello li a:hover { color: var(--fg); }
+
+/* Menus: plain lists on glass, numbers in mono */
+.pop { position: absolute; z-index: 5; border-radius: 12px; padding: 6px; }
+.model-pop { left: 14px; bottom: 50px; width: min(320px, calc(100% - 28px)); }
+.more-pop { top: 38px; right: 8px; width: 230px; }
+.switch-pop { top: 38px; left: 8px; width: min(300px, calc(100% - 16px)); }
+.mi { display: flex; align-items: center; gap: 10px; min-height: 32px; padding: 4px 9px; border-radius: 7px; font-size: 12.5px; }
+.mi > .ico-s, .mi > .logo { width: 15px; height: 15px; color: var(--muted); }
+.mi .r { margin-left: auto; font-family: var(--mono); font-size: 11px; color: var(--muted); white-space: nowrap; display: inline-flex; gap: 8px; align-items: center; }
+.mi .r.low { color: var(--warn); }
+.blocks { letter-spacing: 1px; }
+.mi.sel { color: var(--fg); }
+.mi.sel::after { content: "●"; font-size: 8px; color: var(--accent); margin-left: 8px; }
+.sep { height: 1px; margin: 5px 9px; background: var(--hover); }
+body.vscode-high-contrast .sep { background: var(--hc); }
+.h { padding: 6px 9px 2px; font-family: var(--mono); font-size: 10.5px; color: var(--muted); }
+
+/* Settings: a plain document */
+.sheet { position: absolute; inset: 0; z-index: 8; background: var(--bg); display: flex; flex-direction: column; }
+.sheet .body { padding: 8px 16px 18px; max-width: 620px; width: 100%; margin: 0 auto; }
+.sheet h2 { margin: 0; font-size: 12.5px; font-weight: 600; }
+.sheet h3 { margin: 18px 0 6px; font-family: var(--mono); font-size: 10.5px; font-weight: 400; color: var(--muted); letter-spacing: .04em; }
+.opt { display: grid; grid-template-columns: 18px minmax(0, 1fr); gap: 2px 8px; padding: 8px 0; font-size: 13px; }
+.opt .dot { width: 13px; height: 13px; border-radius: 50%; margin-top: 3px; box-shadow: inset 0 0 0 1.5px var(--muted); }
+.opt.on .dot { box-shadow: inset 0 0 0 4px var(--accent); }
+.opt small { grid-column: 2; color: var(--muted); font-size: 12px; line-height: 1.45; }
+.line { display: flex; align-items: baseline; gap: 10px; padding: 7px 0; font-size: 13px; }
+.line .v { margin-left: auto; font-family: var(--mono); font-size: 11.5px; color: var(--accent); white-space: nowrap; }
+.links { display: flex; flex-wrap: wrap; gap: 4px 16px; font-size: 13px; }
+.links a { color: var(--accent); text-decoration: none; }
+</style>
+</head>
+<body>
+<div class="app">
+  <header class="top">
+    <button class="switch tap" aria-haspopup="menu" title="Switch chat"><span data-show="chat steps running model more settings">Fix the sign-in button</span><span data-show="empty">New chat</span><span class="ico-s" data-i="chevDown"></span></button>
+    <span class="spacer"></span>
+    <button class="txt tap" title="New chat"><span class="ico-s" data-i="plus"></span>New</button>
+    <button class="txt tap" aria-label="More" style="padding:0 5px"><span class="ico-s" data-i="more"></span></button>
+  </header>
+
+  <main>
+    <section class="hello" data-show="empty">
+      <p class="k">~/dev/Clanker-Controller</p>
+      <h1>Ask a question, describe a change, or drop in a screenshot.</h1>
+      <ul>
+        <li><a href="#">Explain how this project is put together</a></li>
+        <li><a href="#">Find and fix the failing test</a></li>
+        <li><a href="#">Continue “Fix the sign-in button”</a></li>
+      </ul>
+    </section>
+    <div class="col" data-show="chat steps running model more settings">
+      <div class="turn">
+        <div class="u"><span>The sign-in button does nothing on my phone. Can you find out why and fix it?</span></div>
+        <div class="meta tap">
+          <span class="who"><span class="logo" data-agent="claude"></span>sonnet-5.5</span><span>48s</span><span>7 steps</span>
+          <span class="open">steps<span class="ico-s" data-i="chevRight"></span></span>
+        </div>
+        <ol class="log" data-show="steps">
+          <li><span class="k">search</span><span class="tgt">"sign-in"</span><span class="end">4 hits</span></li>
+          <li><span class="k">read</span><span class="tgt">src/LoginForm.tsx</span></li>
+          <li><span class="k">read</span><span class="tgt">src/CookieBanner.tsx</span></li>
+          <li class="thought">The banner is fixed to the bottom with z-index 50, so below 480px it covers the button.</li>
+          <li><span class="k">edit</span><span class="tgt">src/CookieBanner.tsx</span><span class="end"><span class="add">+4</span> <span class="del">−2</span></span></li>
+          <li><span class="k">edit</span><span class="tgt">src/LoginForm.test.tsx</span><span class="end"><span class="add">+10</span> <span class="del">−1</span></span></li>
+          <li><span class="k">run</span><span class="tgt">npm test</span><span class="end add">42 passed</span></li>
+        </ol>
+        <div class="a">
+          <p>Found it. On small screens the cookie banner sits on top of the sign-in button, so your taps land on the banner instead.</p>
+          <p>I moved the banner above the page content on phones and added a test that taps the button at 375&nbsp;px wide. All 42 tests pass.</p>
+          <p>Want me to check the sign-up page as well?</p>
+        </div>
+        <div class="diff"><a href="#">CookieBanner.tsx</a><span><span class="add">+4</span> <span class="del">−2</span></span><a href="#">LoginForm.test.tsx</a><span><span class="add">+10</span> <span class="del">−1</span></span></div>
+      </div>
+      <div class="turn" data-show="running">
+        <div class="u"><span>Yes, check the sign-up page too.</span></div>
+        <div class="live"><span class="who"><span class="logo" data-agent="claude"></span>sonnet-5.5</span><span>12s</span><span>read SignupForm.tsx<span class="cursor"></span></span></div>
+      </div>
+    </div>
+  </main>
+
+  <footer class="dock">
+    <div class="composer glass" style="box-shadow:none">
+      <div class="field"><span data-show="empty chat steps model more settings">Message, @file, /command</span><span data-show="running">Steer or queue a follow-up</span></div>
+      <div class="crow">
+        <button class="txt tap"><span class="ico-s" data-i="sparkle"></span>Auto<span class="ico-s" data-i="chevDown"></span></button>
+        <button class="txt tap"><span class="ico-s" data-i="paperclip"></span>Attach</button>
+        <button class="txt tap"><span class="ico-s" data-i="mic"></span>Voice</button>
+        <span class="spacer"></span>
+        <button class="go" data-show="empty chat steps model more settings">Send <span class="kbd">⏎</span></button>
+        <button class="go stop" data-show="running">Stop <span class="kbd">Esc</span></button>
+      </div>
+    </div>
+  </footer>
+
+  <div class="pop model-pop glass surface" data-show="model" role="menu">
+    <div class="mi sel is-hover"><span class="ico-s" data-i="sparkle"></span>Auto<span class="r">best per message</span></div>
+    <div class="sep"></div>
+    <div class="h">model · plan left</div>
+    <div class="mi tap"><span class="logo" data-agent="claude"></span>sonnet-5.5<span class="r">62% <span class="blocks">■■■□□</span></span></div>
+    <div class="mi tap"><span class="logo" data-agent="codex"></span>gpt-6.1-sol<span class="r">88% <span class="blocks">■■■■□</span></span></div>
+    <div class="mi tap"><span class="logo" data-agent="gemini"></span>gemini-4-neon<span class="r low">12% · 3h <span class="blocks">■□□□□</span></span></div>
+    <div class="sep"></div>
+    <div class="mi tap"><span class="ico-s" data-i="bolt"></span>effort<span class="r">medium</span></div>
+    <div class="mi tap"><span class="ico-s" data-i="shield"></span>permissions<span class="r">ask before edits</span></div>
+  </div>
+
+  <div class="pop more-pop glass surface" data-show="more" role="menu">
+    <div class="mi tap"><span class="ico-s" data-i="popout"></span>Open in editor</div>
+    <div class="mi tap"><span class="ico-s" data-i="queue"></span>Queue &amp; schedule<span class="r">2</span></div>
+    <div class="mi tap"><span class="ico-s" data-i="loop"></span>Loops</div>
+    <div class="mi tap"><span class="ico-s" data-i="folder"></span>Project<span class="r">clanker</span></div>
+    <div class="sep"></div>
+    <div class="mi tap is-hover"><span class="ico-s" data-i="sliders"></span>Settings<span class="r">Ctrl ,</span></div>
+  </div>
+
+  <div class="sheet" data-show="settings">
+    <header class="top"><h2>Settings</h2><span class="spacer"></span><button class="txt tap">Done</button></header>
+    <div class="body">
+      <h3>INTERFACE</h3>
+      <div class="opt"><span class="dot"></span>Clanker<small>Everything in view: sidebar rail, usage rings, tool cards and the full composer.</small></div>
+      <div class="opt on"><span class="dot"></span>Minimal<small>Text first. Work is one line per turn until you open it; usage shows when a plan runs low.</small></div>
+      <h3>MINIMAL</h3>
+      <div class="line">Work steps<span class="v">folded ▾</span></div>
+      <div class="line">Usage<span class="v">when low ▾</span></div>
+      <div class="line">Model names<span class="v">short ids ▾</span></div>
+      <h3>ELSEWHERE</h3>
+      <div class="links"><a href="#">Models &amp; routing</a><a href="#">Voice</a><a href="#">Remote</a><a href="#">Loops</a></div>
+    </div>
+  </div>
+</div>
+</body>
+</html>

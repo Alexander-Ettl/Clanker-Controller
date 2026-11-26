@@ -2,11 +2,28 @@
 
 Open **Settings → Routing**. Task profiles define task names, matching keywords, excluded keywords, priority (higher wins), and fallback complexity. Assign preferred tasks and excluded tasks to any favorite model. Assignments use the current model IDs; the router does not interpret model names as task rules.
 
+Claude Code, Codex, Antigravity and Copilot manage their own compaction thresholds. The router's **Start a new session at** setting applies to harnesses without active native auto-compaction. Clanker can still create a checkpoint for those harnesses using the context window reported by the CLI or configured for the model.
+
 **Open config** opens the shared `routing-config.json` in Clanker's private session storage. Settings writes this same file. External edits are read on the next routing request or Settings refresh, without a reload. Invalid JSON or invalid values leave the last valid configuration active and show an error in Settings. Credentials stay in SecretStorage.
 
 **Edit with AI** opens an unsent chat draft containing the config path. Add the changes you want, then send it using your selected model. The AI should read the current file, preserve unrelated values, and validate before saving. There is no automatic feedback training or background AI editing.
 
 Example request: “Add a translation profile and assign it to my new favorite model. Give Gemini twice the target task share of the other providers. Keep my confidence threshold.”
+
+## Third-party benchmark table
+
+Every Auto routing request automatically hands Clef (and Groq) an objective, compact benchmark table (`state.benchmarks`) plus per-candidate benchmark summaries alongside remaining quota percentages, built from [model-benchmarks.js](../ai-chat-panel/lib/model-benchmarks.js):
+
+- **Artificial Analysis Intelligence Index v5** (`AA-Intelligence`) and speed tier (`fast` / `medium` / `slow`)
+- **Coding Agent / CursorBench / SWE-bench** (`Coding`, 0–100)
+- **Terminal-Bench 4.1** (`Terminal-Bench`, %)
+- **WebDev Arena (LMArena)** (`WebDev-Arena`, Elo)
+
+Task categories weight the matching benchmark axes (for example, `Coding` + `Terminal-Bench` for backend/debugging/builds, `WebDev-Arena` + `Coding` for visual UI work, `Speed` + `AA-Intelligence` for quick docs/research) while accounting for remaining quota so exhausted or low-quota pools are avoided.
+
+To update scores immediately when a new model drops without waiting for an extension update:
+- Drop overrides into `<session>/routing-benchmarks.json` (keyed by model family id, e.g. `"gemini-4-neon": { "intelligence": 61, "coding": 94, "terminal": 65.2, "frontend": 1765, "speed": "fast" }`), or
+- Set a free `ARTIFICIAL_ANALYSIS_API_KEY` (cached daily from `https://artificialanalysis.ai/api/v2/language/models`).
 
 ## Editable fields
 

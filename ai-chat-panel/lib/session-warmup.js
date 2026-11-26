@@ -47,7 +47,8 @@ function commandFor(agent, entry, binary, { lean = true } = {}) {
     // window without Clanker ever seeing it, and the ring keeps showing no window running.
     return { command, env, input: `${PROMPT}\n`, args: [...args, 'exec', '--json', '--skip-git-repo-check', '--sandbox', 'read-only', ...cliTelemetry(agent).args, '--model', entry.model, ...(entry.effort ? ['-c', `model_reasoning_effort="${entry.effort}"`] : []), '-'] };
   }
-  return { command, env, input: JSON.stringify({ event: 'user', message: { content: PROMPT } }) + '\n', args: [...args, '--model', entry.model, '--mode', 'plan', '--sandbox', '--disable-slash-commands',
+  const telemetry = cliTelemetry(agent);
+  return { command, env: { ...env, ...telemetry.env }, input: JSON.stringify({ event: 'user', message: { content: PROMPT } }) + '\n', args: [...args, ...telemetry.args, '--model', entry.model, '--mode', 'plan', '--sandbox', '--disable-slash-commands',
     '--input-format', 'stream-json', '--output-format', 'stream-json', '--print-timeout', `${TIMEOUT_MS / 1000}s`] };
 }
 

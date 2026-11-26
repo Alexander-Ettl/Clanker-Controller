@@ -14,7 +14,15 @@ const { researchSpec, fixerSpec, parseLine } = require('../lib/investigation-fix
 const agent = require('../lib/clanker-agent');
 
 const SPEC = path.join(__dirname, 'clanker-agent-spec.js');
-const tmp = () => fs.mkdtempSync(path.join(os.tmpdir(), 'clanker-agent-'));
+const made = [];
+const tmp = () => { const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'clanker-agent-')); made.push(dir); return dir; };
+// Jobs started here are indexed under <CLANKER_HOME>/jobs/<chat>. Without this, a test run inside a Clanker chat (which exports
+// CLANKER_CHAT_ID) listed every fake job in that chat's real agents chip: 47 runs left 376 "agents" in one chat.
+const TEST_HOME = tmp();
+const TEST_CHAT = 'clanker-agent-test-chat';
+process.env.CLANKER_HOME = TEST_HOME;
+process.env.CLANKER_CHAT_ID = TEST_CHAT;
+test.after(() => { for (const dir of made) fs.rmSync(dir, { recursive: true, force: true }); });
 const entry = (agentId, id, label, extra = {}) => ({ id, agent: agentId, model: id, effort: null, label, company: { claude: 'Anthropic', codex: 'OpenAI', gemini: 'Google' }[agentId], ...extra });
 const CATALOG = [
   entry('gemini', 'gemini-4-argon-low', 'Gemini 4 Argon Low'), entry('gemini', 'gemini-4-argon-medium', 'Gemini 4 Argon Medium'), entry('gemini', 'gemini-4-argon-high', 'Gemini 4 Argon High'),
@@ -58,6 +66,45 @@ test('mid-run text is kept from Claude and Codex, not from a sub-agent', () => {
   assert.equal(state.partial, 'main');
   parseLine(JSON.stringify({ type: 'item.completed', item: { type: 'agent_message', text: 'codex says' } }), state);
   assert.equal(state.partial, 'codex says');
+});
+
+test('a Copilot delegation keeps the default model, project root, permissions and final JSONL reply', async () => {
+  const cwd = tmp();
+  const home = tmp();
+  const copilot = entry('copilot', 'copilot-auto', 'Copilot · Auto', { model: 'auto', isDefault: true });
+  agent.publish({ home, models: [entry('copilot', 'copilot-fast', 'Copilot · Fast', { model: 'fast' }), copilot] });
+  const catalog = agent.readCatalog(home);
+  assert.equal(agent.resolveTarget('copilot', catalog).model, 'auto');
+  assert.equal(agent.resolveTarget('copilot:new-model', catalog).model, 'new-model');
+  const launch = { cwd, model: 'auto', prompt: 'Read the status file' };
+  const read = researchSpec('copilot', launch);
+  const edit = fixerSpec('copilot', launch);
+  assert.ok(read.args.includes('--available-tools=view,glob,grep,web_fetch,web_search'));
+  assert.ok(read.args.includes('--deny-tool=write,shell') && !read.args.includes('--allow-all-tools'));
+  assert.ok(edit.args.includes('--allow-tool=read,write') && !edit.args.includes('--allow-all-tools'));
+  assert.deepEqual(read.args.slice(read.args.indexOf('--add-dir'), read.args.indexOf('--add-dir') + 2), ['--add-dir', cwd]);
+  const records = require('./fixtures/copilot-events.json');
+  const spec = () => ({ command: process.execPath, args: ['-e', `process.stdout.write(${JSON.stringify(records.map(record => JSON.stringify(record)).join('\n'))})`], env: {}, input: '' });
+  const result = await run(['run', '--to', 'copilot', '--task', 'status', '--prompt', 'Read the status file', '--cwd', cwd], { inline: true, catalog, spec });
+  assert.equal(result.code, 0, result.text);
+  const dir = agent.jobDir('status', cwd);
+  assert.equal(agent.readStatus(dir).tokens, 175);
+  assert.equal(fs.readFileSync(path.join(dir, 'result.md'), 'utf8'), 'The patch and checks passed.\n\n- Status updated\n- Checks passed\n');
+});
+
+test('Copilot API errors keep their diagnostic and partial reply in the failed job', async () => {
+  const cwd = tmp();
+  const records = [
+    { type: 'assistant.message', data: { content: 'I found the file.', toolRequests: [{ toolCallId: 'view-1' }] } },
+    { type: 'session.error', data: { message: '401 authentication expired' } },
+    { type: 'result', exitCode: 1 },
+  ];
+  const spec = () => ({ command: process.execPath, args: ['-e', `process.stdout.write(${JSON.stringify(records.map(record => JSON.stringify(record)).join('\n'))})`], env: {}, input: '' });
+  const result = await run(['run', '--to', 'copilot:auto', '--task', 'expired', '--prompt', 'Read the file', '--cwd', cwd], { inline: true, spec });
+  assert.equal(result.code, 1);
+  const dir = agent.jobDir('expired', cwd);
+  assert.match(agent.readStatus(dir).hint, /Sign in to copilot/);
+  assert.match(fs.readFileSync(path.join(dir, 'result.md'), 'utf8'), /^> INCOMPLETE:.*401 authentication expired\n\nI found the file\./);
 });
 
 test('Gemini empty SUCCESS after a denied command fails with provider diagnostics, not a fabricated answer', async () => {
@@ -201,4 +248,11 @@ test('mistakes are explained, not thrown', async () => {
   assert.match((await run(['start', '--to', 'Codex Sol 6.1 Medium', '--cwd', tmp()], { inline: true })).text, /No prompt/);
   assert.match((await run(['status', 'nope', '--cwd', tmp()])).text, /No task "nope"/);
   assert.match((await run([])).text, /hand a task to a model/);
+});
+
+test('jobs started by a test are indexed in the test home, never in the real ~/.clanker', async () => {
+  const cwd = tmp();
+  await agent.start({ to: 'codex:gpt-6.1-sol', task: 'isolated', prompt: 'x', cwd }, { catalog: CATALOG, inline: true });
+  assert.ok(agent.indexedJobs(TEST_CHAT, TEST_HOME).includes(path.join(cwd, '_work', 'clanker', 'isolated')));
+  assert.notEqual(process.env.CLANKER_HOME, path.join(os.homedir(), '.clanker'));
 });

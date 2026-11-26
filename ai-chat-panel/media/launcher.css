@@ -452,6 +452,7 @@ body.lg-on:not(.vscode-high-contrast, .vscode-high-contrast-light) .rail .ring:h
 
 /* A section is its label plus what it labels; the gap between sections is much wider than inside one. */
 .launcher-section { display: flex; flex-direction: column; gap: 8px; }
+.launcher-section:has(> .model-cards:empty) { display: none; }
 .launcher-label {
   font: 600 9.5px var(--font-text);
   text-transform: uppercase;
@@ -650,7 +651,10 @@ body.lg-on:not(.vscode-light, .vscode-high-contrast, .vscode-high-contrast-light
   opacity: 0;
   transition: opacity 0.1s var(--eo-ease);
 }
+.ring-row[hidden] { display: none; } /* display:grid above would otherwise win over the attribute (Copilot hides its 7d row) */
 .ring-row-name { color: var(--text-tertiary); }
+/* Copilot has one monthly allowance: "Month" is wider than the 12px "5h"/"7d" column, so the column takes what the word needs. */
+.model-card-copilot .ring-row { grid-template-columns: max-content minmax(0, 1fr) 30px 36px; column-gap: 8px; }
 .ring-row-pct { text-align: right; font-weight: 600; color: var(--text-primary); }
 .ring-row-eta { text-align: right; white-space: nowrap; color: var(--text-tertiary); }
 .ring-bar {
@@ -1093,6 +1097,108 @@ body.lg-on:not(.vscode-light, .vscode-high-contrast, .vscode-high-contrast-light
 }
 
 .history-empty { display: none; }
+
+/* Recent folders: iOS-style squircle tile with a 2x2 mini-grid of member chat marks.
+   Clicking expands it at the very top of Recent inside a soft glass tray with all member chats below. */
+.history-row.is-folder-tile {
+  --history-rim: rgb(var(--ink) / 0.18);
+  height: 40px;
+  padding: 0;
+  clip-path: url(#squircle);
+}
+.history-row.is-folder-tile::before {
+  mask: var(--squircle-fill-mask) center / 100% 100% no-repeat;
+  background: color-mix(in srgb, var(--rail-tile) 82%, rgb(var(--ink) / 0.08));
+}
+.history-row.is-folder-tile:hover::before,
+.history-row.is-folder-tile.is-expanded::before {
+  background: var(--rail-tile-hover);
+}
+.history-row.is-folder-tile.is-expanded {
+  --history-rim: color-mix(in srgb, var(--accent) 65%, rgb(var(--ink) / 0.3));
+}
+.history-peek.is-folder-peek { height: 40px; }
+.history-folder-label {
+  max-width: 52px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.folder-mini-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 12px);
+  grid-template-rows: repeat(2, 12px);
+  gap: 3px;
+  align-items: center;
+  justify-items: center;
+}
+.folder-mini-cell {
+  width: 12px;
+  height: 12px;
+  display: grid;
+  place-items: center;
+  border-radius: 3.5px;
+  overflow: hidden;
+  background: rgb(var(--ink) / 0.06);
+}
+.folder-mini-cell .history-project-icon.is-tile {
+  width: 12px;
+  height: 12px;
+  border-radius: 3.5px;
+  box-shadow: none;
+}
+.folder-mini-cell .history-project-icon.is-tile .project-mark { font-size: 6px; line-height: 1; }
+.folder-mini-cell .history-project-icon.is-tile .project-icon { width: 10px; height: 10px; border-radius: 2px; padding: 0; }
+.folder-mini-cell .agent-logo,
+.folder-mini-cell .agent-mark svg { width: 10px; height: 10px; }
+.folder-mini-cell .slot-mark { width: 10px; height: 10px; border-width: 1px; }
+.folder-mini-cell .slot-mark::before { width: 2.5px; height: 2.5px; }
+.folder-empty-mark,
+.folder-collapse-mark {
+  display: grid;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  color: var(--text-primary);
+}
+.folder-empty-mark { opacity: 0.72; }
+.folder-empty-mark svg,
+.folder-collapse-mark svg { width: 17px; height: 17px; display: block; }
+
+.history-folder-group {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  width: 48px;
+  padding: 4px 4px 8px;
+  margin: -4px -4px 4px;
+  border-radius: 13px;
+  background: rgb(var(--ink) / 0.065);
+  box-shadow: inset 0 0 0 1px rgb(var(--ink) / 0.13);
+  overflow: visible;
+}
+.history-folder-contents {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  overflow: visible;
+}
+.history-folder-contents.is-opening {
+  animation: folder-contents-in 0.22s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+@keyframes folder-contents-in {
+  from { opacity: 0; transform: translateY(-6px) scale(0.95); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+.history-folder-empty-rail {
+  font: 500 9.5px var(--font-text);
+  color: var(--text-tertiary);
+  padding: 2px 0 4px;
+}
+@media (prefers-reduced-motion: reduce) {
+  .history-folder-contents.is-opening { animation: none; }
+}
 
 /* API value: a comparison figure, never a bill. It is the rail's own charcoal glass pill (like the Recent list) with
    "not billed" under the number; on hover it grows leftward into a card over the chat, out of the pill itself (the same

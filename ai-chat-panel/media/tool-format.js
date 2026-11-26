@@ -221,7 +221,45 @@
     try { JSON.parse(trimmed); return true; } catch { return false; }
   }
 
-  const api = { langFor, splitPath, normalize, hasAnsi, parseAnsi, stripAnsi, parseNumbered, parseGrep, pathLine, parseFileList, parseSearch, hostOf, unwrapCommand, lineTone, looksLikeDiff, diffTone, looksLikeJson };
+  /** What a Stop card (TaskStop / KillShell / KillBash) stopped: the stopped command or description, falling back to its task/shell id. */
+  function stopTarget(output, fallback = '') {
+    const raw = String(output || '').trim();
+    const oneLine = (value) => String(value || '').replace(/\s+/g, ' ').trim();
+    const unescapeJson = (chunk) => {
+      try { return oneLine(JSON.parse(`"${chunk}"`)); }
+      catch { return oneLine(chunk.replace(/\\n/g, ' ').replace(/\\t/g, ' ').replace(/\\"/g, '"').replace(/\\\\/g, '\\')); }
+    };
+    if (raw.startsWith('{')) {
+      try {
+        const parsed = JSON.parse(raw);
+        if (parsed && typeof parsed === 'object') {
+          const picked = oneLine(parsed.command || parsed.description || parsed.summary || parsed.task_id || parsed.shell_id || parsed.bash_id);
+          if (picked) return picked;
+          if (typeof parsed.message === 'string') {
+            const inner = parsed.message.match(/stopped\s+(?:task|shell|process)\s*:?\s*[\w-]+\s*\(([\s\S]+)\)\s*$/i);
+            if (inner) return oneLine(inner[1]);
+            const id = parsed.message.match(/(?:task|shell|ID)\s*:?\s*([\w-]+)/i);
+            if (id) return id[1];
+          }
+        }
+      } catch {
+        // Long outputs arrive truncated to a preview; pull the stopped command or id straight from the JSON text.
+        const cmd = raw.match(/"(?:command|description|summary)"\s*:\s*"((?:\\.|[^"\\])+)/);
+        if (cmd) return unescapeJson(cmd[1]);
+        const msg = raw.match(/"message"\s*:\s*"[^"]*?stopped\s+(?:task|shell|process)\s*:?\s*[\w-]+\s*\(((?:\\.|[^"\\])+)/i);
+        if (msg) return unescapeJson(msg[1].replace(/\)\s*$/, ''));
+        const id = raw.match(/"(?:task_id|shell_id|bash_id)"\s*:\s*"([^"]+)"/);
+        if (id) return id[1];
+      }
+    }
+    const paren = raw.match(/stopped\s+(?:task|shell|process)\s*:?\s*[\w-]+\s*\(([\s\S]+?)\)\s*$/i);
+    if (paren) return oneLine(paren[1]);
+    const id = raw.match(/(?:stopped\s+(?:task|shell)|killed\s+(?:shell|bash|task)|(?:task|shell)\s+(?:found\s+)?(?:with\s+)?ID)\s*:?\s*([\w-]+)/i);
+    if (id) return id[1];
+    return oneLine(fallback);
+  }
+
+  const api = { langFor, splitPath, normalize, hasAnsi, parseAnsi, stripAnsi, parseNumbered, parseGrep, pathLine, parseFileList, parseSearch, hostOf, unwrapCommand, lineTone, looksLikeDiff, diffTone, looksLikeJson, stopTarget };
   if (typeof module === 'object' && module.exports) module.exports = api;
   else window.toolFormat = api;
 })();

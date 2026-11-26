@@ -126,7 +126,7 @@ body.lg-on:not(.vscode-high-contrast, .vscode-high-contrast-light) {
      Same floating glass plane in Settings, Manage Chats, All projects and Loops: frosted interior, real Snell rim
      refraction and crisp specular highlight (liquid-glass.js KINDS), floating 10px below the header so scrolling
      content dissolves gently into the top edge and glides visibly underneath the pills. */
-  & :is(.cs-settings-search, .history-tools .history-search, .history-filter-btn, .project-gallery-search, .project-gallery-quota, .inv-bar, .cs-route-status) {
+  & :is(.cs-settings-search, .history-tools .history-search, .history-filter-btn, .history-folder-add-btn, .project-gallery-search, .project-gallery-quota, .inv-bar, .cs-route-status) {
     border-color: transparent;
     border-radius: 20px;
     background-color: var(--gc-pill-fill);
@@ -134,7 +134,7 @@ body.lg-on:not(.vscode-high-contrast, .vscode-high-contrast-light) {
     backdrop-filter: var(--lg-bd, blur(18px) saturate(170%));
     box-shadow: var(--gc-pill-lift), var(--gc-hair), var(--gc-lit), var(--gc-pill-lip);
   }
-  & :is(.cs-settings-search, .history-filter-btn, .project-gallery-quota, .inv-bar, .cs-route-status) {
+  & :is(.cs-settings-search, .history-filter-btn, .history-folder-add-btn, .project-gallery-quota, .inv-bar, .cs-route-status) {
     background-image: var(--gc-pill-sheen);
   }
   & .cs-settings-search { top: 10px; z-index: 8; }
@@ -143,7 +143,8 @@ body.lg-on:not(.vscode-high-contrast, .vscode-high-contrast-light) {
   & :is(.history-tools .history-search, .project-gallery-search.cs-field) { height: 40px; padding-left: 38px; }
   & .history-tools .history-search { background-position: 14px 50%; background-size: 16px; }
   & :is(.history-filter-btn, .project-gallery-quota) { height: 40px; padding: 0 15px 0 13px; color: var(--text-primary); }
-  & .history-filter-btn:hover, & .history-filter-btn[aria-expanded='true'] { background-color: var(--gc-pill-fill-focus); }
+  & .history-folder-add-btn { width: 40px; height: 40px; color: var(--text-primary); }
+  & :is(.history-filter-btn, .history-folder-add-btn):hover, & :is(.history-filter-btn, .history-folder-add-btn)[aria-expanded='true'] { background-color: var(--gc-pill-fill-focus); }
   & .history-filter-btn.is-filtered { box-shadow: var(--gc-pill-lift), inset 0 0 0 1px color-mix(in srgb, var(--accent) 55%, transparent), var(--gc-lit), var(--gc-pill-lip); }
   & .project-gallery-quota.is-full { background-color: color-mix(in srgb, var(--fg-cyan) 16%, var(--gc-pill-fill)); box-shadow: var(--gc-pill-lift), inset 0 0 0 1px rgba(100, 210, 255, 0.35), var(--gc-lit), var(--gc-pill-lip); color: var(--fg-cyan); }
   & :is(.cs-settings-search:focus-within, .history-tools .history-search:focus, .project-gallery-search:focus) {
@@ -160,7 +161,8 @@ body.lg-on:not(.vscode-high-contrast, .vscode-high-contrast-light) {
   & #settingsModal .fs-modal-body,
   & #projectsModal .fs-modal-body { scroll-padding-top: 66px; }
   & #historyModal .history-tools { position: relative; z-index: 8; margin: 10px 14px 0; }
-  & #historyModal .history-filter-panel {
+  & #historyModal .history-filter-panel,
+  & #historyModal .history-folder-creator {
     position: relative;
     z-index: 8;
     margin: 8px 14px 0;
@@ -169,7 +171,7 @@ body.lg-on:not(.vscode-high-contrast, .vscode-high-contrast-light) {
     box-shadow: var(--gc-hair), var(--gc-lit-soft), 0 10px 24px -10px rgb(0 0 0 / calc(0.35 * var(--shadow-k)));
     transform-origin: top right;
   }
-  & #historyModal:has(.history-tools:not([hidden])):has(.history-filter-panel[hidden]) .fs-modal-body {
+  & #historyModal:has(.history-tools:not([hidden])):has(.history-filter-panel[hidden]):has(.history-folder-creator[hidden]) .fs-modal-body {
     margin-top: -50px;
     padding-top: 62px;
     scroll-padding-top: 62px;
@@ -217,6 +219,19 @@ body.lg-on:not(.vscode-high-contrast, .vscode-high-contrast-light) {
   & .history-card.is-recent { --card-rim: rgba(100, 210, 255, 0.55); }
   & .history-card.is-current { --card-rim: rgb(var(--ink) / 0.85); }
   & .history-card.is-waiting { --card-rim: #ffd60a; }
+  & .history-folder-card {
+    border-color: transparent;
+    background: var(--gc-sheen-soft), var(--gc-card);
+    box-shadow: var(--gc-hair), var(--gc-lit-soft), 0 8px 20px -12px rgb(0 0 0 / calc(0.38 * var(--shadow-k)));
+  }
+  & .history-folder-card.is-recent { box-shadow: inset 0 0 0 1px rgba(100, 210, 255, 0.48), var(--gc-lit-soft), 0 8px 20px -12px rgb(0 0 0 / calc(0.38 * var(--shadow-k))); }
+  & .history-folder-card.is-current { box-shadow: inset 0 0 0 1px rgb(var(--ink) / 0.72), var(--gc-lit-soft), 0 8px 20px -12px rgb(0 0 0 / calc(0.38 * var(--shadow-k))); }
+  & .history-folder-card.is-waiting { box-shadow: inset 0 0 0 1px #ffd60a, var(--gc-lit-soft), 0 0 10px rgba(255, 214, 10, 0.32); }
+  & .history-folder-menu {
+    border-color: transparent;
+    background: var(--gc-sheen-soft), var(--charcoal);
+    box-shadow: 0 18px 40px rgb(0 0 0 / calc(0.5 * var(--shadow-k))), var(--gc-hair), var(--gc-lit);
+  }
 
   /* ----- Tiles that hold a logo ----- */
   & :is(.cs-icon, .cs-project-tile, .cs-setup-mark) {

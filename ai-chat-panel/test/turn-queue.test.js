@@ -28,7 +28,7 @@ const load = Module._load;
 const vscodeStub = {
   env: { language: 'en' },
   workspace: { getConfiguration: () => ({ get: (key, fallback) => ({ verifyCommand: 'npm run check', chatNames, railChats })[key] ?? fallback }) },
-  Uri: { file: file => ({ fsPath: file, toString: () => file }), joinPath: (base, ...parts) => ({ fsPath: path.join(String(base), ...parts), toString: () => path.join(String(base), ...parts) }) },
+  Uri: { file: file => ({ scheme: 'file', fsPath: file, toString: () => file }), joinPath: (base, ...parts) => ({ scheme: 'file', fsPath: path.join(String(base), ...parts), toString: () => path.join(String(base), ...parts) }) },
 };
 Module._load = function (request, parent, isMain) {
   if (request === 'vscode') return vscodeStub;
@@ -2067,4 +2067,151 @@ test('reply text is sent to the windows in batches without changing order or con
   assert.equal(run.pendingDelta, null);
   run.postEvent({ type: 'delta', agent: 'codex', model: 'codex', text: 'whole', block: true });
   assert.equal(seen.at(-1).block, true, 'block replies are never merged');
+});
+
+test('a model switch saves the actual handoff and confirms it to the waiting user bubble', async t => {
+  const f = fixture(t), run = f.chat(), host = f.host(run);
+  const send = async (modelId, clientTurnId) => {
+    await run.startTurn({ modelId, clientTurnId, text: `Prompt ${clientTurnId}` });
+    const reply = run.chat.messages.at(-1);
+    const prompt = run.chat.messages.at(-2);
+    const confirmed = host.messages.findLast(message => message.type === 'userMessage');
+    assert.equal(confirmed.clientTurnId, clientTurnId);
+    assert.deepEqual(confirmed.contextHandoff, prompt.contextHandoff);
+    run.streamEngine.emit('event', { type: 'delta', agent: reply.agent, text: 'Reply.' });
+    run.streamEngine.complete();
+    await settle();
+    return { prompt, model: { agent: reply.agent, label: reply.modelLabel } };
+  };
+  const first = await send('claude-sonnet-5-5-high', 'first');
+  assert.equal(first.prompt.contextHandoff, undefined);
+  const second = await send('gpt-6.1-sol-high', 'second');
+  assert.deepEqual(second.prompt.contextHandoff, { from: first.model, to: second.model });
+  const same = await send('gpt-6.1-sol-high', 'same');
+  assert.equal(same.prompt.contextHandoff, undefined);
+  const otherCodex = await send('gpt-6-astra-high', 'other-model');
+  assert.deepEqual(otherCodex.prompt.contextHandoff, { from: same.model, to: otherCodex.model });
+  f.deps.chatStore.flush();
+  assert.deepEqual(f.deps.chatStore.load(run.chat.id).messages.find(entry => entry.clientTurnId === 'second').contextHandoff, second.prompt.contextHandoff);
+});
+
+test('a Claude chat keeps its session at high context while native compaction is available', async t => {
+  const { Router, config } = require('../lib/routing');
+  const f = fixture(t), run = f.chat(), host = f.host(run);
+  run.deps.routing = { router: new Router({ getConfig: () => ({ tiers: ['deterministic'] }) }), getConfig: () => config(), prepareSummary: async () => {} };
+  const modelId = 'claude-sonnet-5-5-high';
+  run.chat.sessions = { claude: { id: 'session-1', seen: 0 } };
+  run.chat.context = { agent: 'claude', tokens: 165000, limit: 1000000 };
+  await run.startTurn({ text: 'keep going', modelId });
+  assert.equal(run.streamEngine.runs.at(-1).resume, 'session-1', 'was 129% of an assumed 128k window and started over');
+  assert.ok(!host.messages.some(message => message.type === 'contextReset'));
+  run.streamEngine.complete(); await settle();
+
+  run.chat.context = { agent: 'claude', tokens: 850000, limit: 1000000 };
+  await run.startTurn({ text: 'and more', modelId });
+  assert.equal(run.streamEngine.runs.at(-1).resume, 'session-1');
+  assert.ok(!host.messages.some(message => message.type === 'contextReset'));
+  run.streamEngine.complete(); await settle();
+
+  t.mock.method(require('../lib/providers').get('claude'), 'nativeAutoCompaction', () => false);
+  run.chat.context = { agent: 'claude', tokens: 850000, limit: 1000000 };
+  await run.startTurn({ text: 'and again', modelId });
+  assert.equal(run.streamEngine.runs.at(-1).resume, null);
+  const reply = run.chat.messages.findLast(message => message.role === 'assistant');
+  assert.equal(reply.contextResets.length, 1);
+  assert.match(reply.contextResets[0].detail, /85% of Claude's window/);
+  assert.deepEqual(host.messages.filter(message => message.type === 'contextReset').map(message => message.title), ['New session · context reset']);
+});
+
+test('high context defers to the harness and still uses the fallback when native compaction is disabled', async t => {
+  const f = fixture(t), run = f.chat(), host = f.host(run);
+  const modelId = 'claude-sonnet-5-5-high';
+  const provider = require('../lib/providers').get('claude');
+  const capability = t.mock.method(provider, 'nativeAutoCompaction', () => true);
+  const engine = run.streamEngine;
+  const finishAt = async (contextTokens) => {
+    await run.startTurn({ text: 'Keep working', modelId });
+    engine.emit('event', { type: 'usage', agent: 'claude', contextTokens, contextWindow: 200000 });
+    engine.emit('event', { type: 'delta', agent: 'claude', text: 'Progress.' });
+    engine.complete();
+    await settle();
+  };
+  await finishAt(200000);
+  assert.equal(engine.runs.length, 1);
+  await assert.rejects(run.startTurn({ text: '/compact keep this', modelId }), /manages compaction automatically/);
+  assert.equal(engine.runs.length, 1, 'a typed compaction command never reaches the CLI');
+  capability.mock.mockImplementation(() => false);
+  await finishAt(179999);
+  assert.equal(engine.runs.length, 2);
+  await finishAt(180000);
+  assert.equal(engine.runs.length, 4);
+  assert.equal(engine.runs.at(-1).autoCompact, true);
+  assert.equal(host.messages.filter(message => message.type === 'compacting').length, 1);
+  engine.emit('event', { type: 'delta', agent: 'claude', text: 'Retained work and next steps.' });
+  engine.complete();
+  await settle();
+  assert.equal(run.chat.messages.at(-1).checkpoint, true);
+});
+
+test("a CLI's own compaction and an unexplained fall of the gauge both leave a divider, once", async t => {
+  const f = fixture(t), run = f.chat(), host = f.host(run);
+  run.chat.sessions = { claude: { id: 'session-1', seen: 0 } };
+  run.chat.context = { agent: 'claude', tokens: 400000, limit: 1000000 };
+  await run.startTurn({ text: 'work', modelId: 'claude-sonnet-5-5-high' });
+  const engine = run.streamEngine;
+  engine.emit('event', { type: 'usage', agent: 'claude', contextTokens: 410000 });
+  engine.emit('event', { type: 'context_reset', kind: 'native', agent: 'claude', trigger: 'auto', preTokens: 410000 });
+  engine.emit('event', { type: 'context_reset', kind: 'native', agent: 'claude', trigger: 'auto', preTokens: 410000 });
+  engine.emit('event', { type: 'usage', agent: 'claude', contextTokens: 60000 });
+  const reply = run.chat.messages.findLast(message => message.role === 'assistant');
+  assert.deepEqual(reply.contextResets.map(entry => entry.kind), ['native'], 'the drop after an announced compaction is not news again');
+  engine.complete(); await settle();
+
+  // Nothing announced it this time (Gemini): the fall itself is the evidence.
+  run.chat.context = { agent: 'claude', tokens: 400000, limit: 1000000 };
+  await run.startTurn({ text: 'more work', modelId: 'claude-sonnet-5-5-high' });
+  run.streamEngine.emit('event', { type: 'usage', agent: 'claude', contextTokens: 120000 });
+  const second = run.chat.messages.findLast(message => message.role === 'assistant');
+  assert.deepEqual(second.contextResets.map(entry => entry.kind), ['drop']);
+  assert.match(second.contextResets[0].detail, /120k tokens, down from 400k/);
+  assert.equal(host.messages.filter(message => message.type === 'contextReset').length, 2);
+});
+
+test('resuming a paused queue with only due scheduled prompts immediately triggers the watchdog', async t => {
+  const f = fixture(t);
+  let watchdog;
+  f.deps.onQueueResumed = () => void watchdog?.tick();
+  const run = f.chat();
+  const queue = new SchedulerQueue({ workspaceDir: f.deps.workspaceDir, sessionDir: f.deps.sessionDir });
+  await queue.enqueue({ model: 'codex', modelId: 'gpt-6.1-sol-high', chatId: run.chat.id, dispatchTrigger: 'quota-reset', prompt: 'continue', notBefore: new Date(Date.now() - 60000).toISOString() });
+  await queue.enqueue({ model: 'codex', modelId: 'gpt-6.1-sol-high', chatId: run.chat.id, dispatchTrigger: 'quota-reset', prompt: 'Next prompt', notBefore: new Date(Date.now() - 60000).toISOString() });
+  run.pauseQueue(true);
+  watchdog = new SchedulerWatchdog({
+    queue, workspaceDir: f.deps.workspaceDir, getModels: () => ({}),
+    resumeInChat: task => f.manager.resumeChat(task),
+    isChatBusy: (id, task) => f.manager.isChatBusy(id, task),
+    getQueueState: id => f.manager.runs.get(id)?.queueState() || {},
+  });
+  t.after(() => watchdog.engine.dispose());
+  await watchdog.tick(); await settle();
+  assert.equal(run.streamEngine.runs.length, 0, 'paused queue holds due scheduled prompts');
+
+  run.pauseQueue(false);
+  await until(() => run.streamEngine.runs.length, n => n === 1);
+  assert.equal(run.chat.messages.findLast(m => m.role === 'user').text, 'continue', 'resuming dispatches the first due scheduled prompt at once');
+});
+
+test('attachUris copies dropped/pasted local files into attachments and turns directories into mentions', async t => {
+  const f = fixture(t), run = f.chat(), host = f.host(run);
+  const sample = path.join(f.deps.workspaceDir, 'notes.txt');
+  const folder = path.join(f.deps.workspaceDir, 'sub');
+  fs.writeFileSync(sample, 'hello linux drop');
+  fs.mkdirSync(folder);
+  const toFileUri = (p) => `file://${p.startsWith('/') ? '' : '/'}${encodeURI(p.replace(/\\/g, '/'))}`;
+  await host.handleMessage({ type: 'attachUris', chatId: run.chat.id, uris: [toFileUri(sample), toFileUri(folder), 'https://example.com/nope'] });
+  const saved = host.messages.find(m => m.type === 'attachmentSaved');
+  assert.ok(saved, 'regular file is copied and reported as attachmentSaved');
+  assert.equal(fs.readFileSync(saved.attachment.path, 'utf8'), 'hello linux drop');
+  const mentions = host.messages.find(m => m.type === 'insertMentions');
+  assert.deepEqual(mentions?.paths, ['sub'], 'dropped directory becomes a workspace-relative @-mention');
 });

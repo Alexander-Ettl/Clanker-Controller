@@ -1,0 +1,250 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Minimal appearance · B · Halo</title>
+<link rel="stylesheet" href="shared/base.css">
+<script src="../../../ai-chat-panel/media/agent-icons.js"></script>
+<script src="shared/clanker-mark.js"></script>
+<script src="shared/mock.js"></script>
+<style>
+/* B · Halo. Softer and a little expressive, closest to Gemini. Rounder shapes, one theme-derived gradient (greeting,
+   Auto spark, the working halo), a pill that holds all steps, and the model choice as a chip inside the composer. */
+body {
+  --grad: linear-gradient(100deg, var(--accent), color-mix(in oklch, var(--accent) 45%, #b36bff) 55%, color-mix(in oklch, var(--accent) 40%, #ff6fae));
+}
+body.vscode-high-contrast { --grad: linear-gradient(var(--fg), var(--fg)); }
+.app { position: relative; height: 100%; display: flex; flex-direction: column; }
+.top { display: flex; align-items: center; gap: 2px; height: 48px; padding: 0 8px; flex: none; }
+.title { font-size: 13px; color: var(--muted); padding-left: 4px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.spacer { flex: 1; }
+.icon-btn { width: 34px; height: 34px; display: grid; place-items: center; color: var(--muted); border-radius: 50%; flex: none; }
+.icon-btn:hover, .icon-btn.is-hover { color: var(--fg); }
+
+main { flex: 1; min-height: 0; overflow: hidden; display: flex; flex-direction: column; justify-content: flex-end; }
+.col { width: 100%; max-width: 760px; margin: 0 auto; padding: 0 16px 12px; }
+.turn + .turn { margin-top: 24px; }
+.u { width: fit-content; max-width: 80%; margin-left: auto; padding: 10px 16px; border-radius: 22px 22px 6px 22px; background: var(--t2); font-size: 13.5px; line-height: 1.5; }
+.reply { display: grid; grid-template-columns: 26px minmax(0, 1fr); gap: 0 10px; margin-top: 18px; }
+.spark { width: 22px; height: 22px; margin-top: 1px; background: var(--grad); -webkit-mask: var(--spark) center / 100% no-repeat; mask: var(--spark) center / 100% no-repeat; }
+body { --spark: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath d='M12 2.5c.5 4.6 2.4 6.9 7 7.5v.9c-4.6.6-6.5 2.9-7 7.6h-.9c-.6-4.7-2.5-7-7.1-7.6V10c4.6-.6 6.5-2.9 7.1-7.5z'/%3E%3C/svg%3E"); }
+.spark.spin { animation: spin 2.4s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+.pill { display: inline-flex; align-items: center; gap: 6px; height: 28px; padding: 0 8px 0 12px; border-radius: 14px; background: var(--t1); font-size: 12.5px; color: var(--muted); margin-bottom: 10px; }
+.pill .ico-s { width: 14px; height: 14px; transition: transform .2s ease; }
+body[data-state="steps"] .pill .ico-s { transform: rotate(180deg); }
+.panel { border-radius: 18px; background: var(--t1); padding: 10px 14px; margin: -2px 0 12px; display: grid; gap: 8px; list-style: none; }
+.panel li { display: flex; align-items: center; gap: 9px; font-size: 12.5px; color: var(--muted); min-width: 0; }
+.panel .tgt { color: var(--fg); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.panel .end { margin-left: auto; padding-left: 8px; white-space: nowrap; }
+.panel .thought { align-items: flex-start; font-style: italic; line-height: 1.45; }
+.panel .thought .ico-s { margin-top: 2px; }
+.a { font-size: 13.5px; line-height: 1.62; }
+.a p { margin: 0 0 10px; }
+.files { display: inline-flex; align-items: center; gap: 8px; height: 30px; padding: 0 6px 0 12px; border-radius: 15px; background: var(--t1); font-size: 12.5px; color: var(--muted); }
+.files .go { display: inline-flex; align-items: center; gap: 2px; height: 22px; padding: 0 6px 0 9px; border-radius: 11px; background: var(--t2); color: var(--fg); font-size: 12px; }
+.files .go .ico-s { width: 13px; height: 13px; }
+.acts { display: flex; align-items: center; margin: 6px 0 0 -7px; color: var(--muted); }
+.acts .icon-btn { width: 30px; height: 30px; }
+.acts .ico { width: 15px; height: 15px; }
+.acts .by { font-size: 11.5px; margin-left: 6px; display: inline-flex; align-items: center; gap: 5px; white-space: nowrap; }
+.acts .logo { width: 12px; height: 12px; }
+.live { display: flex; align-items: center; gap: 8px; font-size: 13px; min-height: 24px; }
+.live .t { color: var(--muted); font-size: 12px; }
+
+.dock { flex: none; padding: 0 12px 14px; position: relative; }
+.composer { position: relative; max-width: 760px; margin: 0 auto; border-radius: 28px; padding: 14px 10px 8px 18px; }
+.input { min-height: 22px; font-size: 14px; color: var(--muted); }
+.crow { display: flex; align-items: center; gap: 4px; margin-top: 10px; margin-left: -8px; }
+.auto { display: inline-flex; align-items: center; gap: 6px; height: 32px; padding: 0 10px 0 9px; border-radius: 16px; font-size: 13px; font-weight: 500; }
+.auto .spark { width: 15px; height: 15px; margin: 0; }
+.auto .ico-s { width: 13px; height: 13px; color: var(--muted); }
+.send { width: 36px; height: 36px; border-radius: 50%; display: grid; place-items: center; background: var(--t3); color: var(--fg); }
+.send .ico { width: 17px; height: 17px; }
+body.vscode-high-contrast .send { outline: 1px solid var(--hc); }
+/* The halo: a gradient rim that only exists while Clanker is working. */
+body[data-state="running"] .composer::before {
+  content: ""; position: absolute; inset: -1.5px; border-radius: inherit; padding: 1.5px; pointer-events: none;
+  background: conic-gradient(from var(--a, 0deg), var(--accent), color-mix(in oklch, var(--accent) 45%, #b36bff), color-mix(in oklch, var(--accent) 40%, #ff6fae), var(--accent));
+  -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0); -webkit-mask-composite: xor; mask-composite: exclude;
+  animation: halo 3s linear infinite;
+}
+body[data-state="running"] .composer::after { content: ""; position: absolute; inset: 8px 30px -8px; border-radius: inherit; z-index: -1; background: var(--grad); filter: blur(22px); opacity: .22; }
+body.vscode-high-contrast[data-state="running"] .composer::after { display: none; }
+@property --a { syntax: "<angle>"; inherits: false; initial-value: 0deg; }
+@keyframes halo { to { --a: 360deg; } }
+
+/* Empty */
+.hello { padding: 0 24px; margin: auto 0 22vh; max-width: 760px; width: 100%; align-self: center; }
+.hello h1 { margin: 0; font-size: 26px; font-weight: 600; letter-spacing: -.02em; line-height: 1.25; background: var(--grad); -webkit-background-clip: text; background-clip: text; color: transparent; width: fit-content; }
+.hello p { margin: 2px 0 0; font-size: 26px; font-weight: 600; letter-spacing: -.02em; line-height: 1.25; color: var(--muted); }
+body.vscode-high-contrast .hello p { color: var(--muted); }
+.chips { display: flex; flex-wrap: wrap; gap: 8px; padding: 0 12px 10px; max-width: 760px; margin: 0 auto; width: 100%; }
+.chips button { flex: none; display: inline-flex; align-items: center; gap: 7px; height: 34px; padding: 0 14px 0 11px; border-radius: 17px; background: var(--t1); font-size: 12.5px; }
+.chips .ico-s { width: 15px; height: 15px; color: var(--accent); }
+
+/* Menus */
+.pop { position: absolute; z-index: 5; border-radius: 22px; padding: 8px; }
+.model-pop { left: 12px; bottom: 112px; width: min(340px, calc(100% - 24px)); }
+.more-pop { top: 46px; right: 8px; width: 240px; }
+.mi { display: flex; align-items: center; gap: 12px; min-height: 40px; padding: 7px 12px; border-radius: 14px; font-size: 13px; }
+.mi > .ico-s, .mi > .logo { width: 17px; height: 17px; color: var(--muted); }
+.mi .spark { width: 17px; height: 17px; margin: 0; }
+.mi .two { display: grid; line-height: 1.32; min-width: 0; flex: 1; }
+.mi .two small { color: var(--muted); font-size: 11.5px; }
+.mi .two small.low { color: var(--warn); }
+.mi .r { margin-left: auto; color: var(--muted); font-size: 12px; display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
+.mi .r .ico-s { width: 15px; height: 15px; }
+.mi.sel { background: var(--t2); }
+.mi.sel .r { color: var(--fg); }
+.seg { display: flex; gap: 2px; padding: 3px; border-radius: 14px; background: var(--t2); margin: 4px 4px 2px; }
+.seg button { flex: 1; height: 28px; border-radius: 11px; font-size: 12px; color: var(--muted); }
+.seg button.on { background: var(--bg); color: var(--fg); box-shadow: 0 1px 3px rgb(0 0 0 / .18); }
+body.vscode-high-contrast .seg { outline: 1px solid var(--hc); }
+body.vscode-high-contrast .seg button.on { outline: 1px solid var(--vscode-contrastActiveBorder); }
+.lab { padding: 8px 12px 2px; font-size: 11.5px; color: var(--muted); }
+.badge { min-width: 20px; height: 20px; padding: 0 6px; border-radius: 10px; background: var(--t3); font-size: 11px; display: inline-grid; place-items: center; color: var(--fg); }
+
+/* Settings */
+.sheet { position: absolute; inset: 0; z-index: 8; background: var(--bg); display: flex; flex-direction: column; }
+.sheet h2 { margin: 0 0 0 8px; font-size: 16px; font-weight: 600; }
+.sheet .body { padding: 4px 16px 18px; max-width: 640px; width: 100%; margin: 0 auto; display: grid; gap: 12px; align-content: start; }
+.card { border-radius: 22px; background: var(--t1); padding: 14px; }
+.card h3 { margin: 0 0 10px; font-size: 13px; font-weight: 600; }
+.looks { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.look { text-align: left; padding: 6px 6px 10px; border-radius: 16px; background: var(--bg); }
+.look.on { box-shadow: 0 0 0 2px var(--accent); }
+body.vscode-high-contrast .look.on { outline: 2px solid var(--focus); }
+.look .art { height: 66px; border-radius: 11px; background: var(--t1); position: relative; overflow: hidden; }
+.art i { position: absolute; display: block; border-radius: 4px; background: var(--t3); }
+.look b { display: block; margin: 8px 6px 1px; font-size: 13px; }
+.look small { display: block; margin: 0 6px; color: var(--muted); font-size: 11.5px; line-height: 1.4; }
+.set { display: grid; gap: 6px; margin-top: 12px; }
+.set > span { font-size: 12.5px; }
+.set .seg { margin: 0; background: var(--t2); }
+.set .seg button.on { background: var(--bg); }
+.links { display: grid; }
+.links .mi { padding: 7px 8px; }
+</style>
+</head>
+<body>
+<div class="app">
+  <header class="top">
+    <button class="icon-btn tap" title="Chats" aria-label="Chats"><span class="ico" data-i="history"></span></button>
+    <span class="title" data-show="chat steps running model more settings">Fix the sign-in button</span>
+    <span class="spacer"></span>
+    <button class="icon-btn tap" title="New chat" aria-label="New chat"><span class="ico" data-i="newChat"></span></button>
+    <button class="icon-btn tap" title="More" aria-label="More"><span class="ico" data-i="more"></span></button>
+  </header>
+
+  <main>
+    <section class="hello" data-show="empty">
+      <h1>Hi Alex</h1>
+      <p>What are we making today?</p>
+    </section>
+    <div class="col" data-show="chat steps running model more settings">
+      <div class="turn">
+        <div class="u surface">The sign-in button does nothing on my phone. Can you find out why and fix it?</div>
+        <div class="reply">
+          <span class="spark" aria-hidden="true"></span>
+          <div>
+            <button class="pill tap surface">7 steps · 48s<span class="ico-s" data-i="chevDown"></span></button>
+            <ol class="panel surface" data-show="steps">
+              <li><span class="ico-s" data-i="search"></span>Searched<span class="tgt">“sign-in”</span><span class="end">4 results</span></li>
+              <li><span class="ico-s" data-i="file"></span>Read<span class="tgt">LoginForm.tsx, CookieBanner.tsx</span></li>
+              <li class="thought"><span class="ico-s" data-i="sparkle"></span><span>The banner is fixed to the bottom with z-index 50, so below 480px it covers the button.</span></li>
+              <li><span class="ico-s" data-i="pencil"></span>Edited<span class="tgt">CookieBanner.tsx</span><span class="end mono"><span class="add">+4</span> <span class="del">−2</span></span></li>
+              <li><span class="ico-s" data-i="pencil"></span>Edited<span class="tgt">LoginForm.test.tsx</span><span class="end mono"><span class="add">+10</span> <span class="del">−1</span></span></li>
+              <li><span class="ico-s" data-i="terminal"></span>Ran<span class="tgt mono">npm test</span><span class="end">42 passed</span></li>
+            </ol>
+            <div class="a">
+              <p>Found it. On small screens the cookie banner sits on top of the sign-in button, so your taps land on the banner instead.</p>
+              <p>I moved the banner above the page content on phones and added a test that taps the button at 375&nbsp;px wide. All 42 tests pass.</p>
+              <p>Want me to check the sign-up page as well?</p>
+            </div>
+            <span class="files surface"><span class="ico-s" data-i="file"></span>2 files<span class="mono"><span class="add">+14</span> <span class="del">−3</span></span><button class="go">Review<span class="ico-s" data-i="chevRight"></span></button></span>
+            <div class="acts">
+              <button class="icon-btn tap" aria-label="Copy"><span class="ico" data-i="copy"></span></button>
+              <button class="icon-btn tap" aria-label="Undo this turn"><span class="ico" data-i="retry"></span></button>
+              <span class="by"><span class="logo" data-agent="claude"></span>Claude Sonnet 5.5 · Auto</span>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="turn" data-show="running">
+        <div class="u surface">Yes, check the sign-up page too.</div>
+        <div class="reply">
+          <span class="spark spin" aria-hidden="true"></span>
+          <div class="live"><span class="shimmer">Reading SignupForm.tsx</span><span class="t">12s</span></div>
+        </div>
+      </div>
+    </div>
+  </main>
+
+  <div class="chips flex" data-show="empty">
+    <button class="tap"><span class="ico-s" data-i="search"></span>Explain this project</button>
+    <button class="tap"><span class="ico-s" data-i="bolt"></span>Fix a bug</button>
+    <button class="tap"><span class="ico-s" data-i="image"></span>From a screenshot</button>
+  </div>
+  <footer class="dock">
+    <div class="composer glass surface">
+      <div class="input" data-show="empty chat steps model more settings">Ask Clanker</div>
+      <div class="input" data-show="running">Add a follow-up</div>
+      <div class="crow">
+        <button class="icon-btn tap" aria-label="Attach"><span class="ico" data-i="plus"></span></button>
+        <button class="auto tap" aria-haspopup="menu"><span class="spark" aria-hidden="true"></span>Auto<span class="ico-s" data-i="chevDown"></span></button>
+        <span class="spacer"></span>
+        <button class="icon-btn tap" aria-label="Dictate" data-show="empty chat steps model more settings"><span class="ico" data-i="mic"></span></button>
+        <button class="send" aria-label="Stop" data-show="running"><span class="ico" data-i="stop"></span></button>
+      </div>
+    </div>
+  </footer>
+
+  <div class="pop model-pop glass surface" data-show="model" role="menu">
+    <div class="mi sel"><span class="spark" aria-hidden="true"></span><span class="two">Auto<small>Picks the best model for each message</small></span><span class="r"><span class="ico-s" data-i="check"></span></span></div>
+    <div class="mi tap"><span class="logo" data-agent="claude"></span><span class="two">Claude Sonnet 5.5<small>Careful with code · 62% left</small></span></div>
+    <div class="mi tap"><span class="logo" data-agent="codex"></span><span class="two">GPT-6.1 Sol<small>Fast and thorough · 88% left</small></span></div>
+    <div class="mi tap"><span class="logo" data-agent="gemini"></span><span class="two">Gemini 4 Neon<small class="low">12% left · resets in 3 h</small></span></div>
+    <div class="lab">How hard to think</div>
+    <div class="seg"><button>Light</button><button class="on">Standard</button><button>Deep</button></div>
+    <div class="mi tap" style="margin-top:4px"><span class="ico-s" data-i="shield"></span>Ask before editing files<span class="r"><span class="ico-s" data-i="chevRight"></span></span></div>
+  </div>
+
+  <div class="pop more-pop glass surface" data-show="more" role="menu">
+    <div class="mi tap"><span class="ico-s" data-i="popout"></span>Open in editor</div>
+    <div class="mi tap"><span class="ico-s" data-i="queue"></span>Queue &amp; schedule<span class="r"><span class="badge">2</span></span></div>
+    <div class="mi tap"><span class="ico-s" data-i="loop"></span>Loops</div>
+    <div class="mi tap"><span class="ico-s" data-i="folder"></span>Project<span class="r">Clanker</span></div>
+    <div class="mi tap is-hover"><span class="ico-s" data-i="sliders"></span>Settings</div>
+  </div>
+
+  <div class="sheet" data-show="settings">
+    <header class="top"><h2>Settings</h2><span class="spacer"></span><button class="icon-btn tap" aria-label="Close"><span class="ico" data-i="close"></span></button></header>
+    <div class="body">
+      <section class="card surface">
+        <h3>Look</h3>
+        <div class="looks" role="radiogroup" aria-label="Interface">
+          <button class="look" role="radio" aria-checked="false">
+            <div class="art"><i style="right:6px;top:6px;bottom:6px;width:14px;border-radius:7px"></i><i style="left:8px;top:12px;width:52%;height:6px"></i><i style="left:8px;top:24px;width:40%;height:6px"></i><i style="left:8px;right:26px;bottom:8px;height:14px;border-radius:7px"></i></div>
+            <b>Clanker</b><small>All controls, usage rings and tool cards</small>
+          </button>
+          <button class="look on" role="radio" aria-checked="true">
+            <div class="art"><i style="left:14px;top:16px;width:34%;height:8px;background:var(--accent);opacity:.7"></i><i style="left:12px;right:12px;bottom:8px;height:18px;border-radius:9px"></i></div>
+            <b>Minimal</b><small>Calm and simple; steps fold away</small>
+          </button>
+        </div>
+        <div class="set"><span>Work steps</span><div class="seg"><button class="on">Folded</button><button>While working</button><button>Always</button></div></div>
+        <div class="set"><span>Usage</span><div class="seg"><button class="on">When low</button><button>Always</button></div></div>
+      </section>
+      <section class="card surface links">
+        <div class="mi tap"><span class="ico-s" data-i="sparkle"></span>Models &amp; routing<span class="r"><span class="ico-s" data-i="chevRight"></span></span></div>
+        <div class="mi tap"><span class="ico-s" data-i="mic"></span>Voice<span class="r"><span class="ico-s" data-i="chevRight"></span></span></div>
+        <div class="mi tap"><span class="ico-s" data-i="globe"></span>Remote<span class="r"><span class="ico-s" data-i="chevRight"></span></span></div>
+        <div class="mi tap"><span class="ico-s" data-i="loop"></span>Loops<span class="r"><span class="ico-s" data-i="chevRight"></span></span></div>
+      </section>
+    </div>
+  </div>
+</div>
+</body>
+</html>

@@ -10,6 +10,7 @@ const { execFile } = require('node:child_process');
 const https = require('node:https');
 const { locate, resolveShim, headlessEnv } = require('./binary-locator.js');
 const { cliTelemetry } = require('./cli-telemetry.js');
+const desktopApps = require('./desktop-apps.js');
 const { MODEL_CATALOG, normalizeModels, setModelCatalog, setFavoriteModels, setEnabledAgents, modelOption } = require('./model-catalog.js');
 const { withPrompt, cleanPrompt, promptFor } = require('../media/model-prompts.js');
 
@@ -78,7 +79,7 @@ function runCli(file, args, timeout, onLine, input = '', agent) {
   const shell = isCmd && !shim;
   return new Promise((resolve) => {
     const child = execFile(shim ? shim.command : shell ? `"${file}"` : file, [...(shim ? shim.args : []), ...telemetry.args, ...args], { windowsHide: true, timeout, shell, maxBuffer: 16 << 20, env: { ...process.env, ...headlessEnv(file), ...telemetry.env } },
-      (error, stdout, stderr) => resolve({ ok: !error, code: error ? (Number.isInteger(error.code) ? error.code : null) : 0, stdout: String(stdout), stderr: String(stderr || error?.message || '') }));
+      (error, stdout, stderr) => resolve({ ok: !error, code: error ? (Number.isInteger(error.code) ? error.code : null) : 0, stdout: String(stdout), stderr: String(stderr || error?.message || ''), timedOut: Boolean(error?.killed), signal: error?.signal || null, spawnError: error && typeof error.code === 'string' ? error.code : null }));
     child.stdin?.on('error', () => {}); // a CLI may exit before it reads initialization
     child.stdin?.end(input);
     if (onLine) for (const stream of [child.stdout, child.stderr]) stream?.on('data', (chunk) => String(chunk).split(/\r?\n/).map((line) => line.trim()).filter(Boolean).forEach(onLine));
@@ -165,10 +166,18 @@ async function fetchModels(enabled = providers.ids()) {
  * report, and the starred ones. `broadcast` posts to every open chat window; favourites persist through the store.
  */
 class CliHub {
-  constructor({ store, promptStore, settingsStore, cacheStore, broadcast, discover = fetchModels, accounts = null, checkVersionsImpl = checkVersions,
-    autoUpdateEnabled = () => false, isBusy = () => true, beforeUpdate = async () => {}, updateCliImpl = updateCli, installedVersionImpl = installedVersion, releaseStatusImpl = releaseStatus, now = Date.now }) {
-    Object.assign(this, { autoUpdateEnabled, isBusy, beforeUpdate, updateCli: updateCliImpl, installedVersion: installedVersionImpl, releaseStatus: releaseStatusImpl, now });
+  constructor({ store, promptStore, settingsStore, cacheStore, seenProvidersStore, broadcast, discover = fetchModels, accounts = null, checkVersionsImpl = checkVersions,
+    autoUpdateEnabled = () => false, autoUpdateAppsEnabled = () => false, checkAppsImpl, updateAppImpl = desktopApps.updateApp, isBusy = () => true, beforeUpdate = async () => {}, updateCliImpl = updateCli, installedVersionImpl = installedVersion, releaseStatusImpl = releaseStatus, now = Date.now }) {
+    Object.assign(this, { autoUpdateEnabled, autoUpdateAppsEnabled, isBusy, beforeUpdate, updateCli: updateCliImpl, installedVersion: installedVersionImpl, releaseStatus: releaseStatusImpl, now });
     this.autoAttempts = {};
+    // Desktop apps (ChatGPT, Claude Desktop) installed from an apt repository: { [agent]: { name, version, latest, outdated } }.
+    this.apps = {};
+    this.appUpdating = {};
+    this.appNotes = {};
+    this.appAttempts = {};
+    this.appPromises = new Map();
+    this.checkApps = checkAppsImpl || (async () => ({})); // the extension passes `checkDesktopApps`; tests never touch the system
+    this.updateAppImpl = updateAppImpl;
     this.updatePromises = new Map();
     this.accounts = accounts;
     this.store = store; // { get(): entry[], set(entry[]) }
@@ -183,6 +192,8 @@ class CliHub {
     this.versionCheck = null;
     this.installedCheck = null;
     this.cacheStore = cacheStore;
+    this.seenProvidersStore = seenProvidersStore;
+    this.seenProviders = new Set(seenProvidersStore?.get() || []);
     this.discover = discover;
     this.fetched = normalizeModels(cacheStore?.get() || []);
     this.updating = {}; // agent -> { startedAt, estimateMs, line }: updates run side by side, each with its own entry
@@ -191,6 +202,7 @@ class CliHub {
     this.modelsBusy = false;
     this.modelErrors = {}; // agent -> why its last model discovery failed
     const savedFavorites = this.store.get();
+    this.rememberProviders([...this.fetched, ...savedFavorites]);
     const migratedFavorites = normalizeModels(savedFavorites);
     for (const entry of savedFavorites) {
       const migrated = migratedFavorites.find((model) => model.agent === entry.agent && model.model === entry.model && model.effort === entry.effort);
@@ -210,7 +222,7 @@ class CliHub {
 
   snapshot() {
     const favorites = this.store.get().map((entry) => entry.id);
-    return { type: 'cliStatus', versions: this.versions, checking: this.checking, updating: this.updating, notes: this.notes, catalog: [...MODEL_CATALOG], prompts: this.prompts, modelSettings: this.modelSettings, fetched: this.available(), modelErrors: this.modelErrors, favorites, modelsBusy: this.modelsBusy, updates: providers.ids().filter((agent) => this.versions[agent]?.outdated) };
+    return { type: 'cliStatus', versions: this.versions, checking: this.checking, updating: this.updating, notes: this.notes, apps: this.apps, appUpdating: this.appUpdating, appNotes: this.appNotes, bundled: Object.keys(this.apps).filter((agent) => this.usesBundledBinary(agent)), catalog: [...MODEL_CATALOG], prompts: this.prompts, modelSettings: this.modelSettings, fetched: this.available(), modelErrors: this.modelErrors, favorites, modelsBusy: this.modelsBusy, updates: providers.ids().filter((agent) => this.versions[agent]?.outdated || this.apps[agent]?.outdated) };
   }
 
   push() {
@@ -219,6 +231,12 @@ class CliHub {
   }
 
   available() { return this.fetched.filter((entry) => this.accounts?.isEnabled(entry.agent) !== false); }
+
+  rememberProviders(models) {
+    const count = this.seenProviders.size;
+    for (const { agent } of models) if (agent) this.seenProviders.add(agent);
+    if (this.seenProviders.size !== count) this.seenProvidersStore?.set([...this.seenProviders]);
+  }
 
   connectionsChanged() {
     setEnabledAgents(this.accounts?.enabledAgents() || providers.ids());
@@ -231,7 +249,8 @@ class CliHub {
     const previous = this.versions;
     this.checking = true;
     this.push();
-    this.versionCheck = this.checkVersions().then((versions) => {
+    const appCheck = Promise.resolve().then(() => this.checkApps()).then((apps) => { if (!Object.keys(this.appUpdating).length) this.apps = apps || {}; }).catch(() => {});
+    this.versionCheck = Promise.all([this.checkVersions(), appCheck]).then(([versions]) => {
       for (const [agent, info] of Object.entries(versions)) {
         // An update or a local version refresh may have completed while the
         // release service was responding. Never put its older version back.
@@ -291,14 +310,60 @@ class CliHub {
   }
 
   update(agent, options) {
+    // The copy Clanker runs lives inside the desktop app: only the app's own update replaces it (the CLI updater cannot).
+    if (this.apps[agent] && this.usesBundledBinary(agent)) return this.updateApp(agent, options);
     if (this.updatePromises.has(agent)) return this.updatePromises.get(agent);
     const promise = this.performUpdate(agent, options).finally(() => this.updatePromises.delete(agent));
     this.updatePromises.set(agent, promise);
     return promise;
   }
 
+  usesBundledBinary(agent) { return desktopApps.isBundledBinary(agent, locate(agent).path); }
+
+  /** Upgrades the provider's desktop app through the system password dialog; the row shows the app's own progress and outcome. */
+  updateApp(agent, options) {
+    if (this.appPromises.has(agent)) return this.appPromises.get(agent);
+    const promise = this.performAppUpdate(agent, options).finally(() => this.appPromises.delete(agent));
+    this.appPromises.set(agent, promise);
+    return promise;
+  }
+
+  async performAppUpdate(agent, { background = false } = {}) {
+    if (!this.apps[agent] || this.appUpdating[agent]) return;
+    const startedAt = Date.now();
+    const track = (line) => { if (this.appUpdating[agent]) { this.appUpdating = { ...this.appUpdating, [agent]: { ...this.appUpdating[agent], line } }; this.push(); } };
+    this.appUpdating = { ...this.appUpdating, [agent]: { startedAt, estimateMs: this.durations[`app:${agent}`] || 90000, line: '', background } };
+    this.appNotes = { ...this.appNotes, [agent]: '' };
+    this.push();
+    let result;
+    try {
+      await this.beforeUpdate(agent);
+      result = await this.updateAppImpl(agent, { onLine: track });
+    } catch (error) { result = { ok: false, message: error.message }; }
+    this.durations[`app:${agent}`] = Date.now() - startedAt;
+    const { [agent]: _done, ...rest } = this.appUpdating;
+    this.appUpdating = rest;
+    this.appNotes = { ...this.appNotes, [agent]: { ok: result.ok, text: result.message, completedAt: Date.now() } };
+    try { this.apps = (await this.checkApps()) || this.apps; } catch { /* keep the last known state */ }
+    // The app's bundled CLI changed with it.
+    void this.refreshInstalled();
+    this.push();
+  }
+
+  async autoUpdateApps() {
+    if (!this.autoUpdateAppsEnabled() || this.checking) return;
+    return Promise.allSettled(Object.keys(this.apps).filter((agent) => this.apps[agent].outdated
+      && this.accounts?.isEnabled(agent) !== false && !this.appUpdating[agent]
+      && !this.isBusy(agent) && this.now() >= (this.appAttempts[agent] || 0))
+      .map((agent) => {
+        this.appAttempts[agent] = this.now() + AUTO_RETRY_MS; // a dismissed password dialog is not shown again for hours
+        return this.updateApp(agent, { background: true });
+      }));
+  }
+
   async performUpdate(agent, { background = false } = {}) {
     if (!providers.has(agent) || this.updating[agent]) return;
+    const previousVersion = this.versions[agent]?.version || null;
     const startedAt = Date.now();
     const track = (line) => { if (this.updating[agent]) { this.updating = { ...this.updating, [agent]: { ...this.updating[agent], line } }; this.push(); } };
     this.updating = { ...this.updating, [agent]: { startedAt, estimateMs: this.durations[agent] || DEFAULT_UPDATE_MS, line: '', background } };
@@ -317,10 +382,16 @@ class CliHub {
     this.durations[agent] = Date.now() - startedAt;
     const { [agent]: _done, ...rest } = this.updating;
     this.updating = rest;
-    this.notes = { ...this.notes, [agent]: { ok: result.ok, text: result.message, completedAt: Date.now() } };
     // Keep the last known release if a post-update network lookup fails.
     const latest = release.latest || this.versions[agent]?.latest;
-    this.setVersion(agent, { version, ...release, latest, outdated: Boolean(version && latest && isNewer(latest, version)) });
+    const outdated = Boolean(version && latest && isNewer(latest, version));
+    // A CLI updater can exit 0 without upgrading (e.g. channel lag or a mismatched release track): surface its message instead of claiming success.
+    const unchanged = Boolean(result.ok && outdated && previousVersion && version === previousVersion);
+    const noteText = unchanged
+      ? (result.message && result.message !== 'Updated' ? `${result.message} (still v${version}, latest v${latest})` : `Still on v${version} after update (latest v${latest})`)
+      : result.message;
+    this.notes = { ...this.notes, [agent]: { ok: result.ok && !unchanged, text: noteText, completedAt: Date.now() } };
+    this.setVersion(agent, { version, ...release, latest, outdated });
     this.push();
   }
 
@@ -335,14 +406,15 @@ class CliHub {
       this.modelErrors = Object.fromEntries(providers.ids().filter(failed).map((agent) => [agent, discovered[agent].error]));
       this.fetched = normalizeModels(providers.ids().flatMap((agent) => (failed(agent) ? []
         : discovered[agent] ?? previous.filter((entry) => entry.agent === agent))));
-      this.cacheStore?.set(this.fetched);
       // First discovery for a provider starts with its reported default. Every
-      // heart remains editable; existing favorites retain their exact effort.
+      // heart remains editable even after an empty discovery result or a restart.
       const favorites = this.store.get();
-      const defaults = this.fetched.filter((entry) => entry.isDefault && !previous.some((old) => old.agent === entry.agent)
+      const defaults = this.fetched.filter((entry) => entry.isDefault && !this.seenProviders.has(entry.agent)
         && !favorites.some((favorite) => favorite.agent === entry.agent));
       const next = [...favorites, ...defaults];
       if (defaults.length) this.store.set(next);
+      this.rememberProviders(this.fetched);
+      this.cacheStore?.set(this.fetched);
       setModelCatalog(this.fetched);
       setFavoriteModels(next);
       this.broadcast({ type: 'modelCatalog', catalog: MODEL_CATALOG, available: this.available() });
@@ -401,4 +473,7 @@ class CliHub {
   }
 }
 
-module.exports = { parseVersion, parseAgyLatest, isNewer, parseCodexModels, parseClaudeModels, parseAgyModels, checkVersions, releaseStatus, updateCli, fetchModels, installedVersion, runCli, CliHub, providerBusy };
+/** The real app check for the extension: the apt-installed desktop apps and the repository's newest versions. */
+const checkDesktopApps = () => desktopApps.checkApps({ fetchText: async (url) => { const res = await fetchRelease(url); if (!res.ok) throw new Error(`HTTP ${res.status}`); return res.text(); } });
+
+module.exports = { checkDesktopApps, parseVersion, parseAgyLatest, isNewer, parseCodexModels, parseClaudeModels, parseAgyModels, checkVersions, releaseStatus, updateCli, fetchModels, installedVersion, runCli, CliHub, providerBusy };

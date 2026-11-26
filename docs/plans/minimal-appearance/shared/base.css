@@ -1,0 +1,102 @@
+/* Shared tokens for the minimal-appearance mockups. Every colour derives from VS Code's theme variables,
+   so a mockup follows whatever theme the editor uses. Variant files only add layout and character. */
+* { box-sizing: border-box; }
+html, body { margin: 0; height: 100%; }
+button { font: inherit; color: inherit; background: none; border: 0; padding: 0; cursor: pointer; }
+svg { display: block; width: 100%; height: 100%; }
+
+body {
+  --bg: var(--vscode-editor-background);
+  --fg: var(--vscode-foreground);
+  /* descriptionForeground is pulled slightly toward the background so secondary text reads as secondary even in
+     themes (Light Modern) that set it equal to the foreground. High contrast keeps the raw value. */
+  --muted: color-mix(in srgb, var(--vscode-descriptionForeground) 86%, var(--bg));
+  --accent: var(--vscode-textLink-foreground);
+  --focus: var(--vscode-focusBorder);
+  --add: var(--vscode-gitDecoration-addedResourceForeground);
+  --del: var(--vscode-gitDecoration-deletedResourceForeground);
+  --warn: var(--vscode-editorWarning-foreground);
+  --hc: transparent;
+  /* Tints: the only way surfaces separate. No borders outside high contrast. */
+  --t1: color-mix(in srgb, var(--fg) 4.5%, var(--bg));
+  --t2: color-mix(in srgb, var(--fg) 8%, var(--bg));
+  --t3: color-mix(in srgb, var(--fg) 13%, var(--bg));
+  --hover: color-mix(in srgb, var(--fg) 8%, transparent);
+  --glass: color-mix(in srgb, var(--t1) 74%, transparent);
+  --glass-rim: inset 0 1px 0 rgb(255 255 255 / .06), inset 0 0 0 1px rgb(255 255 255 / .035);
+  --lift: 0 10px 32px -14px rgb(0 0 0 / .65), 0 2px 6px -2px rgb(0 0 0 / .3);
+  --mono: var(--vscode-editor-font-family);
+  --sans: var(--vscode-font-family);
+  background: var(--bg);
+  color: var(--fg);
+  font: 13px/1.55 var(--sans);
+  -webkit-font-smoothing: antialiased;
+  overflow: hidden;
+}
+body.vscode-light {
+  --t1: color-mix(in srgb, var(--fg) 5%, var(--bg));
+  --t2: color-mix(in srgb, var(--fg) 7%, var(--bg));
+  --t3: color-mix(in srgb, var(--fg) 13%, var(--bg));
+  --hover: color-mix(in srgb, var(--fg) 7%, transparent);
+  --glass: color-mix(in srgb, var(--bg) 78%, transparent);
+  --glass-rim: inset 0 1px 0 rgb(255 255 255 / .9), inset 0 0 0 1px color-mix(in srgb, var(--fg) 7%, transparent);
+  --lift: 0 12px 30px -16px rgb(20 20 40 / .28), 0 1px 3px rgb(20 20 40 / .08);
+}
+/* High contrast: tints vanish, every surface gets the theme's contrast border instead, nothing is translucent. */
+body.vscode-high-contrast {
+  --muted: var(--vscode-descriptionForeground);
+  --hc: var(--vscode-contrastBorder);
+  --t1: var(--bg); --t2: var(--bg); --t3: var(--bg);
+  --hover: transparent;
+  --glass: var(--bg);
+  --glass-rim: none;
+  --lift: none;
+}
+body.vscode-high-contrast .surface { outline: 1px solid var(--hc); outline-offset: -1px; backdrop-filter: none !important; }
+body.vscode-high-contrast .tap:hover, body.vscode-high-contrast .is-hover { outline: 1px dashed var(--vscode-contrastActiveBorder); outline-offset: -1px; }
+
+.glass {
+  background: var(--glass);
+  backdrop-filter: blur(22px) saturate(1.6);
+  box-shadow: var(--glass-rim), var(--lift);
+}
+.tap { border-radius: 8px; transition: background-color .15s ease; }
+.tap:hover, .is-hover { background: var(--hover); }
+.ico { width: 18px; height: 18px; flex: none; display: inline-block; }
+.ico-s { width: 14px; height: 14px; flex: none; display: inline-block; }
+.logo { width: 14px; height: 14px; flex: none; display: inline-block; }
+.logo svg { width: 100%; height: 100%; }
+.mono { font-family: var(--mono); font-size: 11.5px; }
+.add { color: var(--add); }
+.del { color: var(--del); }
+.muted { color: var(--muted); }
+.sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
+code { font-family: var(--mono); font-size: .92em; padding: .05em .35em; border-radius: 5px; background: var(--t2); }
+body.vscode-high-contrast code { outline: 1px solid var(--hc); background: none; }
+
+/* State switch: elements say which states show them. */
+[data-show]:not([data-show~="all"]) { display: none !important; }
+body[data-state="empty"] [data-show~="empty"],
+body[data-state="chat"] [data-show~="chat"],
+body[data-state="steps"] [data-show~="steps"],
+body[data-state="running"] [data-show~="running"],
+body[data-state="model"] [data-show~="model"],
+body[data-state="more"] [data-show~="more"],
+body[data-state="settings"] [data-show~="settings"] { display: revert !important; }
+body[data-state="empty"] [data-show~="empty"].flex, body[data-state="chat"] [data-show~="chat"].flex,
+body[data-state="steps"] [data-show~="steps"].flex, body[data-state="running"] [data-show~="running"].flex,
+body[data-state="model"] [data-show~="model"].flex, body[data-state="more"] [data-show~="more"].flex,
+body[data-state="settings"] [data-show~="settings"].flex { display: flex !important; }
+
+@keyframes shimmer { from { background-position: 100% 0; } to { background-position: -100% 0; } }
+.shimmer {
+  background: linear-gradient(90deg, var(--muted) 0 35%, var(--fg) 50%, var(--muted) 65% 100%) 0 0 / 200% 100%;
+  -webkit-background-clip: text; background-clip: text; color: transparent;
+  animation: shimmer 2.2s linear infinite;
+}
+body.vscode-high-contrast .shimmer { background: none; color: var(--fg); animation: none; }
+@media (prefers-reduced-motion: reduce) { .shimmer { animation: none; } }
+
+/* Settings preview art: tints vanish in high contrast, so draw it with outlines there. */
+body.vscode-high-contrast .art { outline: 1px solid var(--hc); }
+body.vscode-high-contrast .art i { background: none !important; outline: 1px solid var(--fg); }

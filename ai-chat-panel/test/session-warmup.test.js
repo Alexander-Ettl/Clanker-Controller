@@ -41,6 +41,7 @@ test('commands send the prompt on stdin with the cheap model and no tools, and t
   assert.ok(codex.args.includes('otel.metrics_exporter=none'));
   const agy = commandFor('gemini', cheapestModel(catalog, 'gemini'), 'C:\\Users\\me\\AppData\\Local\\agy\\bin\\agy.exe');
   assert.ok(agy.args.includes('gemini-3.8-flash-low'));
+  assert.ok(agy.args.includes('--settings') && agy.args.includes('{"showFeedbackSurvey":false}'));
   assert.equal(agy.env.AGY_CLI_DISABLE_AUTO_UPDATE, 'true', 'agy otherwise opens a terminal window for its background updater');
   assert.equal(agy.env.ANTIGRAVITY_NO_CHIME, '1', 'silences the global agy Stop hook so Clanker chimes once when the reply renders');
   assert.deepEqual(commandFor('codex', cheapestModel(catalog, 'codex'), 'codex.exe').env, {});

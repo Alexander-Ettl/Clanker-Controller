@@ -9,6 +9,8 @@ const { launchFailure } = require('./shared.js');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
+const { stripVTControlCharacters } = require('node:util');
+const skillsDir = path.resolve(__dirname, '..', '..', 'skills');
 
 const entry = (model, title, isDefault = false) => ({
   id: `copilot-${String(model).replace(/[^a-z0-9.-]+/gi, '-')}`,
@@ -23,27 +25,56 @@ const text = (value) => (typeof value === 'string' ? value : '');
 // Tools that only report progress to the CLI's own UI.
 const HIDDEN_TOOLS = new Set(['report_intent']);
 
-/** The panel's card for a tool call: Copilot's edit/create become an edit with a diff, the rest keep their names. */
+/** Copilot's edit/create/patch calls use the same file and diff cards as the other providers. */
 function toolStart(data) {
   // Lazy: the stream engine loads the providers.
   const { toolTarget, editDiff } = require('../stream-engine.js');
   const input = data.arguments && typeof data.arguments === 'object' ? data.arguments : {};
   const name = text(data.toolName) || 'tool';
-  const file = text(input.path) || text(input.file_path);
+  const file = text(input.path) || text(input.file_path) || text(input.filePath);
   const base = { type: 'tool_start', toolId: text(data.toolCallId), agent: 'copilot' };
+  const command = text(input.command) || text(input.question) || text(input.prompt) || toolTarget(input) || file || text(data.toolTitle);
+  if (data.mcpServerName) return { ...base, name: `mcp__${data.mcpServerName}__${text(data.mcpToolName) || name}`, command, file: '', diff: '' };
   if (name === 'edit' || name === 'create') {
     return { ...base, name: 'edit', command: file, file, diff: editDiff({ old_string: name === 'edit' ? input.old_str : '', new_string: name === 'edit' ? input.new_str : input.file_text }) };
   }
-  const command = text(input.command) || toolTarget(input) || file || text(data.toolTitle);
-  return { ...base, name, command, file, diff: '' };
+  if (name === 'apply_patch') {
+    const patch = text(input.patch) || text(input.input) || text(data.arguments);
+    const files = [...patch.matchAll(/^\*\*\* (?:Add|Update|Delete) File: (.+)$/gm)].map((match) => match[1].trim());
+    const lines = patch.replace(/\r\n/g, '\n').split('\n');
+    const diff = lines.flatMap((line) => {
+      if (/^[ +\-]/.test(line)) return [line];
+      const header = /^\*\*\* (?:Add|Update|Delete) File: (.+)$/.exec(line);
+      return header && files.length > 1 ? [` ${header[1]}`] : [];
+    }).slice(0, 300).join('\n');
+    return { ...base, name: 'edit', command: files.join(', ') || text(data.toolTitle), file: files.length === 1 ? files[0] : '', diff };
+  }
+  const summary = text(data.toolTitle) || text(input.description);
+  return { ...base, name, command, file, diff: '', ...(summary && command !== summary ? { summary: summary.slice(0, 200) } : {}) };
+}
+
+function toolOutput(result) {
+  const blocks = Array.isArray(result?.contents) ? result.contents : [];
+  const content = blocks.map((block) => text(block?.text) || text(block?.output) || text(block?.uri)
+    || (block?.type === 'image' ? '[Image output]' : block?.type === 'audio' ? '[Audio output]' : '')).filter(Boolean).join('\n');
+  return text(result?.detailedContent) || content || text(result?.content);
+}
+
+function usage(raw) {
+  if (raw?.type !== 'assistant.usage') return null;
+  const data = raw.data || {};
+  const n = (value) => Number.isFinite(value) && value >= 0 ? value : 0;
+  const input = n(data.inputTokens), output = n(data.outputTokens);
+  const cachedInput = Math.min(input, n(data.cacheReadTokens));
+  const cacheWrite = Math.min(input - cachedInput, n(data.cacheWriteTokens));
+  return { input, output, id: raw.id || null, detail: { fresh: input - cachedInput - cacheWrite, cachedInput, cacheWrite, output } };
 }
 
 /** One event of `copilot -p --output-format json`; null for a known event with nothing to show. */
-function normalizeEvent(raw) {
+function normalizeEvent(raw, { nested = false } = {}) {
   if (!raw || typeof raw !== 'object') return undefined;
   const data = raw.data && typeof raw.data === 'object' ? raw.data : {};
-  // A subagent's own steps stay inside its task card.
-  if (data.parentToolCallId) return null;
+  if (!nested && (data.parentToolCallId || raw.agentId)) return null;
   switch (raw.type) {
     case 'session.start':
       return data.sessionId ? { type: 'session', sessionId: text(data.sessionId), agent: 'copilot' } : null;
@@ -51,16 +82,31 @@ function normalizeEvent(raw) {
       return text(data.content).trim() ? { type: 'delta', text: data.content, block: true, model: 'copilot', agent: 'copilot' } : null;
     case 'assistant.reasoning':
       return text(data.content).trim() ? { type: 'thought', text: data.content, agent: 'copilot' } : null;
+    case 'skill.invoked':
+      return text(data.name) ? { type: 'tool_start', toolId: text(raw.id), name: 'skill', command: data.name, done: true, agent: 'copilot' } : null;
     case 'tool.execution_start':
       return HIDDEN_TOOLS.has(data.toolName) ? null : toolStart(data);
+    case 'tool.execution_partial_result':
+    case 'tool.shell_output': {
+      const output = stripVTControlCharacters(text(data.partialOutput) || text(data.text)).slice(-16000);
+      return output && data.toolCallId ? { type: 'tool_progress', toolId: data.toolCallId, output, sequence: data.sequence, agent: 'copilot' } : null;
+    }
     case 'tool.execution_complete': {
-      const output = data.success === false ? text(data.error?.message) || text(data.result?.content) : text(data.result?.content);
+      if (!data.toolCallId || HIDDEN_TOOLS.has(data.toolName)) return null;
+      const content = toolOutput(data.result);
+      const error = data.success === false ? text(data.error?.message) : '';
+      const output = [error, content].filter((value, index, all) => value && all.indexOf(value) === index).join('\n\n');
       return { type: 'tool_end', toolId: text(data.toolCallId), output, error: data.success === false, diff: '', agent: 'copilot' };
     }
     case 'session.error':
       return { type: 'delta', text: `Copilot error: ${text(data.message) || 'request failed'}`, block: true, model: 'copilot', agent: 'copilot' };
     case 'session.warning':
       return text(data.message) ? { type: 'notice', text: data.message, agent: 'copilot' } : null;
+    case 'session.usage_info':
+      return data.currentTokens > 0 && data.tokenLimit > 0 ? { type: 'usage', contextTokens: data.currentTokens, contextWindow: data.tokenLimit, agent: 'copilot' } : null;
+    case 'session.compaction_complete':
+      return data.success === true ? { type: 'context_reset', kind: 'native', preTokens: data.preCompactionTokens, agent: 'copilot' }
+        : text(data.error) ? { type: 'notice', text: `Copilot compaction failed: ${data.error}`, agent: 'copilot' } : null;
     case 'result':
       return { type: 'turn_complete', agent: 'copilot' };
     default:
@@ -108,6 +154,7 @@ function removeProbeSession(sessionId, env = process.env, home = os.homedir()) {
 
 module.exports = {
   id: 'copilot',
+  nativeAutoCompaction: true,
   name: 'GitHub Copilot',
   company: 'GitHub',
   color: '#10b981',
@@ -163,10 +210,12 @@ module.exports = {
     if (resume) args.push('--resume', resume);
     if (permissionMode === 'fullAccess' || permissionMode === 'auto') args.push('--allow-all-tools');
     if (cwd) args.push('--add-dir', cwd);
-    return { command, args, input: '' };
+    const skillDirs = [process.env.COPILOT_SKILLS_DIRS, skillsDir].filter(Boolean).join(',');
+    return { command, args, input: '', env: { COPILOT_SKILLS_DIRS: skillDirs } };
   },
 
   normalizeEvent,
+  usage,
   parseAcpModels,
   removeProbeSession,
 };

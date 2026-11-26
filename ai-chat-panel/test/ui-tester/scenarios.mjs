@@ -8,7 +8,9 @@ import { queueStability } from '../queue-stability.mjs';
 import { queueReset } from '../queue-reset.mjs';
 import { messageDock } from '../message-dock.mjs';
 import { hiddenDialogs } from '../render-budgets.mjs';
-const { DEFAULTS } = createRequire(import.meta.url)('../../lib/routing');
+const require = createRequire(import.meta.url);
+const { DEFAULTS } = require('../../lib/routing');
+const { StreamEngine } = require('../../lib/stream-engine');
 const openSettings = tab => page => page.evaluate(name => window.dispatchEvent(new MessageEvent('message', { data: { type: 'openSettings', tab: name } })), tab);
 const loopsState = state => async page => {
   await page.evaluate(name => window.setFakeState(name), state);
@@ -16,6 +18,11 @@ const loopsState = state => async page => {
   await page.locator('.inv .inv-overview').waitFor();
 };
 const MODAL = '.fs-modal:not([hidden]) .fs-modal-sheet';
+// The host's message when aiChatPanel.appearance changes; a frame later the measuring code has seen the new shapes.
+const toHalo = async page => {
+  await page.evaluate(() => window.dispatchEvent(new MessageEvent('message', { data: { type: 'appearance', appearance: 'halo' } })));
+  await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+};
 
 const IDE_PALETTES = {
   dark: { kind: 'vscode-dark', background: '#172437', panel: '#213149', foreground: '#e4edf7', accent: '#8acbff' },
@@ -79,7 +86,100 @@ const unavailable = async page => {
   });
 };
 
+async function copilotToolCards(page, agents) {
+  const engine = new StreamEngine();
+  const events = [];
+  engine.on('event', event => events.push(event));
+  try {
+    for (const raw of require('../fixtures/copilot-events.json')) engine.consumeLine(JSON.stringify(raw), 'copilot');
+  } finally { engine.dispose(); }
+  const post = messages => page.evaluate(events => {
+    for (const data of events) window.dispatchEvent(new MessageEvent('message', { data }));
+  }, messages);
+  await post([{ type: 'userMessage', text: 'Check and update the release status.' }, { type: 'routing', agentId: 'copilot' }]);
+  const shellEnd = events.findIndex(event => event.type === 'tool_end' && event.toolId === 'shell-1');
+  await post(events.slice(0, shellEnd));
+  const shell = page.locator('.tool-shell');
+  assert.match(await shell.getAttribute('class'), /is-running/, 'the hidden intent completion leaves the shell running');
+  assert.equal(await shell.locator('.tool-body').textContent(), 'Starting checks\nChecks passed', 'dual output events are shown once');
+  await post(events.slice(shellEnd));
+  if (agents) {
+    await page.locator('#agentsBtn').click();
+    await page.locator('.agents-log .tool-read').evaluate(card => { card.open = true; });
+    assert.equal(await page.locator('.agents-title').textContent(), 'Explorer');
+    assert.match(await page.locator('.agents-log').textContent(), /The status file reads checked/);
+    assert.match(await page.locator('.agents-log .tool-body').textContent(), /checked/);
+    return;
+  }
+  await page.locator('.work-summary:not(.is-empty), .tool-edit, .tool-plug').evaluateAll(cards => cards.forEach(card => { card.open = true; }));
+  assert.equal(await page.locator('.tool-skill .tool-label').textContent(), 'clanker-load-agent');
+  assert.equal(await page.locator('.tool-edit summary .diff-add').textContent(), '+1');
+  assert.equal(await page.locator('.tool-edit summary .diff-del').textContent(), '-1');
+  assert.match(await page.locator('.tool-plug .tool-body').textContent(), /The docs service denied this lookup/);
+  assert.equal(await page.locator('.turn .tool-read').count(), 0, 'subagent cards stay in the Agents viewer');
+}
+
 export const scenarios = [
+  { id: 'model-handoff-divider', sidebar: true, height: 740, setup: async page => {
+    const send = data => page.evaluate(message => window.dispatchEvent(new MessageEvent('message', { data: message })), data);
+    const previous = [{ role: 'user', text: 'Check the migration notes.' }, { role: 'assistant', agent: 'claude', modelLabel: 'Claude Sonnet 5.5 High', text: 'The schema changes are ready. The verification is still pending.' }];
+    const destination = 'gpt-6.1-sol-high';
+    const chat = { id: 'handoff-fixture', modelId: destination, messages: previous };
+    const label = 'Context handoff from Claude Sonnet 5.5 High to GPT 6.1 Sol High';
+    await send({ type: 'chatLoaded', chat });
+    const divider = page.getByRole('note', { name: label });
+    assert.equal(await divider.count(), 0);
+    const text = 'Run the verification and report back.';
+    await page.locator('#promptInput').fill(text);
+    await page.locator('#promptInput').press('Enter');
+    await page.waitForFunction(() => window.sent.some(message => message.type === 'send'));
+    const clientTurnId = await page.evaluate(() => window.sent.findLast(message => message.type === 'send').clientTurnId);
+    const contextHandoff = { from: { agent: 'claude', label: 'Claude Sonnet 5.5 High' }, to: { agent: 'codex', label: 'GPT 6.1 Sol High' } };
+    const user = { role: 'user', text, clientTurnId, contextHandoff };
+    await send({ ...user, type: 'userMessage' });
+    await send({ ...user, type: 'userMessage' });
+    assert.equal(await divider.count(), 1);
+    assert.equal(await divider.evaluate(node => node.nextElementSibling.querySelector('.msg-user-text').textContent.trim()), text);
+    assert.equal(await page.locator('.msg-user-text').filter({ hasText: text }).count(), 1);
+    await send({ type: 'chatLoaded', chat: { ...chat, messages: [...previous, user, { role: 'assistant', agent: 'codex', modelLabel: contextHandoff.to.label, text: 'The verification passed.' }] } });
+    assert.equal(await divider.count(), 1, 'the marker restores with the user message');
+    assert.equal(await divider.evaluate(node => node.nextElementSibling.querySelector('.msg-user-text').textContent.trim()), text);
+  } },
+  { id: 'usage-favorite-providers', sidebar: true, height: 660, focus: '.rail', setup: async page => {
+    const send = data => page.evaluate(message => window.dispatchEvent(new MessageEvent('message', { data: message })), data);
+    const { models } = require('../model-fixture');
+    const claude = models.filter(model => model.agent === 'claude');
+    const copilot = { id: 'copilot-auto', agent: 'copilot', model: 'auto', label: 'Copilot Auto' };
+    const available = [...claude, copilot];
+    const favorites = catalog => send({ type: 'modelCatalog', catalog, available });
+    const visible = () => page.locator('#modelCards .model-card').evaluateAll(cards => cards.map(card => card.dataset.agent));
+    await send({ type: 'cliConnections', providers: { claude: { enabled: true }, copilot: { enabled: true } } });
+    await send({ type: 'quotas', quotas: { claude: { remaining: 79 }, copilot: { remaining: 100, windowMinutes: 43200 } } });
+    await favorites(available);
+    assert.deepEqual(await visible(), ['claude', 'copilot']);
+    await favorites([claude[0], copilot]);
+    assert.deepEqual(await visible(), ['claude', 'copilot'], 'another favorite keeps the provider visible');
+    await favorites([claude[0]]);
+    assert.deepEqual(await visible(), ['claude']);
+    await favorites([]);
+    assert.equal(await page.locator('.launcher-section').filter({ has: page.locator('#modelCards') }).isVisible(), false);
+    await favorites([claude[0], copilot]);
+    assert.deepEqual(await visible(), ['claude', 'copilot']);
+    assert.equal(await page.locator('.model-card-copilot .model-card-5h').textContent(), '100%');
+    await favorites([claude[0]]);
+  } },
+  { id: 'high-context-composer', height: 660, setup: async page => {
+    await page.evaluate(() => window.dispatchEvent(new MessageEvent('message', { data: {
+      type: 'chatLoaded', chat: { id: 'high-context', context: { agent: 'gemini', tokens: 421000, limit: 512000 },
+        messages: [{ role: 'user', text: 'Continue the implementation.' }] },
+      running: { agentId: 'gemini', modelLabel: 'Gemini', startedAt: Date.now() },
+    } })));
+    assert.match(await page.locator('.pending-tokens').textContent(), /421k \/ 512k/);
+    assert.equal(await page.locator('.context-warning').count(), 0);
+    assert.equal(await page.getByRole('button', { name: 'Compact', exact: true }).count(), 0);
+  } },
+  { id: 'copilot-tool-cards', height: 850, setup: page => copilotToolCards(page, false) },
+  { id: 'copilot-native-agent', height: 740, focus: MODAL, setup: page => copilotToolCards(page, true) },
   // The rail's usage circles in both themes: one ring pair (Claude), one (Codex) and the split Antigravity circle with its two arcs.
   ...['light', 'dark'].map(theme => ({ id: `usage-rings-${theme}`, sidebar: true, height: 700, focus: '.model-cards', setup: async page => {
     await applyIdePalette(page, theme === 'light' ? { ...IDE_PALETTES.light, background: '#e6e7ee', panel: '#d9dbe5', foreground: '#38405e', accent: '#365cb0' } : IDE_PALETTES.dark);
@@ -1062,12 +1162,61 @@ export const scenarios = [
     await page.locator('.continue-at-reset').waitFor();
     assert.match(await page.locator('.continue-at-reset').innerText(), /Continue when .* resets/);
   } },
+  ...['dark', 'light'].map(theme => ({ id: `inline-file-links-${theme}`, setup: async page => {
+    await applyIdePalette(page, IDE_PALETTES[theme]);
+    const text = 'The checks passed. See the [chat screenshot](out/chat.png) and [agents screenshot](out/agents.png) for the result. The [release notes](docs/publishing.md) describe the next steps.';
+    await page.evaluate(text => window.dispatchEvent(new MessageEvent('message', { data: { type: 'chatLoaded', chat: { id: 'inline-files', messages: [
+      { role: 'user', text: 'How did the interface checks go?' }, { role: 'assistant', agent: 'codex', text },
+    ] } } })), text);
+    const files = page.locator('#transcript .file-badge');
+    assert.equal(await files.count(), 3);
+    const style = await files.first().evaluate(file => {
+      const css = getComputedStyle(file);
+      return { border: css.borderTopWidth, background: css.backgroundColor, color: css.color, icon: Boolean(file.querySelector('svg')) };
+    });
+    assert.deepEqual(style, { border: '0px', background: 'rgba(0, 0, 0, 0)', color: theme === 'light' ? 'rgb(50, 101, 141)' : 'rgb(140, 184, 220)', icon: true });
+    await files.first().click();
+    assert.equal(await page.evaluate(() => window.sent.findLast(message => message.type === 'openFile').path), 'out/chat.png');
+    await files.nth(1).focus();
+    await page.keyboard.press('Enter');
+    assert.equal(await page.evaluate(() => window.sent.findLast(message => message.type === 'openFile').path), 'out/agents.png');
+    await files.nth(1).blur();
+    await page.mouse.move(0, 0);
+  } })),
+  ...['dark', 'light'].map(theme => ({ id: `chat-inline-images-${theme}`, setup: async page => {
+    await applyIdePalette(page, IDE_PALETTES[theme]);
+    const svg = (title, sub, bg, fg) => `data:image/svg+xml;base64,${Buffer.from(`<svg xmlns="http://www.w3.org/2000/svg" width="480" height="260"><rect width="480" height="260" rx="16" fill="${bg}"/><text x="240" y="122" text-anchor="middle" fill="${fg}" font-family="sans-serif" font-size="28" font-weight="700">${title}</text><text x="240" y="158" text-anchor="middle" fill="${fg}" opacity="0.72" font-family="sans-serif" font-size="16">${sub}</text></svg>`).toString('base64')}`;
+    const beforeUri = svg('Before', '32px buttons · misaligned margin', theme === 'light' ? '#dfe5ee' : '#252936', theme === 'light' ? '#1c2430' : '#f4f6fb');
+    const afterUri = svg('After', '42px buttons · aligned baseline', theme === 'light' ? '#d7eee3' : '#1b352c', theme === 'light' ? '#0f3d2e' : '#dcfce7');
+    await page.evaluate(({ beforeUri, afterUri }) => {
+      const origPost = window.acquireVsCodeApi;
+      // Intercept previewFile via window.sent observer: scenarios boot already wired acquireVsCodeApi, so watch sent messages.
+      let seen = window.sent.length;
+      const poll = setInterval(() => {
+        while (seen < window.sent.length) {
+          const m = window.sent[seen++];
+          if (m.type === 'previewFile') {
+            const uri = m.path.includes('before') ? beforeUri : afterUri;
+            window.dispatchEvent(new MessageEvent('message', { data: { type: 'filePreview', requestId: m.requestId, path: m.path, uri, name: m.path.split('/').pop() } }));
+          }
+        }
+      }, 15);
+      setTimeout(() => clearInterval(poll), 3000);
+      const text = 'Here is the visual diff between the old layout and the updated layout:\n\n![Before](out/before.png)\n![After](out/after.png)\n\nClick either image for the full preview, or use the top-right button to open it in VS Code.';
+      window.dispatchEvent(new MessageEvent('message', { data: { type: 'chatLoaded', chat: { id: 'inline-imgs', messages: [
+        { role: 'user', text: 'Show me the before and after screenshots' },
+        { role: 'assistant', agent: 'claude', text },
+      ] } } }));
+    }, { beforeUri, afterUri });
+    await page.locator('.chat-image-card.is-ready').nth(1).waitFor({ state: 'visible' });
+    await page.waitForTimeout(120);
+  } })),
   { id: 'pdf-file-links', setup: async page => {
     const text = 'Open [Review notes](<out/review notes.pdf>), `review.pdf`, `C:\\Project Files\\review.PDF`, or out/review.pdf.\n\n[Website](https://example.com/review.pdf)';
     await page.evaluate(text => window.dispatchEvent(new MessageEvent('message', { data: { type: 'chatLoaded', chat: { id: 'pdf-links', messages: [{ role: 'assistant', text }] } } })), text);
     const badges = page.locator('#transcript .file-badge[data-ext="pdf"]');
     assert.equal(await badges.count(), 4);
-    assert.equal(await page.locator('#transcript a[href="https://example.com/review.pdf"]').count(), 1);
+    assert.equal(await page.locator('#transcript a[data-external-url="https://example.com/review.pdf"]').count(), 1);
     await badges.first().click();
     assert.deepEqual(await page.evaluate(() => window.sent.filter(message => message.type === 'openFile').at(-1)), { type: 'openFile', path: 'out/review notes.pdf', line: null });
     await badges.nth(1).focus(); await page.keyboard.press('Enter');
@@ -1216,6 +1365,54 @@ export const scenarios = [
     assert.equal(await page.locator('#settingsModal').innerText().then(text => text.includes('Use your existing account, or create one during sign-in.')), false);
   } })),
   ...['general', 'voice', 'remote', 'models'].map(tab => ({ id: `settings-${tab}`, height: 1400, focus: MODAL, setup: openSettings(tab) })),
+  { id: 'settings-voice-local', height: 1400, focus: MODAL, scope: '[data-role=voiceEngine]', setup: async page => {
+    await openSettings('voice')(page);
+    await page.evaluate(() => window.dispatchEvent(new MessageEvent('message', { data: { type: 'voice', voice: {
+      supported: true, hotkey: 'F9', hotkeyActive: true, mode: 'toggle', sounds: true, pauseMedia: true, micDevice: '',
+      provider: 'local', groqModel: 'whisper-large-v3-turbo', localModel: 'small.en',
+      localStt: {
+        dir: '/home/user/.cache/clanker-controller/local-stt',
+        runtime: { installed: false, path: '', source: '' },
+        selectedModel: 'small.en',
+        ready: false,
+        busy: false,
+        progress: null,
+        error: '',
+        models: [
+          { id: 'base.en', label: 'Base · Fast', group: 'english', language: 'en', sizeMb: 60, ramGb: 0.3, description: 'Quick English transcription with low memory use.', installed: false, bytes: 0 },
+          { id: 'small.en', label: 'Small · Balanced', group: 'english', language: 'en', sizeMb: 190, ramGb: 0.5, description: 'Recommended English default: accurate and light on RAM.', installed: false, bytes: 0 },
+          { id: 'medium.en', label: 'Medium · Accurate', group: 'english', language: 'en', sizeMb: 539, ramGb: 1.5, description: 'Higher English accuracy; needs ~1.5 GB free RAM.', installed: false, bytes: 0 },
+          { id: 'small', label: 'Small · Fast', group: 'multilingual', language: 'auto', sizeMb: 190, ramGb: 0.5, description: 'Multilingual (auto-detects 90+ languages) with modest RAM use.', installed: false, bytes: 0 },
+          { id: 'large-v3-turbo', label: 'Large v3 Turbo · Best', group: 'multilingual', language: 'auto', sizeMb: 574, ramGb: 1.6, description: 'Best local multilingual quality; needs ~1.6 GB free RAM.', installed: false, bytes: 0 },
+        ],
+      },
+      groq: { source: '', masked: '', today: { calls: 0 }, limits: {} },
+    } } })));
+    await page.locator('[data-role=voiceLocalPanel]').waitFor({ state: 'visible' });
+    const groups = await page.locator('[data-role=voiceLocalModel] optgroup').evaluateAll(els => els.map(el => el.label));
+    assert.deepEqual(groups, ['English only', 'Multilingual']);
+    await page.locator('[data-role=voiceLocalInstall]').click();
+    assert.ok(await page.evaluate(() => window.sent.some(m => m.type === 'installLocalStt' && m.model === 'small.en')));
+  } },
+  { id: 'settings-external-links', height: 1200, focus: '.cs-row:has([data-role=confirmExternalLinks])', setup: async page => {
+    await page.evaluate(() => window.dispatchEvent(new MessageEvent('message', { data: { type: 'chatLoaded', chat: {
+      id: 'links', messages: [{ role: 'assistant', agent: 'codex', text: '[Docs](https://example.com/?a=1&b=2) and https://example.org' }],
+    } } })));
+    const docs = page.getByRole('link', { name: 'Docs', exact: true });
+    assert.equal(await docs.getAttribute('href'), null);
+    await docs.press('Enter');
+    await page.getByRole('link', { name: 'https://example.org', exact: true }).click();
+    assert.deepEqual(await page.evaluate(() => window.sent.filter(m => m.type === 'openUrl').map(m => m.url)), [
+      'https://example.com/?a=1&b=2', 'https://example.org',
+    ]);
+    await openSettings('general')(page);
+    const toggle = page.getByRole('switch', { name: 'Confirm external links' });
+    assert.equal(await toggle.getAttribute('aria-checked'), 'false');
+    await toggle.press('Space');
+    assert.equal(await toggle.getAttribute('aria-checked'), 'true');
+    assert.deepEqual(await page.evaluate(() => window.sent.findLast(m => m.type === 'setConfirmExternalLinks')), { type: 'setConfirmExternalLinks', enabled: true });
+    await toggle.evaluate(el => el.closest('.cs-row').scrollIntoView({ block: 'center' }));
+  } },
   { id: 'settings-cli-telemetry', height: 1000, scope: '.cs-row:has([data-role=cliTelemetry])', focus: MODAL, setup: async page => {
     await openSettings('general')(page);
     const toggle = page.getByRole('switch', { name: 'CLI telemetry' });
@@ -1527,4 +1724,197 @@ export const scenarios = [
     await page.waitForTimeout(300);
   } },
   ...LOOP_STATES.map(state => ({ id: `loops-${state}`, height: 2600, focus: MODAL, setup: loopsState(state) })),
+  { id: 'chat-folders-manage', sidebar: true, height: 820, focus: MODAL, setup: async page => {
+    const send = data => page.evaluate(msg => window.dispatchEvent(new MessageEvent('message', { data: msg })), data);
+    const projects = [
+      { id: 'a', name: 'Portfolio 2026', root: '/dev/portfolio' },
+      { id: 'b', name: 'Visor', root: '/dev/visor' },
+      { id: 'c', name: 'Clanker Controller', root: '/dev/clanker' },
+    ];
+    const ago = minutes => new Date(Date.now() - minutes * 60000).toISOString();
+    const sessions = [
+      { id: '1', projectId: 'c', projectName: 'Clanker Controller', title: 'OAuth callback fix', models: ['claude'], latestAgent: 'claude', messageCount: 14, updatedAt: ago(4), active: true, state: 'running', lastMessage: { role: 'assistant', agent: 'claude', text: 'Updated token refresh.' } },
+      { id: '2', projectId: 'c', projectName: 'Clanker Controller', title: 'Login screen polish', models: ['gemini'], latestAgent: 'gemini', messageCount: 8, updatedAt: ago(25), lastMessage: { role: 'user', text: 'Match spacing in dark mode.' } },
+      { id: '3', projectId: 'b', projectName: 'Visor', title: 'Release checklist', models: ['codex'], latestAgent: 'codex', messageCount: 19, updatedAt: ago(60 * 24 * 3), lastMessage: { role: 'assistant', agent: 'codex', text: 'Checks passed.' } },
+      { id: '4', projectId: 'a', projectName: 'Portfolio 2026', title: 'Hero typography', models: ['claude'], latestAgent: 'claude', messageCount: 5, updatedAt: ago(12), selected: true, active: true, lastMessage: { role: 'assistant', agent: 'claude', text: 'Adjusted tracking.' } },
+    ];
+    const folders = [
+      { id: 'f-rel', name: 'Release v2', chatIds: ['3'], pinned: true, pinnedAt: 1000, createdAt: ago(60 * 24 * 4), updatedAt: ago(60 * 24 * 3) },
+      { id: 'f-auth', name: 'Auth flow', chatIds: ['1', '2'], pinned: false, pinnedAt: null, createdAt: ago(90), updatedAt: ago(4) },
+    ];
+    await send({ type: 'project', project: projects[0], projects, chatId: '4', required: false });
+    await send({ type: 'history', sessions, folders, chatFoldersEnabled: true });
+    await page.locator('#historyBtn').click();
+    await page.locator('#historyModal .history-folder-card[data-folder-id="f-auth"] .history-folder-title').click();
+    await page.waitForTimeout(350);
+    assert.equal(await page.locator('#historyModal .history-folder-card').count(), 2);
+    assert.equal(await page.locator('#historyModal .history-folder-card[data-folder-id="f-auth"] .history-card').count(), 2);
+  } },
+  { id: 'chat-folders-rail', sidebar: true, height: 820, focus: '.rail', setup: async page => {
+    const send = data => page.evaluate(msg => window.dispatchEvent(new MessageEvent('message', { data: msg })), data);
+    const projects = [
+      { id: 'a', name: 'Portfolio 2026', root: '/dev/portfolio' },
+      { id: 'b', name: 'Visor', root: '/dev/visor' },
+      { id: 'c', name: 'Clanker Controller', root: '/dev/clanker' },
+    ];
+    const ago = minutes => new Date(Date.now() - minutes * 60000).toISOString();
+    const sessions = [
+      { id: '1', projectId: 'a', projectName: 'Portfolio 2026', title: 'Hero typography', models: ['claude'], latestAgent: 'claude', messageCount: 5, updatedAt: ago(2), selected: true, active: true, lastMessage: { role: 'assistant', agent: 'claude', text: 'Adjusted tracking.' } },
+      { id: '2', projectId: 'c', projectName: 'Clanker Controller', title: 'OAuth callback fix', models: ['claude'], latestAgent: 'claude', messageCount: 14, updatedAt: ago(6), active: true, state: 'running', lastMessage: { role: 'assistant', agent: 'claude', text: 'Updated token refresh.' } },
+      { id: '3', projectId: 'c', projectName: 'Clanker Controller', title: 'Login screen polish', models: ['gemini'], latestAgent: 'gemini', messageCount: 8, updatedAt: ago(25), lastMessage: { role: 'user', text: 'Match spacing in dark mode.' } },
+      { id: '4', projectId: 'b', projectName: 'Visor', title: 'Release checklist', models: ['codex'], latestAgent: 'codex', messageCount: 19, updatedAt: ago(60 * 24 * 3), lastMessage: { role: 'assistant', agent: 'codex', text: 'Checks passed.' } },
+    ];
+    const folders = [
+      { id: 'f-rel', name: 'Release', chatIds: ['4'], pinned: true, pinnedAt: 1000, createdAt: ago(60 * 24 * 4), updatedAt: ago(60 * 24 * 3) },
+      { id: 'f-auth', name: 'Auth', chatIds: ['2', '3'], pinned: false, pinnedAt: null, createdAt: ago(90), updatedAt: ago(6) },
+    ];
+    await send({ type: 'project', project: projects[0], projects, chatId: '1', required: false });
+    await send({ type: 'history', sessions, folders, chatFoldersEnabled: true });
+    await page.locator('#historyList .history-item[data-folder-id="f-auth"]').click();
+    await page.mouse.move(10, 10);
+    await page.waitForTimeout(350);
+    assert.equal(await page.locator('#historyList > :first-child').evaluate(el => el.classList.contains('history-folder-group') && el.dataset.folderId === 'f-auth'), true);
+    assert.equal(await page.locator('#historyList .history-folder-contents .history-item').count(), 2);
+  } },
+  { id: 'gemini-thought-bundling', height: 780, focus: '.transcript', setup: async page => {
+    const send = data => page.evaluate(msg => window.dispatchEvent(new MessageEvent('message', { data: msg })), data);
+    await send({ type: 'userMessage', text: 'Investigate the slow startup and fix it.' });
+    await send({ type: 'routing', agentId: 'gemini', modelLabel: 'Gemini 4 Neon' });
+    await send({ type: 'thought', text: 'First I will inspect the startup hooks and measure where time is spent.', agent: 'gemini' });
+    for (let i = 1; i <= 3; i++) {
+      await send({ type: 'tool_start', toolId: `a${i}`, name: 'read_file', command: `src/init-${i}.js`, agent: 'gemini' });
+      await send({ type: 'tool_end', toolId: `a${i}`, output: 'ok', agent: 'gemini' });
+    }
+    await send({ type: 'thought', text: 'Found two synchronous disk reads during boot. Checking their callers before refactoring.', agent: 'gemini' });
+    for (let i = 1; i <= 2; i++) {
+      await send({ type: 'tool_start', toolId: `b${i}`, name: 'grep_search', command: `loadCache${i}`, agent: 'gemini' });
+      await send({ type: 'tool_end', toolId: `b${i}`, output: 'match', agent: 'gemini' });
+    }
+    await send({ type: 'thought', text: '**Initial observation:** Switching cache warmup in `src/boot.js` to lazy async loading:\n- Avoid blocking startup on `loadCache1`\n- Re-run `npm run bench:startup` to confirm', agent: 'gemini' });
+    await send({ type: 'tool_start', toolId: 'c1', name: 'bash', command: 'npm run bench:startup', agent: 'gemini' });
+    await send({ type: 'tool_end', toolId: 'c1', output: 'startup 142ms', agent: 'gemini' });
+    await page.waitForTimeout(450);
+    assert.deepEqual(await page.locator('.thought-fold').evaluateAll(els => els.map(el => el.open)), [false, false, true]);
+    assert.deepEqual(await page.locator('.work-summary.is-thought-steps > summary .work-label').allTextContents(), ['3 steps', '2 steps']);
+  } },
+  { id: 'gemini-update-steps', height: 780, focus: '.transcript', setup: async page => {
+    const send = data => page.evaluate(msg => window.dispatchEvent(new MessageEvent('message', { data: msg })), data);
+    await send({ type: 'userMessage', text: 'Update thought and step bundling.' });
+    await send({ type: 'routing', agentId: 'gemini', modelLabel: 'Gemini 4 Neon' });
+    await send({ type: 'thought', text: 'Reading the current thought card handlers before updating the checklist view.', agent: 'gemini' });
+    await send({ type: 'tool_start', toolId: 'r1', name: 'read_file', command: 'ai-chat-panel/media/main.js', agent: 'gemini' });
+    await send({ type: 'tool_end', toolId: 'r1', output: 'ok', agent: 'gemini' });
+    await send({ type: 'tool_start', toolId: 'r2', name: 'read_file', command: 'ai-chat-panel/media/style.css', agent: 'gemini' });
+    await send({ type: 'tool_end', toolId: 'r2', output: 'ok', agent: 'gemini' });
+    await send({ type: 'tool_start', toolId: 'u1', name: 'update_steps', command: 'Refine nested thought-step styles (2/4)', agent: 'gemini' });
+    await send({ type: 'tool_end', toolId: 'u1', output: '✓ Update thought and tool bundling logic\n▸ Refine nested thought-step styles\n○ Update and add UI verification tests\n○ Verify tests and inspect screenshots', agent: 'gemini' });
+    await send({ type: 'tool_start', toolId: 'e1', name: 'edit_file', command: 'ai-chat-panel/media/style.css', agent: 'gemini' });
+    await send({ type: 'tool_end', toolId: 'e1', output: 'done', agent: 'gemini' });
+    await page.waitForTimeout(450);
+    assert.equal(await page.locator('.thought-fold').first().evaluate(el => el.open), false);
+    assert.equal(await page.locator('.tool-card.tool-todo').first().evaluate(el => el.open), true);
+    assert.equal(await page.locator('.tool-card.tool-todo .todo-step.is-active').count(), 1);
+  } },
+  // Halo, the minimal look (aiChatPanel.appearance = 'halo', media/halo.css and halo.js). Each one switches live, the way the
+  // host does when the setting changes, so the switch itself is covered too. The whole matrix also runs in Halo with
+  // CLANKER_UI_APPEARANCE=halo (see docs/ui-tester.md).
+  ...['dark', 'light', 'contrast-dark'].map(theme => ({ id: `halo-empty-${theme}`, sidebar: true, setup: async page => {
+    await applyIdePalette(page, IDE_PALETTES[theme]);
+    await toHalo(page);
+    assert.equal(await page.locator('.rail').isVisible(), false, 'the rail gives way to the header');
+    assert.equal(await page.locator('.halo-top').isVisible(), true);
+    assert.match(await page.locator('.halo-hello h2').textContent(), /^(Hi \S+|Hello)$/);
+    assert.equal(await page.locator('.empty-mark').isVisible(), false, 'no mascot in Halo');
+    assert.equal(await page.locator('#scheduleBtn').isVisible(), false, 'the clock waits until a send time is armed');
+  } })),
+  { id: 'halo-more-menu', sidebar: true, focus: '#haloMenu', setup: async page => {
+    await toHalo(page);
+    await page.locator('.halo-top [data-halo="more"]').click();
+    await page.locator('#haloMenu').waitFor();
+    const shown = await page.locator('#haloMenu .halo-item:visible').allTextContents();
+    assert.deepEqual(shown.map(text => text.trim()), ['Open in editor', 'Schedule next message', 'Loops', 'Settings'], 'only what applies: no queue and no update without one');
+    assert.equal(await page.evaluate(() => document.activeElement?.textContent.trim()), 'Open in editor', 'the menu takes the keyboard');
+    await page.keyboard.press('ArrowDown');
+    assert.equal(await page.evaluate(() => document.activeElement?.textContent.trim()), 'Schedule next message');
+  } },
+  { id: 'halo-header-actions', sidebar: true, focus: MODAL, setup: async page => {
+    await toHalo(page);
+    const more = page.locator('.halo-top [data-halo="more"]');
+    await more.click();
+    await page.keyboard.press('Escape');
+    assert.equal(await page.locator('#haloMenu').isVisible(), false);
+    assert.equal(await page.evaluate(() => document.activeElement?.getAttribute('aria-label')), 'More', 'Esc hands focus back');
+    await more.click();
+    await page.locator('#haloMenu [data-halo="popOut"]').click();
+    assert.ok(await page.evaluate(() => window.sent.some(m => m.type === 'newChatWindow')), 'Open in editor is the rail\'s pop-out');
+    await more.click();
+    await page.locator('#haloMenu [data-halo="schedule"]').click();
+    assert.equal(await page.locator('#scheduleBtn').isVisible(), true, 'arming a send time brings the clock back');
+    await page.locator('.halo-top [data-halo="chats"]').click();
+    await page.locator('#historyModal:not([hidden])').waitFor();
+    await page.keyboard.press('Escape');
+    await page.locator('#historyModal').waitFor({ state: 'hidden' });
+    await more.click();
+    await page.locator('#haloMenu [data-halo="settings"]').click();
+    await page.locator('#settingsModal:not([hidden])').waitFor();
+    await page.waitForTimeout(300);
+  } },
+  ...['dark', 'light'].map(theme => ({ id: `halo-steps-${theme}`, height: 850, setup: async page => {
+    await applyIdePalette(page, IDE_PALETTES[theme]);
+    await toHalo(page);
+    await copilotToolCards(page, false);
+    const card = await page.locator('.work-steps .tool-shell').evaluate(el => ({ bg: getComputedStyle(el).backgroundColor, shadow: getComputedStyle(el).boxShadow }));
+    assert.deepEqual(card, { bg: 'rgba(0, 0, 0, 0)', shadow: 'none' }, 'a step is a row in the panel, not a card inside it');
+    assert.equal(await page.locator('.turn').evaluate(el => getComputedStyle(el, '::before').content), 'none', 'no timeline rail');
+    assert.notEqual(await page.locator('.turn > .msg-role').evaluate(el => getComputedStyle(el, '::before').content), 'none', 'the spark leads the reply');
+  } })),
+  { id: 'halo-running', height: 780, focus: '.compose-row', setup: async page => {
+    await toHalo(page);
+    const send = data => page.evaluate(msg => window.dispatchEvent(new MessageEvent('message', { data: msg })), data);
+    await send({ type: 'userMessage', text: 'Investigate the slow startup and fix it.' });
+    await send({ type: 'routing', agentId: 'gemini', modelLabel: 'Gemini 4 Neon' });
+    await send({ type: 'tool_start', toolId: 'r1', name: 'read_file', command: 'src/boot.js', agent: 'gemini' });
+    await send({ type: 'tool_end', toolId: 'r1', output: 'ok', agent: 'gemini' });
+    const ring = () => page.locator('.composer').evaluate(el => getComputedStyle(el, '::before').content);
+    assert.ok(await page.evaluate(() => document.body.classList.contains('is-turn-busy')));
+    assert.notEqual(await ring(), 'none', 'the halo turns round the composer while the reply is written');
+    assert.equal(await page.locator('.msg-pending').evaluate(el => getComputedStyle(el).backgroundImage), 'none', 'working is a spark and a word, not a pill');
+    await send({ type: 'turn_complete' });
+    assert.equal(await ring(), 'none', 'and stops when it is done');
+    await send({ type: 'userMessage', text: 'Now the shutdown path.' });
+    await send({ type: 'routing', agentId: 'gemini', modelLabel: 'Gemini 4 Neon' });
+    await page.waitForTimeout(300);
+  } },
+  { id: 'halo-cli-update', sidebar: true, focus: '#haloMenu', setup: async page => {
+    await toHalo(page);
+    const status = data => page.evaluate(data => window.dispatchEvent(new MessageEvent('message', { data: {
+      checking: false, notes: {}, catalog: [], prompts: {}, modelSettings: {}, fetched: [], favorites: [], modelsBusy: false, ...data } })), data);
+    await status({ type: 'cliStatus', versions: { claude: { version: '2.1.306', latest: '2.1.308', outdated: true }, codex: { version: '0.9.1', latest: '0.9.2', outdated: true } },
+      updates: ['claude', 'codex'], updating: { claude: { startedAt: Date.now() - 8000, estimateMs: 20000 }, codex: { startedAt: Date.now() - 4000, estimateMs: 20000 } } });
+    await page.waitForTimeout(300);
+    assert.equal(await page.locator('.halo-top .halo-dot').isVisible(), true, 'the rail is hidden: More carries the signal');
+    await page.locator('.halo-top [data-halo="more"]').click();
+    const item = page.locator('#haloMenu [data-halo="update"]');
+    assert.match(await item.textContent(), /Updating 2 CLIs/, 'progress shows in the menu');
+    assert.equal(await item.isDisabled(), true, 'no second update while one runs');
+  } },
+  { id: 'halo-model-menu', scope: '#modelMenu', focus: '.model-menu-stage', setup: async page => {
+    await toHalo(page);
+    await page.locator('#modelPill').click();
+    await page.waitForTimeout(700);
+  } },
+  { id: 'halo-settings-look', sidebar: true, focus: MODAL, setup: async page => {
+    await toHalo(page);
+    await openSettings('general')(page);
+    await page.locator('#settingsModal:not([hidden]) .look-pill').first().waitFor();
+    await page.locator('.look-pill[data-look="clanker"]').click();
+    assert.deepEqual(await page.evaluate(() => window.sent.filter(m => m.type === 'setAppearance').at(-1)), { type: 'setAppearance', appearance: 'clanker' });
+    assert.equal(await page.locator('.look-pill[data-look="clanker"]').getAttribute('aria-checked'), 'true');
+    await page.evaluate(() => window.dispatchEvent(new MessageEvent('message', { data: { type: 'appearance', appearance: 'clanker' } })));
+    assert.equal(await page.evaluate(() => document.body.classList.contains('ui-halo')), false, 'the host\'s broadcast switches back live');
+    assert.equal(await page.locator('.halo-top').isVisible(), false);
+    await page.locator('.look-pill[data-look="halo"]').click();
+    await toHalo(page);
+    await page.waitForTimeout(300);
+  } },
 ];

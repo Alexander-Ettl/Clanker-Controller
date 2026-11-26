@@ -4,6 +4,9 @@
 
 const { RECORDED_OUTPUT_CHARS } = require('./chat-transcript.js');
 const { quotaFor } = require('./model-catalog.js');
+const { stopTarget } = require('../media/tool-format.js');
+
+const STOP_TOOL = /^(?:task_?stop|kill_?(?:shell|bash))$/i;
 
 /** Marks a recorded tool step finished and keeps its (capped) output, diff and duration. */
 function recordToolEnd(chat, event) {
@@ -15,7 +18,8 @@ function recordToolEnd(chat, event) {
   if (Number.isFinite(durationMs)) { step.durationMs = durationMs; event.durationMs = durationMs; }
   step.done = true;
   step.error = Boolean(event.error);
-  step.event = { ...step.event, ...(Number.isFinite(durationMs) ? { durationMs } : {}), output: String(event.output || '').slice(0, RECORDED_OUTPUT_CHARS), diff: event.diff || step.event.diff, ...(Number.isInteger(event.exitCode) ? { exitCode: event.exitCode } : {}) };
+  const stopped = STOP_TOOL.test(String(step.event?.name || '')) ? stopTarget(event.output, step.event?.command || '') : '';
+  step.event = { ...step.event, ...(stopped ? { command: stopped } : {}), ...(Number.isFinite(durationMs) ? { durationMs } : {}), output: String(event.output || '').slice(0, RECORDED_OUTPUT_CHARS), diff: event.diff || step.event.diff, ...(Number.isInteger(event.exitCode) ? { exitCode: event.exitCode } : {}) };
 }
 
 /** True when the model behind a task (or an agent name) has usage left. A missing live Antigravity number never blocks it. */

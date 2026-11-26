@@ -10,6 +10,6 @@
   },
   "agy": {
     "help": [["--help"]],
-    "flags": ["--input-format", "--output-format", "--model", "--dangerously-skip-permissions", "--add-dir", "--conversation"]
+    "flags": ["--input-format", "--output-format", "--model", "--effort", "--mode", "--dangerously-skip-permissions", "--add-dir", "--conversation"]
   }
 }

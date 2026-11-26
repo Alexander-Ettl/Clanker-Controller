@@ -3,7 +3,8 @@ import assert from 'node:assert/strict';
 import { chromium } from 'playwright';
 import { openChat } from './ui-tester/boot.mjs';
 import { scenarios } from './ui-tester/scenarios.mjs';
-const browser = await chromium.launch({ channel: process.platform === 'win32' ? 'msedge' : undefined, headless: false });
+const outputPath = process.argv.slice(2).find(arg => !arg.startsWith('--'));
+const browser = await chromium.launch({ channel: process.platform === 'win32' ? 'msedge' : undefined, headless: !process.argv.includes('--headed') });
 try {
   const { page } = await openChat(browser, { width: 900, height: 1100, sidebar: true });
   await scenarios.find(s => s.id === 'recent-context-hover').setup(page);
@@ -32,7 +33,7 @@ try {
   assert.equal(result.pathWrites, 0, 'hover never resizes or redraws the SVG outline');
   assert.match(result.fill, /0\.85\)/, 'the refracting surface stays dense enough that page text behind it cannot ghost through the labels');
   assert.match(await page.locator('.rail-glass').evaluate(el => getComputedStyle(el).backdropFilter), /url\(/, 'the shared-page backdrop uses the lens filter');
-  if (process.argv[2]) await page.screenshot({ path: process.argv[2] });
+  if (outputPath) await page.screenshot({ path: outputPath });
   await page.mouse.move(5, 5); await page.waitForTimeout(500);
   assert.equal(await page.locator('.rail-glass').evaluate(el => el.hidden), true, 'the shared lens disappears after the closing transition');
   console.log(JSON.stringify(result));

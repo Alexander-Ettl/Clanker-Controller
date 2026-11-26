@@ -125,6 +125,35 @@ export async function queueStability(page) {
   await page.waitForTimeout(700);
 }
 
+/** A paused chat whose only due prompts live in the scheduler (turnQueue empty) still shows the Play button and lets the user resume. */
+async function dueScheduledTransport(page) {
+  const send = data => page.evaluate(data => window.dispatchEvent(new MessageEvent('message', { data })), data);
+  const now = await page.evaluate(() => Date.now());
+  const past = new Date(now - 60000).toISOString();
+  const soon = new Date(now + 2500).toISOString();
+  await send({ type: 'chatLoaded', chat: { id: 'queue-due-only', messages: [{ role: 'user', text: 'Earlier task.' }], turnQueue: { turns: [], paused: true } }, running: null });
+  await send({ type: 'schedulerQueue', queue: [
+    { id: 'due-1', chatId: 'queue-due-only', model: 'claude', modelId: 'claude-opus-5-5-high', prompt: 'continue', status: 'pending', dispatchTrigger: 'quota-reset', notBefore: past, attachments: [] },
+    { id: 'due-2', chatId: 'queue-due-only', model: 'claude', modelId: 'claude-opus-5-5-high', prompt: 'Follow up', status: 'pending', dispatchTrigger: 'quota-reset', notBefore: past, attachments: [] },
+  ] });
+  assert.equal(await page.locator('.turn-queue-head > span').textContent(), '2 queued · paused');
+  const transport = page.locator('.turn-queue-head > .queue-transport');
+  assert.equal(await transport.isVisible(), true, 'Play button must be visible when due scheduled prompts are paused');
+  assert.equal(await transport.getAttribute('aria-label'), 'Resume queue');
+  await transport.click();
+  assert.deepEqual(await page.evaluate(() => window.sent.findLast(item => item.type === 'pauseTurnQueue')), { type: 'pauseTurnQueue', chatId: 'queue-due-only', paused: false });
+
+  // When a waiting scheduled prompt becomes due on the live countdown tick, the transport button appears without a new host snapshot.
+  await send({ type: 'turnQueue', chatId: 'queue-due-only', turns: [], paused: true });
+  await send({ type: 'schedulerQueue', queue: [
+    { id: 'soon-1', chatId: 'queue-due-only', model: 'claude', modelId: 'claude-opus-5-5-high', prompt: 'Wait a moment', status: 'pending', dispatchTrigger: 'fixed-time', dispatchTime: soon, attachments: [] },
+  ] });
+  assert.equal(await transport.isVisible(), false, 'future scheduled prompt alone needs no play/pause button yet');
+  await page.clock.runFor(3500);
+  assert.equal(await page.locator('.turn-queue-head > span').textContent(), '1 queued · paused');
+  assert.equal(await transport.isVisible(), true, 'Play button appears automatically as soon as the countdown reaches zero');
+}
+
 if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) {
   const browser = await chromium.launch({ channel: process.platform === 'win32' ? 'msedge' : undefined, headless: true });
   try {
@@ -132,9 +161,10 @@ if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.ar
       const { page, problems } = await openChat(browser, { width: 900, height: 900 });
       await page.emulateMedia({ reducedMotion });
       await queueStability(page);
+      await dueScheduledTransport(page);
       assert.deepEqual(problems, []);
       await page.close();
     }
-    console.log('Queue stability: repeated host snapshots, editing, sibling rows, animations, current callbacks and scheduled updates passed.');
+    console.log('Queue stability: repeated host snapshots, editing, sibling rows, animations, current callbacks, scheduled updates and due-scheduled play/pause passed.');
   } finally { await browser.close(); }
 }

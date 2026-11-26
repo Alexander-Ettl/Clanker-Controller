@@ -298,8 +298,10 @@ export async function transcribeAudio(filePath, options = {}) {
 
   const form = new FormData();
   form.append('file', new Blob([buffer]), path.basename(filePath));
-  form.append('model', process.env.GROQ_WHISPER_MODEL || DEFAULT_TRANSCRIPTION_MODEL);
+  form.append('model', options.model || process.env.GROQ_WHISPER_MODEL || DEFAULT_TRANSCRIPTION_MODEL);
   form.append('response_format', 'text');
+  form.append('temperature', '0');
+  if (options.language) form.append('language', options.language);
   if (options.vocabularyPrompt) form.append('prompt', options.vocabularyPrompt);
 
   const response = await groqFetch(GROQ_TRANSCRIPTION_URL, {

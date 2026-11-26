@@ -178,3 +178,46 @@ test('verified current version clears an updater error even if the follow-up rel
   assert.equal(f.hub.snapshot().versions.gemini.outdated, false);
   assert.equal(f.hub.snapshot().notes.gemini, undefined);
 });
+
+test('Claude release check follows autoUpdatesChannel in Claude settings (stable vs latest)', async () => {
+  const fs = require('node:fs');
+  const os = require('node:os');
+  const path = require('node:path');
+  const claude = require('../lib/providers/claude.js');
+  const { releaseStatus } = require('../lib/cli-tools.js');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'clanker-claude-channel-'));
+  const prevDir = process.env.CLAUDE_CONFIG_DIR;
+  try {
+    process.env.CLAUDE_CONFIG_DIR = dir;
+    assert.equal(claude.claudeUpdateChannel(), 'latest');
+    fs.writeFileSync(path.join(dir, 'settings.json'), JSON.stringify({ autoUpdatesChannel: 'stable' }));
+    assert.equal(claude.claudeUpdateChannel(), 'stable');
+    const seen = [];
+    const status = await releaseStatus('claude', async (url) => {
+      seen.push(url);
+      return { ok: true, json: async () => ({ version: url.endsWith('/stable') ? '2.1.326' : '2.1.332' }) };
+    });
+    assert.equal(seen[0], 'https://registry.npmjs.org/@anthropic-ai/claude-code/stable');
+    assert.deepEqual(status, { latest: '2.1.326', error: null });
+    fs.writeFileSync(path.join(dir, 'settings.local.json'), JSON.stringify({ autoUpdatesChannel: 'latest' }));
+    assert.equal(claude.claudeUpdateChannel(), 'latest', 'settings.local.json overrides settings.json');
+  } finally {
+    if (prevDir === undefined) delete process.env.CLAUDE_CONFIG_DIR;
+    else process.env.CLAUDE_CONFIG_DIR = prevDir;
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('a CLI updater that exits 0 without upgrading surfaces a failure note instead of Update complete', async () => {
+  const f = fixture({
+    updateCliImpl: async () => ({ ok: true, message: '✔ Claude Code is up to date (2.1.326)' }),
+    installedVersionImpl: async () => '2.1.326',
+    releaseStatusImpl: async () => ({ latest: '2.1.332', error: null }),
+  });
+  f.hub.versions = { claude: { version: '2.1.326', latest: '2.1.332', outdated: true } };
+  await f.hub.update('claude');
+  const snap = f.hub.snapshot();
+  assert.equal(snap.versions.claude.outdated, true);
+  assert.equal(snap.notes.claude.ok, false);
+  assert.match(snap.notes.claude.text, /up to date.*still v2\.1\.326.*latest v2\.1\.332/i);
+});

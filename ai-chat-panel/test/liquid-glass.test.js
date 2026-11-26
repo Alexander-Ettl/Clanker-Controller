@@ -143,3 +143,105 @@ test('copying the identical middle columns of a wide shape gives exactly the byt
     assert.deepEqual(Buffer.from(fast.spec), Buffer.from(slow.spec), `spec ${w}x${h} r${r}`);
   }
 });
+
+/* The rim pieces. The island used to paint every tile onto three dock-sized canvases and crop the boxes out of them; it now cuts
+   each box straight from narrow tiles (only the ends of a wide shape and one middle column). The pictures must not change by a
+   byte, so this keeps the old way as the reference. */
+const { lensTile, composeBox } = require('../media/liquid-glass');
+function referencePieces(shapes, dockW, dockH, px, box, spec = {}) {
+  const W = Math.round(dockW) * px, H = Math.round(dockH) * px;
+  const map = new Uint8ClampedArray(W * H * 4), ring = new Uint8ClampedArray(W * H * 4), solid = new Uint8ClampedArray(W * H * 4);
+  for (let i = 0; i < map.length; i += 4) { map[i] = map[i + 1] = map[i + 2] = 128; map[i + 3] = 255; }
+  for (const s of shapes) {
+    const tw = Math.round(s.w) * px, th = Math.round(s.h) * px;
+    const m = buildLens(tw, th, s.rx * px, Math.min(BEZEL, Math.min(s.w, s.h) / 2) * px, { spec: 0 }).map;
+    const r = new Uint8ClampedArray(m.length), so = new Uint8ClampedArray(m.length);
+    r.fill(255); so.fill(255);
+    for (let i = 0; i < m.length; i += 4) {
+      const dx = m[i] - 128, dy = m[i + 1] - 128;
+      if (dx === 0 && dy === 0) { r[i + 3] = so[i + 3] = 0; continue; }
+      r[i + 3] = Math.max(0, Math.min(255, (Math.sqrt(dx * dx + dy * dy) * 3.2 - 8) * 1.032));
+      so[i + 3] = r[i + 3] > 0 ? 255 : 0;
+    }
+    const sx = Math.round(s.x * px), sy = Math.round(s.y * px); // putImageData: the tile replaces what is under it, clipped to the canvas
+    for (let y = 0; y < th; y++) for (let x = 0; x < tw; x++) {
+      const X = sx + x, Y = sy + y;
+      if (X < 0 || Y < 0 || X >= W || Y >= H) continue;
+      for (const [dst, src] of [[map, m], [ring, r], [solid, so]]) for (let k = 0; k < 4; k++) dst[(Y * W + X) * 4 + k] = src[(y * tw + x) * 4 + k];
+    }
+  }
+  const [bx, by, bw, bh] = box, out = { map: [], ring: [], solid: [] };
+  for (const key of Object.keys(out)) {
+    const src = { map, ring, solid }[key], dst = new Uint8ClampedArray(bw * px * bh * px * 4);
+    for (let y = 0; y < bh * px; y++) for (let x = 0; x < bw * px; x++) for (let k = 0; k < 4; k++) dst[(y * bw * px + x) * 4 + k] = src[((by * px + y) * W + bx * px + x) * 4 + k];
+    out[key] = dst;
+  }
+  return out;
+}
+
+const DOCKS = {
+  'a wide pill': { w: 940, h: 130, shapes: [{ x: 40, y: 40, w: 860, h: 56, rx: 28, ry: 28, o: 1 }] },
+  'a pill at a half-pixel offset': { w: 700, h: 150, shapes: [{ x: 40.5, y: 40.5, w: 619.5, h: 56.5, rx: 28, ry: 28, o: 1 }] },
+  'a tall composer': { w: 700, h: 260, shapes: [{ x: 40, y: 40, w: 620, h: 180, rx: 24, ry: 24, o: 1 }] },
+  'a pill with a menu resting on it': { w: 700, h: 330, shapes: [{ x: 60, y: 40, w: 300, h: 156, rx: 20, ry: 20, o: 1, flat: true }, { x: 40, y: 190, w: 620, h: 56, rx: 28, ry: 28, o: 1 }] },
+  'a pill and two buds': { w: 900, h: 130, shapes: [{ x: 40, y: 40, w: 56, h: 56, rx: 28, ry: 28, o: 1 }, { x: 110, y: 40, w: 640, h: 56, rx: 28, ry: 28, o: 1 }, { x: 764, y: 40, w: 56, h: 56, rx: 28, ry: 28, o: 1 }] },
+  'a narrow pill': { w: 200, h: 130, shapes: [{ x: 40, y: 40, w: 90, h: 56, rx: 28, ry: 28, o: 1 }] },
+  'a small radius': { w: 700, h: 130, shapes: [{ x: 40, y: 40, w: 600, h: 56, rx: 6, ry: 6, o: 1 }] },
+};
+for (const [name, dock] of Object.entries(DOCKS)) {
+  for (const px of [1, 2]) {
+    test(`rim pieces cut from narrow tiles match the dock-sized canvases byte for byte: ${name}, ${px}x`, () => {
+      const cache = new Map();
+      const tileOf = (s) => lensTile(Math.round(s.w) * px, Math.round(s.h) * px, s.rx * px, Math.min(BEZEL, Math.min(s.w, s.h) / 2) * px, cache);
+      const painted = [...dock.shapes.filter((q) => q.flat), ...dock.shapes.filter((q) => !q.flat)];
+      const boxes = painted.flatMap(rimBoxes);
+      assert.ok(boxes.length > 0);
+      for (const box of boxes) {
+        const fast = composeBox(painted, tileOf, px, box), slow = referencePieces(painted, dock.w, dock.h, px, box);
+        for (const key of ['map', 'ring', 'solid']) assert.deepEqual(Buffer.from(fast[key]), Buffer.from(slow[key]), `${key} of box ${box}`);
+      }
+    });
+  }
+}
+
+test('a wide shape reuses one narrow tile at every width, and the tile does not grow with the width', () => {
+  const cache = new Map();
+  const sizes = [500, 640, 777, 1000, 1500, 2400].map((w) => lensTile(w * 2, 112, 56, 40, cache));
+  assert.equal(cache.size, 1, 'one stored tile serves every width');
+  const bytes = sizes[0].body.bytes;
+  assert.ok(bytes < 2 * 1024 * 1024, `the stored tile is ${Math.round(bytes / 1024)} KB`);
+  assert.ok(sizes.every((t) => t.body === sizes[0].body));
+});
+
+test('tiles of different heights, radii or narrow widths are different tiles', () => {
+  const cache = new Map();
+  lensTile(1600, 112, 56, 40, cache); lensTile(1600, 120, 56, 40, cache); lensTile(1600, 112, 40, 40, cache); lensTile(90, 112, 56, 40, cache); lensTile(91, 112, 56, 40, cache);
+  assert.equal(cache.size, 5);
+});
+
+test('the tile cache stays bounded', () => {
+  const cache = new Map();
+  for (let h = 40; h < 140; h++) lensTile(600, h, 20, 20, cache);
+  assert.ok(cache.size <= 24);
+});
+
+const { disjointBoxes } = require('../media/liquid-glass');
+const area = (boxes) => boxes.reduce((sum, [, , w, h]) => sum + w * h, 0);
+const cells = (boxes) => { const set = new Set(); for (const [x, y, w, h] of boxes) for (let j = y; j < y + h; j++) for (let i = x; i < x + w; i++) set.add(`${i},${j}`); return set; };
+test('disjoint boxes cover what the boxes cover and never overlap', () => {
+  for (const boxes of [
+    [[0, 0, 10, 10]], [[0, 0, 10, 10], [20, 20, 5, 5]], [[0, 0, 10, 10], [5, 5, 10, 10]], [[0, 0, 10, 10], [2, 2, 3, 3]], [[2, 2, 3, 3], [0, 0, 10, 10]],
+    [[0, 0, 30, 4], [0, 0, 6, 20], [24, 0, 6, 20], [0, 16, 30, 4], [10, 2, 8, 30]],
+    ...Object.values(DOCKS).map((dock) => [...dock.shapes.filter((q) => q.flat), ...dock.shapes.filter((q) => !q.flat)].flatMap(rimBoxes)),
+  ]) {
+    const parts = disjointBoxes(boxes);
+    assert.equal(area(parts), cells(boxes).size, 'no pixel counted twice, none lost');
+    assert.deepEqual([...cells(parts)].sort(), [...cells(boxes)].sort());
+    assert.ok(parts.every(([, , w, h]) => w > 0 && h > 0));
+  }
+});
+
+test('with no overlap the ring pieces are the boxes themselves', () => {
+  const boxes = rimBoxes({ x: 0, y: 0, w: 860, h: 56, rx: 28 });
+  assert.deepEqual(disjointBoxes(boxes), boxes);
+});

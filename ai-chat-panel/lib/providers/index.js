@@ -11,6 +11,7 @@
 //   company       who makes the models                    color         '#rrggbb', the provider's accent
 //   cli           the command a person types              icon          optional SVG string; a monogram is drawn without one
 //   headlessApprovals  false when it cannot ask for approval run headless (default true)
+//   nativeAutoCompaction  true or (env) => boolean when the CLI manages its context automatically
 //   locate(h)     candidate paths for the binary, best first; h = { onPath, inExtensions, join, home, local, npmGlobal }
 //   npmPackage    latest version comes from the npm registry   latestVersion(fetch)  or from here (null = unknown)
 //   updateArgs    default ['update']                      versionArgs   default ['--version']
@@ -62,6 +63,10 @@ const has = (id) => providers.has(id);
 const get = (id) => providers.get(id) || null;
 const all = () => [...providers.values()];
 const ids = () => [...providers.keys()];
+function autoCompacts(id, env = process.env) {
+  const capability = get(id)?.nativeAutoCompaction;
+  return typeof capability === 'function' ? capability(env) : capability === true;
+}
 
 /** What the webviews need: no functions, nothing about the machine. */
 const displayList = () => all().map(({ id, name, accountName, company, color, cli, icon, headlessApprovals, optional }) => ({ id, name, accountName, company, color, cli, headlessApprovals: headlessApprovals !== false, ...(optional ? { optional: true } : {}), ...(icon ? { icon } : {}) }));
@@ -79,4 +84,4 @@ function accentCss(list = displayList()) {
 
 BUILTIN.forEach(register);
 
-module.exports = { register, unregister, validate, has, get, all, ids, displayList, accentCss };
+module.exports = { register, unregister, validate, has, get, all, ids, autoCompacts, displayList, accentCss };

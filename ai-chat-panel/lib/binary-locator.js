@@ -53,11 +53,20 @@ function candidates(agent) {
   return WIN ? found : [...found, ...unixBinDirs().map((dir) => path.join(dir, provider.cli))];
 }
 
+/** nvm keeps one npm prefix per Node version, so `npm install -g` lands in `~/.nvm/versions/node/<version>/bin`; newest version first. */
+function nvmBinDirs(home) {
+  const root = path.join(process.env.NVM_DIR || path.join(home, '.nvm'), 'versions', 'node');
+  try { return fs.readdirSync(root).sort((a, b) => b.localeCompare(a, undefined, { numeric: true })).map((version) => path.join(root, version, 'bin')); } catch { return []; }
+}
+
 /** Where install scripts and `npm install -g` put executables on Linux and macOS, besides PATH. */
 function unixBinDirs(home = os.homedir(), env = process.env) {
   return [path.join(home, '.local', 'bin'), path.join(home, '.npm-global', 'bin'), env.NPM_CONFIG_PREFIX && path.join(env.NPM_CONFIG_PREFIX, 'bin'),
-    path.join(home, '.volta', 'bin'), path.join(home, '.bun', 'bin'), '/usr/local/bin', '/opt/homebrew/bin', '/usr/bin', '/snap/bin'].filter(Boolean);
+    path.join(home, '.volta', 'bin'), path.join(home, '.bun', 'bin'), ...nvmBinDirs(home), '/usr/local/bin', '/opt/homebrew/bin', '/usr/bin', '/snap/bin'].filter(Boolean);
 }
+
+/** A copy in a folder this user cannot write (the ChatGPT app's `/usr/lib/chatgpt/resources/codex`) cannot update itself or be updated by npm. */
+const updatable = (file) => { try { fs.accessSync(path.dirname(file), fs.constants.W_OK); return true; } catch { return false; } };
 
 const cache = new Map();
 
@@ -65,7 +74,9 @@ const cache = new Map();
 function locate(agent) {
   if (!cache.has(agent)) {
     const checked = [...new Set(candidates(agent))];
-    cache.set(agent, { agent, path: checked.find(WIN ? isFile : isExecutable) || null, checked });
+    const usable = checked.filter(WIN ? isFile : isExecutable);
+    // Off Windows an app-managed copy in a read-only folder only runs when no copy the user owns exists, so the CLI's own update works.
+    cache.set(agent, { agent, path: (WIN ? usable[0] : usable.find(updatable) || usable[0]) || null, checked });
   }
   return cache.get(agent);
 }

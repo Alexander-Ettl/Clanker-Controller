@@ -1,12 +1,22 @@
 'use strict';
 
 // Clanker stores provider choices, never credentials. The CLIs own account creation and browser sign-in.
-const { locate, refresh, resolveShim } = require('./binary-locator');
+const { locate, refresh, resolveShim, unixBinDirs } = require('./binary-locator');
+const fs = require('node:fs');
 const os = require('node:os');
 const { runCli } = require('./cli-tools');
 const { callLanguageServer } = require('./antigravity-quota');
 const providers = require('./providers'); // name, sign-in, install line and auth check per provider: lib/providers/<id>.js
 const { launchFailure } = require('./providers/shared.js');
+
+/**
+ * `bash -c` is not an interactive shell, so it never reads ~/.bashrc, where nvm, volta and the like put node and npm on PATH.
+ * The setup line gets the same folders the binary locator searches, so `npm install -g` runs and its result is found again.
+ */
+function posixPathPrefix() {
+  const dirs = unixBinDirs().filter((dir) => { try { return fs.statSync(dir).isDirectory(); } catch { return false; } });
+  return dirs.length ? `export PATH="${dirs.join(':')}:$PATH"; ` : '';
+}
 
 function terminalSpec(agent, file, platform = process.platform) {
   const provider = providers.get(agent);
@@ -16,7 +26,7 @@ function terminalSpec(agent, file, platform = process.platform) {
       if (!provider.installPosix) throw new Error('Install this CLI from its official website, then check connections.');
       // The terminal stays open afterwards, like -NoExit does for PowerShell.
       const shell = process.env.SHELL || '/bin/sh';
-      return { shellPath: shell, shellArgs: ['-c', `${provider.installPosix}; exec "${shell}"`] };
+      return { shellPath: shell, shellArgs: ['-c', `${posixPathPrefix()}${provider.installPosix}; exec "${shell}"`] };
     }
     return { shellPath: 'powershell.exe', shellArgs: ['-NoLogo', '-NoProfile', '-NoExit', '-Command', provider.install] };
   }
@@ -27,8 +37,13 @@ function terminalSpec(agent, file, platform = process.platform) {
   return { shellPath: shim?.command || file, shellArgs: [...(shim?.args || []), ...provider.login] };
 }
 
+// A status check the machine could not finish (killed on its timeout, a spawn that failed for want of memory) says nothing about the
+// sign-in. It is asked again after these waits, the last one repeating, until a check gives a real answer.
+const RECHECK_MS = [15000, 45000, 120000, 300000];
+const BUSY_ERRORS = new Set(['ENOMEM', 'EAGAIN', 'EMFILE', 'ENFILE']);
+
 class CliAccounts {
-  constructor({ vscode, store, home = os.homedir(), languageServer = callLanguageServer, existingUser = false, cwd, broadcast, onChange, onChecked, find = locate, reset = refresh, run = runCli, spec = terminalSpec, now = Date.now }) {
+  constructor({ vscode, store, home = os.homedir(), languageServer = callLanguageServer, existingUser = false, cwd, broadcast, onChange, onChecked, find = locate, reset = refresh, run = runCli, spec = terminalSpec, now = Date.now, recheckMs = RECHECK_MS }) {
     Object.assign(this, { vscode, store, home, languageServer, cwd, broadcast, onChange, onChecked, find, reset, run, spec, now });
     const saved = store.get();
     const coreIds = () => providers.ids().filter(agent => !providers.get(agent)?.optional);
@@ -40,6 +55,7 @@ class CliAccounts {
     // Sign-in ended while Clanker was working: the status command may still say "logged in" for a token the server dropped, so
     // this stays until a sign-in is seen (agent -> { detail, sawBad }). checkedAt: when each CLI's status was last read.
     this.expired = {}; this.checkedAt = {}; this.looking = new Map(); this.signingIn = new Set();
+    this.recheckMs = recheckMs; this.recheckCount = 0; this.recheckTimer = null; this.inconclusive = new Set();
   }
   // Why an added CLI cannot be used, or null when it works. The one answer behind the rail's red ring, the chat's sign-in banner,
   // the Windows popup and the gate that holds unattended prompts (lib/auth-gate.js). `code` is the exit code of the CLI's own
@@ -191,6 +207,15 @@ class CliAccounts {
     try {
       const { authStatus } = providers.get(agent);
       const result = await this.run(file, authStatus.args, 8000);
+      // A CLI that never got to answer (timed out under load, killed, no memory to start) is not a CLI that is signed out. Keep what
+      // was known (a ring that was fine stays fine), say the check was not possible, and ask again soon.
+      if (result?.timedOut || result?.signal || BUSY_ERRORS.has(result?.spawnError)) {
+        if (!this.auth[agent]) this.auth[agent] = 'unknown';
+        this.inconclusive.add(agent);
+        this.notes[agent] = 'Could not check this CLI: the computer is too busy. Clanker will look again shortly.';
+        return;
+      }
+      this.inconclusive.delete(agent);
       this.auth[agent] = authStatus.interpret(result);
       this.codes[agent] = result.code;
       this.checkedAt[agent] = this.now();
@@ -199,7 +224,14 @@ class CliAccounts {
       await this.checkEntitlement(agent, result);
       if (['connected', 'ready'].includes(this.auth[agent])) this.notes[agent] = '';
       else if (this.auth[agent] === 'broken') { this.damage[agent] = launchFailure(result.stderr || result.stdout); this.notes[agent] = `${providers.get(agent).accountName} cannot start: ${this.damage[agent]}`; }
-    } catch { this.auth[agent] = 'unknown'; this.notes[agent] = 'Could not check this CLI. Try again.'; }
+    } catch { if (!this.auth[agent]) this.auth[agent] = 'unknown'; this.inconclusive.add(agent); this.notes[agent] = 'Could not check this CLI. Try again.'; }
+  }
+  /** Asks again after the next wait of the schedule; a real answer from every CLI starts the schedule over. */
+  scheduleRecheck() {
+    if (this.disposed || this.recheckTimer) return;
+    const wait = this.recheckMs[Math.min(this.recheckCount++, this.recheckMs.length - 1)];
+    this.recheckTimer = setTimeout(() => { this.recheckTimer = null; void this.check(); }, wait);
+    this.recheckTimer.unref?.();
   }
   // One CLI's sign-in, checked now (the CLI's own status command, no prompt sent). 'unknown' means the check itself failed.
   verify(agent) {
@@ -253,6 +285,7 @@ class CliAccounts {
   }
   async checkAccounts() {
     await Promise.all(this.connectedAgents().map(agent => this.checkAgent(agent)));
+    if (this.inconclusive.size) this.scheduleRecheck(); else this.recheckCount = 0;
     if (this.dirty) { this.dirty = false; await this.save(); } else this.onChange?.();
     await this.onChecked?.();
   }
@@ -267,6 +300,7 @@ class CliAccounts {
   }
   dispose() {
     this.disposed = true;
+    clearTimeout(this.recheckTimer);
     const terminals = [...this.terminals.values()];
     this.terminals.clear();
     terminals.forEach(terminal => terminal.dispose());

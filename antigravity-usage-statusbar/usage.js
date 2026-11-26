@@ -267,26 +267,35 @@ function findLatestCodexRateLimit(text) {
 }
 
 function normalizeAntigravityBucket(bucket) {
-  if (!bucket) return null;
-  const remainingFraction = finiteNumber(
-    bucket.remainingFraction ?? bucket.remaining_fraction,
-  );
+  if (!bucket || typeof bucket !== 'object') return null;
+  const rawReset = bucket.resetTime ?? bucket.reset_time;
+  const resetMs = typeof rawReset === 'number'
+    ? (rawReset > 1e12 ? rawReset : rawReset * 1000)
+    : Date.parse(rawReset);
+  const resetsAt = Number.isFinite(resetMs) ? resetMs / 1000 : null;
+  const description = bucket.description ?? null;
+
+  const rawFraction = bucket.remainingFraction ?? bucket.remaining_fraction;
+  let remainingFraction = finiteNumber(rawFraction);
+  if (
+    remainingFraction === null &&
+    rawFraction == null &&
+    (resetsAt !== null || /hit your .* limit|exhausted|depleted|\b0%/i.test(String(description || '')))
+  ) {
+    remainingFraction = 0;
+  }
   if (remainingFraction === null) return null;
 
   const remaining = percent(remainingFraction * 100);
   if (remaining === null) return null;
   const used = 100 - remaining;
 
-  const resetMs = Date.parse(bucket.resetTime ?? bucket.reset_time);
-  const resetsAt = Number.isFinite(resetMs) ? resetMs / 1000 : null;
-  if (resetsAt === null) return null;
-
   let windowMinutes = 300;
   const bucketId = String(bucket.bucketId ?? bucket.bucket_id ?? '');
   const windowStr = String(bucket.window ?? '');
-  if (windowStr === 'weekly' || bucketId.includes('weekly')) {
+  if (windowStr === 'weekly' || /weekly|7d/i.test(bucketId)) {
     windowMinutes = 7 * 24 * 60;
-  } else if (windowStr === '5h' || bucketId.includes('5h')) {
+  } else if (windowStr === '5h' || /5h|five[_-]?hour/i.test(bucketId)) {
     windowMinutes = 300;
   }
 
@@ -294,9 +303,9 @@ function normalizeAntigravityBucket(bucket) {
     used,
     remaining,
     windowMinutes,
-    resetsAt,
+    resetsAt: remainingFraction >= 1 && !description ? null : resetsAt,
     displayName: bucket.displayName ?? bucket.display_name ?? null,
-    description: bucket.description ?? null,
+    description,
   };
 }
 
@@ -305,12 +314,22 @@ function parseAntigravityQuota(data, groupName = 'Gemini Models') {
   const groups = data.response?.groups ?? data.groups;
   if (!Array.isArray(groups)) return null;
 
-  const group = groups.find(
+  const want = groupName.toLowerCase();
+  let group = groups.find(
     (g) =>
       g.displayName === groupName ||
       (typeof g.displayName === 'string' &&
-        g.displayName.toLowerCase().includes(groupName.toLowerCase())),
+        g.displayName.toLowerCase().includes(want)),
   );
+  if (!group && want.includes('claude')) {
+    group = groups.find(
+      (g) =>
+        Array.isArray(g.buckets) &&
+        (g.buckets.some((b) => /^3p[-_]/i.test(String(b?.bucketId ?? b?.bucket_id ?? ''))) ||
+          (/\b(?:claude|gpt)\b/i.test(`${g.displayName || ''} ${g.description || ''}`) &&
+            !/^gemini\b/i.test(String(g.displayName || '')))),
+    );
+  }
   if (!group || !Array.isArray(group.buckets)) return null;
 
   const buckets = group.buckets;

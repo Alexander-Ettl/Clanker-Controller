@@ -9,8 +9,11 @@ const { pathToFileURL } = require('node:url');
 const { TerminalSessionManager } = require('./lib/pty-session.js');
 const log = require('./lib/log.js'); // the Logs popup and the "Clanker Controller" output channel
 const { readQuotas, onDidChangeQuotas, recordClaudeUsage, claudeUsageAge } = require('./lib/quota-bridge.js');
+const { stopOwnHub } = require('./lib/antigravity-quota.js');
 const { probeClaudeUsage } = require('./lib/claude-usage.js');
 const { configureCliTelemetry } = require('./lib/cli-telemetry.js');
+const { repairGitConfigEnv } = require('./lib/git-env.js');
+const { configureAppRoot } = require('./lib/cli-env.js');
 const cliTelemetryEnabled = () => vscode.workspace.getConfiguration('aiChatPanel').get('cliTelemetry', false);
 
 // Claude's real usage after a restart or a quiet spell: `claude -p /usage` is a local command
@@ -25,6 +28,7 @@ function refreshClaudeUsage(cwd, maxAge = USAGE_PROBE_AFTER_MS) {
 }
 const { readMarkup, writeMarkup, cleanMarkup, sidecarPath } = require('./lib/markup.js');
 const { VoiceCapture } = require('./lib/voice-capture.js');
+const { LocalSttManager, DEFAULT_LOCAL_MODEL, LOCAL_STT_MODELS } = require('./lib/local-stt.js');
 const { learnedTerms } = require('./lib/voice-learn.js');
 const providers = require('./lib/providers'); // the coding-agent CLIs Clanker drives (docs/adding-a-provider.md)
 const { VoiceHotkey, createHotkeyHandlers } = require('./lib/voice-hotkey.js');
@@ -47,12 +51,16 @@ const ROUTING_LINKS = {
 const COMPLIANCE_SETTINGS = { scout: 'complianceScout', redact: 'complianceRedact' };
 const { execFile, spawn } = require('node:child_process');
 const { StreamEngine } = require('./lib/stream-engine.js');
+const { OomGuard } = require('./lib/oom-guard.js');
 const { locate, refresh: refreshBinaries, resolveShim, terminalCommand } = require('./lib/binary-locator.js');
 const { ChatStore, markActive, ACTIVE_WINDOW_MS, deriveFallbackTitle, recoverInterruptedChat, ownedByAnotherHost } = require('./lib/chat-store.js');
+const chatFolders = require('./lib/chat-folders.js');
 const { CodexThreadTitles, codexThreadTitle } = require('./lib/codex-thread-titles.js');
 const { readAgentTitle, hasAgentTitles } = require('./lib/agent-titles.js');
 const { CodexChatSync, inputHash, repairImportedPrompts } = require('./lib/codex-chat-sync.js');
-const { historyPage } = require('./lib/chat-history.js');
+const { historyPage, historyPageForward } = require('./lib/chat-history.js');
+const { ChatFind, historyWindow } = require('./lib/chat-find.js');
+const chatFind = new ChatFind(); // find in chat: one cache of normalised message text, keyed by the message objects
 const TOOL_PREVIEW_MAX = 2000, TOOL_PREVIEW_CHARS = 1200; // longer outputs are sent in full only when the card is opened
 const { route, routeBest } = require('./lib/auto-router.js');
 const { runtime: routingRuntime, projectStack } = require('./lib/routing-runtime.js');
@@ -60,7 +68,7 @@ const { contextAssets } = require('./lib/work-context.js');
 let contextAssetsJson = null; // the rail's category list and icons, read once from media/context-icons
 const { windowOf, GROQ_MODEL } = require('./lib/routing.js');
 const { MODEL_CATALOG, AVAILABLE_MODELS, defaultModel, modelOption, resolveModel, quotaFor } = require('./lib/model-catalog.js');
-const { CliHub, providerBusy } = require('./lib/cli-tools.js');
+const { CliHub, providerBusy, checkDesktopApps } = require('./lib/cli-tools.js');
 const { CliAccounts } = require('./lib/cli-accounts.js');
 const { promptFor, permissionFor, appendInstructions } = require('./media/model-prompts.js');
 const { CostMeter, chatTotal, chatCost, LEDGER_VERSION } = require('./lib/api-cost.js');
@@ -87,15 +95,20 @@ const { TelegramBridge, DOCK_KEYBOARD, escapeHtml, markdownToTelegramHtml } = re
 const { configureTelegram: setupTelegram, TOKEN_KEY, CHAT_KEY, OWNER_KEY } = require('./lib/telegram-setup.js');
 const { forwardRequest, bindTelegramControls } = require('./lib/telegram-control.js');
 const { resolveEditorTheme } = require('./lib/editor-theme.js');
+const { describeContextReset, isContextDrop } = require('./lib/context-reset.js');
 const { buildHandoff, buildCompactionHandoff, taskState, checkpointStart, estimateTokens, COMPACT_DIRECTIVE, COMPACT_TARGET_TOKENS } = require('./lib/chat-handoff.js');
 const { CodexCommandCatalog } = require('./lib/codex-commands.js');
 const { SlashCommandCatalog } = require('./lib/slash-commands.js');
 
-// Context windows (the webview's gauge uses the same numbers) and the point
-// where the panel compacts Gemini itself: agy has no compaction of its own,
-// while Claude Code and Codex auto-compact natively (both on by default).
+// Nominal windows for the gauge. Harnesses with native compaction manage their own thresholds.
 const CONTEXT_LIMITS = { claude: 1000000, codex: 1000000, gemini: 1048576 };
 const AUTO_COMPACT_RATIO = 0.90;
+/** The window a chat's gauge, auto-compact and overflow checks measure against: what the CLI reported, else the vendor's nominal one. */
+const contextLimitOf = (agent, context) => (context?.agent === agent && context.limit > 0 ? context.limit : CONTEXT_LIMITS[agent] || 1000000);
+/** The window of `model` in this chat: the one configured for it, else what its CLI reported for the chat, else the vendor's nominal one. */
+const modelWindow = (deps, model, context) => windowOf({ ...model, ...deps.routing?.getConfig().models[model.id] }, 0) || contextLimitOf(model.agent, context);
+/** The webview's gauge event for a saved chat.context. */
+const usageEventOf = (context) => ({ type: 'usage', agent: context.agent, contextTokens: context.tokens, contextWindow: context.limit, estimated: context.estimated });
 const DELTA_BATCH_MS = 33; // reply text reaches the window at most about every second frame, see ChatRun.postEvent
 const SUBAGENT_LOG_LIMIT = 3000; // subagent events kept per chat for the agents viewer
 const { notifyReply, textAfterLastTool } = require('./lib/notify.js');
@@ -132,6 +145,16 @@ const railLimits = () => {
   const config = vscode.workspace.getConfiguration('aiChatPanel');
   return { projects: railLimit('railProjects', config.get('railProjects', RAIL_LIMIT_DEFAULTS.railProjects)), chats: railLimit('railChats', config.get('railChats', RAIL_LIMIT_DEFAULTS.railChats)) };
 };
+const openFailedToolCards = () => vscode.workspace.getConfiguration('aiChatPanel').get('openFailedToolCards', false) === true;
+// aiChatPanel.appearance: 'clanker' (every control) or 'halo' (the minimal look, media/halo.css and halo.js).
+const appearance = () => vscode.workspace.getConfiguration('aiChatPanel').get('appearance', 'clanker') === 'halo' ? 'halo' : 'clanker';
+// Halo greets you by your account name when it reads as a first name ("alex" -> "Alex"), otherwise with a plain hello.
+const greetingName = () => {
+  let name = '';
+  try { name = os.userInfo().username || ''; } catch { /* no account name */ }
+  return /^[a-z][a-z'-]{1,19}$/i.test(name) && !/^(user|admin|root|owner|guest|dev|ubuntu|vagrant|runner)$/i.test(name) ? name[0].toUpperCase() + name.slice(1).toLowerCase() : '';
+};
+const chatFoldersEnabled = () => vscode.workspace.getConfiguration('aiChatPanel').get('chatFolders', true) !== false;
 const timePrefs = () => JSON.stringify({ locale: vscode.env.language || 'en', timeFormat: vscode.workspace.getConfiguration('aiChatPanel').get('timeFormat', '24h') });
 
 const QUOTA_POLL_MS = 5000;
@@ -150,7 +173,7 @@ class SchedulerWatchdog {
     this.onQueueChange = onQueueChange || (() => {});
     this.chatStore = chatStore || null; this.onHistoryChange = onHistoryChange || (() => {});
     this.timer = null; this.running = false; this.activeTaskId = null; this.output = ''; this.failed = ''; this.chat = null; this.reply = null;
-    this.engine = new StreamEngine({ cwd: workspaceDir, models: getModels(), permissionMode: getPermissionMode ? getPermissionMode() : 'fullAccess' });
+    this.engine = new StreamEngine({ cwd: workspaceDir, attachmentsDir: queue?.stagingDir || null, models: getModels(), permissionMode: getPermissionMode ? getPermissionMode() : 'fullAccess' });
     this.engine.on('event', (event) => void this.handleEvent(event));
   }
   start() { if (!this.timer) { this.timer = setInterval(() => void this.tick(), WATCHDOG_POLL_MS); void this.tick(); } }
@@ -224,6 +247,7 @@ class SchedulerWatchdog {
     const context = this.projects?.context(projectId, { worktree: task.chatId ? this.chatStore?.load(task.chatId)?.worktree : null });
     if (task.chatId && task.projectId && this.chatStore?.load(task.chatId)?.projectId !== task.projectId) throw new Error('Scheduled task project does not match its conversation.');
     await this.waitForCliUpdate?.(task.model);
+    await this.waitForMemory?.(); // likewise a scheduled prompt: see ChatRun's queue drain
     await this.queue.markDispatched(task.id);
     this.onQueueChange();
     // "Continue when the limit resets": the message goes back into the chat it came from, so the
@@ -236,7 +260,7 @@ class SchedulerWatchdog {
     this.activeTaskId = task.id; this.output = ''; this.failed = ''; this.engine.models = this.getModels();
     if (context) {
       this.engine.dispose(); // Native server sessions must not carry over between project directories.
-      this.engine = new StreamEngine({ cwd: context.workspaceDir, models: this.getModels(), permissionMode: this.getPermissionMode?.() || 'fullAccess' });
+      this.engine = new StreamEngine({ cwd: context.workspaceDir, attachmentsDir: context.attachmentsDir || this.queue?.stagingDir || null, models: this.getModels(), permissionMode: this.getPermissionMode?.() || 'fullAccess' });
       this.engine.on('event', event => void this.handleEvent(event));
     }
     this.engine.permissionMode = this.getPermissionMode ? this.getPermissionMode() : 'fullAccess';
@@ -546,6 +570,17 @@ function chatModelFor(chat, agent) {
   return byLabel || (saved?.agent === agent ? saved : null) || defaultModel(agent);
 }
 
+function contextHandoff(messages, reply) {
+  const previous = messages.findLast((entry) => entry.role === 'assistant' && !entry.compact && !entry.inProgress && entry.agent && (entry.modelId || entry.modelLabel));
+  if (!previous || !reply.agent) return null;
+  const from = previous.modelLabel || modelOption(previous.modelId)?.label || previous.modelId;
+  const to = reply.modelLabel || modelOption(reply.modelId)?.label || reply.modelId;
+  if (!from || !to) return null;
+  const sameModel = previous.modelId && reply.modelId ? previous.modelId === reply.modelId : from === to;
+  if (previous.agent === reply.agent && sameModel) return null;
+  return { from: { agent: previous.agent, label: from }, to: { agent: reply.agent, label: to } };
+}
+
 async function chooseAutoModel(task, models, quotas, deps, context = []) {
   const modules = await loadVoiceRouterModules();
   return modules[1].selectFavoriteModel(task, models.map(model => ({
@@ -556,8 +591,9 @@ async function chooseAutoModel(task, models, quotas, deps, context = []) {
 
 async function planTurn(run, message, deps) {
   run.requireProject(); // Validate the pinned project; never fall back to the active editor.
-  if (deps.ensureModels) await deps.ensureModels();
   const text = message.text;
+  if (/^\/compact(?:\s|$)/i.test(text.trimStart())) throw new Error('Clanker manages compaction automatically.');
+  if (deps.ensureModels) await deps.ensureModels();
   const quotas = await readQuotas();
   let option = modelOption(message.modelId);
   if (message.modelId && message.modelId !== 'auto' && !option) throw new Error(`Selected model ${message.modelId} is unavailable. Refresh Models or choose another model.`);
@@ -579,7 +615,7 @@ async function planTurn(run, message, deps) {
     // still be used after its favorite is removed or its effort is changed.
     const candidates = MODEL_CATALOG.filter(m => !accounts || accounts.isEnabled(m.agent));
     if (option && !candidates.some(m => m.id === option.id)) candidates.push(option);
-    routingDecision = await deps.routing.router.route({ prompt: text, project: run.chat.projectId || deps.workspaceDir, project_name: deps.projects?.get(run.chat.projectId)?.name, project_aliases: [deps.workspaceDir, deps.projects?.get(run.chat.projectId)?.name], stack: projectStack(deps.workspaceDir), language: vscode.env.language, recent_work: run.chat.messages.filter(m=>m.role==='user'||m.role==='assistant').slice(-deps.routing.getConfig().policy.recent_messages), previous, manual_pick: option?.id, screenshot: attachments.some(f => /\.(png|jpe?g|webp)$/i.test(f)), attachments, context_tokens: run.chat.context?.tokens || 0, context_pct: previous ? (run.chat.context?.tokens || 0) / windowOf({...previous,...deps.routing.getConfig().models[previous.id]},deps.routing.getConfig().policy.default_context) * 100 : 0, turns_since_switch: run.chat.routingTurns || 0, retry: message.retry === true, new_chat: message.newChat === true }, candidates, quotas);
+    routingDecision = await deps.routing.router.route({ prompt: text, project: run.chat.projectId || deps.workspaceDir, project_name: deps.projects?.get(run.chat.projectId)?.name, project_aliases: [deps.workspaceDir, deps.projects?.get(run.chat.projectId)?.name], stack: projectStack(deps.workspaceDir), language: vscode.env.language, recent_work: run.chat.messages.filter(m=>m.role==='user'||m.role==='assistant').slice(-deps.routing.getConfig().policy.recent_messages), previous, manual_pick: option?.id, screenshot: attachments.some(f => /\.(png|jpe?g|webp)$/i.test(f)), attachments, context_tokens: run.chat.context?.tokens || 0, context_windows: Object.fromEntries(candidates.map(m => [m.id, modelWindow(deps, m, run.chat.context)])), context_pct: previous ? (run.chat.context?.tokens || 0) / modelWindow(deps, previous, run.chat.context) * 100 : 0, turns_since_switch: run.chat.routingTurns || 0, retry: message.retry === true, new_chat: message.newChat === true }, candidates, quotas);
     if (routingDecision.exhausted) throw new Error('No enabled model can accept this prompt with the remaining quota and image/context requirements.');
     option = modelOption(routingDecision.pick) || (routingDecision.pick === GROQ_MODEL.id ? GROQ_MODEL : null);
     if (previous?.id !== option?.id) run.chat.routingTurns = 0;
@@ -617,6 +653,10 @@ async function planTurn(run, message, deps) {
   // even this agent's own replies must be replayed: the fresh CLI has no memory.
   // A failed native resume likewise receives freshPrompt with the full briefing.
   const session = routingDecision?.action === 'new' ? null : run.chat.sessions?.[dispatch.agent] || null;
+  // A session the router drops is context the user loses: begin() tells them why (nothing is announced when there was none).
+  const droppedContext = routingDecision?.action === 'new' && run.chat.sessions?.[dispatch.agent]?.id
+    ? { kind: 'session', agent: dispatch.agent, reason: routingDecision.reason, tokens: run.chat.context?.agent === dispatch.agent ? run.chat.context.tokens || 0 : 0, limit: contextLimitOf(dispatch.agent, run.chat.context) }
+    : null;
   if (routingDecision?.action === 'new') run.chat.sessions = {};
   // Never further back than the last compaction: its summary stands in for everything before it.
   // The agent reads this, so it names the project; the registry id stays the router's key.
@@ -639,11 +679,12 @@ async function planTurn(run, message, deps) {
     agent: dispatch.agent,
     rerouted,
     begin: {
+      contextReset: droppedContext,
       agent: dispatch.agent,
       user: { role: 'user', text, at: new Date().toISOString(), agent: dispatch.agent, modelId: message.modelId, attachments: Array.isArray(message.attachments) ? message.attachments : [], ...(message.clientTurnId ? { clientTurnId: message.clientTurnId } : {}), ...(message.scheduled ? { scheduled: true } : {}), ...(message.queued ? { queued: true } : {}), ...(message.pipelineBuild ? { pipelineBuild: true } : {}) },
       reply: { role: 'assistant', text: '', agent: dispatch.agent, modelId: used?.id, modelLabel: used?.label, roleName: session?.id ? undefined : dispatch.roleName, routing: routingDecision || (dispatch.split ? 'contract-lock' : undefined) },
       routing: { agentId: dispatch.agent, modelLabel: used?.label, roleName: session?.id ? null : dispatch.roleName, auto: requested === 'auto', split: dispatch.split },
-      run: { agent: dispatch.agent, prompt, freshPrompt, resume: session?.id || null, groqRouter: deps.routing?.router, contextWindow: used ? windowOf({ ...used, ...deps.routing?.getConfig().models[used.id] },deps.routing?.getConfig().policy.default_context) : undefined, codexCommand: codexCommand?.name || null, codexCommandArgs: codexCommand?.args || [], attachments: safeAttachmentPaths(deps, message.attachments), model: used?.model, effort: used?.effort, permissionMode: permissionFor(deps.getModelSettings?.(), used, deps.getPermissionMode?.() || 'fullAccess') },
+      run: { agent: dispatch.agent, prompt, freshPrompt, resume: session?.id || null, groqRouter: deps.routing?.router, contextWindow: used ? windowOf({ ...used, ...deps.routing?.getConfig().models[used.id] }, 0) || undefined : undefined, codexCommand: codexCommand?.name || null, codexCommandArgs: codexCommand?.args || [], attachments: safeAttachmentPaths(deps, message.attachments), model: used?.model, effort: used?.effort, permissionMode: permissionFor(deps.getModelSettings?.(), used, deps.getPermissionMode?.() || 'fullAccess') },
     },
   };
 }
@@ -678,7 +719,7 @@ class ChatRun {
     this.startVersion = 0;
     this.subagentLog = []; // this chat's subagent events, for the agents viewer (not saved to disk)
     this.subagentLogBytes = 0;
-    this.streamEngine = new StreamEngine({ cwd: deps.workspaceDir, chatId: chat.id, models: deps.getModels(), permissionMode: deps.getPermissionMode?.() || 'fullAccess', interactive: true });
+    this.streamEngine = new StreamEngine({ cwd: deps.workspaceDir, attachmentsDir: deps.attachmentsDir || null, chatId: chat.id, models: deps.getModels(), permissionMode: deps.getPermissionMode?.() || 'fullAccess', interactive: true });
     this.streamEngine.on('event', (event) => this.handleStreamEvent(event));
     // The chat's API value so far (api-cost.js). Chats saved before it was kept, or before the last pricing fix, get theirs rebuilt from their replies.
     if (!Number.isFinite(this.chat.apiCostUsd) || this.chat.apiCostV !== LEDGER_VERSION) {
@@ -758,7 +799,9 @@ class ChatRun {
   }
 
   /** Pushes the user message and the empty reply it streams into, then starts the agent. */
-  begin({ agent, user, reply, routing, run }) {
+  begin({ agent, user, reply, routing, run, contextReset = null }) {
+    // What the gauge may fall from without explanation: a real reading of this agent's resumed session.
+    this.contextBaseline = run.resume && !reply.compact && !run.codexCommand && this.chat.context?.agent === agent && !this.chat.context.estimated ? this.chat.context.tokens || 0 : 0;
     if (agent === 'codex' && !run.codexCommand) {
       const { attachmentPrompt } = require('./lib/attachments');
       user.codexInputHashes = [run.prompt, run.freshPrompt].filter(Boolean).map(prompt => inputHash(attachmentPrompt(prompt, run.attachments)));
@@ -766,8 +809,10 @@ class ChatRun {
     this.turnAgent = agent;
     this.turnModel = run.model || null; // what this turn's tokens are priced as
     let contextEstimate = null;
+    // The saved window was reported by the model that ran last turn; another model of the same vendor may have a different one.
+    if (this.chat.context?.limit && (this.chat.context.model || null) !== (run.model || null)) delete this.chat.context.limit;
     if (!run.codexCommand && !reply.compact) {
-      const limit = run.contextWindow || CONTEXT_LIMITS[agent] || 1000000;
+      const limit = run.contextWindow || contextLimitOf(agent, this.chat.context);
       const baseTokens = this.chat.context?.agent === agent && this.chat.context.tokens > 0 && this.chat.context.tokens <= limit
         ? this.chat.context.tokens
         : estimateTokens(buildCompactionHandoff(this.chat.messages, agent));
@@ -776,10 +821,13 @@ class ChatRun {
       contextEstimate = {
         agent,
         tokens: startingTokens,
+        limit,
         estimated: !this.chat.context?.tokens || Boolean(this.chat.context?.estimated), // a real reading stays real, Codex's too
       };
       this.chat.context = contextEstimate;
     }
+    const handoff = !reply.compact && !run.codexCommand && contextHandoff(this.chat.messages, reply);
+    if (handoff) user.contextHandoff = handoff;
     this.chat.messages.push(user);
     reply.inProgress = true;
     reply.hostPid = process.pid;
@@ -793,12 +841,13 @@ class ChatRun {
     }
     if (!reply.compact) this.considerWorkContext(); // the category is predicted from the prompt as soon as it is sent
     // Confirm local sends too: a replay during planning may have replaced their optimistic bubble.
-    if (user.clientTurnId || user.scheduled || user.pipelineBuild || user.queued) {
-      for (const host of this.hosts) host.panel.webview.postMessage({ type: 'userMessage', clientTurnId: user.clientTurnId, text: user.text, at: user.at, scheduled: Boolean(user.scheduled), files: host.webviewFiles(user.attachments) });
+    if (user.clientTurnId || user.scheduled || user.pipelineBuild || user.queued || user.contextHandoff) {
+      for (const host of this.hosts) host.panel.webview.postMessage({ type: 'userMessage', clientTurnId: user.clientTurnId, text: user.text, at: user.at, scheduled: Boolean(user.scheduled), files: host.webviewFiles(user.attachments), contextHandoff: user.contextHandoff });
     }
     this.turn = { ...routing, startedAt: Date.now() };
     this.post({ type: 'routing', ...routing });
-    if (contextEstimate) this.post({ type: 'usage', agent, contextTokens: contextEstimate.tokens, estimated: true });
+    if (contextReset && !reply.compact) this.recordContextReset(contextReset);
+    if (contextEstimate) this.post(usageEventOf(contextEstimate));
     this.streamEngine.models = this.deps.getModels();
     this.streamEngine.permissionMode = this.deps.getPermissionMode?.() || 'fullAccess';
     this.streamEngine.turnBases = null; // set again by start(), unless the turn goes to a process that is already running
@@ -978,7 +1027,10 @@ class ChatRun {
   pauseQueue(paused) {
     this.queuePaused = Boolean(paused);
     this.queueChanged();
-    if (!this.queuePaused) void this.drain();
+    if (!this.queuePaused) {
+      void this.drain();
+      this.deps.onQueueResumed?.();
+    }
   }
   stop() {
     this.startVersion++; // Stop also cancels an Auto decision still in flight.
@@ -1005,6 +1057,8 @@ class ChatRun {
     if (!turn) return;
     Object.assign(turn, { text: String(message.turn.text || ''), modelId: message.turn.modelId, attachments: safeAttachmentPaths(this.deps, message.turn.attachments), editing: message.editing === true,
       clientEditId: typeof message.turn.clientEditId === 'string' ? message.turn.clientEditId : undefined });
+    // A saved edit with nothing left (no text, no files) removes the prompt: an empty one can never be sent.
+    if (!turn.editing && !turn.text.trim() && !turn.attachments?.length) { this.removeQueuedTurn(turn.id); return; }
     this.queueChanged();
     if (!turn.editing) void this.drain();
   }
@@ -1195,6 +1249,8 @@ class ChatRun {
       const plan = await planTurn(this, { ...message, text, ...extras, modelId }, this.deps);
       // A provider picked while its idle update is finishing starts on the new binary.
       await this.deps.waitForCliUpdate?.(plan.agent);
+      // Nobody is watching a queued prompt start: when memory is short it waits (up to 10 minutes) instead of tipping the machine into the OOM killer.
+      if (queued) await this.deps.waitForMemory?.();
       // Look before sending what nobody is watching (queued, scheduled, "continue"): a signed-out CLI keeps it queued and says why.
       const blocked = queued ? await this.deps.authGate?.check(plan.agent) : null;
       // Pause, delete, or reorder during planning takes effect before a task starts.
@@ -1226,21 +1282,14 @@ class ChatRun {
     return result;
   }
 
-  /**
-   * P17-R: shrinks `agent`'s context to a checkpoint. Claude compacts its own
-   * session natively (/compact). Codex resumes its native thread so its own
-   * automatic compaction and complete history remain available while writing
-   * the checkpoint. Gemini uses the bounded transcript fallback when needed.
-   */
-  compact(agent, used, { auto = false } = {}) {
+  /** Compacts the saved conversation when the harness cannot do it automatically. */
+  compact(agent, used) {
     try { this.requireProject(); } catch (error) {
       this.post({ type: 'notice', text: error.message });
-      if (!auto) this.post({ type: 'turn_complete', interrupted: true });
       return;
     }
     if (this.deps.cliAccounts?.isEnabled(agent) === false) {
       this.post({ type: 'notice', text: 'Add this CLI in Settings > Models before compacting its context.' });
-      if (!auto) this.post({ type: 'turn_complete' });
       return;
     }
     const session = this.chat.sessions?.[agent] || null;
@@ -1250,24 +1299,39 @@ class ChatRun {
     const from = lastCheckpoint?.retainedTokens ? checkpointStart(this.chat.messages) : 0;
     const history = buildCompactionHandoff(this.chat.messages.slice(from), agent);
     const fromTranscript = [history, COMPACT_DIRECTIVE].filter(Boolean).join('\n\n');
-    const overflowing = this.chat.context?.agent === agent && this.chat.context.tokens >= CONTEXT_LIMITS[agent];
-    const native = (agent === 'claude' || agent === 'codex') && Boolean(session?.id);
-    // Codex exec reports cumulative turn consumption, not live context size,
-    // and auto-compacts resumable threads itself. Never discard that thread
-    // because its usage total exceeded the nominal window.
-    const resume = native || (session?.id && (agent === 'codex' || !overflowing)) ? session.id : null;
-    const text = auto ? 'Auto-compact: context nearly full' : 'Compact session';
+    const overflowing = this.chat.context?.agent === agent && this.chat.context.tokens >= contextLimitOf(agent, this.chat.context);
+    const resume = overflowing ? null : session?.id || null;
+    const text = 'Auto-compact: context nearly full';
     const previousContext = this.chat.context;
     this.streamEngine.interrupt();
-    this.chat.context = { agent, tokens: 0 };
-    this.post({ type: 'compacting', text, auto });
+    this.chat.context = { agent, tokens: 0, ...(previousContext?.agent === agent && previousContext.limit ? { limit: previousContext.limit, model: previousContext.model } : {}) };
+    this.post({ type: 'compacting', text, auto: true });
     this.begin({
       agent,
-      user: { role: 'user', text, compact: true, auto, at: new Date().toISOString(), agent },
+      user: { role: 'user', text, compact: true, auto: true, at: new Date().toISOString(), agent },
       reply: { role: 'assistant', text: '', agent, modelLabel: used?.label, compact: true, compactContext: history, compactPreviousContext: previousContext },
       routing: { agentId: agent, modelLabel: used?.label, roleName: null, compact: true },
-      run: { agent, prompt: native ? '' : resume ? COMPACT_DIRECTIVE : fromTranscript, resume, freshPrompt: resume && !native ? fromTranscript : null, codexCommand: native && agent === 'codex' ? 'compact' : null, model: used?.model, effort: used?.effort, compact: true, autoCompact: auto },
+      run: { agent, prompt: resume ? COMPACT_DIRECTIVE : fromTranscript, resume, freshPrompt: resume ? fromTranscript : null, model: used?.model, effort: used?.effort, compact: true, autoCompact: true },
     });
+  }
+
+  /**
+   * A context reset the user did not ask for (see lib/context-reset.js). It shows as the same divider a
+   * compaction leaves, and is kept on the reply so a reload shows it where it happened.
+   * The fallback compaction turn already has that divider.
+   */
+  recordContextReset(info) {
+    const reply = this.activeAssistantMessage;
+    if (!reply || reply.compact) return;
+    const seen = reply.contextResets || [];
+    // One word per cause and turn; an unexplained drop is only news when nothing else explained it.
+    if (seen.some((entry) => entry.kind === info.kind) || (info.kind === 'drop' && seen.length)) return;
+    const described = describeContextReset(info);
+    if (!described) return;
+    const record = { kind: info.kind, ...described, at: new Date().toISOString() };
+    reply.contextResets = [...seen, record].slice(-4);
+    this.save();
+    this.post({ type: 'contextReset', ...record, agent: info.agent });
   }
 
   rememberSubagent(event) {
@@ -1301,6 +1365,11 @@ class ChatRun {
       if ((event.state === 'disconnected' || event.state === 'failed') && this.remote) this.post({ type: 'notice', text: `Remote Control ${event.state}; Claude Code reconnects on its own when it can.` });
       return;
     }
+    if (event.type === 'context_reset') { if (event.agent === this.turnAgent) this.recordContextReset(event); return; }
+    if (event.type === 'usage' && event.contextTokens && event.agent === this.turnAgent && this.activeAssistantMessage) {
+      if (isContextDrop(this.contextBaseline, event.contextTokens)) this.recordContextReset({ kind: 'drop', agent: event.agent, before: this.contextBaseline, after: event.contextTokens });
+      if (this.contextBaseline) this.contextBaseline = event.contextTokens;
+    }
     if (event.type === 'upstream_error' && event.agent === this.turnAgent && LIMIT_RE.test(event.detail || '')) this.limitNotice = event.detail;
     if (event.type === 'session' && event.agent === 'claude' && this.deps.slashCommands?.recordClaude(event.slashCommands)) {
       void this.deps.slashCommands.list().then((commands) => this.post({ type: 'slashCommands', commands }));
@@ -1319,9 +1388,14 @@ class ChatRun {
     // agy gave only the turn's new tokens: the conversation is that much longer than before.
     if (event.type === 'usage' && event.contextGrowth) {
       const before = this.chat.context?.agent === event.agent ? this.chat.context.tokens || 0 : 0;
-      event.contextTokens = Math.min(CONTEXT_LIMITS[event.agent] || 1000000, before + event.contextGrowth);
+      event.contextTokens = Math.min(contextLimitOf(event.agent, this.chat.context), before + event.contextGrowth);
     }
-    if (event.type === 'usage' && this.turnAgent === event.agent) this.chat.context = { agent: event.agent, tokens: event.contextTokens }; // P17-R: saved with the turn
+    if (event.type === 'usage' && this.turnAgent === event.agent) {
+      // P17-R: saved with the turn. The window sticks across readings that do not repeat it.
+      const limit = event.contextWindow || (this.chat.context?.agent === event.agent ? this.chat.context.limit : 0) || 0;
+      this.chat.context = { agent: event.agent, tokens: event.contextTokens, ...(limit ? { limit, model: this.turnModel } : {}) };
+      if (limit) event.contextWindow = limit;
+    }
     if (event.type === 'delta' && this.activeAssistantMessage) this.activeAssistantMessage.text += event.text;
     // `offset`: how much reply text came before this tool, so a reload shows them in order.
     if (event.type === 'tool_start') {
@@ -1358,22 +1432,21 @@ class ChatRun {
       const summary = reply.text.trim();
       const previousContext = reply.compactPreviousContext;
       delete reply.compactPreviousContext;
-      if (reply.compact && reply.agent !== 'claude' && !event.interrupted && summary && !/^(Gemini|Codex) error:/.test(summary)) {
+      if (reply.compact && !event.interrupted && summary && !/^(Claude|Gemini|Codex|Copilot) error:/.test(summary)) {
         // The summary is the new starting point: no session id, so the next
-        // turn opens a fresh session briefed from this checkpoint on. Codex's
-        // native App Server compaction keeps the same thread instead.
+        // turn opens a fresh session briefed from this checkpoint on.
         reply.checkpoint = true;
-        if (reply.agent !== 'codex') this.chat.sessions = { ...this.chat.sessions, [reply.agent]: {} };
+        this.chat.sessions = { ...this.chat.sessions, [reply.agent]: {} };
         reply.retainedTokens = Math.min(COMPACT_TARGET_TOKENS, estimateTokens(buildHandoff(this.chat.messages.slice(checkpointStart(this.chat.messages)), reply.agent)));
         // The latest checkpoint subsumes earlier hidden context. Keep saved
         // chat files bounded across repeated compactions.
         for (const message of this.chat.messages) if (message !== reply && message.checkpoint) delete message.compactContext;
-        compacted = { agent: reply.agent, tokens: reply.retainedTokens, estimated: true };
+        compacted = { agent: reply.agent, tokens: reply.retainedTokens, limit: contextLimitOf(reply.agent, previousContext), model: previousContext?.model, estimated: true };
         this.chat.context = compacted;
-      } else if (reply.compact && reply.agent !== 'claude') {
+      } else if (reply.compact) {
         contextEstimate = previousContext || { agent: reply.agent, tokens: 0, estimated: true };
         this.chat.context = contextEstimate;
-      } else if (!event.interrupted && !reply.compact && this.chat.context?.tokens >= (CONTEXT_LIMITS[reply.agent] || 1000000) * AUTO_COMPACT_RATIO) {
+      } else if (!event.interrupted && !providers.autoCompacts(reply.agent) && this.chat.context?.agent === reply.agent && this.chat.context.tokens >= contextLimitOf(reply.agent, this.chat.context) * AUTO_COMPACT_RATIO) {
         autoCompact = AVAILABLE_MODELS.find((entry) => entry.agent === reply.agent && entry.label === reply.modelLabel) || defaultModel(reply.agent);
       }
     }
@@ -1389,7 +1462,7 @@ class ChatRun {
         // Opt-in droid voice (docs/clanker-controller-mascot-spec.md §4): same moments as the chime, played by the window itself.
         if (!reply.compact && !more && !scheduled && vscode.workspace.getConfiguration('aiChatPanel').get('droidSounds', false)) this.post({ type: 'droid', kind: /^(Claude|Gemini|Codex) error:/.test(reply.text.trim()) ? 'warn' : 'done' });
         if (reply.agent === 'codex' && !reply.compact && this.chat.context?.estimated) {
-          this.chat.context.tokens = Math.min(CONTEXT_LIMITS.codex, this.chat.context.tokens + estimateTokens(reply.text));
+          this.chat.context.tokens = Math.min(contextLimitOf('codex', this.chat.context), this.chat.context.tokens + estimateTokens(reply.text));
           contextEstimate = this.chat.context;
         }
       }
@@ -1454,10 +1527,9 @@ class ChatRun {
     if (event.type === 'session') this.retitle();
     this.postEvent(autoCompact ? { ...event, compacting: true } : event);
     if (undoCount) { this.post({ type: 'undoOffer', count: undoCount, diff: this.turnDiffSummary || null }); this.turnDiffSummary = null; }
-    if (compacted) this.post({ type: 'usage', agent: compacted.agent, contextTokens: compacted.tokens, estimated: true });
-    else if (contextEstimate) this.post({ type: 'usage', agent: contextEstimate.agent, contextTokens: contextEstimate.tokens, estimated: true });
+    if (compacted || contextEstimate) this.post(usageEventOf(compacted || contextEstimate));
     // An agent past 90% of its window compacts before the next turn can overflow it.
-    if (autoCompact) this.compact(autoCompact.agent || 'gemini', autoCompact, { auto: true });
+    if (autoCompact) this.compact(autoCompact.agent, autoCompact);
     if (event.type === 'turn_complete' && !autoCompact && this.afterCompact) {
       const next = this.afterCompact;
       this.afterCompact = null;
@@ -1652,6 +1724,12 @@ class ChatWindowHost {
       case 'deleteChat': this.deps.chatWindowManager.deleteChat(message.id); break;
       case 'renameChat': this.deps.renameChat(message.id, message.title); break;
       case 'pinChat': await this.deps.chatWindowManager.pinChat(message.id, message.pinned); break;
+      case 'createChatFolder': await this.deps.chatWindowManager.createChatFolder(message.name, message.chatIds); break;
+      case 'renameChatFolder': await this.deps.chatWindowManager.renameChatFolder(message.id, message.name); break;
+      case 'deleteChatFolder': await this.deps.chatWindowManager.deleteChatFolder(message.id); break;
+      case 'pinChatFolder': await this.deps.chatWindowManager.pinChatFolder(message.id, message.pinned); break;
+      case 'setChatFolder': await this.deps.chatWindowManager.setChatFolder(message.chatId, message.folderId); break;
+      case 'setFolderChats': await this.deps.chatWindowManager.setFolderChats(message.id, message.chatIds); break;
       case 'setChatCategory': {
         const run = this.deps.chatWindowManager.runs.get(message.id);
         const chat = run?.chat || this.deps.chatStore.load(message.id);
@@ -1667,6 +1745,7 @@ class ChatWindowHost {
         break;
       }
       case 'pickAttachments': await this.pickAttachments(message); break;
+      case 'attachUris': await this.attachUris(message); break;
       case 'attachmentData': await this.saveAttachment(message); break;
       case 'removeAttachment': this.removeAttachment(message.path); break;
       case 'renameAttachment': this.renameAttachment(message.path, message.name); break;
@@ -1743,7 +1822,18 @@ class ChatWindowHost {
       case 'openFile': await this.openFile(message.path, message.line); break;
       case 'previewFile': await this.previewFile(message.path, message.requestId); break;
       case 'copyFilePath': await this.copyFileRef(message.path, message.mode); break;
-      case 'openUrl': if (/^(https?:|mailto:)/i.test(String(message.url || ''))) void vscode.env.openExternal(vscode.Uri.parse(message.url)); break;
+      case 'openUrl': {
+        if (typeof message.url !== 'string' || !/^(https?:|mailto:)/i.test(message.url)) break;
+        const uri = vscode.Uri.parse(message.url);
+        if (vscode.workspace.getConfiguration('aiChatPanel').get('confirmExternalLinks', false)) {
+          const action = await vscode.window.showInformationMessage(
+            'Open this external link?', { modal: true, detail: message.url }, 'Open',
+          );
+          if (action !== 'Open') break;
+        }
+        await vscode.env.openExternal(uri);
+        break;
+      }
       case 'queryFiles': await this.postWorkspaceFiles(); break;
       case 'querySlashCommands': {
         const run = this.run;
@@ -1752,7 +1842,6 @@ class ChatWindowHost {
         break;
       }
       case 'mentionUris': this.postMentions((message.uris || []).map((uri) => vscode.Uri.parse(uri))); break;
-      case 'compact': this.compactSession(); break;
       case 'requestQuotas': await this.pushQuotas(); break;
       case 'windowActive': this.deps.chatWindowManager.setActive(this); break;
       case 'micToggle': await this.handleMicToggle(); break;
@@ -1799,8 +1888,21 @@ class ChatWindowHost {
       }
       case 'requestChatHistory': {
         if (message.chatId !== this.chat.id || !Number.isSafeInteger(message.before) || message.before <= 0 || message.before > this.chat.messages.length) break;
-        const page = historyPage(this.chat.messages, message.before);
+        const after = Number.isSafeInteger(message.after) && message.after >= 0 && message.after < message.before ? message.after : 0;
+        // Find in chat jumps to an unloaded turn with a small window around it (leaving a lazy gap if turns were skipped);
+        // scrolling into a gap loads one page at a time from whichever edge the reader reached.
+        const page = Number.isSafeInteger(message.fromTurn)
+          ? historyWindow(this.chat.messages, message.fromTurn, after, message.before)
+          : message.direction === 'down'
+            ? { ...historyPageForward(this.chat.messages, after, message.before), rangeStart: after, rangeEnd: message.before }
+            : { ...historyPage(this.chat.messages, message.before, after), rangeStart: after, rangeEnd: message.before };
+        if (!page) break;
         this.panel.webview.postMessage({ type: 'chatHistory', chatId: this.chat.id, requestId: message.requestId, ...page, messages: this.webviewMessages(page.messages) });
+        break;
+      }
+      case 'findInChat': {
+        if (message.chatId !== this.chat.id || typeof message.query !== 'string') break;
+        this.panel.webview.postMessage({ type: 'findResults', chatId: this.chat.id, requestId: message.requestId, turns: chatFind.find(this.chat.messages, message.query.slice(0, 500)) });
         break;
       }
       case 'verifyInfo': this.panel.webview.postMessage({ type: 'verifyInfo', command: vscode.workspace.getConfiguration('aiChatPanel').get('verifyCommand', '') }); break;
@@ -2428,15 +2530,15 @@ class ChatWindowHost {
     await vscode.commands.executeCommand('vscode.diff', before, now, title, { preview: true, preserveFocus: false });
   }
 
-  /** The Compact button: compacts whichever agent's context the gauge shows (see ChatRun.compact). */
-  compactSession() {
-    const option = modelOption(this.activeModelId);
-    const agent = this.chat.context?.agent || this.lastRoutedAgent || (option?.agent !== 'auto' ? option?.agent : null);
-    if (!agent) return;
-    this.run.compact(agent, option?.agent === agent ? option : defaultModel(agent));
+  postHistory() {
+    const enabled = chatFoldersEnabled();
+    this.panel.webview.postMessage({
+      type: 'history',
+      sessions: this.deps.chatWindowManager.listChats(),
+      folders: enabled ? this.deps.chatWindowManager.listFolders() : [],
+      chatFoldersEnabled: enabled,
+    });
   }
-
-  postHistory() { this.panel.webview.postMessage({ type: 'history', sessions: this.deps.chatWindowManager.listChats() }); }
   async pushSchedulerQueue(attempt = 0) {
     const scheduler = this.deps.schedulerQueue;
     if (!scheduler) return;
@@ -2490,7 +2592,7 @@ class ChatWindowHost {
       return (relative.startsWith('..') || path.isAbsolute(relative) ? uri.fsPath : relative).split(path.sep).join('/');
     });
     if (!paths.length) return;
-    this.panel.reveal(undefined, false);
+    this.panel.reveal?.(undefined, false);
     this.panel.webview.postMessage({ type: 'insertMentions', paths });
   }
   /** File links: PDFs use the editor's registered viewer, HTML opens in the browser, source opens at the line. */
@@ -2612,6 +2714,38 @@ class ChatWindowHost {
       this.panel.webview.postMessage({ type: 'attachmentSaved', chatId: run.chat.id, attachment: this.attachmentMetadata(target) });
     }
   }
+  /** Local file URIs dropped or pasted from an OS file manager (e.g. Linux Dolphin/GTK text/uri-list): regular files attach, folders become @-mentions. */
+  async attachUris({ uris, chatId } = {}) {
+    const run = chatId ? this.deps.chatWindowManager.runFor(chatId) : this.run;
+    if (!run || !Array.isArray(uris) || !uris.length) return;
+    const { fileURLToPath } = require('node:url');
+    const dirs = [];
+    for (const raw of uris) {
+      if (typeof raw !== 'string' || !/^file:/i.test(raw.trim())) continue;
+      let fsPath = '';
+      try { fsPath = fileURLToPath(raw.trim()); } catch {
+        try { const parsed = vscode.Uri.parse(raw.trim()); if (parsed.scheme === 'file') fsPath = parsed.fsPath; } catch { /* ignore */ }
+      }
+      if (!fsPath) continue;
+      let stat;
+      try { stat = await fs.promises.stat(fsPath); } catch { continue; }
+      if (stat.isDirectory()) { dirs.push(vscode.Uri.file(fsPath)); continue; }
+      if (!stat.isFile()) continue;
+      if (stat.size > 20 * 1024 * 1024) {
+        this.panel.webview.postMessage({ type: 'attachmentFailed', chatId: run.chat.id, error: `${path.basename(fsPath)} is larger than 20 MB.` });
+        continue;
+      }
+      const filename = path.basename(fsPath).replace(/[^a-zA-Z0-9._-]/g, '_');
+      const target = path.join(run.deps.attachmentsDir, `${attachmentStamp()}_${filename}`);
+      try {
+        await fs.promises.copyFile(fsPath, target);
+        this.panel.webview.postMessage({ type: 'attachmentSaved', chatId: run.chat.id, attachment: this.attachmentMetadata(target) });
+      } catch (error) {
+        this.panel.webview.postMessage({ type: 'attachmentFailed', chatId: run.chat.id, error: `Could not attach ${path.basename(fsPath)} (${error.message}).` });
+      }
+    }
+    if (dirs.length) this.postMentions(dirs);
+  }
   /** A name the user gave an attached image: the file keeps its timestamp prefix (so names never collide) and its extension. */
   renameAttachment(file, name) {
     const safe = this.safeReadableAttachmentPath(file) || this.safeAttachmentPaths([file])[0];
@@ -2732,7 +2866,7 @@ class ChatWindowHost {
     this.panel.webview.postMessage({ type: 'voiceError', message });
   }
 
-  /** Every window shows the shared microphone's state; this one is the dictation target (see ChatWindowManager.broadcastMic). */
+  /** Only the dictation target shows the shared microphone's state; the other windows are told `idle` (see ChatWindowManager.broadcastMic). */
   postMic(message) { this.deps.chatWindowManager.broadcastMic(this, message); }
 
   /** Save only the correction the user accepted; never report a failed write as learned. */
@@ -2766,7 +2900,7 @@ class ChatWindowHost {
     if (capture.starting) return; // double click while ffmpeg is still opening the device
     if (!capture.isRecording()) {
       this.postMic({ state: 'starting' });
-      // P17-ZA: live levels go to every window, so all of them animate the one shared microphone in step.
+      // Live levels go to the window that owns the recording only (ChatWindowManager.broadcastMicVolume).
       const manager = this.deps.chatWindowManager;
       capture.onVolume = ({ rms, peak, level }) => manager.broadcastMicVolume({ rms, peak, level });
       let dir = null;
@@ -2784,9 +2918,15 @@ class ChatWindowHost {
       }
       manager.broadcastMic(capture.owner, { state: 'recording', device: capture.device, hold, cue }); // the target may have changed while the microphone opened
       // From here on every finished 5-minute part is transcribed and cleaned while you keep talking. A short prompt never gets that far.
-      this.createDictationPipeline(dir).then((pipeline) => {
-        if (capture.dir === dir && capture.isRecording()) { capture.pipeline = pipeline; pipeline.start(); }
-      }).catch(() => { /* the end-of-recording pass does all the work instead */ });
+      // Loading the speech modules and the dictionary takes the extension host's thread for a moment, which stalled the first
+      // meter frames. Nothing needs the pipeline for minutes (a part is 5 minutes long), so it waits until the start has settled;
+      // a recording that ends sooner builds its pipeline in dictateFromFolder.
+      setTimeout(() => {
+        if (capture.dir !== dir || !capture.isRecording()) return;
+        this.createDictationPipeline(dir).then((pipeline) => {
+          if (capture.dir === dir && capture.isRecording()) { capture.pipeline = pipeline; pipeline.start(); }
+        }).catch(() => { /* the end-of-recording pass does all the work instead */ });
+      }, 3000);
       return;
     }
 
@@ -2809,13 +2949,39 @@ class ChatWindowHost {
   /** Speech to text and cleanup for one recording folder, as a job that can run during the recording (lib/voice-archive.js). */
   async createDictationPipeline(dir) {
     const [, { transcribeAudio, cleanDictationPart, splitTranscript }] = await loadVoiceRouterModules();
+    const cfg = vscode.workspace.getConfiguration('aiChatPanel');
+    const provider = cfg.get('voiceProvider', 'groq') === 'local' ? 'local' : 'groq';
+    const groqModel = cfg.get('voiceGroqModel', 'whisper-large-v3-turbo') === 'whisper-large-v3'
+      ? 'whisper-large-v3'
+      : 'whisper-large-v3-turbo';
+    const localModel = cfg.get('voiceLocalModel', DEFAULT_LOCAL_MODEL);
+    const ffmpeg = this.deps.voiceCapture.ffmpeg();
     // P17-ZA: saved spellings bias Whisper's decoding and the cleanup pass repairs toward them.
     const terms = await voiceVocabulary(this.chat.projectId); // ranked, so only what the models take (voiceDictionary.LIMITS) is used, however long the dictionary is
     const vocabularyPrompt = voiceDictionary.promptTerms(terms).join(', ');
     const dictionaryTerms = terms.slice(0, voiceDictionary.LIMITS.cleanupTerms);
+    const hasCloudCleanup = Boolean(
+      groqAccount?.snapshot?.().source
+      || process.env.GROQ_API_KEY
+      || (process.env.CF_ACCOUNT_ID && process.env.CF_API_TOKEN),
+    );
+    const transcribe = provider === 'local'
+      ? voiceArchive.withSilenceTrim(
+        (file) => this.deps.localStt.transcribe(file, { modelId: localModel, vocabularyPrompt, ffmpeg }),
+        { ffmpeg, format: 'wav' },
+      )
+      : voiceArchive.withSilenceTrim(
+        (file) => transcribeAudio(file, { vocabularyPrompt, model: groqModel }),
+        { ffmpeg },
+      );
+    // In local mode, run optional cloud cleanup only when a Groq or Cloudflare key is already configured;
+    // otherwise keep dictation 100% offline with zero API key requirement.
+    const clean = (provider === 'local' && !hasCloudCleanup)
+      ? async (text) => text
+      : (text, { number, multi }) => cleanDictationPart(text, { dictionaryTerms, ...(multi ? { number } : {}) });
     return new voiceArchive.DictationPipeline(dir, {
-      transcribe: voiceArchive.withSilenceTrim((file) => transcribeAudio(file, { vocabularyPrompt }), { ffmpeg: this.deps.voiceCapture.ffmpeg() }),
-      clean: (text, { number, multi }) => cleanDictationPart(text, { dictionaryTerms, ...(multi ? { number } : {}) }),
+      transcribe,
+      clean,
       split: splitTranscript,
     });
   }
@@ -2907,6 +3073,10 @@ class ChatWindowHost {
     const attachmentPreviewUri = webview.asWebviewUri(vscode.Uri.joinPath(this.extensionUri, 'media', 'attachment-preview.js'));
     const attachmentDocsStyleUri = webview.asWebviewUri(vscode.Uri.joinPath(this.extensionUri, 'media', 'attachment-docs.css'));
     const glassUiStyleUri = webview.asWebviewUri(vscode.Uri.joinPath(this.extensionUri, 'media', 'glass-ui.css'));
+    const haloStyleUri = webview.asWebviewUri(vscode.Uri.joinPath(this.extensionUri, 'media', 'halo.css'));
+    const haloUri = webview.asWebviewUri(vscode.Uri.joinPath(this.extensionUri, 'media', 'halo.js'));
+    const chatFindUri = webview.asWebviewUri(vscode.Uri.joinPath(this.extensionUri, 'media', 'chat-find.js'));
+    const look = appearance();
     const attachmentDocsUri = webview.asWebviewUri(vscode.Uri.joinPath(this.extensionUri, 'media', 'attachment-docs.js'));
     const attachmentMarkupUri = webview.asWebviewUri(vscode.Uri.joinPath(this.extensionUri, 'media', 'attachment-markup.js'));
     const mascotUri =webview.asWebviewUri(vscode.Uri.joinPath(this.extensionUri, 'media', 'clanker-mascot.js'));
@@ -2954,12 +3124,13 @@ class ChatWindowHost {
 <link rel="stylesheet" href="${timerStyleUri}">
 <link rel="stylesheet" href="${attachmentDocsStyleUri}">
 <link rel="stylesheet" href="${glassUiStyleUri}">
+<link rel="stylesheet" href="${haloStyleUri}">
 <style>${providers.accentCss()}</style>
 ${rail ? `<link rel="stylesheet" href="${railStyleUri}">` : ''}
 <title>Clanker Controller</title>
 </head>
-<body inert${rail ? ' class="has-rail"' : ''}>
-${rail ? railMarkup(CHAT_BUTTONS) : `<div class="topbar"><div class="topbar-actions"><div hidden>${CHAT_BUTTONS.queue}${CHAT_BUTTONS.loops}</div>${CHAT_BUTTONS.history}${CHAT_BUTTONS.newChat}</div></div>`}
+<body inert${rail || look === 'halo' ? ` class="${[rail && 'has-rail', look === 'halo' && 'ui-halo'].filter(Boolean).join(' ')}"` : ''}>
+${rail ? railMarkup(CHAT_BUTTONS) : `<div class="topbar"><div class="topbar-actions"><div hidden>${CHAT_BUTTONS.queue}${CHAT_BUTTONS.loops}</div>${CHAT_BUTTONS.find}${CHAT_BUTTONS.history}${CHAT_BUTTONS.newChat}</div></div>`}
 
   <div class="transcript" id="transcript" aria-live="polite">
     <div class="empty-state"></div><!-- drawn by main.js (emptyState), the same for a fresh chat and a loaded empty one -->
@@ -3007,7 +3178,7 @@ ${rail ? railMarkup(CHAT_BUTTONS) : `<div class="topbar"><div class="topbar-acti
   </div>
 
   <script nonce="${nonce}" src="${errorReportUri}"></script>
-  <script nonce="${nonce}">window.CLANKER_MARK = ${JSON.stringify(webview.asWebviewUri(vscode.Uri.joinPath(this.extensionUri, 'media', 'clanker-dark.svg')).toString())}; window.MODEL_CATALOG = ${JSON.stringify(MODEL_CATALOG)}; window.AVAILABLE_MODELS = ${JSON.stringify(AVAILABLE_MODELS.filter((entry) => this.deps.cliAccounts?.isEnabled(entry.agent) !== false))}; window.TIME_PREFS = ${timePrefs()}; window.RAIL_LIMITS = ${JSON.stringify(railLimits())}; window.ANTIGRAVITY_RING = ${JSON.stringify(antigravityRing())}; window.SCHEDULE_MODE = ${JSON.stringify(this.deps.getScheduleMode?.() || 'reset')}; window.VOICE_SILENCE_MS = ${Math.max(0, Number(vscode.workspace.getConfiguration('aiChatPanel').get('voiceAutoStopSeconds', 0)) || 0) * 1000}; window.INITIAL_QUEUE_LOADING = ${JSON.stringify(initialQueueLoading)};</script>
+  <script nonce="${nonce}">window.CLANKER_MARK = ${JSON.stringify(webview.asWebviewUri(vscode.Uri.joinPath(this.extensionUri, 'media', 'clanker-dark.svg')).toString())}; window.MODEL_CATALOG = ${JSON.stringify(MODEL_CATALOG)}; window.AVAILABLE_MODELS = ${JSON.stringify(AVAILABLE_MODELS.filter((entry) => this.deps.cliAccounts?.isEnabled(entry.agent) !== false))}; window.TIME_PREFS = ${timePrefs()}; window.TOOL_PREFS = ${JSON.stringify({ openFailed: openFailedToolCards() })}; window.CLANKER_APPEARANCE = ${JSON.stringify(look)}; window.CLANKER_GREETING_NAME = ${JSON.stringify(greetingName())}; window.CHAT_FOLDERS_ENABLED = ${JSON.stringify(chatFoldersEnabled())}; window.RAIL_LIMITS = ${JSON.stringify(railLimits())}; window.ANTIGRAVITY_RING = ${JSON.stringify(antigravityRing())}; window.SCHEDULE_MODE = ${JSON.stringify(this.deps.getScheduleMode?.() || 'reset')}; window.VOICE_SILENCE_MS = ${Math.max(0, Number(vscode.workspace.getConfiguration('aiChatPanel').get('voiceAutoStopSeconds', 0)) || 0) * 1000}; window.INITIAL_QUEUE_LOADING = ${JSON.stringify(initialQueueLoading)};</script>
   <script nonce="${nonce}">window.PROVIDERS = ${JSON.stringify(providers.displayList()).replace(/</g, '\\u003c')};</script>
   <script defer nonce="${nonce}" src="${themePaletteUri}"></script>
   <script defer nonce="${nonce}" src="${liquidGlassUri}"></script>
@@ -3034,9 +3205,11 @@ ${rail ? railMarkup(CHAT_BUTTONS) : `<div class="topbar"><div class="topbar-acti
 <script defer nonce="${nonce}" src="${attachmentDocsUri}"></script>
 <script defer nonce="${nonce}" src="${attachmentMarkupUri}"></script>
 <script defer nonce="${nonce}" src="${logViewerUri}"></script>
+<script defer nonce="${nonce}" src="${chatFindUri}"></script>
 <script defer nonce="${nonce}" src="${scriptUri}"></script>
   ${rail ? `<script nonce="${nonce}">window.CONTEXT_ASSETS = ${(contextAssetsJson ||= JSON.stringify(contextAssets(path.join(__dirname, 'media')))).replace(/</g, '\\u003c')};</script>` : ''}
   ${rail ? `<script defer nonce="${nonce}" src="${railScriptUri}"></script>` : ''}
+  <script defer nonce="${nonce}" src="${haloUri}"></script>
   <script nonce="${nonce}">window.SHIKI_URI = ${JSON.stringify(shikiUri.toString())};</script>
   <script nonce="${nonce}">
     document.addEventListener('DOMContentLoaded', () => {
@@ -3211,7 +3384,10 @@ class ChatWindowManager {
       this.recentSelections.delete(session.id);
       removed = true;
     }
-    if (removed) this.notifyOpenChanged();
+    if (removed) {
+      void this.pruneFolders();
+      this.notifyOpenChanged();
+    }
   }
 
   /** History in rail order: selected, recently selected or running, then older chats. */
@@ -3262,6 +3438,66 @@ class ChatWindowManager {
     this.deps.notifyHistory();
   }
 
+  /** Normalized chat folders, keeping only chats that still exist. */
+  listFolders() {
+    const existing = new Set(this.deps.chatStore.list().map(session => session.id));
+    return chatFolders.normalizeFolders(this.deps.chatFolderStore?.get(), existing);
+  }
+
+  async saveFolders(folders) {
+    if (!this.deps.chatFolderStore) return false;
+    try { await this.deps.chatFolderStore.set(folders); } catch (error) { require('./lib/log.js').error('chat folders', 'Could not save chat folders:', error); return false; }
+    this.deps.notifyHistory();
+    return true;
+  }
+
+  async createChatFolder(name, chatIds = []) {
+    const existing = new Set(this.deps.chatStore.list().map(session => session.id));
+    const { folders, folder } = chatFolders.createFolder(this.deps.chatFolderStore?.get(), name, chatIds, existing);
+    if (!folder) return null;
+    return await this.saveFolders(folders) ? folder : null;
+  }
+
+  async renameChatFolder(id, name) {
+    if (typeof id !== 'string' || !id) return;
+    const folders = chatFolders.renameFolder(this.listFolders(), id, name);
+    await this.saveFolders(folders);
+  }
+
+  async deleteChatFolder(id) {
+    if (typeof id !== 'string' || !id) return;
+    const folders = chatFolders.deleteFolder(this.listFolders(), id);
+    await this.saveFolders(folders);
+  }
+
+  async pinChatFolder(id, pinned) {
+    if (typeof id !== 'string' || typeof pinned !== 'boolean') return;
+    const folders = chatFolders.pinFolder(this.listFolders(), id, pinned);
+    await this.saveFolders(folders);
+  }
+
+  async setChatFolder(chatId, folderId) {
+    if (typeof chatId !== 'string' || !chatId) return;
+    const existing = new Set(this.deps.chatStore.list().map(session => session.id));
+    const folders = chatFolders.setChatFolder(this.listFolders(), chatId, typeof folderId === 'string' && folderId ? folderId : null, existing);
+    await this.saveFolders(folders);
+  }
+
+  async setFolderChats(id, chatIds) {
+    if (typeof id !== 'string' || !id || !Array.isArray(chatIds)) return;
+    const existing = new Set(this.deps.chatStore.list().map(session => session.id));
+    const folders = chatFolders.setFolderChats(this.listFolders(), id, chatIds, existing);
+    await this.saveFolders(folders);
+  }
+
+  async pruneFolders() {
+    if (!this.deps.chatFolderStore) return;
+    const existing = new Set(this.deps.chatStore.list().map(session => session.id));
+    const { folders, changed } = chatFolders.pruneDeletedChats(this.deps.chatFolderStore.get(), existing);
+    if (!changed) return;
+    try { await this.deps.chatFolderStore.set(folders); } catch (error) { require('./lib/log.js').error('chat folders', 'Could not prune chat folders:', error); }
+  }
+
   /**
    * A deleted chat takes its worktree with it when nothing would be lost. One with uncommitted work or unmerged commits stays on
    * disk (the message says where), because the chat was the only thing that knew about it.
@@ -3283,6 +3519,7 @@ class ChatWindowManager {
     this.releaseWorktree(run?.chat || this.deps.chatStore.load(id));
     this.deps.chatStore.delete(id);
     this.recentSelections.delete(id);
+    void this.pruneFolders();
     this.deps.notifyHistory();
   }
 
@@ -3480,16 +3717,22 @@ class ChatWindowManager {
   }
 
   /**
-   * Dictation is one shared microphone, so every window shows its state; `target` is the window the text will land in.
-   * Only the target plays the cue (the others would stack the same tone) and gets the full animation.
+   * Dictation is one shared microphone, but only the window the text will land in (`target`) shows it: it gets the state, the
+   * cue and the live levels. Every other window is told `idle`, so a chat never animates for text it will not receive. `elsewhere`
+   * only tells that window's mic button what another chat is doing, so a click there can move the dictation instead of stopping it.
    */
   broadcastMic(target, message) {
     this.mic = message.state === 'idle' ? null : { ...message, cue: false }; // replayed when the target changes mid-recording
-    for (const host of this.hosts) void host.panel.webview.postMessage({ type: 'micState', ...message, cue: Boolean(message.cue) && host === target, target: host === target });
+    for (const host of this.hosts) {
+      void host.panel.webview.postMessage(host === target
+        ? { type: 'micState', ...message, cue: Boolean(message.cue), target: true }
+        : { type: 'micState', state: 'idle', target: false, ...(this.mic ? { elsewhere: this.mic.state === 'processing' ? 'processing' : 'recording' } : {}) });
+    }
   }
 
   broadcastMicVolume(volume) {
-    for (const host of this.hosts) void host.panel.webview.postMessage({ type: 'micVolume', ...volume });
+    const owner = this.deps.voiceCapture.owner;
+    if (owner && this.hosts.has(owner)) void owner.panel.webview.postMessage({ type: 'micVolume', ...volume });
   }
 
   /** Used by cross-extension IPC (injectPrompt, batch dispatch): the currently focused
@@ -3734,6 +3977,7 @@ class LauncherViewProvider {
       case 'completeCliSetup': void this.deps.cliAccounts.complete(); break;
       case 'checkCliUpdates': void this.deps.cliHub.check(); break;
       case 'updateCli': void this.deps.cliHub.update(message.agent); break;
+      case 'updateApp': void this.deps.cliHub.updateApp(message.agent); break;
       case 'updateAllClis': void this.deps.cliHub.updateAll(); break;
       case 'refreshModels': void this.deps.cliHub.refreshModels(); break;
       case 'toggleFavoriteModel': this.deps.cliHub.toggleFavorite(message.id); break;
@@ -3778,6 +4022,16 @@ class LauncherViewProvider {
       case 'cloudWarmup': void this.deps.cloudWarmup?.handle(message); break;
       case 'setAutoContinueOnLimit': if (typeof message.enabled === 'boolean') void vscode.workspace.getConfiguration('aiChatPanel').update('autoContinueOnLimit', message.enabled, vscode.ConfigurationTarget.Global); break;
       case 'setAutoUpdateClis': if (typeof message.enabled === 'boolean') void vscode.workspace.getConfiguration('aiChatPanel').update('autoUpdateClis', message.enabled, vscode.ConfigurationTarget.Global); break;
+      case 'setAutoUpdateApps': if (typeof message.enabled === 'boolean') void vscode.workspace.getConfiguration('aiChatPanel').update('autoUpdateApps', message.enabled, vscode.ConfigurationTarget.Global); break;
+      case 'setConfirmExternalLinks':
+        if (typeof message.enabled === 'boolean') {
+          void vscode.workspace.getConfiguration('aiChatPanel').update('confirmExternalLinks', message.enabled, vscode.ConfigurationTarget.Global).catch((error) => {
+            log.error('Settings', 'Could not save external link confirmation', error);
+            void vscode.window.showErrorMessage('Clanker could not save the external link confirmation setting.');
+            void this.pushFleet();
+          });
+        }
+        break;
       case 'setCliTelemetry': {
         if (typeof message.enabled === 'boolean') {
           void vscode.workspace.getConfiguration('aiChatPanel').update('cliTelemetry', message.enabled, vscode.ConfigurationTarget.Global).then(undefined, (error) => {
@@ -3789,7 +4043,10 @@ class LauncherViewProvider {
         break;
       }
       case 'setCompletionSound': if (typeof message.enabled === 'boolean') void vscode.workspace.getConfiguration('aiChatPanel').update('completionSound', message.enabled, vscode.ConfigurationTarget.Global); break;
+      case 'setAppearance': if (message.appearance === 'clanker' || message.appearance === 'halo') void vscode.workspace.getConfiguration('aiChatPanel').update('appearance', message.appearance, vscode.ConfigurationTarget.Global); break;
+      case 'setOpenFailedToolCards': if (typeof message.enabled === 'boolean') void vscode.workspace.getConfiguration('aiChatPanel').update('openFailedToolCards', message.enabled, vscode.ConfigurationTarget.Global); break;
       case 'setWorkContextIcons': if (typeof message.enabled === 'boolean') void vscode.workspace.getConfiguration('aiChatPanel').update('workContextIcons', message.enabled, vscode.ConfigurationTarget.Global); break;
+      case 'setChatFolders': if (typeof message.enabled === 'boolean') void vscode.workspace.getConfiguration('aiChatPanel').update('chatFolders', message.enabled, vscode.ConfigurationTarget.Global); break;
       case 'setCompliance': if (COMPLIANCE_SETTINGS[message.key]) void vscode.workspace.getConfiguration('aiChatPanel').update(COMPLIANCE_SETTINGS[message.key], Boolean(message.value), vscode.ConfigurationTarget.Global); break;
       case 'setRailLimit': if (Object.hasOwn(RAIL_LIMIT_DEFAULTS, message.key) && Number.isInteger(message.value) && message.value >= 0) void vscode.workspace.getConfiguration('aiChatPanel').update(message.key, railLimit(message.key, message.value), vscode.ConfigurationTarget.Global); break;
       case 'setChatNames': if (CHAT_NAME_SOURCES.includes(message.value)) void vscode.workspace.getConfiguration('aiChatPanel').update('chatNames', message.value, vscode.ConfigurationTarget.Global); break;
@@ -3806,6 +4063,35 @@ class LauncherViewProvider {
       case 'setVoiceSounds': void vscode.workspace.getConfiguration('aiChatPanel').update('voiceSounds', Boolean(message.enabled), vscode.ConfigurationTarget.Global); break;
       case 'setVoicePauseMedia': void vscode.workspace.getConfiguration('aiChatPanel').update('voicePauseMedia', Boolean(message.enabled), vscode.ConfigurationTarget.Global); break;
       case 'setVoiceMic': void vscode.workspace.getConfiguration('aiChatPanel').update('voiceMicDevice', String(message.device || ''), vscode.ConfigurationTarget.Global); break;
+      case 'setVoiceProvider': {
+        const provider = message.provider === 'local' ? 'local' : 'groq';
+        void vscode.workspace.getConfiguration('aiChatPanel').update('voiceProvider', provider, vscode.ConfigurationTarget.Global);
+        break;
+      }
+      case 'setVoiceGroqModel': {
+        const model = message.model === 'whisper-large-v3' ? 'whisper-large-v3' : 'whisper-large-v3-turbo';
+        void vscode.workspace.getConfiguration('aiChatPanel').update('voiceGroqModel', model, vscode.ConfigurationTarget.Global);
+        break;
+      }
+      case 'setVoiceLocalModel': {
+        const valid = LOCAL_STT_MODELS.some((entry) => entry.id === message.model) ? message.model : DEFAULT_LOCAL_MODEL;
+        void vscode.workspace.getConfiguration('aiChatPanel').update('voiceLocalModel', valid, vscode.ConfigurationTarget.Global);
+        break;
+      }
+      case 'installLocalStt': {
+        const model = LOCAL_STT_MODELS.some((entry) => entry.id === message.model)
+          ? message.model
+          : vscode.workspace.getConfiguration('aiChatPanel').get('voiceLocalModel', DEFAULT_LOCAL_MODEL);
+        void this.deps.localStt?.install(model);
+        break;
+      }
+      case 'removeLocalSttModel': {
+        const model = LOCAL_STT_MODELS.some((entry) => entry.id === message.model)
+          ? message.model
+          : vscode.workspace.getConfiguration('aiChatPanel').get('voiceLocalModel', DEFAULT_LOCAL_MODEL);
+        this.deps.localStt?.removeModel(model);
+        break;
+      }
       // Settings > General > Project icons. The registry file is the storage; the watcher in activate() also covers an AI editing it.
       case 'requestProjectIcons': this.postProjectIcons(); break;
       case 'pickProjectIcon': void this.pickProjectIcon(message.id); break;
@@ -3881,9 +4167,14 @@ class LauncherViewProvider {
       statusBar: vscode.workspace.getConfiguration('aiChatPanel').get('showStatusBar', false),
       autoContinueOnLimit: vscode.workspace.getConfiguration('aiChatPanel').get('autoContinueOnLimit', true),
       autoUpdateClis: vscode.workspace.getConfiguration('aiChatPanel').get('autoUpdateClis', true),
+      autoUpdateApps: vscode.workspace.getConfiguration('aiChatPanel').get('autoUpdateApps', false),
       cliTelemetry: cliTelemetryEnabled(),
+      confirmExternalLinks: vscode.workspace.getConfiguration('aiChatPanel').get('confirmExternalLinks', false),
       completionSound: vscode.workspace.getConfiguration('aiChatPanel').get('completionSound', true),
       workContextIcons: vscode.workspace.getConfiguration('aiChatPanel').get('workContextIcons', false),
+      chatFolders: chatFoldersEnabled(),
+      openFailedToolCards: openFailedToolCards(),
+      appearance: appearance(),
       rail: railLimits(),
       sessionWarmup: this.deps.getSessionWarmup?.(),
       cloudWarmup: this.deps.cloudWarmup?.snapshot(),
@@ -3901,7 +4192,15 @@ class LauncherViewProvider {
     } catch (error) { vscode.window.showWarningMessage(error.message); }
   }
 
-  postHistory() { this.view?.webview.postMessage({ type: 'history', sessions: this.deps.chatWindowManager.listChats() }); }
+  postHistory() {
+    const enabled = chatFoldersEnabled();
+    this.view?.webview.postMessage({
+      type: 'history',
+      sessions: this.deps.chatWindowManager.listChats(),
+      folders: enabled ? this.deps.chatWindowManager.listFolders() : [],
+      chatFoldersEnabled: enabled,
+    });
+  }
   async pushQuotas(quotas) {
     if (!this.view) return;
     this.view.webview.postMessage({ type: 'quotas', quotas: quotas || await readQuotas() });
@@ -3939,6 +4238,10 @@ const CHAT_BUTTONS = {
         <span class="queue-badge" id="queueBadge">0</span>
         <span class="round-btn-tip" aria-hidden="true">Queue</span>
       </button>`,
+  find: `<button class="round-btn" id="findBtn" type="button" aria-label="Find in chat" aria-keyshortcuts="Control+F">
+        <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" aria-hidden="true"><circle cx="7" cy="7" r="4.5"/><path d="m10.5 10.5 3 3"/></svg>
+        <span class="round-btn-tip" aria-hidden="true">Find</span>
+      </button>`,
   history: `<button class="round-btn" id="historyBtn" type="button" aria-label="Manage chats">
         <svg viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
           <path d="M8 4v4.3l3 1.7" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/>
@@ -3966,6 +4269,7 @@ function railMarkup(buttons) {
       <span class="round-btn-tip" aria-hidden="true">Pop out</span>
     </button>
     ${buttons.history}
+    ${buttons.find}
     ${buttons.queue}
     ${buttons.loops}
     <button class="round-btn" id="settingsBtn" type="button" title="Chat settings" aria-label="Chat settings">
@@ -4001,6 +4305,8 @@ function railMarkup(buttons) {
 
 function activate(context) {
   installLog(context, () => chatWindowManager); // first, so everything after it can log
+  repairGitConfigEnv(); // an editor started from a Codex shell inherits a half-empty GIT_CONFIG_* set that breaks every git call
+  configureAppRoot(vscode.env?.appRoot);
   configureCliTelemetry(cliTelemetryEnabled);
   refreshBinaries();
   const AGENTS = agentList();
@@ -4110,8 +4416,9 @@ function activate(context) {
     for (const host of chatWindowManager?.hosts || []) host.panel.webview.postMessage({ type: 'quotas', quotas });
   }));
 
+  let watchdog;
   chatWindowManager = new ChatWindowManager(context.extensionUri, {
-    sessionManager, chatStore, projects, defaultProjectId, cliAccounts, voiceCapture, voiceDir, workspaceDir, sessionDir: SESSION_DIR, attachmentsDir, getModels, getPermissionMode, getModelPrompts: () => cliHub.prompts, getModelSettings: () => cliHub.modelSettings, getCostMeter: () => costMeter, codexCommands, codexThreadTitles, codexChatSync, slashCommands, schedulerQueue, notifySchedulerQueue, renameChat, getEditorTheme: () => editorTheme, notify, notifyHistory, onTelegramEvent, keepAwake,
+    sessionManager, chatStore, projects, defaultProjectId, cliAccounts, voiceCapture, voiceDir, workspaceDir, sessionDir: SESSION_DIR, attachmentsDir, getModels, getPermissionMode, getModelPrompts: () => cliHub.prompts, getModelSettings: () => cliHub.modelSettings, getCostMeter: () => costMeter, codexCommands, codexThreadTitles, codexChatSync, slashCommands, schedulerQueue, notifySchedulerQueue, onQueueResumed: () => void watchdog?.tick(), renameChat, getEditorTheme: () => editorTheme, notify, notifyHistory, onTelegramEvent, keepAwake,
     authGate,
     // Which scheduling mode (usage reset, timer, calendar) the clock starts with: the one used last, kept for good.
     getScheduleMode: () => context.globalState.get('scheduleMode', 'reset'),
@@ -4119,6 +4426,7 @@ function activate(context) {
     sidebarState: context.workspaceState,
     projectPinStore: { get: () => context.globalState.get('pinnedProjectIds'), set: ids => context.globalState.update('pinnedProjectIds', ids) },
     chatPinStore: { get: () => context.globalState.get('pinnedChatIds'), set: ids => context.globalState.update('pinnedChatIds', ids) },
+    chatFolderStore: { get: () => context.globalState.get('chatFolders'), set: folders => context.globalState.update('chatFolders', folders) },
   });
   context.subscriptions.push(vscode.workspace.onDidChangeWorkspaceFolders(event => {
     for (const folder of event.added) {
@@ -4138,6 +4446,11 @@ function activate(context) {
   applyStatusBar();
   context.subscriptions.push(vscode.workspace.onDidChangeConfiguration((event) => {
     if (event.affectsConfiguration('aiChatPanel.workContextIcons')) chatWindowManager?.refreshWorkContexts();
+    if (event.affectsConfiguration('aiChatPanel.chatFolders')) {
+      notifyHistory();
+      void launcher?.pushFleet();
+      for (const host of chatWindowManager?.hosts || []) void host.settingsPane?.pushFleet();
+    }
     if (event.affectsConfiguration('aiChatPanel.railProjects') || event.affectsConfiguration('aiChatPanel.railChats')) {
       for (const host of chatWindowManager?.hosts || []) {
         host.panel.webview.postMessage({ type: 'railLimits', value: railLimits() });
@@ -4156,7 +4469,7 @@ function activate(context) {
       void launcher?.pushFleet();
       for (const host of chatWindowManager?.hosts || []) void host.settingsPane?.pushFleet();
     }
-    if (event.affectsConfiguration('aiChatPanel.autoContinueOnLimit') || event.affectsConfiguration('aiChatPanel.autoUpdateClis') || event.affectsConfiguration('aiChatPanel.cliTelemetry')) {
+    if (event.affectsConfiguration('aiChatPanel.autoContinueOnLimit') || event.affectsConfiguration('aiChatPanel.autoUpdateClis') || event.affectsConfiguration('aiChatPanel.autoUpdateApps') || event.affectsConfiguration('aiChatPanel.cliTelemetry') || event.affectsConfiguration('aiChatPanel.confirmExternalLinks')) {
       void launcher?.pushFleet();
       for (const host of chatWindowManager?.hosts || []) void host.settingsPane?.pushFleet();
     }
@@ -4212,7 +4525,7 @@ function activate(context) {
     launcher?.postHistory();
     for (const host of chatWindowManager?.hosts || []) host.postHistory();
   }
-  const watchdog = new SchedulerWatchdog({ queue: schedulerQueue, projects, workspaceDir, getModels, getPermissionMode, getModelPrompts: () => cliHub.prompts, getModelSettings: () => cliHub.modelSettings, telegram: null, onQueueChange: notifySchedulerQueue, chatStore, onHistoryChange: notifyHistory, notify, isAgentEnabled: (agent) => cliAccounts.isEnabled(agent), resumeInChat: (task) => chatWindowManager?.resumeChat(task), isChatBusy: (chatId, task) => chatWindowManager?.isChatBusy(chatId, task), getQueueState: id => chatWindowManager?.runs.get(id)?.queueState() || chatStore.load(id)?.turnQueue || {}, authGate });
+  watchdog = new SchedulerWatchdog({ queue: schedulerQueue, projects, workspaceDir, getModels, getPermissionMode, getModelPrompts: () => cliHub.prompts, getModelSettings: () => cliHub.modelSettings, telegram: null, onQueueChange: notifySchedulerQueue, chatStore, onHistoryChange: notifyHistory, notify, isAgentEnabled: (agent) => cliAccounts.isEnabled(agent), resumeInChat: (task) => chatWindowManager?.resumeChat(task), isChatBusy: (chatId, task) => chatWindowManager?.isChatBusy(chatId, task), getQueueState: id => chatWindowManager?.runs.get(id)?.queueState() || chatStore.load(id)?.turnQueue || {}, authGate });
   const warmupConfig = () => vscode.workspace.getConfiguration('aiChatPanel');
   const warmupChanged = () => { void launcher?.pushFleet(); for (const host of chatWindowManager?.hosts || []) void host.settingsPane?.pushFleet(); };
   const cloudWarmup = new CloudWarmup({ context, vscode, models: () => AVAILABLE_MODELS, locate: agent => locate(agent).path || '',
@@ -4409,10 +4722,12 @@ function activate(context) {
   // CLI versions, the update icon and the starred models (Settings > Models) share one hub; every chat window hears it.
   // The `clanker-agent` command (skill clanker-load-agent) lets any agent hand a task to another vendor's model. It reads the picker's
   // models and starts through a launcher at ~/.clanker/clanker-agent.js, both written here whenever the model list changes.
-  const publishAgentModels = () => { try { clankerAgent.publish({ models: AVAILABLE_MODELS.filter(entry => cliAccounts.isEnabled(entry.agent) !== false), faults: Object.fromEntries(['claude', 'codex', 'gemini'].map(agent => [agent, cliAccounts.fault(agent)])) }); } catch { /* the helper is optional */ } };
+  const publishAgentModels = () => { try { clankerAgent.publish({ models: AVAILABLE_MODELS.filter(entry => cliAccounts.isEnabled(entry.agent) !== false), faults: Object.fromEntries(clankerAgent.AGENTS.map(agent => [agent, cliAccounts.fault(agent)])) }); } catch { /* the helper is optional */ } };
   const cliHub = new CliHub({
     accounts: cliAccounts,
     autoUpdateEnabled: () => vscode.workspace.getConfiguration('aiChatPanel').get('autoUpdateClis', true),
+    autoUpdateAppsEnabled: () => vscode.workspace.getConfiguration('aiChatPanel').get('autoUpdateApps', false),
+    checkAppsImpl: checkDesktopApps,
     isBusy: agent => watchdog.running || Boolean(watchdog.activeTaskId) || sessionWarmup.busy
       || Boolean(investigations.manager?.actives.size)
       || providerBusy(agent, { runs: chatWindowManager.runs.values(), hosts: chatWindowManager.hosts }),
@@ -4438,6 +4753,7 @@ function activate(context) {
     promptStore: { get: () => context.globalState.get('modelPrompts', {}), set: (prompts) => void context.globalState.update('modelPrompts', prompts) },
     settingsStore: { get: () => context.globalState.get('favoriteModelSettings', {}), set: (settings) => void context.globalState.update('favoriteModelSettings', settings) },
     cacheStore: { get: () => context.globalState.get('discoveredModels', []), set: (entries) => void context.globalState.update('discoveredModels', entries) },
+    seenProvidersStore: { get: () => context.globalState.get('discoveredModelProviders', []), set: (entries) => void context.globalState.update('discoveredModelProviders', entries) },
     broadcast: (message) => {
       void launcher?.view?.webview.postMessage(message);
       for (const host of chatWindowManager.hosts) {
@@ -4468,6 +4784,20 @@ function activate(context) {
   chatWindowManager.deps.ensureModels = () => cliHub.ready;
   chatWindowManager.deps.waitForCliUpdate = agent => cliHub.updatePromises.get(agent);
   watchdog.waitForCliUpdate = chatWindowManager.deps.waitForCliUpdate;
+  // Linux: keep the editor alive through a memory shortage (lib/oom-guard.js). Work = a turn running, starting or waiting in a
+  // chat's queue, background agents, a scheduled task, or a loop; while there is any, other desktop apps are killed first.
+  const oomGuard = new OomGuard({
+    enabled: () => vscode.workspace.getConfiguration('aiChatPanel').get('oomGuard', true) !== false,
+    hasWork: () => Boolean(watchdog.activeTaskId || watchdog.running)
+      || [...chatWindowManager.runs.values()].some(run => run.turn || run.starting || run.remote || run.queue?.length || run.streamEngine?.hasBackgroundAgents)
+      || (schedulerQueue.loaded && schedulerQueue.tasks.some(task => task.status === 'pending' || task.status === 'dispatched')),
+    releaseIdle: () => [...chatWindowManager.runs.values()].filter(run => !run.turn && run.streamEngine?.releaseIdleWarm?.()).length,
+    log: line => log.info('memory', line),
+  });
+  oomGuard.start();
+  context.subscriptions.push({ dispose: () => oomGuard.dispose() });
+  chatWindowManager.deps.waitForMemory = () => oomGuard.waitForMemory();
+  watchdog.waitForMemory = chatWindowManager.deps.waitForMemory;
   void cliHub.check();
   // Which CLIs are signed in and still on a plan that unlocks them (the rail and the picker hide the ones that are not).
   // Cheap: a status call per CLI, no prompt. Settings > General checks again whenever it is opened.
@@ -4493,7 +4823,7 @@ function activate(context) {
   void costMeter.refreshPrices(MODEL_CATALOG.map((entry) => entry.model));
   chatWindowManager.refreshWorkContexts(); // builds ChatRuns, which read costMeter: only valid once it is declared
   const updateTimer = setInterval(() => void cliHub.check(), 6 * 60 * 60 * 1000);
-  const autoUpdateTimer = setInterval(() => void cliHub.autoUpdate(), 15000);
+  const autoUpdateTimer = setInterval(() => { void cliHub.autoUpdate(); void cliHub.autoUpdateApps(); }, 15000);
   const installedVersionTimer = setInterval(() => void cliHub.refreshInstalled(), 60000);
   context.subscriptions.push({ dispose: () => { clearInterval(updateTimer); clearInterval(autoUpdateTimer); clearInterval(installedVersionTimer); } });
   // Dictation (Settings > Voice): the Groq key and its usage, and the global hotkey that starts and stops recording.
@@ -4510,12 +4840,25 @@ function activate(context) {
     }),
     onError: (reason) => vscode.window.showWarningMessage(`Clanker Controller:the dictation hotkey stopped (${reason}).`),
   });
-  const voiceState = () => ({
-    pauseMedia: voiceConfig().get('voicePauseMedia', true),
-    hotkey: voiceConfig().get('voiceHotkey', ''), mode: hotkeyMode(), sounds: voiceConfig().get('voiceSounds', true),
-    micDevice: voiceConfig().get('voiceMicDevice', ''), hotkeyActive: Boolean(voiceHotkey.child), supported: process.platform === 'win32', groq: groqAccount.snapshot(),
-  });
+  let localStt = null;
+  const voiceState = () => {
+    const provider = voiceConfig().get('voiceProvider', 'groq') === 'local' ? 'local' : 'groq';
+    const groqModel = voiceConfig().get('voiceGroqModel', 'whisper-large-v3-turbo') === 'whisper-large-v3'
+      ? 'whisper-large-v3'
+      : 'whisper-large-v3-turbo';
+    const localModel = voiceConfig().get('voiceLocalModel', DEFAULT_LOCAL_MODEL);
+    return {
+      pauseMedia: voiceConfig().get('voicePauseMedia', true),
+      hotkey: voiceConfig().get('voiceHotkey', ''), mode: hotkeyMode(), sounds: voiceConfig().get('voiceSounds', true),
+      micDevice: voiceConfig().get('voiceMicDevice', ''), hotkeyActive: Boolean(voiceHotkey.child), supported: process.platform === 'win32',
+      provider, groqModel, localModel,
+      localStt: localStt ? localStt.snapshot(localModel) : null,
+      groq: groqAccount.snapshot(),
+    };
+  };
   const broadcastVoice = () => { for (const host of chatWindowManager.hosts) void host.panel.webview.postMessage({ type: 'voice', voice: voiceState() }); };
+  localStt = new LocalSttManager({ onChange: broadcastVoice });
+  chatWindowManager.deps.localStt = localStt;
   groqAccount = new GroqAccount({
     secrets: context.secrets,
     store: { get: () => context.globalState.get('groqUsage', null), set: (usage) => void context.globalState.update('groqUsage', usage) },
@@ -4572,11 +4915,13 @@ function activate(context) {
     vscode.workspace.onDidChangeConfiguration((event) => {
       if (event.affectsConfiguration('aiChatPanel.voiceHotkey')) voiceHotkey.start(voiceConfig().get('voiceHotkey', ''));
       if (event.affectsConfiguration('aiChatPanel.voiceMicDevice')) chooseMic();
-      if (['voiceHotkey', 'voiceHotkeyMode', 'voiceSounds', 'voicePauseMedia', 'voiceMicDevice'].some((name) => event.affectsConfiguration(`aiChatPanel.${name}`))) broadcastVoice();
+      if (event.affectsConfiguration('aiChatPanel.appearance')) for (const host of chatWindowManager.hosts) void host.panel.webview.postMessage({ type: 'appearance', appearance: appearance() });
+      if (event.affectsConfiguration('aiChatPanel.openFailedToolCards')) for (const host of chatWindowManager.hosts) void host.panel.webview.postMessage({ type: 'toolPrefs', openFailed: openFailedToolCards() });
+      if (['voiceHotkey', 'voiceHotkeyMode', 'voiceSounds', 'voicePauseMedia', 'voiceMicDevice', 'voiceProvider', 'voiceGroqModel', 'voiceLocalModel'].some((name) => event.affectsConfiguration(`aiChatPanel.${name}`))) broadcastVoice();
     }),
   );
   const launcherDeps = {
-    groqAccount, getVoice: voiceState, listMicDevices: () => voiceCapture.probe(), routing, cloudWarmup,
+    groqAccount, localStt, getVoice: voiceState, listMicDevices: () => voiceCapture.probe(), routing, cloudWarmup,
     cliHub, cliAccounts, chatStore, chatWindowManager, schedulerQueue, getModels, getPermissionMode, watchdog, notifySchedulerQueue, renameChat,
     getServices, getSessionWarmup: () => sessionWarmup.snapshot(), configureTelegram, disconnectTelegram, startTunnel: () => tunnel.start(), stopTunnel: () => tunnel.stop(),
     getTelegramBridge: () => telegram, sessionManager, getCostMeter: () => costMeter, authGate,
@@ -4632,6 +4977,12 @@ function activate(context) {
       if (!pick) return;
       const result = pick.id === 'install' ? runnerService.install({ launcher: path.join(process.env.CLANKER_HOME || path.join(os.homedir(), '.clanker'), runDueCli.LAUNCHER) }) : runnerService.remove();
       void (result.ok ? vscode.window.showInformationMessage(result.message) : vscode.window.showWarningMessage(result.message));
+    }),
+    // The in-editor dictation key (F9 by default, rebindable in Keyboard Shortcuts): works on every platform, including Wayland, where no global hotkey can be grabbed.
+    vscode.commands.registerCommand('aiChatPanel.dictateToggle', () => {
+      // On Windows a global hotkey set to F9 already toggles it; the editor key must not toggle it a second time.
+      if (voiceHotkey.child && /^f9$/i.test(String(voiceConfig().get('voiceHotkey', '')).trim())) return;
+      dictateHandlers.onDown();
     }),
     vscode.commands.registerCommand('aiChatPanel.openVoiceRecordings', () => { fs.mkdirSync(voiceDir, { recursive: true }); return vscode.env.openExternal(vscode.Uri.file(voiceDir)); }),
     vscode.commands.registerCommand('aiChatPanel.chooseProject', () => chatWindowManager.getOrCreateActive().chooseProject()),
@@ -4782,6 +5133,6 @@ function installLog(context, manager) {
   log.info('extension', `Clanker Controller activated (${vscode.env.appName} ${vscode.version}, ${process.platform})`);
 }
 
-function deactivate() { return stopChatStorage?.(); }
+function deactivate() { stopOwnHub(); return stopChatStorage?.(); }
 
 module.exports = { activate, deactivate, agentList, injectTarget, opusTerminalCommand, ChatWindowHost, ChatWindowManager, LauncherViewProvider, SchedulerWatchdog, TunnelManager, quotaAvailable, cleanAttachmentName };

@@ -5,7 +5,8 @@ import path from 'node:path';
 import { chromium } from 'playwright';
 import { openChat } from './ui-tester/boot.mjs';
 import { scenarios } from './ui-tester/scenarios.mjs';
-const browser = await chromium.launch({ channel: process.platform === 'win32' ? 'msedge' : undefined, headless: false });
+const outputPath = process.argv.slice(2).find(arg => !arg.startsWith('--'));
+const browser = await chromium.launch({ channel: process.platform === 'win32' ? 'msedge' : undefined, headless: !process.argv.includes('--headed') });
 try {
   for (const theme of ['light', 'dark']) {
     const { page, problems } = await openChat(browser, { width: 900, height: 1000, sidebar: true, scale: 2 });
@@ -32,13 +33,13 @@ try {
       return changed;
     }, [a.toString('base64'), b.toString('base64')]);
     assert.ok(changed > 200, `${theme}: lens must change backdrop pixels beyond ordinary blur (${changed})`);
-    if (process.argv[2]) {
-      fs.mkdirSync(process.argv[2], { recursive: true });
-      fs.writeFileSync(path.join(process.argv[2], `${theme}-refracted.png`), a);
-      fs.writeFileSync(path.join(process.argv[2], `${theme}-blur-only.png`), b);
+    if (outputPath) {
+      fs.mkdirSync(outputPath, { recursive: true });
+      fs.writeFileSync(path.join(outputPath, `${theme}-refracted.png`), a);
+      fs.writeFileSync(path.join(outputPath, `${theme}-blur-only.png`), b);
       await page.evaluate(() => { document.querySelector('.transcript').style.backgroundImage = ''; });
       await lens.evaluate(el => { el.style.removeProperty('backdrop-filter'); el.style.removeProperty('-webkit-backdrop-filter'); });
-      await page.screenshot({ path: path.join(process.argv[2], `${theme}-context.png`) });
+      await page.screenshot({ path: path.join(outputPath, `${theme}-context.png`) });
     }
     assert.deepEqual(problems, []);
     console.log(`${theme}: ${changed} backdrop pixels bent beyond the ordinary blur.`);

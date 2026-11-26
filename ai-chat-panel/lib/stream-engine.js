@@ -6,13 +6,15 @@ const crypto = require('node:crypto');
 const fs = require('node:fs');
 const path = require('node:path');
 const { locate, resolveShim, headlessEnv } = require('./binary-locator.js');
+const { prepareCliEnv } = require('./cli-env.js');
 const { cliTelemetry } = require('./cli-telemetry.js');
 const { CodexAppServer } = require('./codex-app-server.js');
 const { AVAILABLE_MODELS, defaultModel } = require('./model-catalog.js');
 const { fromRateLimitEvent } = require('./claude-usage.js');
 const { attachmentPrompt, codexAttachmentInput } = require('./attachments.js');
-const { readQuestion } = require('./agy-question.js');
+const { readQuestion, readThoughts, readContext } = require('./agy-question.js');
 const { AgySubagents } = require('./agy-subagents.js');
+const agyStepOutput = require('./agy-step-output.js');
 const { isLimitNotice } = require('../media/limit-notice.js');
 const providers = require('./providers');
 const { silentTurnMessage } = require('./provider-health.js');
@@ -44,6 +46,15 @@ function transientCodexError(message, info) {
 // Nothing at all on stdout/stderr for this long means the CLI is stuck in
 // its own upstream check; treated like a 503 rather than freezing the panel.
 const FIRST_OUTPUT_TIMEOUT_MS = 30000;
+// Keep a warm `agy` stream-json process alive between turns to skip cold startup and keep
+// subagents/background tasks intact, then release it after idle inactivity to protect RAM.
+const AGY_IDLE_MS = 10 * 60 * 1000;
+const AGY_EFFORTS = new Set(['low', 'medium', 'high', 'xhigh', 'max']);
+
+function isInsideDir(target, root) {
+  const rel = path.relative(path.resolve(root), path.resolve(target));
+  return rel === '' || (!rel.startsWith('..') && !path.isAbsolute(rel));
+}
 
 
 /**
@@ -67,7 +78,7 @@ function toolTarget(input = {}) {
   const s = (x) => (typeof x === 'string' ? x : '');
   if (s(input.command)) return s(input.command);
   if (s(input.pattern)) return [`"${s(input.pattern)}"`, s(input.path) && `in ${s(input.path)}`, s(input.glob) && `(${s(input.glob)})`].filter(Boolean).join(' ');
-  return s(input.url) || s(input.query) || s(input.skill) || s(input.description) || '';
+  return s(input.url) || s(input.query) || s(input.skill) || s(input.description) || s(input.task_id) || s(input.shell_id) || s(input.bash_id) || '';
 }
 
 /** The first path-like parameter of an agy tool call, whatever this build calls it (path, file_path, DirectoryPath, paths: [...]). Content fields never match. */
@@ -80,6 +91,27 @@ function anyPathLike(params = {}) {
   return '';
 }
 
+/** agy's update_steps plan: [{ title, status: pending|in_progress|completed|... }]. */
+function planSteps(steps) {
+  return (Array.isArray(steps) ? steps : []).map((s) => ({ title: typeof s?.title === 'string' ? s.title.trim() : '', status: String(s?.status || 'pending').toLowerCase() })).filter((s) => s.title);
+}
+const stepDone = (s) => /^(complete|completed|done)$/.test(s.status);
+const stepActive = (s) => /^in.?progress$/.test(s.status);
+/** One line: the step being worked on and how far along the plan is ("Run the tests (2/4)"). */
+function stepsLabel(steps) {
+  const list = planSteps(steps);
+  if (!list.length) return '';
+  const current = list.find(stepActive) || list.find((s) => !stepDone(s));
+  return current ? `${current.title} (${list.indexOf(current) + 1}/${list.length})` : `All ${list.length} steps done`;
+}
+/** The whole plan, one step per line, for the card's body. */
+function stepsChecklist(steps) {
+  return planSteps(steps).map((s) => `${stepDone(s) ? '✓' : stepActive(s) ? '▸' : '○'} ${s.title}`).join('\n');
+}
+
+/** agy's file-writing tools, older and newer builds: all are edits (a card that opens the file, with its diff). */
+const AGY_EDIT_TOOLS = /^(write_to_file|write_file|create_file|edit_file|(multi_)?replace_file_content)$/;
+
 /** What a Gemini / Antigravity tool call acts on: command, file path, query, task action, etc. */
 function geminiToolTarget(toolName, params = {}) {
   const at = (x) => (typeof x === 'string' ? x : '');
@@ -87,11 +119,14 @@ function geminiToolTarget(toolName, params = {}) {
 
   if (name === 'runcommand') return at(params.CommandLine);
   // view_file/list_dir/write_to_file (older agy) and read_file/write_file/edit_file (newer agy, other parameter names).
-  if (/^(viewfile|listdir|readfile|viewcodeitem|writetofile|writefile|editfile|createfile)$/.test(name) || name.includes('replacefilecontent')) return at(params.AbsolutePath) || at(params.TargetFile) || anyPathLike(params);
+  if (/^(viewfile|listdir|readfile|viewcodeitem|writetofile|writefile|editfile|createfile)$/.test(name) || name.includes('replacefilecontent')) return at(params.AbsolutePath) || at(params.TargetFile) || at(params.Path) || at(params.path) || at(params.file_path) || anyPathLike(params);
   if (name === 'searchweb' || name === 'websearch') return at(params.query) || at(params.Query) || at(params.toolSummary) || at(params.toolAction);
   if (name === 'readurlcontent' || name === 'webfetch' || name === 'readbrowserpage' || name === 'browserpage') return at(params.Url) || at(params.url);
+  if (name === 'updatesteps') return stepsLabel(params.steps) || at(params.toolSummary) || at(params.toolAction);
   if (name === 'managetask') {
-    const parts = [at(params.Action), at(params.TaskId)].filter(Boolean);
+    // The id is "<conversation>/task-262". The engine adds TaskLabel (what the task runs) once it knows; without it the short id stands.
+    const id = at(params.TaskId).split('/').pop();
+    const parts = [at(params.Action), at(params.TaskLabel) ? `${at(params.TaskLabel)} (${id})` : id].filter(Boolean);
     return parts.length ? parts.join(' ') : at(params.toolSummary) || at(params.toolAction);
   }
   if (name === 'sendmessage') {
@@ -127,6 +162,15 @@ function contextTokensOf(raw) {
   if (!u) return 0;
   // agy's input_tokens leaves out cache_read_tokens (its total_tokens adds them back); a resumed chat's history is nearly all cache reads.
   return n(u.total_tokens) || n(u.input_tokens) + n(u.cache_read_input_tokens) + n(u.cache_read_tokens) + n(u.cache_creation_input_tokens) + n(u.output_tokens);
+}
+
+/** The window of the model that did the work, from Claude Code's result `modelUsage` ({ [model]: { contextWindow, inputTokens, ... } }). */
+function contextWindowOf(raw) {
+  if (raw?.type !== 'result' || !raw.modelUsage || typeof raw.modelUsage !== 'object') return 0;
+  const n = (x) => (Number.isFinite(x) ? x : 0);
+  const used = (m) => n(m?.inputTokens) + n(m?.outputTokens) + n(m?.cacheReadInputTokens) + n(m?.cacheCreationInputTokens);
+  const main = Object.values(raw.modelUsage).filter((m) => n(m?.contextWindow) >= 32000).sort((a, b) => used(b) - used(a))[0];
+  return main ? main.contextWindow : 0;
 }
 
 /**
@@ -195,7 +239,7 @@ function editDiff(input) {
   // Claude MultiEdit: edits[]; Claude Edit/Write; agy replace_file_content/write_to_file.
   const pairs = Array.isArray(input?.edits)
     ? input.edits.map((e) => [e?.old_string, e?.new_string])
-    : [[input?.old_string ?? input?.TargetContent, input?.new_string ?? input?.ReplacementContent ?? input?.content ?? input?.CodeContent]];
+    : [[input?.old_string ?? input?.TargetContent ?? input?.Target, input?.new_string ?? input?.ReplacementContent ?? input?.Replacement ?? input?.content ?? input?.CodeContent ?? input?.Content]]; // agy: write_to_file CodeContent, write_file Content, edit_file Target/Replacement
   const out = [];
   for (const [before, after] of pairs) {
     const a = text(before);
@@ -350,7 +394,10 @@ function vendorEvent(raw, agent) {
   if (raw?.type === 'result' && 'session_id' in raw) return { type: 'turn_complete', agent, ...(raw.total_cost_usd > 0 ? { costUsd: raw.total_cost_usd } : {}) };
   // Session ids, so the agent's next turn in this chat resumes the same session.
   // Claude compacts on its own when the window runs full; say so in the transcript.
-  if (raw?.type === 'system' && raw.subtype === 'compact_boundary') return { type: 'notice', text: 'Claude compacted the context automatically.', agent };
+  if (raw?.type === 'system' && raw.subtype === 'compact_boundary') {
+    const meta = raw.compact_metadata || raw.compactMetadata || {};
+    return { type: 'context_reset', kind: 'native', agent, trigger: at(meta.trigger) || 'auto', preTokens: Number(meta.pre_tokens ?? meta.preTokens) || 0 };
+  }
   // Remote Control bridge: ready / connected / disconnected / failed.
   if (raw?.type === 'system' && raw.subtype === 'bridge_state') return { type: 'remote_state', state: at(raw.state), agent };
   // init also names every slash command this session supports: the "/" menu's live source for Claude.
@@ -396,10 +443,10 @@ function vendorEvent(raw, agent) {
       }
       const command = geminiToolTarget(step.tool_name, params);
       // view_file/list_dir keep their own names (read cards); only writes are edits.
-      const name = step.tool_name === 'run_command' ? 'bash' : /^(write_to_file|(multi_)?replace_file_content)$/.test(at(step.tool_name)) ? 'edit' : at(step.tool_name) || 'tool';
-      if (step.state === 'ACTIVE') return { type: 'tool_start', toolId, name, command, file: at(params.TargetFile), diff: name === 'edit' ? editDiff(params) : '', agent };
-      if (step.state === 'ERROR') return { type: 'tool_end', toolId, output: at(step.tool_info?.error?.message).split('\n')[0], error: true, diff: '', agent };
-      return { type: 'tool_end', toolId, output: '', diff: '', agent };
+      const name = step.tool_name === 'run_command' ? 'bash' : AGY_EDIT_TOOLS.test(at(step.tool_name)) ? 'edit' : at(step.tool_name) || 'tool';
+      if (step.state === 'ACTIVE') return { type: 'tool_start', toolId, name, command, file: at(params.TargetFile) || (name === 'edit' ? command : ''), diff: name === 'edit' ? editDiff(params) : '', ...(name === 'update_steps' ? { checklist: stepsChecklist(params.steps) } : {}), ...(at(params.toolSummary) && at(params.toolSummary) !== command ? { summary: at(params.toolSummary).slice(0, 200) } : {}), agent };
+      if (step.state === 'ERROR') return { type: 'tool_end', toolId, output: at(step.clankerOutput) || at(step.tool_info?.error?.message).split('\n')[0], error: true, diff: '', agent };
+      return { type: 'tool_end', toolId, output: at(step.clankerOutput), diff: '', agent }; // clankerOutput: the step's result, read from agy's files (agy-step-output.js)
     }
     // P17-T: thought deltas. Field names not yet seen in a captured agy stream; both spellings accepted.
     const thought = at(step.thought_delta) || at(step.thinking_delta);
@@ -469,11 +516,18 @@ class StreamEngine extends EventEmitter {
    * question cards to be answered. The scheduler's unattended engine keeps
    * it off (auto mode, never blocks on a click).
    */
-  constructor({ cwd, chatId = null, models = {}, interactive = false, permissionMode = null, codexServerFactory = (options) => new CodexAppServer(options), agyQuestionReader = readQuestion } = {}) {
+  constructor({ cwd, attachmentsDir = null, chatId = null, models = {}, interactive = false, permissionMode = null, keepAgyWarm = true, agyIdleMs = AGY_IDLE_MS, spawnImpl = spawn, locateImpl = locate, codexServerFactory = (options) => new CodexAppServer(options), agyQuestionReader = readQuestion, agyThoughtReader = readThoughts, agyContextReader = readContext, agyHome = undefined } = {}) {
     super();
     this.agyLimit = null; // the quota failure this process reported on stderr
     this.limitShown = false; // ... and whether the reply already says so
     this.cwd = cwd || process.cwd();
+    this.attachmentsDir = attachmentsDir || null;
+    this.keepAgyWarm = keepAgyWarm !== false;
+    this.agyIdleMs = Number.isFinite(agyIdleMs) ? agyIdleMs : AGY_IDLE_MS;
+    this.spawn = spawnImpl;
+    this.locate = locateImpl;
+    this.warmAgy = null; // persistent agy stream-json process reused across turns
+    this.warmAgyTimer = null; // idle TTL timer that closes warmAgy to save RAM
     this.bridgeAgents = new (require('./bridge-agents').BridgeAgents)(chatId, event => this.emit('event', event));
     this.chatEnv = chatId ? { CLANKER_CHAT_ID: chatId } : {};
     this.bridgeTimer = setInterval(() => this.bridgeAgents.poll(this.cwd), 2000);
@@ -488,11 +542,18 @@ class StreamEngine extends EventEmitter {
     this.approvals = new Map(); // actionId -> { child, input, suggestions, kind }
     this.agyEdits = new Map(); // toolId -> { event, file, before }: a Gemini edit waiting for its diff
     this.agyQuestionReader = agyQuestionReader;
+    this.agyHome = agyHome; // where ~/.gemini is (tests point it elsewhere)
+    this.agyThoughtReader = agyThoughtReader;
+    this.agyContextReader = agyContextReader;
+    this.agyChecklists = new Map(); // toolId -> the update_steps plan, shown as the card's body once the step is done
     this.codexBases = new Map(); // repo root -> snapshot, for Codex's per-edit diffs
     this.turnBases = null; // repo root -> snapshot as the turn began, and when (ms): what Undo turn restores
     this.tokens = noTokens();
     this.subagentIds = new Set(); // Agent/Task tool_use ids still running (background ones outlive their call)
+    this.copilotSubagents = new Map(); // Copilot's envelope agent id -> spawning tool call
     this.backgroundCommands = new Map(); // tool_use id -> CLI task id (Bash/Monitor jobs also resume the conversation)
+    this.toolTargetsById = new Map(); // tool_use id -> command/description, so TaskStop can name the task while it runs
+    this.taskLabels = new Map(); // CLI task id -> command/description of that background task
     this.agySubagentIds = new Set(); // viewer ids of the agy subagents already launched in this engine
     this.agySubagents = new AgySubagents({ emit: (event) => this.emit('event', { ...event, agent: 'gemini' }), describe: (name, params) => geminiToolTarget(name, params) });
     this.codexServerFactory = codexServerFactory;
@@ -513,13 +574,43 @@ class StreamEngine extends EventEmitter {
     return 'fullAccess';
   }
 
+  /** Normalized agy --effort flag, omitted when the model id already bakes in the same level (e.g. gemini-4-neon-high). */
+  agyEffortFlag(model, effort) {
+    const level = String(effort || '').trim().toLowerCase();
+    if (!AGY_EFFORTS.has(level)) return null;
+    if (model && new RegExp(`-${level}$`, 'i').test(String(model).trim())) return null;
+    return level;
+  }
+
+  /** Directories agy needs workspace access to: the project cwd plus external attachment folders. */
+  agyAddDirs(attachments = []) {
+    const dirs = [];
+    const seen = new Set();
+    const add = (dir) => {
+      if (!dir) return;
+      const resolved = path.resolve(dir);
+      const key = process.platform === 'win32' ? resolved.toLowerCase() : resolved;
+      if (seen.has(key)) return;
+      seen.add(key);
+      dirs.push(dir);
+    };
+    add(this.cwd);
+    if (this.attachmentsDir && !isInsideDir(this.attachmentsDir, this.cwd)) add(this.attachmentsDir);
+    for (const file of attachments || []) {
+      if (typeof file !== 'string' || !file.trim()) continue;
+      const parent = path.dirname(path.resolve(this.cwd, file));
+      if (!isInsideDir(parent, this.cwd)) add(parent);
+    }
+    return dirs;
+  }
+
   /** `choice` = { model, effort } from the composer picker; the configured default otherwise. */
   commandFor(agent, prompt, attachments = [], choice = {}) {
     const effort = choice.effort || null;
     const resume = choice.resume || null;
     const model = choice.model || this.models[agent] || defaultModel(agent)?.model;
     const fullPrompt = attachmentPrompt(prompt, attachments);
-    const command = locate(agent).path;
+    const command = this.locate(agent).path;
     const provider = providers.get(agent);
     if (typeof provider?.commandFor === 'function') {
       const permissionMode = this.effectivePermissionMode(agent, choice.permissionMode);
@@ -541,11 +632,31 @@ class StreamEngine extends EventEmitter {
     // agy). The prompt always goes over stdin, which is then closed.
     if (agent === 'gemini') {
       const permMode = this.effectivePermissionMode('gemini', choice.permissionMode);
-      const permArgs = permMode === 'fullAccess' ? ['--dangerously-skip-permissions'] : [];
+      const permArgs = permMode === 'fullAccess' ? ['--dangerously-skip-permissions']
+        : permMode === 'auto' ? ['--mode', 'auto']
+        : ['--mode', 'accept-edits'];
+      const effortFlag = this.agyEffortFlag(model, effort);
+      const effortArgs = effortFlag ? ['--effort', effortFlag] : [];
+      const addDirs = this.agyAddDirs(attachments);
+      const addDirArgs = addDirs.flatMap((dir) => ['--add-dir', dir]);
+      const isCompacting = Boolean(choice.compact || choice.autoCompact);
       // agy's stream-json input is {"event":"user","message":{"content":...}}.
       // --add-dir: without it agy runs its shell and resolves relative paths in its own scratch
       // folder (~/.gemini/antigravity-cli/scratch), not the project, even though init reports the cwd.
-      return { command, args: ['--input-format', 'stream-json', '--output-format', 'stream-json', ...(model ? ['--model', model] : []), ...permArgs, '--add-dir', this.cwd, ...(resume ? ['--conversation', resume] : [])], input: JSON.stringify({ event: 'user', message: { content: fullPrompt } }) + '\n' };
+      return {
+        command,
+        args: [...cliTelemetry('gemini').args, '--input-format', 'stream-json', '--output-format', 'stream-json', ...(model ? ['--model', model] : []), ...effortArgs, ...permArgs, ...addDirArgs, ...(resume ? ['--conversation', resume] : [])],
+        input: JSON.stringify({ event: 'user', message: { content: fullPrompt } }) + '\n',
+        keepStdinOpen: Boolean(this.keepAgyWarm && !isCompacting),
+        addDirs,
+        agyWarmConfig: {
+          model: model || '',
+          effort: effortFlag,
+          permissionMode: permMode,
+          cwd: path.resolve(this.cwd),
+          addDirs: new Set(addDirs.map((dir) => (process.platform === 'win32' ? path.resolve(dir).toLowerCase() : path.resolve(dir)))),
+        },
+      };
     }
     if (agent === 'claude') {
       // -p reads the prompt from stdin; stream-json output needs --verbose.
@@ -600,7 +711,7 @@ class StreamEngine extends EventEmitter {
 
   getCodexServer() {
     if (this.codexServer) return this.codexServer;
-    const server = this.codexServerFactory({ cwd: this.cwd, env: { ...process.env, ...this.chatEnv } });
+    const server = this.codexServerFactory({ cwd: this.cwd, env: prepareCliEnv({ ...process.env, ...this.chatEnv }) });
     server.on('notification', (message) => this.handleCodexNotification(message));
     server.on('request', (message) => this.handleCodexRequest(message));
     server.on('diagnostic', (text) => this.emit('diagnostic', { agent: 'codex', text, timestamp: new Date().toISOString() }));
@@ -626,6 +737,7 @@ class StreamEngine extends EventEmitter {
     this.agyLimit = null;
     this.limitShown = false;
     this.codexTurnId = null;
+    if (!recovering) this.codexCompactionAnnounced = false;
     if (!recovering) this.codexTurnBase = null; // preserve the thread baseline across recovery attempts
     this.codexError = '';
     this.codexErrorInfo = null;
@@ -677,6 +789,7 @@ class StreamEngine extends EventEmitter {
         catch (error) {
           if (!resume || !/missing session/i.test(error.message) && !RESUME_FAILED.test(error.message)) throw error;
           this.codexThreadId = null;
+          this.emit('event', { type: 'context_reset', kind: 'resume', agent: 'codex' });
           await this.ensureCodexThread(server, { resume: null, model, permissionMode });
           if (freshPrompt) turn.prompt = freshPrompt;
         }
@@ -743,10 +856,6 @@ class StreamEngine extends EventEmitter {
       this.codexTurnId = result?.turn?.id || this.codexTurnId;
       return;
     }
-    if (name === 'compact') {
-      await server.request('thread/compact/start', { threadId });
-      return;
-    }
     let label = `/${name}`;
     let result;
     if (name === 'goal') {
@@ -790,10 +899,10 @@ class StreamEngine extends EventEmitter {
     const turnId = params.turnId || params.turn?.id || null;
     if (params.threadId && this.codexThreadId && params.threadId !== this.codexThreadId) return;
     if (turnId && (!this.codexAcceptEvents || this.codexRetiredTurns.has(turnId) || (this.codexTurnId && this.codexTurnId !== turnId))) return;
-    if (method === 'thread/compacted' && this.codexActive && this.turn?.codexCommand === 'compact') {
-      this.consumeLine(JSON.stringify({ __appServer: true, method: 'item/agentMessage/delta', params: { delta: 'Codex compacted this thread.' } }), 'codex');
-      this.finishCodexTurn();
-      return;
+    // Codex can compact a long thread mid-turn. Record the event once per turn.
+    if ((method === 'thread/compacted' || (method === 'item/started' && params.item?.type === 'contextCompaction')) && this.codexActive && !this.codexCompactionAnnounced) {
+      this.codexCompactionAnnounced = true;
+      this.emit('event', { type: 'context_reset', kind: 'native', agent: 'codex', trigger: 'auto', preTokens: this.lastContextTokens || 0 });
     }
     if (method === 'turn/started') {
       this.codexTurnId = params.turn?.id || this.codexTurnId;
@@ -803,7 +912,7 @@ class StreamEngine extends EventEmitter {
       const usage = params.tokenUsage || {};
       const last = usage.last || {};
       const total = usage.total || {};
-      if (usage.modelContextWindow && last.totalTokens) this.emit('event', { type: 'usage', agent: 'codex', contextTokens: last.totalTokens });
+      if (usage.modelContextWindow && last.totalTokens) this.emit('event', { type: 'usage', agent: 'codex', contextTokens: last.totalTokens, contextWindow: Number(usage.modelContextWindow) });
       if (total.totalTokens) {
         // `total` is the whole thread's, resumed history included. The turn began where the first update's total, less that
         // update's own request (`last`), stood; what has been drawn since is this turn's.
@@ -945,11 +1054,16 @@ class StreamEngine extends EventEmitter {
     if (!attempt && !live) { this.turnStartedAt = Date.now(); this.turnBases = repoSnapshots(this.cwd); }
     if (agent !== 'claude' && !attempt) this.codexBases = new Map(this.turnBases || repoSnapshots(this.cwd));
     if (agent === 'codex') return this.startCodex({ prompt, attachments, model, effort, resume, freshPrompt, codexCommand, codexCommandArgs, attempt, permissionMode, compact, autoCompact });
+    if (agent === 'gemini' && !live && this.canReuseWarmAgy({ model, effort, resume, permissionMode, attachments, compact, autoCompact })) {
+      const reused = this.sendToWarmAgy({ prompt, attachments, model, effort, resume, freshPrompt, attempt, permissionMode });
+      if (reused) return reused;
+    }
     this.cancel();
     this.turn = live ? null : { agent, prompt, attachments, model, effort, resume, freshPrompt, codexCommand, codexCommandArgs, attempt, permissionMode, compact: Boolean(compact), autoCompact: Boolean(autoCompact) };
     this.tokens = noTokens(); // P17-V: this turn's token draw
     this.contextSeen = false; // set once a step reports the context size
-    const spec = this.commandFor(agent, prompt, attachments, { model, effort, resume, codexCommand, codexCommandArgs, permissionMode });
+    this.lastContextTokens = 0;
+    const spec = this.commandFor(agent, prompt, attachments, { model, effort, resume, codexCommand, codexCommandArgs, permissionMode, compact, autoCompact });
     if (live && spec.command) spec.args.push('--replay-user-messages');
     // A session that no longer exists (cleared, or made on another machine)
     // reruns the turn once as a new session, with the chat's full handoff.
@@ -963,7 +1077,7 @@ class StreamEngine extends EventEmitter {
     // as a setup card, instead of a raw `spawn ... ENOENT` string posing as
     // the model's reply.
     if (!spec.command) {
-      const { checked } = locate(agent);
+      const { checked } = this.locate(agent);
       queueMicrotask(() => {
         this.emit('event', { type: 'binary_missing', agent, checked });
         this.emit('event', { type: 'turn_complete', agent });
@@ -978,15 +1092,16 @@ class StreamEngine extends EventEmitter {
     // A shell would split the name at its spaces: only the prompt travels safely there (over stdin).
     if (useShell) { const at = spec.args.indexOf('--name'); if (at >= 0) spec.args.splice(at, 2); }
     const isCompacting = Boolean(compact || autoCompact);
-    const child = spawn(shim ? shim.command : useShell ? `"${spec.command}"` : spec.command, shim ? [...shim.args, ...spec.args] : spec.args, {
+    const child = this.spawn(shim ? shim.command : useShell ? `"${spec.command}"` : spec.command, shim ? [...shim.args, ...spec.args] : spec.args, {
       cwd: this.cwd,
       windowsHide: true,
       shell: useShell,
-      env: {
+      env: prepareCliEnv({
         ...process.env,
         ...headlessEnv(spec.command),
         ...cliTelemetry(agent).env,
         ...this.chatEnv,
+        ...spec.env,
         CLAUDE_CONFIG_DIR: process.env.CLAUDE_CONFIG_DIR,
         ...(isCompacting ? {
           NO_CHIME: '1',
@@ -995,12 +1110,16 @@ class StreamEngine extends EventEmitter {
           CODEX_NO_CHIME: '1',
           AI_CHAT_PANEL_COMPACT: '1',
         } : {}),
-      },
+      }),
       stdio: ['pipe', 'pipe', 'pipe'],
     });
     this.child = child;
     child.permissionMode = this.effectivePermissionMode(agent, permissionMode);
     if (live) { child.live = true; child.turnCompleted = true; this.live = child; } // idle until a message arrives
+    if (agent === 'gemini' && spec.keepStdinOpen && !live) {
+      child.agyWarmConfig = spec.agyWarmConfig;
+      this.warmAgy = child;
+    }
     this.blockCount = 0;
     this.lastTextKey = null;
     this.hadText = false;
@@ -1012,11 +1131,13 @@ class StreamEngine extends EventEmitter {
       if (line.trim() && !/^WARNING:/i.test(line.trim())) lastDiagnostic = line.trim().slice(-16384);
     };
     // A live process says nothing until it gets a message, so only per-turn processes have a first-output deadline.
-    const watchdog = live ? null : setTimeout(() => { if (this.child === child) this.failUpstream(agent, `No response from ${agent} after ${FIRST_OUTPUT_TIMEOUT_MS / 1000}s.`); }, FIRST_OUTPUT_TIMEOUT_MS);
+    child.watchdog = live ? null : setTimeout(() => { if (this.child === child) this.failUpstream(agent, `No response from ${agent} after ${FIRST_OUTPUT_TIMEOUT_MS / 1000}s.`); }, FIRST_OUTPUT_TIMEOUT_MS);
+    child.watchdog?.unref?.();
     // A live process keeps talking between our turns (phone prompts), so it's always heard.
     const current = () => this.child === child || this.live === child;
     const consumeStdout = (chunk) => {
-      clearTimeout(watchdog);
+      clearTimeout(child.watchdog);
+      child.watchdog = null;
       if (!current()) return;
       stdoutBuffer += chunk.toString();
       const lines = stdoutBuffer.split(/\r?\n/);
@@ -1031,7 +1152,8 @@ class StreamEngine extends EventEmitter {
       }
     };
     const consumeStderr = (chunk) => {
-      clearTimeout(watchdog);
+      clearTimeout(child.watchdog);
+      child.watchdog = null;
       if (!current()) return;
       stderrBuffer += chunk.toString();
       const lines = stderrBuffer.split(/\r?\n/);
@@ -1046,13 +1168,19 @@ class StreamEngine extends EventEmitter {
     child.stderr.on('data', consumeStderr);
     child.on('error', (error) => { child.reportedError = true; this.emit('event', { type: 'delta', text: `Unable to start ${agent}: ${error.message}`, model: agent, agent }); });
     child.on('close', async (code) => {
-      clearTimeout(watchdog);
+      clearTimeout(child.watchdog);
+      child.watchdog = null;
       if (agent === 'gemini') {
         await agyInput;
         if (current() && stdoutBuffer.trim()) {
           await this.consumeAgyLine(stdoutBuffer, child);
           stdoutBuffer = '';
         }
+      }
+      if (this.warmAgy === child) {
+        clearTimeout(this.warmAgyTimer);
+        this.warmAgyTimer = null;
+        this.warmAgy = null;
       }
       if (this.live === child) {
         this.live = null;
@@ -1067,6 +1195,7 @@ class StreamEngine extends EventEmitter {
       // Subagents run inside this process: whatever it didn't report finished ended with it.
       for (const id of this.subagentIds) this.emit('event', { type: 'subagent_status', id, status: code ? 'failed' : 'ended', agent });
       this.subagentIds.clear();
+      this.copilotSubagents.clear();
       this.agySubagents.endAll(code ? 'failed' : 'ended');
       this.backgroundCommands.clear();
       if (code && !child.turnCompleted && !this.sawOutput && !child.reportedError) {
@@ -1087,6 +1216,88 @@ class StreamEngine extends EventEmitter {
     if (spec.keepStdinOpen) child.stdin.write(spec.input);
     else child.stdin.end(spec.input || '');
     return child;
+  }
+
+  /** True when the idle warm agy process matches the next turn's model, flags, workspace, and conversation. */
+  canReuseWarmAgy({ model, effort, resume = null, permissionMode = null, attachments = [], compact = false, autoCompact = false } = {}) {
+    if (!this.keepAgyWarm || compact || autoCompact) return false;
+    const child = this.warmAgy;
+    if (!child || child.killed || child.exitCode !== null || child.signalCode !== null || !child.stdin?.writable || !child.turnCompleted) return false;
+    const cfg = child.agyWarmConfig;
+    if (!cfg) return false;
+    const effectiveModel = (model || this.models.gemini || defaultModel('gemini')?.model || '');
+    const effectiveEffort = this.agyEffortFlag(effectiveModel, effort);
+    const effectivePerm = this.effectivePermissionMode('gemini', permissionMode);
+    if (effectiveModel !== cfg.model || effectiveEffort !== cfg.effort || effectivePerm !== cfg.permissionMode) return false;
+    if (path.resolve(this.cwd) !== cfg.cwd) return false;
+    if (resume && (!child.agyConversationId || resume !== child.agyConversationId)) return false;
+    for (const dir of this.agyAddDirs(attachments)) {
+      const key = process.platform === 'win32' ? path.resolve(dir).toLowerCase() : path.resolve(dir);
+      if (!cfg.addDirs.has(key)) return false;
+    }
+    return true;
+  }
+
+  /** Sends a follow-up prompt over the already-warm agy stream-json stdin without cold-starting a new CLI process. */
+  sendToWarmAgy({ prompt, attachments = [], model, effort, resume = null, freshPrompt = null, attempt = 0, permissionMode = null }) {
+    const child = this.warmAgy;
+    if (!child?.stdin?.writable) return null;
+    clearTimeout(this.warmAgyTimer);
+    this.warmAgyTimer = null;
+    const spec = this.commandFor('gemini', prompt, attachments, { model, effort, resume, permissionMode });
+    this.child = child;
+    this.turn = { agent: 'gemini', prompt, attachments, model, effort, resume, freshPrompt, attempt, permissionMode, compact: false, autoCompact: false };
+    this.beginLiveTurn();
+    this.contextSeen = false;
+    this.lastContextTokens = 0;
+    this.agyEdits.clear();
+    this.agyChecklists.clear();
+    clearTimeout(child.watchdog);
+    child.watchdog = setTimeout(() => { if (this.child === child) this.failUpstream('gemini', `No response from gemini after ${FIRST_OUTPUT_TIMEOUT_MS / 1000}s.`); }, FIRST_OUTPUT_TIMEOUT_MS);
+    child.watchdog.unref?.();
+    try {
+      child.stdin.write(spec.input);
+      return child;
+    } catch {
+      this.closeWarmAgy(child, { immediate: true });
+      return null;
+    }
+  }
+
+  /** Starts the idle TTL timer after a warm agy turn completes so inactive chats release RAM automatically. */
+  armWarmAgyIdle(child) {
+    if (!child || this.warmAgy !== child) return;
+    clearTimeout(this.warmAgyTimer);
+    this.warmAgyTimer = null;
+    if (!(this.agyIdleMs > 0)) return;
+    this.warmAgyTimer = setTimeout(() => {
+      if (this.warmAgy === child && child.turnCompleted) this.closeWarmAgy(child);
+    }, this.agyIdleMs);
+    this.warmAgyTimer.unref?.();
+  }
+
+  /** Memory is short: closes a warm agy that is waiting between turns (the next turn cold-starts). True when one closed. */
+  releaseIdleWarm() {
+    const child = this.warmAgy;
+    if (!child || !child.turnCompleted) return false;
+    this.closeWarmAgy(child);
+    return true;
+  }
+
+  /** Closes the warm agy process gracefully via stdin EOF (or kills immediately on cancel/dispose). */
+  closeWarmAgy(child = this.warmAgy, { immediate = false } = {}) {
+    if (!child) return;
+    clearTimeout(child.watchdog);
+    child.watchdog = null;
+    if (this.warmAgy === child) {
+      clearTimeout(this.warmAgyTimer);
+      this.warmAgyTimer = null;
+      this.warmAgy = null;
+    }
+    if (this.child === child && child.turnCompleted) this.child = null;
+    try { child.stdin?.end(); } catch { /* already gone */ }
+    if (immediate) killTree(child);
+    else setTimeout(() => killTree(child), 3000).unref?.();
   }
 
   /** A panel turn into the live process: same message shape a fresh process would get. */
@@ -1146,6 +1357,7 @@ class StreamEngine extends EventEmitter {
       if (this.resumeRetry && (RESUME_FAILED.test(line) || /"is_error":\s*true[\s\S]*"num_turns":\s*0\b/.test(line))) {
         const retry = this.resumeRetry;
         this.resumeRetry = null;
+        this.emit('event', { type: 'context_reset', kind: 'resume', agent });
         this.start(retry);
         return;
       }
@@ -1191,7 +1403,79 @@ class StreamEngine extends EventEmitter {
         return;
       }
     }
-    if (this.child === child) this.consumeLine(line, 'gemini');
+    if (this.child === child) {
+      if (step?.step_type === 'tool') line = this.enrichAgyStep(child, raw, step) ?? line;
+      // Gemini's thinking summary for the step that is about to run lives only in agy's trajectory file.
+      // Read it when a tool starts or the reply begins, so it shows ahead of the step it explains.
+      const begins = step && ((step.step_type === 'tool' && step.state === 'ACTIVE') || (step.text_delta && !child.agyTextSteps?.has(step.step_index)));
+      if (begins && Number.isSafeInteger(step.step_index)) {
+        if (step.text_delta) (child.agyTextSteps ||= new Set()).add(step.step_index);
+        this.emitAgyThoughts(child, step);
+      }
+      // The conversation's size, from agy's own record: ahead of a result line, because the turn ends with it.
+      if (begins || raw?.event === 'result') this.emitAgyContext(child, step?.conversation_id, raw?.event === 'result');
+      this.consumeLine(line, 'gemini');
+    }
+  }
+
+  /**
+   * What the stream leaves out of a Gemini tool step, filled in from agy's own files (lib/agy-step-output.js). A finished step gets
+   * its result, so the card shows what the tool printed like a Claude or Codex card does. A background task (`run_command` that
+   * outlived its wait) is remembered by what it runs, so a later `manage_task` card says "kill  enroll --help (task-262)" and
+   * not a bare conversation id. Returns the rewritten line, or undefined when there is nothing to add.
+   */
+  enrichAgyStep(child, raw, step) {
+    const conversationId = step.conversation_id || child.agyConversationId;
+    const tasks = (child.agyTasks ||= new Map()); // task id -> what it runs
+    const summaries = (child.agySummaries ||= new Map()); // step index -> the call's own one-line summary
+    const params = step.tool_info?.parameters || {};
+    try {
+      if (step.state === 'ACTIVE') {
+        if (typeof params.toolSummary === 'string') summaries.set(step.step_index, params.toolSummary);
+        if (String(step.tool_name).toLowerCase().replace(/[-_]/g, '') !== 'managetask' || typeof params.TaskId !== 'string') return undefined;
+        const known = tasks.get(params.TaskId.split('/').pop());
+        const label = known || agyStepOutput.taskLabel('', agyStepOutput.readTaskLog(conversationId, params.TaskId, { home: this.agyHome, lines: 1, head: true }));
+        if (!label) return undefined;
+        return JSON.stringify({ ...raw, step_update: { ...step, tool_info: { ...step.tool_info, parameters: { ...params, TaskLabel: label } } } });
+      }
+      if (step.state !== 'DONE' && step.state !== 'ERROR') return undefined;
+      const result = agyStepOutput.readStepResult(conversationId, step.step_index, { home: this.agyHome });
+      if (!result) return undefined;
+      if (result.task) tasks.set(agyStepOutput.shortTaskId(result.task.id), agyStepOutput.taskLabel(summaries.get(step.step_index) || result.task.description, ''));
+      if (!result.text) return undefined;
+      return JSON.stringify({ ...raw, step_update: { ...step, clankerOutput: result.text.slice(0, 200000) } });
+    } catch { return undefined; } // agy's files are an extra: a layout this does not know leaves the card as it was
+  }
+
+  /** How full Gemini's window is: its last model call's tokens (stream usage has only the fresh part) against agy's own budget. */
+  emitAgyContext(child, conversationId, force) {
+    if (!force && Date.now() - (child.agyContextAt || 0) < 1500) return; // a tool-heavy turn starts many steps a second
+    child.agyContextAt = Date.now();
+    try {
+      const context = this.agyContextReader(conversationId || child.agyConversationId);
+      if (!context?.tokens) return;
+      // A sharp fall is believed only when a second read agrees. agy saves a model call's usage in stages (fresh input and output
+      // first, the cached history after), so a read in between weighs a few thousand tokens in a window that holds 150k. A real
+      // compaction stays low on the next read; a half-written row has filled in by then. (2026-11-25: a chat at 153k was told it
+      // had "shrunk to 4k" = the 3,375 fresh input and 346 output tokens of a call whose cache-read count was not saved yet.)
+      const last = child.agyLastContext || 0;
+      if (last >= 40000 && context.tokens < last * 0.5 && !child.agyLowRead) { child.agyLowRead = context.tokens; child.agyContextAt = 0; return; }
+      child.agyLowRead = 0;
+      child.agyLastContext = context.tokens;
+      child.agyDbContext = true;
+      this.contextSeen = true;
+      this.emit('event', { type: 'usage', agent: 'gemini', contextTokens: context.tokens, ...(context.limit ? { contextWindow: context.limit } : {}) });
+    } catch { child.agyDbUnavailable = true; /* no trajectory file: the stream's own usage numbers stand in */ }
+  }
+
+  emitAgyThoughts(child, step) {
+    const id = step.conversation_id || child.agyConversationId;
+    try {
+      for (const { idx, text } of this.agyThoughtReader(id, child.agyThoughtCursor ?? -1, step.step_index + (step.text_delta ? 1 : 0)) || []) {
+        child.agyThoughtCursor = idx;
+        this.emit('event', { type: 'thought', text, agent: 'gemini' });
+      }
+    } catch { /* no trajectory file (another agy build, no node:sqlite): the step just shows without its thinking */ }
   }
 
   consumeLine(line, agent) {
@@ -1199,6 +1483,7 @@ class StreamEngine extends EventEmitter {
     if (this.resumeRetry && !this.sawOutput && (RESUME_FAILED.test(line) || /"is_error":\s*true[\s\S]*"num_turns":\s*0\b/.test(line))) {
       const retry = this.resumeRetry;
       this.resumeRetry = null;
+      this.emit('event', { type: 'context_reset', kind: 'resume', agent });
       this.start(retry);
       return;
     }
@@ -1229,10 +1514,16 @@ class StreamEngine extends EventEmitter {
     if (agent === 'codex' && raw?.type === 'turn.started') this.codexBases = repoSnapshots(this.cwd);
     if (this.consumeSubagentLine(raw, agent)) return;
     if (raw !== undefined) {
-      const contextTokens = contextTokensOf(raw);
-      if (contextTokens) { this.contextSeen = true; this.emit('event', { type: 'usage', agent, contextTokens }); }
+      // Gemini's stream usage is the fresh part of a call only (a few thousand tokens in a window that holds 150k), so it stands in
+      // for the real figure only where agy's own record cannot be read at all.
+      if (agent === 'gemini' && this.child && !this.child.agyDbContext && !this.child.agyDbUnavailable && raw?.step_update?.usage) this.emitAgyContext(this.child, raw.step_update.conversation_id, true); // is the real figure readable?
+      const contextTokens = agent === 'gemini' && !this.child?.agyDbUnavailable ? 0 : contextTokensOf(raw);
+      if (contextTokens) { this.contextSeen = true; this.lastContextTokens = contextTokens; this.emit('event', { type: 'usage', agent, contextTokens }); }
       else if (!this.contextSeen && contextGrowthOf(raw)) this.emit('event', { type: 'usage', agent, contextGrowth: contextGrowthOf(raw) });
-      const counts = tokenCountsOf(raw);
+      // Claude Code names each model's real window in its result; the gauge has to measure against that one.
+      const windowTokens = agent === 'claude' ? contextWindowOf(raw) : 0;
+      if (windowTokens && this.lastContextTokens) this.emit('event', { type: 'usage', agent, contextTokens: this.lastContextTokens, contextWindow: windowTokens });
+      const counts = agent === 'copilot' ? providers.get('copilot').usage(raw) : tokenCountsOf(raw);
       if (counts && (counts.final || counts.id === null || counts.id !== this.tokens.lastId)) {
         this.tokens = counts.final
           ? { input: counts.input, output: counts.output, lastId: null, detail: counts.detail }
@@ -1286,6 +1577,7 @@ class StreamEngine extends EventEmitter {
         this.limitShown = true;
       }
     }
+    const agyTurnErrored = Boolean(event.limitError || event.error);
     delete event.limit;
     delete event.limitError;
     if (event.type === 'turn_complete' && event.error) {
@@ -1322,7 +1614,11 @@ class StreamEngine extends EventEmitter {
       if (this.child?.stdin?.writable && this.child !== this.live) {
         if (agent === 'claude' && this.subagentIds.size) this.lingering = this.child;
         else if (this.child === this.lingering) this.releaseLingering();
-        else this.child.stdin.end();
+        else if (agent === 'gemini' && this.child === this.warmAgy && !agyTurnErrored) this.armWarmAgyIdle(this.child);
+        else {
+          if (this.child === this.warmAgy) { clearTimeout(this.warmAgyTimer); this.warmAgyTimer = null; this.warmAgy = null; }
+          this.child.stdin.end();
+        }
       }
     }
     // agy's edit steps carry only the target path, never the text, so the lines come from the
@@ -1339,6 +1635,18 @@ class StreamEngine extends EventEmitter {
       for (const key of ['file', 'command']) if (start[key]) start[key] = this.relative(start[key]);
       this.emit('event', start);
     }
+    if (agent === 'gemini' && event.type === 'tool_start' && 'checklist' in event) {
+      if (event.checklist) this.agyChecklists.set(event.toolId, event.checklist);
+      delete event.checklist;
+    }
+    if (agent === 'gemini' && event.type === 'tool_end' && this.agyChecklists.has(event.toolId)) {
+      if (!event.error) event.output = this.agyChecklists.get(event.toolId);
+      this.agyChecklists.delete(event.toolId);
+    }
+    // A TaskStop / KillShell card names the background task it is stopping right away when we saw it start.
+    if (event.type === 'tool_start' && /^(?:task_?stop|kill_?(?:shell|bash))$/i.test(String(event.name || '')) && event.command && this.taskLabels.has(event.command)) {
+      event.command = this.taskLabels.get(event.command);
+    }
     // Cards show workspace-relative paths, not the absolute ones the CLIs report.
     if (event.type === 'tool_start' || event.type === 'approval_required') {
       for (const key of ['file', 'command']) if (event[key]) event[key] = this.relative(event[key]);
@@ -1348,6 +1656,7 @@ class StreamEngine extends EventEmitter {
       const child = this.child;
       this.emit('event', event);
       // The reply would otherwise go on as if the user had skipped it. Closing the turn here makes the answer the next one.
+      if (child && this.warmAgy === child) { clearTimeout(this.warmAgyTimer); this.warmAgyTimer = null; this.warmAgy = null; }
       this.consumeLine(JSON.stringify({ event: 'result', result: { status: 'SUCCESS', response: '' } }), agent);
       if (child && this.child === child) { killTree(child); this.child = null; }
       return;
@@ -1377,6 +1686,14 @@ class StreamEngine extends EventEmitter {
       this.consumeLine(JSON.stringify({ event: 'result', result: { status: 'SUCCESS', response: event.response || '' } }), agent);
       return;
     }
+    if (agent === 'gemini' && raw?.event === 'result' && event.type === 'delta' && this.child && !this.child.turnCompleted) {
+      this.emit('event', event);
+      // Don't reuse a warm agy process after a turn-level ERROR result, and end the turn without waiting for stdin EOF.
+      const errored = this.child;
+      if (this.warmAgy === errored) { clearTimeout(this.warmAgyTimer); this.warmAgyTimer = null; this.warmAgy = null; }
+      this.consumeLine(JSON.stringify({ event: 'result', result: { status: 'SUCCESS', response: '' } }), agent);
+      return;
+    }
     if (event.changes) {
       event.diff = codexDiff(event.changes, this.cwd, (file) => this.fileDiff(file));
       delete event.changes;
@@ -1392,6 +1709,7 @@ class StreamEngine extends EventEmitter {
    */
   consumeSubagentLine(raw, agent) {
     if (!raw || typeof raw !== 'object') return false;
+    if (agent === 'copilot') return this.consumeCopilotSubagentLine(raw);
     if (agent === 'gemini' && raw.event === 'step_update' && raw.step_update?.tool_name === 'invoke_subagent') this.consumeAgySubagentStep(raw.step_update);
     const parentId = typeof raw.parent_tool_use_id === 'string' ? raw.parent_tool_use_id : null;
     if (parentId && (raw.type === 'assistant' || raw.type === 'user')) {
@@ -1409,8 +1727,11 @@ class StreamEngine extends EventEmitter {
     const blocks = Array.isArray(raw.message?.content) ? raw.message.content : [];
     if (raw.type === 'assistant') {
       for (const block of blocks) {
-        if (block?.type !== 'tool_use' || !SUBAGENT_TOOLS.has(block.name)) continue;
+        if (block?.type !== 'tool_use') continue;
         const input = block.input || {};
+        const label = toolTarget(input);
+        if (block.id && label) this.toolTargetsById.set(block.id, label);
+        if (!SUBAGENT_TOOLS.has(block.name)) continue;
         this.subagentIds.add(block.id);
         this.emit('event', {
           type: 'subagent_start', id: at(block.id), agent,
@@ -1424,7 +1745,11 @@ class StreamEngine extends EventEmitter {
         if (agent === 'claude' && block?.type === 'tool_result') {
           const output = Array.isArray(block.content) ? block.content.map((c) => at(c?.text)).join('') : at(block.content);
           const task = /Command running in background with ID:\s*([\w-]+)/i.exec(output);
-          if (task) this.backgroundCommands.set(block.tool_use_id, task[1]);
+          if (task) {
+            this.backgroundCommands.set(block.tool_use_id, task[1]);
+            const label = this.toolTargetsById.get(block.tool_use_id);
+            if (label) this.taskLabels.set(task[1], label);
+          }
         }
         if (block?.type !== 'tool_result' || !this.subagentIds.has(block.tool_use_id)) continue;
         const output = Array.isArray(block.content) ? block.content.map((c) => at(c?.text)).join('') : at(block.content);
@@ -1438,6 +1763,8 @@ class StreamEngine extends EventEmitter {
     if (raw.type === 'system' && /^task_/.test(String(raw.subtype || '')) && (raw.tool_use_id || raw.task_id)) {
       const id = at(raw.tool_use_id || raw.task_id);
       const status = at(raw.status) || (raw.subtype === 'task_started' ? 'running' : '');
+      const taskLabel = at(raw.command) || at(raw.description) || at(raw.summary) || this.toolTargetsById.get(at(raw.tool_use_id));
+      if (raw.task_id && taskLabel && !this.taskLabels.has(at(raw.task_id))) this.taskLabels.set(at(raw.task_id), taskLabel);
       const commandId = this.backgroundCommands.has(id) ? id : [...this.backgroundCommands].find(([, taskId]) => taskId === raw.task_id)?.[0];
       if (commandId || raw.task_type === 'local_bash') {
         if (SETTLED_TASK.has(status)) this.backgroundCommands.delete(commandId || id);
@@ -1449,6 +1776,32 @@ class StreamEngine extends EventEmitter {
       return true;
     }
     return false;
+  }
+
+  consumeCopilotSubagentLine(raw) {
+    const data = raw.data || {};
+    const id = at(data.toolCallId);
+    const emit = (event) => this.emit('event', { agent: 'copilot', ...event });
+    if (raw.type === 'subagent.started' && id) {
+      this.subagentIds.add(id);
+      if (raw.agentId) this.copilotSubagents.set(raw.agentId, id);
+      emit({ type: 'subagent_start', id, model: at(data.model), description: at(data.agentDisplayName) || at(data.agentName), subagentType: at(data.agentName) || 'agent' });
+      return true;
+    }
+    if ((raw.type === 'subagent.completed' || raw.type === 'subagent.failed') && id) {
+      if (this.subagentIds.delete(id)) {
+        if (data.error) emit({ type: 'subagent_event', id, event: { type: 'notice', text: at(data.error) } });
+        emit({ type: 'subagent_end', id, model: at(data.model), error: raw.type === 'subagent.failed' });
+      }
+      return true;
+    }
+    const parent = at(data.parentToolCallId) || this.copilotSubagents.get(raw.agentId);
+    if (!parent) return false;
+    const event = raw.type === 'user.message' && at(data.content) ? { type: 'task', text: data.content }
+      : providers.get('copilot').normalizeEvent(raw, { nested: true });
+    if (event?.type === 'tool_start') for (const key of ['file', 'command']) if (event[key]) event[key] = this.relative(event[key]);
+    if (event && ['task', 'tool_start', 'tool_progress', 'tool_end', 'delta', 'thought', 'notice'].includes(event.type)) emit({ type: 'subagent_event', id: parent, event });
+    return true;
   }
 
   /** agy's `invoke_subagent` step: a robot-chip entry that follows the subagent's own transcript (see agy-subagents.js). The tool card stays in the reply as before. */
@@ -1579,6 +1932,9 @@ class StreamEngine extends EventEmitter {
     }
     if (this.child && this.child === this.live) return; // the Remote Control process outlives turns
     if (this.child) this.agySubagents.endAll('stopped'); // agy's subagents run inside the process that is about to be killed
+    if (this.warmAgy && this.warmAgy !== this.child) this.closeWarmAgy(this.warmAgy, { immediate: true });
+    if (this.child && this.child === this.warmAgy) { clearTimeout(this.warmAgyTimer); this.warmAgyTimer = null; this.warmAgy = null; }
+    clearTimeout(this.child?.watchdog);
     killTree(this.child);
     this.child = null;
   }
@@ -1587,6 +1943,7 @@ class StreamEngine extends EventEmitter {
   dispose() {
     clearInterval(this.bridgeTimer);
     this.cancel();
+    this.closeWarmAgy(this.warmAgy, { immediate: true });
     if (this.live) killTree(this.live);
     this.live = null;
     this.codexServer?.dispose();
@@ -1665,4 +2022,4 @@ function descendantPids(pid) {
   return found;
 }
 
-module.exports = { StreamEngine, normalizeEvent, killTree, contextTokensOf, contextGrowthOf, toolTarget, geminiToolTarget, editDiff };
+module.exports = { StreamEngine, normalizeEvent, killTree, contextTokensOf, contextWindowOf, contextGrowthOf, toolTarget, geminiToolTarget, editDiff };

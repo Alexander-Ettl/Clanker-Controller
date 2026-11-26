@@ -77,7 +77,7 @@ Every menu that rests on the composer (model picker, permission picker, the @ fi
 |---|---|
 | Your message + its time/copy/revert dock | `.msg-group-user`, the original |
 | Model menu + the composer | `.model-menu-stage`: the menu rests on the composer's top edge, two concave fillets (`.model-menu-fillets`) plus a clipped root below the seam |
-| Composer dock: queued turns, attachments tray, @-mention chips, context warning, all fused to the composer | `.compose-row` carries the goo; buds have `.island-bud` (`media/style.css`, "The dock is a Dynamic Island") |
+| Composer dock: queued turns, attachments tray and @-mention chips, all fused to the composer | `.compose-row` carries the goo; buds have `.island-bud` (`media/style.css`, "The dock is a Dynamic Island") |
 | @ file list, / command list, permission menu | `.model-menu` with `.list-menu` / `.perm-menu`, same stage and upper slab as the model menu |
 
 ## Next candidates
@@ -88,5 +88,5 @@ Sidebar hover motion (2026-11-17): queue previews open even for one chat. Hover 
 
 Scrollbar treatment (2026-11-17): transcript and queued/scheduled prompts share a 12px native drag gutter with a 6px pill thumb, transparent track, subtle inset highlight and stronger hover/drag contrast. Tracks stop 18px before either end so they sit inside rounded shoulders rather than touching the glass rim or composer neck. The transcript runs under the dock, so under glass its track also stops 18px above the dock's top edge (`--dock-h`, the whole row including queued and scheduled prompts): the thumb follows the queue as it grows, up to the strip's own 34vh cap, and never ends up behind the frost, while the text still scrolls on beneath it. Scrollbars are surface details, above their own slab and below any overlaid menu; they add no backdrop filters, SVG maps or animation loops. High contrast retains native styling.
 
-- In the chat panel: the Thinking pill's context gauge; the voice recording state morphing the pill itself; the scheduled-prompt countdown; "Compacting…" as the context warning's next state; retract animations for the dock buds.
+- In the chat panel: the Thinking pill's context gauge, the voice recording state, the scheduled-prompt countdown and retract animations for the dock buds.
 - In the editor studio (`astro-integration/client/src/`): `LiquidGlassDefs.tsx` already defines a matching goo filter (`#liquid-gooey-meniscus`) that nothing uses yet. First targets: the Edit Mode dock and its menus, the text format toolbar with its dropdowns, the Done bar. The editor's top-layer law still applies (`z-index: 2147483647`).

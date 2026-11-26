@@ -44,6 +44,19 @@ npm.cmd run test:ui -- --update          # accept the current pictures as the ba
 npm.cmd run test:ui-tester               # tests of the harness itself
 ```
 
+**Halo, the minimal look.** The `halo-*` scenarios switch the page to Halo live (the host's `appearance` message) and
+assert what Halo changes. To render the *whole* matrix in Halo, set `CLANKER_UI_APPEARANCE=halo` (the fake host then
+answers `aiChatPanel.appearance` with `halo`) and keep its pictures apart with `--baseline=<dir>`. Scenarios that drive
+controls Halo hides cannot be set up there, by design: the rail (`usage-*`, `antigravity-usage-hover`, `project-rail-three`,
+`project-icon-contrast-rail`, `recent-context-hover`, `sidebar-loading`, `chat-folders-rail`, `cli-update-*`, `loops-sidebar`,
+`schedule-pill-chats`), the editor tab's top bar (`chat-folders-manage`), and the clock before a send time is armed
+(`glass-schedule-*`, `edit-scheduled-unschedule`). Halo reaches all of them through its header and More menu, which the
+`halo-*` scenarios cover.
+
+`openChat` waits until the page has revealed itself (`body` no longer inert). Before 2026-11-26 it returned as soon as the
+composer existed, and a scenario that typed straight away lost its text in about one run in four (`composer-action-*`,
+`sent-bubble-confirmation` were flaky in both looks).
+
 ## Determinism
 
 Baselines only help if two runs of an unchanged page match. The harness pins the page clock (`boot.mjs`), freezes CSS

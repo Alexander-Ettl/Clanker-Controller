@@ -104,8 +104,9 @@ test('Codex slash commands are capability-gated by the installed App Server sche
   assert.equal(await catalog.resolve('ordinary prompt'), null);
   assert.equal(calls, 0, 'ordinary turns do not probe the Codex binary');
   assert.deepEqual(methodNamesFromSchema({ oneOf: [{ properties: { method: { enum: ['review/start'] } } }] }), new Set(['review/start']));
-  assert.deepEqual((await catalog.list()).map((entry) => entry.name), ['review', 'goal', 'compact']);
-  assert.deepEqual(commandsForMethods(methods).map((entry) => entry.name), ['review', 'goal', 'compact']);
+  assert.deepEqual((await catalog.list()).map((entry) => entry.name), ['review', 'goal']);
+  assert.deepEqual(commandsForMethods(methods).map((entry) => entry.name), ['review', 'goal']);
+  assert.equal(await catalog.resolve('/compact'), null);
   assert.equal((await catalog.resolve('/review focus on races')).prompt, 'focus on races');
   assert.equal((await catalog.resolve('/goal ship the app')).prompt, 'ship the app');
   assert.equal((await catalog.resolve('/review')).prompt, '');
@@ -324,13 +325,6 @@ test('Codex turns, native commands, approvals, and questions use one persistent 
   assert.equal(server.calls.filter((call) => call.method === 'thread/start').length, 1, 'commands reuse the loaded thread');
   assert.equal(server.calls.findLast((call) => call.method === 'thread/goal/set').params.objective, 'Ship it');
   assert.match(events.findLast((event) => event.type === 'delta').text, /Ship it/);
-
-  engine.start({ agent: 'codex', prompt: '', model: 'gpt-test', codexCommand: 'compact', resume: 'thread-1' });
-  await new Promise((resolve) => setImmediate(resolve));
-  assert.equal(server.calls.at(-1).method, 'thread/compact/start');
-  assert.equal(engine.codexActive, true, 'compaction stays active until the server confirms it finished');
-  server.emit('notification', { method: 'thread/compacted', params: { threadId: 'thread-1', turnId: 'compact-1' } });
-  assert.equal(engine.codexActive, false);
 
   engine.start({ agent: 'codex', prompt: '', model: 'gpt-test', codexCommand: 'review', resume: 'thread-1' });
   await new Promise((resolve) => setImmediate(resolve));
@@ -611,7 +605,8 @@ test('slash command ownership stays with the explicitly selected provider', asyn
   assert.equal(geminiProbes, 0, 'Codex command lookup does not touch Gemini');
   assert.equal(await catalog.owner('/review', 'claude'), 'claude');
   assert.equal(await catalog.owner('/compact', 'codex'), null);
-  assert.equal(await catalog.owner('/compact', 'auto'), 'claude');
+  assert.equal(await catalog.owner('/compact', 'auto'), null);
+  assert.equal((await catalog.list()).some(({ name }) => name === 'compact'), false);
 
   // Antigravity (Gemini) exclusivity & aliases
   assert.equal(await catalog.owner('/goal', 'gemini'), 'gemini');
@@ -687,7 +682,7 @@ test('P16-I: StreamEngine turns a missing CLI into a binary_missing event, never
 test('missing quota readings report every provider as unknown', () => {
   process.env.AI_CHAT_PANEL_QUOTA_CACHE = path.join(os.tmpdir(), `ai-chat-panel-test-unknown-${process.pid}.json`); // nothing remembered either
   const { shapeQuotas } = require('../lib/quota-bridge.js');
-  assert.deepEqual(shapeQuotas({}), { claude: null, claudeWeekly: null, claudeOpus: null, opus: null, codex: null, gemini: null, antigravityClaudeGpt: null, antigravityArgon: null });
+  assert.deepEqual(shapeQuotas({}), { claude: null, claudeWeekly: null, claudeOpus: null, opus: null, codex: null, gemini: null, copilot: null, antigravityClaudeGpt: null, antigravityArgon: null });
 });
 
 test('quota-sources reads Codex rate limits from session logs, with no other extension', async () => {
@@ -1166,7 +1161,7 @@ test('Linux: pactl sources become microphones, speaker monitors do not, and ffmp
   const capture = new VoiceCapture({ platform: 'linux', config: {}, spawnImpl, defaultMicImpl: undefined });
   assert.equal(await capture.start(), 'Headset', 'Automatic is the PipeWire default input');
   const record = spawned.find((call) => call.cmd === 'ffmpeg');
-  assert.deepEqual(record.args.slice(3, 7), ['-f', 'pulse', '-i', 'bluez_input.AA']);
+  assert.deepEqual(record.args.slice(5, 9), ['-f', 'pulse', '-i', 'bluez_input.AA']);
   assert.ok(!record.args.includes('dshow') && !record.args.some((arg) => String(arg).startsWith('audio=')));
   await capture.stop();
   fs.rmSync(capture.dir, { recursive: true, force: true });
@@ -1182,12 +1177,27 @@ test('Linux: pactl sources become microphones, speaker monitors do not, and ffmp
   fs.rmSync(capture.dir, { recursive: true, force: true });
 });
 
+test('Linux: a second recording asks only for the default input, not the whole device list', async () => {
+  const { VoiceCapture } = require('../lib/voice-capture.js');
+  const sources = [{ name: 'alsa_input.usb-Anker.mono', description: 'Anker', monitor_source: '' }];
+  const { spawnImpl, spawned } = fakePulse({ sources, defaultSource: 'alsa_input.usb-Anker.mono' });
+  const capture = new VoiceCapture({ platform: 'linux', config: {}, spawnImpl });
+  const lists = () => spawned.filter((call) => call.cmd === 'pactl' && call.args.includes('list')).length;
+  assert.equal(await capture.start(), 'Anker');
+  assert.equal(lists(), 1);
+  await capture.stop();
+  assert.equal(await capture.start(), 'Anker');
+  assert.equal(lists(), 1, 'the device list is not read again while the default is one that is already known');
+  await capture.stop();
+  fs.rmSync(capture.dir, { recursive: true, force: true });
+});
+
 test('Linux without pactl still records from the system default input', async () => {
   const { VoiceCapture } = require('../lib/voice-capture.js');
   const { spawnImpl, spawned } = fakePulse({ sources: [], defaultSource: '' });
   const capture = new VoiceCapture({ platform: 'linux', config: {}, spawnImpl });
   assert.equal(await capture.start(), 'default');
-  assert.deepEqual(spawned.find((call) => call.cmd === 'ffmpeg').args.slice(3, 7), ['-f', 'pulse', '-i', 'default']);
+  assert.deepEqual(spawned.find((call) => call.cmd === 'ffmpeg').args.slice(5, 9), ['-f', 'pulse', '-i', 'default']);
   await capture.stop();
   fs.rmSync(capture.dir, { recursive: true, force: true });
 });

@@ -1,0 +1,236 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Minimal appearance · A · Quiet</title>
+<link rel="stylesheet" href="shared/base.css">
+<script src="../../../ai-chat-panel/media/agent-icons.js"></script>
+<script src="shared/clanker-mark.js"></script>
+<script src="shared/mock.js"></script>
+<style>
+/* A · Quiet. Neutral and flat, closest to ChatGPT. The model picker moves to the header so the composer keeps three
+   controls; the transcript is plain text with one tinted bubble per prompt; work folds into a single grey line. */
+.app { position: relative; height: 100%; display: flex; flex-direction: column; }
+.top { display: flex; align-items: center; gap: 2px; height: 46px; padding: 0 8px; flex: none; }
+.model-btn { display: inline-flex; align-items: center; gap: 5px; height: 32px; padding: 0 8px 0 10px; font-size: 14px; font-weight: 600; letter-spacing: -.01em; }
+.model-btn .ico-s { color: var(--muted); }
+.model-btn .sub { font-weight: 400; color: var(--muted); font-size: 12.5px; }
+.spacer { flex: 1; }
+.icon-btn { width: 32px; height: 32px; display: grid; place-items: center; color: var(--muted); }
+.icon-btn:hover, .icon-btn.is-hover { color: var(--fg); }
+
+main { flex: 1; min-height: 0; overflow: hidden; display: flex; flex-direction: column; justify-content: flex-end; }
+.col { width: 100%; max-width: 720px; margin: 0 auto; padding: 0 18px 10px; }
+.turn + .turn { margin-top: 26px; }
+.u { width: fit-content; max-width: 82%; margin-left: auto; padding: 9px 14px; border-radius: 18px; background: var(--t2); font-size: 13.5px; line-height: 1.5; }
+.worked { display: inline-flex; align-items: center; gap: 4px; margin: 16px 0 6px -8px; padding: 3px 6px 3px 8px; color: var(--muted); font-size: 12.5px; }
+.worked .ico-s { transition: transform .2s ease; }
+body[data-state="steps"] .worked .ico-s { transform: rotate(90deg); }
+
+.steps { list-style: none; margin: 2px 0 14px 2px; padding: 0 0 0 14px; position: relative; display: grid; gap: 7px; }
+.steps::before { content: ""; position: absolute; left: 0; top: 4px; bottom: 4px; width: 1.5px; border-radius: 1px; background: var(--t3); }
+body.vscode-high-contrast .steps::before { background: var(--hc); }
+.steps li { display: flex; align-items: baseline; gap: 8px; font-size: 12.5px; color: var(--muted); min-width: 0; }
+.steps li .ico-s { align-self: center; }
+.steps .tgt { color: var(--fg); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.steps .end { margin-left: auto; padding-left: 8px; white-space: nowrap; }
+.steps .thought { font-style: italic; line-height: 1.45; }
+
+.a { font-size: 13.5px; line-height: 1.62; }
+.a p { margin: 0 0 10px; }
+.changed { display: flex; align-items: center; gap: 7px; margin: 2px 0 4px; font-size: 12.5px; color: var(--muted); }
+.changed a { color: var(--accent); text-decoration: none; margin-left: 2px; }
+.changed a:hover { text-decoration: underline; }
+.acts { display: flex; align-items: center; gap: 0; margin: 4px 0 0 -6px; color: var(--muted); }
+.acts .icon-btn { width: 28px; height: 28px; }
+.acts .ico { width: 15px; height: 15px; }
+.acts .by { font-size: 11.5px; margin-left: 6px; display: inline-flex; align-items: center; gap: 5px; }
+.acts .logo { width: 12px; height: 12px; }
+
+.live { display: flex; align-items: center; gap: 8px; margin: 16px 0 2px; font-size: 13px; }
+.pulse { width: 8px; height: 8px; border-radius: 50%; background: var(--accent); animation: pulse 1.4s ease-in-out infinite; }
+@keyframes pulse { 50% { transform: scale(.55); opacity: .5; } }
+.live .t { color: var(--muted); font-size: 12px; }
+
+.dock { flex: none; padding: 0 10px 12px; }
+.composer { max-width: 720px; margin: 0 auto; border-radius: 24px; padding: 12px 8px 8px 16px; }
+.input { min-height: 22px; font-size: 13.5px; color: var(--muted); padding-right: 8px; }
+.input.typed { color: var(--fg); }
+.crow { display: flex; align-items: center; gap: 2px; margin-top: 8px; margin-left: -8px; }
+.crow .icon-btn { border-radius: 50%; }
+.send { width: 32px; height: 32px; border-radius: 50%; display: grid; place-items: center; background: var(--fg); color: var(--bg); margin-left: 4px; }
+.send .ico { width: 17px; height: 17px; }
+.send.off { background: var(--t3); color: var(--muted); }
+body.vscode-high-contrast .send { outline: 1px solid var(--hc); }
+.perm { display: inline-flex; align-items: center; gap: 5px; height: 28px; padding: 0 9px 0 7px; border-radius: 14px; font-size: 12px; color: var(--warn); }
+.perm .ico-s { width: 14px; height: 14px; }
+
+/* Empty: greeting and composer sit together in the middle, ChatGPT style. */
+body[data-state="empty"] main { flex: 0 0 auto; justify-content: flex-end; padding-top: 28vh; }
+.hello { text-align: center; padding: 0 18px 18px; }
+.hello h1 { margin: 0; font-size: 21px; font-weight: 600; letter-spacing: -.02em; }
+.hello p { margin: 6px 0 0; color: var(--muted); font-size: 12.5px; }
+.ideas { display: flex; flex-wrap: wrap; justify-content: center; gap: 6px; padding: 4px 18px 0; max-width: 720px; margin: 0 auto; }
+.ideas button { display: inline-flex; align-items: center; gap: 6px; height: 30px; padding: 0 12px; border-radius: 15px; font-size: 12.5px; color: var(--muted); background: var(--t1); }
+.ideas .ico-s { width: 14px; height: 14px; }
+
+/* Menus */
+.pop { position: absolute; z-index: 5; border-radius: 16px; padding: 6px; }
+.model-pop { top: 44px; left: 8px; width: min(330px, calc(100% - 16px)); }
+.more-pop { top: 44px; right: 8px; width: 236px; }
+.mi { display: flex; align-items: center; gap: 10px; min-height: 36px; padding: 6px 10px; border-radius: 10px; font-size: 13px; }
+.mi .ico-s, .mi .logo { width: 16px; height: 16px; color: var(--muted); }
+.mi .r { margin-left: auto; color: var(--muted); font-size: 12px; white-space: nowrap; display: inline-flex; align-items: center; gap: 6px; }
+.mi .r .ico-s { width: 14px; height: 14px; }
+.mi .two { display: grid; line-height: 1.3; }
+.mi .two small { color: var(--muted); font-size: 11.5px; }
+.mi.sel .check { color: var(--fg); }
+.gap { height: 6px; }
+.sect { padding: 8px 10px 4px; font-size: 11.5px; color: var(--muted); }
+.meter { width: 34px; height: 4px; border-radius: 2px; background: var(--t3); overflow: hidden; }
+.meter i { display: block; height: 100%; background: var(--fg); opacity: .7; border-radius: 2px; }
+.meter.low i { background: var(--warn); opacity: 1; }
+body.vscode-high-contrast .meter { outline: 1px solid var(--hc); }
+.kbd { font-family: var(--mono); font-size: 11px; color: var(--muted); }
+.badge { min-width: 18px; height: 18px; padding: 0 5px; border-radius: 9px; background: var(--t3); font-size: 11px; display: inline-grid; place-items: center; color: var(--fg); }
+
+/* Settings sheet */
+.sheet { position: absolute; inset: 0; z-index: 8; background: var(--bg); display: flex; flex-direction: column; }
+.sheet .top { padding: 0 8px 0 18px; }
+.sheet h2 { margin: 0; font-size: 15px; font-weight: 600; }
+.sheet .body { overflow: hidden; padding: 6px 18px 18px; max-width: 620px; width: 100%; margin: 0 auto; }
+.sheet h3 { margin: 14px 0 8px; font-size: 12px; font-weight: 600; color: var(--muted); }
+.looks { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.look { text-align: left; padding: 8px; border-radius: 14px; background: var(--t1); }
+.look.on { box-shadow: 0 0 0 2px var(--accent); }
+body.vscode-high-contrast .look.on { outline: 2px solid var(--focus); }
+.look .art { height: 74px; border-radius: 9px; background: var(--bg); position: relative; overflow: hidden; }
+.look b { display: block; margin: 8px 2px 1px; font-size: 13px; }
+.look small { display: block; margin: 0 2px 2px; color: var(--muted); font-size: 11.5px; line-height: 1.4; }
+.art i { position: absolute; display: block; border-radius: 4px; background: var(--t3); }
+.row { display: flex; align-items: center; gap: 12px; min-height: 44px; font-size: 13px; }
+.row .two { display: grid; line-height: 1.35; flex: 1; min-width: 0; }
+.row small { color: var(--muted); font-size: 11.5px; }
+.select { display: inline-flex; align-items: center; gap: 4px; height: 28px; padding: 0 8px 0 10px; border-radius: 8px; background: var(--t2); font-size: 12.5px; white-space: nowrap; }
+.select .ico-s { width: 13px; height: 13px; color: var(--muted); }
+.nav .row { padding: 0 4px; margin: 0 -4px; border-radius: 8px; min-height: 38px; }
+.nav .row .ico-s { width: 16px; height: 16px; color: var(--muted); }
+.nav .row .chev { margin-left: auto; }
+</style>
+</head>
+<body>
+<div class="app">
+  <header class="top">
+    <button class="model-btn tap" aria-haspopup="menu"><span>Auto</span><span class="ico-s" data-i="chevDown"></span></button>
+    <span class="spacer"></span>
+    <button class="icon-btn tap" title="New chat" aria-label="New chat"><span class="ico" data-i="newChat"></span></button>
+    <button class="icon-btn tap" title="Chats" aria-label="Chats"><span class="ico" data-i="history"></span></button>
+    <button class="icon-btn tap" title="More" aria-label="More"><span class="ico" data-i="more"></span></button>
+  </header>
+
+  <main>
+    <section class="hello" data-show="empty">
+      <h1>What can I help with?</h1>
+    </section>
+    <div class="col" data-show="chat steps running model more settings">
+      <div class="turn">
+        <div class="u surface">The sign-in button does nothing on my phone. Can you find out why and fix it?</div>
+        <button class="worked tap"><span>Worked for 48s</span><span class="ico-s" data-i="chevRight"></span></button>
+        <ol class="steps" data-show="steps">
+          <li><span class="ico-s" data-i="search"></span><span>Searched</span><span class="tgt">“sign-in”</span><span class="end">4 results</span></li>
+          <li><span class="ico-s" data-i="file"></span><span>Read</span><span class="tgt">LoginForm.tsx</span></li>
+          <li><span class="ico-s" data-i="file"></span><span>Read</span><span class="tgt">CookieBanner.tsx</span></li>
+          <li class="thought"><span class="ico-s" data-i="sparkle"></span><span>The banner is fixed to the bottom with z-index 50, so below 480px it covers the button.</span></li>
+          <li><span class="ico-s" data-i="pencil"></span><span>Edited</span><span class="tgt">CookieBanner.tsx</span><span class="end mono"><span class="add">+4</span> <span class="del">−2</span></span></li>
+          <li><span class="ico-s" data-i="pencil"></span><span>Edited</span><span class="tgt">LoginForm.test.tsx</span><span class="end mono"><span class="add">+10</span> <span class="del">−1</span></span></li>
+          <li><span class="ico-s" data-i="terminal"></span><span>Ran</span><span class="tgt mono">npm test</span><span class="end">42 passed</span></li>
+        </ol>
+        <div class="a">
+          <p>Found it. On small screens the cookie banner sits on top of the sign-in button, so your taps land on the banner instead.</p>
+          <p>I moved the banner above the page content on phones and added a test that taps the button at 375&nbsp;px wide. All 42 tests pass.</p>
+          <p>Want me to check the sign-up page as well?</p>
+        </div>
+        <div class="changed"><span class="ico-s" data-i="file"></span><span>2 files changed</span><span class="mono"><span class="add">+14</span> <span class="del">−3</span></span><a href="#">Review</a></div>
+        <div class="acts">
+          <button class="icon-btn tap" aria-label="Copy"><span class="ico" data-i="copy"></span></button>
+          <button class="icon-btn tap" aria-label="Undo this turn"><span class="ico" data-i="retry"></span></button>
+          <span class="by"><span class="logo" data-agent="claude"></span>Claude Sonnet 5.5</span>
+        </div>
+      </div>
+      <div class="turn" data-show="running">
+        <div class="u surface">Yes, check the sign-up page too.</div>
+        <div class="live"><span class="pulse"></span><span class="shimmer">Reading SignupForm.tsx</span><span class="t">12s</span></div>
+      </div>
+    </div>
+  </main>
+
+  <footer class="dock">
+    <div class="composer glass surface">
+      <div class="input" data-show="empty chat steps model more settings">Ask anything</div>
+      <div class="input" data-show="running">Add a follow-up</div>
+      <div class="crow">
+        <button class="icon-btn tap" aria-label="Attach"><span class="ico" data-i="plus"></span></button>
+        <span class="spacer"></span>
+        <button class="icon-btn tap" aria-label="Dictate"><span class="ico" data-i="mic"></span></button>
+        <button class="send off" aria-label="Send" data-show="empty chat steps model more settings"><span class="ico" data-i="arrowUp"></span></button>
+        <button class="send" aria-label="Stop" data-show="running"><span class="ico" data-i="stop"></span></button>
+      </div>
+    </div>
+  </footer>
+  <div class="ideas flex" data-show="empty" style="flex:1;align-content:flex-start;padding-top:10px">
+    <button class="tap"><span class="ico-s" data-i="search"></span>Explain this project</button>
+    <button class="tap"><span class="ico-s" data-i="bolt"></span>Fix a bug</button>
+    <button class="tap"><span class="ico-s" data-i="image"></span>Build from a screenshot</button>
+  </div>
+
+  <div class="pop model-pop glass surface" data-show="model" role="menu">
+    <div class="mi sel tap is-hover"><span class="ico-s" data-i="sparkle"></span><span class="two">Auto<small>Picks the right model for each message</small></span><span class="r check"><span class="ico-s" data-i="check"></span></span></div>
+    <div class="sect">Your plans</div>
+    <div class="mi tap"><span class="logo" data-agent="claude"></span>Claude Sonnet 5.5<span class="r">62%<span class="meter"><i style="width:62%"></i></span></span></div>
+    <div class="mi tap"><span class="logo" data-agent="codex"></span>GPT-6.1 Sol<span class="r">88%<span class="meter"><i style="width:88%"></i></span></span></div>
+    <div class="mi tap"><span class="logo" data-agent="gemini"></span>Gemini 4 Neon<span class="r">12%<span class="meter low"><i style="width:12%"></i></span></span></div>
+    <div class="mi tap"><span class="ico-s" data-i="chevRight"></span><span class="muted">More models</span></div>
+    <div class="gap"></div>
+    <div class="mi tap"><span class="ico-s" data-i="bolt"></span>Thinking<span class="r">Standard<span class="ico-s" data-i="chevDown"></span></span></div>
+    <div class="mi tap"><span class="ico-s" data-i="shield"></span>Permissions<span class="r">Ask before edits<span class="ico-s" data-i="chevDown"></span></span></div>
+  </div>
+
+  <div class="pop more-pop glass surface" data-show="more" role="menu">
+    <div class="mi tap"><span class="ico-s" data-i="popout"></span>Open in editor</div>
+    <div class="mi tap"><span class="ico-s" data-i="queue"></span>Queue &amp; schedule<span class="r"><span class="badge">2</span></span></div>
+    <div class="mi tap"><span class="ico-s" data-i="loop"></span>Loops</div>
+    <div class="mi tap"><span class="ico-s" data-i="folder"></span>Project<span class="r">Clanker</span></div>
+    <div class="gap"></div>
+    <div class="mi tap is-hover"><span class="ico-s" data-i="sliders"></span>Settings<span class="r kbd">Ctrl ,</span></div>
+  </div>
+
+  <div class="sheet" data-show="settings">
+    <header class="top"><h2>Settings</h2><span class="spacer"></span><button class="icon-btn tap" aria-label="Close"><span class="ico" data-i="close"></span></button></header>
+    <div class="body">
+      <h3>Appearance</h3>
+      <div class="looks" role="radiogroup" aria-label="Interface">
+        <button class="look" role="radio" aria-checked="false">
+          <div class="art"><i style="right:6px;top:6px;bottom:6px;width:14px;border-radius:7px"></i><i style="left:8px;top:12px;width:52%;height:6px"></i><i style="left:8px;top:24px;width:40%;height:6px"></i><i style="left:8px;right:26px;bottom:8px;height:14px;border-radius:7px"></i></div>
+          <b>Clanker</b><small>Every control in view: rail, usage rings, tool cards.</small>
+        </button>
+        <button class="look on" role="radio" aria-checked="true">
+          <div class="art"><i style="right:30%;left:30%;top:30px;height:7px"></i><i style="left:12px;right:12px;bottom:8px;height:16px;border-radius:8px"></i></div>
+          <b>Minimal</b><small>Fewer buttons. Work steps stay folded until you open them.</small>
+        </button>
+      </div>
+      <div class="row"><span class="two">Work steps<small>Tool calls, file reads and commands</small></span><span class="select">Folded<span class="ico-s" data-i="chevDown"></span></span></div>
+      <div class="row"><span class="two">Usage<small>Remaining plan limits</small></span><span class="select">When running low<span class="ico-s" data-i="chevDown"></span></span></div>
+      <div class="row"><span class="two">Colours<small>Follow your VS Code theme</small></span><span class="muted" style="font-size:12px">Automatic</span></div>
+      <h3>More</h3>
+      <div class="nav">
+        <div class="row tap"><span class="ico-s" data-i="sparkle"></span>Models &amp; routing<span class="ico-s chev" data-i="chevRight"></span></div>
+        <div class="row tap"><span class="ico-s" data-i="mic"></span>Voice<span class="ico-s chev" data-i="chevRight"></span></div>
+        <div class="row tap"><span class="ico-s" data-i="globe"></span>Remote<span class="ico-s chev" data-i="chevRight"></span></div>
+        <div class="row tap"><span class="ico-s" data-i="loop"></span>Loops<span class="ico-s chev" data-i="chevRight"></span></div>
+      </div>
+    </div>
+  </div>
+</div>
+</body>
+</html>
