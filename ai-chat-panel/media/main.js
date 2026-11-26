@@ -4523,19 +4523,22 @@
     stickToEnd = true;
     if (REDUCED_MOTION.matches) { scrollTranscriptToEnd(true); return; }
     if (tailGlide) return;
-    let last = performance.now(), velocity = 0;
+    let last = performance.now(), velocity = 0, remainder = 0;
     const chatId = currentChatId;
     const finish = () => { tailGlide = 0; transcriptEl.scrollTop = transcriptEl.scrollHeight; lastScrollTop = transcriptEl.scrollTop; updateTranscriptFade(); };
     const step = (now) => {
       const dt = Math.min(0.05, Math.max(0.001, (now - last) / 1000)); last = now;
-      const gap = transcriptEl.scrollHeight - transcriptEl.clientHeight - transcriptEl.scrollTop;
+      const position = transcriptEl.scrollTop + remainder;
+      const gap = transcriptEl.scrollHeight - transcriptEl.clientHeight - position;
       if (!stickToEnd) { tailGlide = 0; return; } // the reader scrolled away
       if (gap < 0.6 || chatId !== currentChatId) { finish(); return; }
       const decay = Math.exp(-GLIDE_OMEGA * dt), carry = velocity + GLIDE_OMEGA * gap;
       const nextGap = (gap + carry * dt) * decay;
       velocity = (velocity - GLIDE_OMEGA * carry * dt) * decay;
-      transcriptEl.scrollTop += gap - nextGap;
+      const nextPosition = position + gap - nextGap;
+      transcriptEl.scrollTop = nextPosition;
       lastScrollTop = transcriptEl.scrollTop;
+      remainder = nextPosition - lastScrollTop; // preserve subpixel movement when the browser rounds scrollTop
       updateTranscriptFade();
       tailGlide = requestAnimationFrame(step);
     };
@@ -6663,6 +6666,10 @@
   /** `running`: the host's routing message for a turn still in progress. Its reply
    * so far stays open, and the stream picks up where it is. */
   function restoreChat(chat, running = null, synced = false) {
+    if (!synced && tailGlide) {
+      cancelAnimationFrame(tailGlide);
+      tailGlide = 0;
+    }
     const previousTop = transcriptEl.scrollTop, follow = stickToEnd;
     if (transcriptScrollFrame) cancelAnimationFrame(transcriptScrollFrame);
     transcriptScrollFrame = 0;
