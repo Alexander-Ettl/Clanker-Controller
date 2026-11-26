@@ -14,10 +14,10 @@ const run = (args, cwd) => execFileSync('git', args, { cwd, encoding: 'utf8', st
 const write = (root, name, text) => { fs.mkdirSync(path.dirname(path.join(root, name)), { recursive: true }); fs.writeFileSync(path.join(root, name), text); };
 
 function fixture() {
-  const base = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'wt-')));
+  const base = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'wt-')));
   const repo = path.join(base, 'my-app');
   fs.mkdirSync(repo);
-  run(['init', '-q', '-b', 'main'], repo); run(['config', 'user.email', 't@t'], repo); run(['config', 'user.name', 't'], repo);
+  run(['init', '-q', '-b', 'main'], repo); run(['config', 'user.email', 't@t'], repo); run(['config', 'user.name', 't'], repo); run(['config', 'core.autocrlf', 'false'], repo);
   write(repo, '.gitignore', '.env\nnode_modules/\n');
   write(repo, 'a.txt', 'one\n');
   run(['add', '.'], repo); run(['commit', '-qm', 'base'], repo);

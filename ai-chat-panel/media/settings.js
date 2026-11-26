@@ -289,10 +289,13 @@
           <div class="cs-info"><span class="cs-title">Open failed steps</span><span class="cs-desc">Unfold a tool step by itself when it fails, so its error is on screen. Off: a failed step stays folded, red and marked Failed, and opens when you click it.</span></div>
           <button class="cs-switch" data-role="openFailedToolCards" role="switch" aria-checked="false" aria-label="Open failed steps" type="button"></button>
         </div>
-        <div class="cs-row">
+        <div class="cs-row cs-row-wrap">
           <span class="cs-icon">${ICON.sliders}</span>
           <div class="cs-info"><span class="cs-title">CLI telemetry</span><span class="cs-desc" id="cs-cli-telemetry-desc">Off blocks Codex and Claude Code telemetry and Agy feedback surveys. Reload the editor to apply changes to running sessions. Agy's account-level telemetry has no CLI override in headless mode: toggle Enable Telemetry in agy /config.</span></div>
-          <button class="cs-switch" data-role="cliTelemetry" role="switch" aria-checked="false" aria-label="CLI telemetry" aria-describedby="cs-cli-telemetry-desc" type="button"></button>
+          <div class="cs-ractions">
+            <button class="cs-btn is-small" data-role="openAgyConfig" type="button" title="Open agy in a VS Code terminal so you can type /config and toggle Enable Telemetry">Open Agy /config</button>
+            <button class="cs-switch" data-role="cliTelemetry" role="switch" aria-checked="false" aria-label="CLI telemetry" aria-describedby="cs-cli-telemetry-desc" type="button"></button>
+          </div>
         </div>
         <div class="cs-row">
           <span class="cs-icon">${ICON.note}</span>
@@ -1625,6 +1628,7 @@
       $('autoUpdateApps').setAttribute('aria-checked', String(enabled));
       vscode.postMessage({ type: 'setAutoUpdateApps', enabled });
     });
+    $('openAgyConfig').addEventListener('click', () => vscode.postMessage({ type: 'openAgyConfig' }));
     $('cliTelemetry').addEventListener('click', () => {
       const enabled = $('cliTelemetry').getAttribute('aria-checked') !== 'true';
       $('cliTelemetry').setAttribute('aria-checked', String(enabled));

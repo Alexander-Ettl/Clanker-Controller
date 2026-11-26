@@ -1427,6 +1427,9 @@ export const scenarios = [
     await toggle.click();
     assert.equal(await toggle.getAttribute('aria-checked'), 'false');
     assert.deepEqual(await page.evaluate(() => window.sent.findLast(m => m.type === 'setCliTelemetry')), { type: 'setCliTelemetry', enabled: false });
+    const agyConfigBtn = page.getByRole('button', { name: 'Open Agy /config' });
+    await agyConfigBtn.click();
+    assert.deepEqual(await page.evaluate(() => window.sent.findLast(m => m.type === 'openAgyConfig')), { type: 'openAgyConfig' });
     await toggle.evaluate(el => el.closest('.cs-row').scrollIntoView({ block: 'center' }));
   } },
   { id: 'settings-chat-names', height: 1400, scope: '.chat-names-picker', focus: MODAL, setup: async page => {

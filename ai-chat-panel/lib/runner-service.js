@@ -14,9 +14,10 @@ const EVERY_MINUTES = 5;
 
 /** `node` on PATH, or the editor's own executable run as node (what an editor-only machine has). */
 function nodeCommand({ env = process.env, execPath = process.execPath, exists = fs.existsSync, platform = process.platform } = {}) {
+  const api = platform === 'win32' ? path.win32 : path.posix;
   const names = platform === 'win32' ? ['node.exe'] : ['node'];
-  for (const dir of String(env.PATH || env.Path || '').split(path.delimiter).filter(Boolean)) {
-    for (const name of names) { const file = path.join(dir, name); if (exists(file)) return { command: file, env: {} }; }
+  for (const dir of String(env.PATH || env.Path || '').split(api.delimiter).filter(Boolean)) {
+    for (const name of names) { const file = api.join(dir, name); if (exists(file)) return { command: file, env: {} }; }
   }
   return { command: execPath, env: { ELECTRON_RUN_AS_NODE: '1' } };
 }

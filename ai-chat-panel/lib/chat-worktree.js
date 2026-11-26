@@ -33,6 +33,21 @@ function slugify(text) {
 const repoTopLevel = (dir) => path.resolve(git(dir, ['rev-parse', '--show-toplevel']).trim());
 const branchExists = (repo, branch) => { try { git(repo, ['rev-parse', '--verify', '--quiet', `refs/heads/${branch}`]); return true; } catch { return false; } };
 
+/** Resolves symlinks and Windows 8.3 short paths on the nearest existing ancestor so path comparisons stay reliable. */
+function realPath(file) {
+  let current = path.resolve(file), tail = '';
+  for (;;) {
+    try { return path.join(fs.realpathSync.native(current), tail); } catch {
+      const parent = path.dirname(current);
+      if (parent === current) return path.resolve(file);
+      tail = path.join(path.basename(current), tail);
+      current = parent;
+    }
+  }
+}
+const fold = (file) => (process.platform === 'win32' ? file.toLowerCase() : file);
+const isUnder = (target, parent) => fold(realPath(target) + path.sep).startsWith(fold(realPath(parent) + path.sep));
+
 /** Dirty files of a working tree (git status --porcelain), as [code, path] pairs. */
 function dirtyFiles(dir) {
   return git(dir, ['status', '--porcelain', '-z', '--untracked-files=all']).split('\0').filter(Boolean).filter((entry) => entry.length > 3).map((entry) => [entry.slice(0, 2), entry.slice(3)]);
@@ -128,9 +143,8 @@ function unlinkEssentials(dir, setup) {
  */
 function removeWorktree({ repoRoot, path: dir, branch, baseCommit, force = false, setup = DEFAULT_SETUP, env = process.env } = {}) {
   const repo = repoTopLevel(repoRoot);
-  const root = managedRoot(env) + path.sep;
   const target = path.resolve(dir);
-  if (!(target + path.sep).startsWith(root)) throw new Error('That folder is not one of Clanker\'s managed worktrees.');
+  if (!isUnder(target, managedRoot(env))) throw new Error('That folder is not one of Clanker\'s managed worktrees.');
   if (fs.existsSync(target)) {
     let state = null;
     try { state = worktreeStatus({ path: target, baseCommit: baseCommit || 'HEAD' }); } catch { /* an unreadable tree is removed by force only */ }
@@ -149,11 +163,11 @@ function removeWorktree({ repoRoot, path: dir, branch, baseCommit, force = false
 /** Managed worktrees git knows for this repository: [{ path, branch, head, missing }]. `missing`: the folder was deleted by hand. */
 function listManaged(repoRoot, env = process.env) {
   const repo = repoTopLevel(repoRoot);
-  const root = managedRoot(env) + path.sep;
+  const root = managedRoot(env);
   const out = [];
   let entry = {};
   for (const line of `${git(repo, ['worktree', 'list', '--porcelain'])}\n`.split(/\r?\n/)) {
-    if (!line) { if (entry.path && (path.resolve(entry.path) + path.sep).startsWith(root)) out.push({ ...entry, missing: !fs.existsSync(entry.path) }); entry = {}; continue; }
+    if (!line) { if (entry.path && isUnder(entry.path, root)) out.push({ ...entry, missing: !fs.existsSync(entry.path) }); entry = {}; continue; }
     const [key, ...rest] = line.split(' ');
     const value = rest.join(' ');
     if (key === 'worktree') entry.path = value; else if (key === 'HEAD') entry.head = value; else if (key === 'branch') entry.branch = value.replace(/^refs\/heads\//, '');

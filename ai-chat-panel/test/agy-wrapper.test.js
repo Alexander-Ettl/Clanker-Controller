@@ -46,7 +46,6 @@ function createFakeAgy(t) {
 function createFakeEngine(t, script, extra = {}) {
   const spawns = [];
   const cwd = extra.cwd || fs.mkdtempSync(path.join(os.tmpdir(), 'clanker-agy-cwd-'));
-  if (!extra.cwd) t.after(() => fs.rmSync(cwd, { recursive: true, force: true }));
   const engine = new StreamEngine({
     cwd,
     locateImpl: () => ({ agent: 'gemini', path: script, checked: [script] }),
@@ -58,7 +57,13 @@ function createFakeEngine(t, script, extra = {}) {
     agyContextReader: () => null,
     ...extra,
   });
-  t.after(() => engine.dispose());
+  t.after(async () => {
+    const child = engine.warmAgy || engine.child;
+    const closed = child && child.exitCode === null ? new Promise((resolve) => child.once('close', resolve)) : Promise.resolve();
+    engine.dispose();
+    await Promise.race([closed, new Promise((resolve) => setTimeout(resolve, 1000))]);
+    if (!extra.cwd) fs.rmSync(cwd, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
+  });
   return { engine, spawns, cwd };
 }
 

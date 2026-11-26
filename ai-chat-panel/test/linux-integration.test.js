@@ -88,7 +88,7 @@ test('Linux: CLIs are also looked for where install scripts and npm put them, no
   for (const dir of [path.join('/home/a', '.local', 'bin'), path.join('/home/a', '.npm-global', 'bin'), path.join('/opt/npm', 'bin'), '/usr/local/bin']) assert.ok(dirs.includes(dir), dir);
 });
 
-test('Linux: an nvm install is searched, and a copy the user owns wins over a root-owned app-bundled one that cannot update itself', () => {
+test('Linux: an nvm install is searched, and a copy the user owns wins over a root-owned app-bundled one that cannot update itself', { skip: process.platform === 'win32' }, () => {
   const fs = require('node:fs');
   const os = require('node:os');
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'nvm-'));

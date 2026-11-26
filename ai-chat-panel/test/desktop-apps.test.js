@@ -177,7 +177,7 @@ test('Claude Desktop: Anthropic\'s one-line .list with bracket options is found 
   assert.deepEqual(apps.parsePackagesIndex(index, 'claude-desktop'), { version: '6.28899.6', size: 191718584 });
 });
 
-test('Antigravity from apt: every installed package is upgraded together and the update runs through a real sh', async () => {
+test('Antigravity from apt: every installed package is upgraded together and the update runs through a real sh', { skip: process.platform === 'win32' }, async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'clanker-apt-'));
   fs.writeFileSync(path.join(dir, 'antigravity.sources'), 'Types: deb\nURIs: https://apt.example.test/deb\nSuites: stable\nComponents: main\n');
   const policy = 'antigravity-ide:\n  Installed: 2.8.0\n  Candidate: 2.9.0\n  Version table:\n     2.9.0 500\n        500 https://apt.example.test/deb stable/main amd64 Packages\n';

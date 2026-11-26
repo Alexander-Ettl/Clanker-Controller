@@ -47,12 +47,12 @@ const flush = async () => { for (let i = 0; i < 12; i++) await tick(); };
 const MODEL = 'gpt-6.1-sol-high';
 
 function fixture(t) {
-  const base = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'clanker-wt-chat-')));
+  const base = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'clanker-wt-chat-')));
   const previous = process.env.CLANKER_WORKTREES;
   process.env.CLANKER_WORKTREES = path.join(base, 'managed');
   const repo = path.join(base, 'app');
   fs.mkdirSync(repo);
-  git(['init', '-q', '-b', 'main'], repo); git(['config', 'user.email', 't@t'], repo); git(['config', 'user.name', 't'], repo);
+  git(['init', '-q', '-b', 'main'], repo); git(['config', 'user.email', 't@t'], repo); git(['config', 'user.name', 't'], repo); git(['config', 'core.autocrlf', 'false'], repo);
   fs.writeFileSync(path.join(repo, '.gitignore'), '.env\n');
   fs.writeFileSync(path.join(repo, 'a.txt'), 'one\n');
   git(['add', '.'], repo); git(['commit', '-qm', 'base'], repo);

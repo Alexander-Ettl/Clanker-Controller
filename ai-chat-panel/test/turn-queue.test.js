@@ -943,6 +943,50 @@ test('deferred questions block queued and scheduled work across reload and prior
   }
 });
 
+test('deferred question answer sends immediately ahead of pending scheduled prompts, ranked queueOrder, and paused queues', async t => {
+  const { firstPrompt } = require('../lib/scheduler-queue.js');
+
+  // 1. Pending scheduled prompt + ranked earlier queued turn must NOT block or jump ahead of the answer.
+  const f = fixture(t);
+  const run = f.chat();
+  const scheduledTask = { id: 'sched-reboot', status: 'pending', chatId: run.chat.id, model: 'gemini', prompt: 'about the vs code reboot issue' };
+  f.deps.schedulerQueue = { loaded: true, tasks: [scheduledTask] };
+  const host = f.host(run);
+  await run.startTurn({ text: 'commit and push', modelId: 'gemini-3.8-flash-high' });
+  run.enqueue(turn('later'));
+  run.queueOrder = [`scheduled:${scheduledTask.id}`, 'turn:later'];
+  run.streamEngine.emit('event', { type: 'question_required', agent: 'gemini', deferred: true, actionId: 'ask-commit', questions: [{ question: 'Rewrite 828b3b6?' }] });
+  run.streamEngine.complete();
+  await settle();
+  assert.equal(run.streamEngine.runs.length, 1);
+
+  await host.handleMessage({ type: 'deferredQuestionSettled', actionId: 'ask-commit', answers: { 'Rewrite 828b3b6?': 'Yes' }, settled: { text: 'Yes', tone: 'allowed' } });
+  await settle();
+  assert.equal(run.streamEngine.runs.length, 2, 'answer must start immediately ahead of scheduled and queued prompts');
+  const sent = run.chat.messages.findLast(m => m.role === 'user');
+  assert.equal(sent.text, 'Rewrite 828b3b6?\nYes');
+  assert.equal(sent.modelId, 'gemini-3.8-flash-high');
+  assert.deepEqual(run.queue.map(q => q.id), ['later'], 'earlier queued prompt remains queued behind the answer');
+  assert.equal(firstPrompt(run.queueState(), [scheduledTask])?.id, scheduledTask.id, 'after answer starts, original scheduled order is preserved');
+
+  // 2. Paused queue: answering a question still sends immediately while leaving the rest of the queue paused.
+  const f2 = fixture(t), run2 = f2.chat(), host2 = f2.host(run2);
+  await run2.startTurn({ text: 'Ask while paused', modelId: 'gemini-3.8-flash-high' });
+  run2.enqueue(turn('paused-later'));
+  run2.pauseQueue(true);
+  run2.streamEngine.emit('event', { type: 'question_required', agent: 'gemini', deferred: true, actionId: 'ask-paused', questions: [{ question: 'Proceed?' }] });
+  run2.streamEngine.complete();
+  await settle();
+  await host2.handleMessage({ type: 'deferredQuestionSettled', actionId: 'ask-paused', answers: { 'Proceed?': 'Go' }, settled: { text: 'Go', tone: 'allowed' } });
+  await settle();
+  assert.equal(run2.streamEngine.runs.length, 2, 'question answer dispatches even when queue is paused');
+  assert.equal(run2.chat.messages.findLast(m => m.role === 'user').text, 'Proceed?\nGo');
+  run2.streamEngine.complete();
+  await settle();
+  assert.equal(run2.streamEngine.runs.length, 2, 'remaining queued turns stay paused after answer finishes');
+  assert.deepEqual(run2.queue.map(q => q.id), ['paused-later']);
+});
+
 function fixture(t) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'clanker-turn-queue-'));
   const deps = { sessionDir: dir, attachmentsDir: path.join(dir, 'attachments'), workspaceDir: dir, chatStore: new ChatStore(dir), getModels: () => ({}), getPermissionMode: () => 'fullAccess', notifyHistory() {} };

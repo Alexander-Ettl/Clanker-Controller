@@ -18,7 +18,7 @@
 // that gap. Queued work also waits for memory (waitForMemory) instead of starting into a full machine.
 
 const nodeFs = require('node:fs');
-const path = require('node:path');
+const path = require('node:path').posix;
 const os = require('node:os');
 const { execFile } = require('node:child_process');
 

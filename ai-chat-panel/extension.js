@@ -248,6 +248,7 @@ class SchedulerWatchdog {
     if (task.chatId && task.projectId && this.chatStore?.load(task.chatId)?.projectId !== task.projectId) throw new Error('Scheduled task project does not match its conversation.');
     await this.waitForCliUpdate?.(task.model);
     await this.waitForMemory?.(); // likewise a scheduled prompt: see ChatRun's queue drain
+    if (task.chatId && this.isChatBusy(task.chatId, task)) return;
     await this.queue.markDispatched(task.id);
     this.onQueueChange();
     // "Continue when the limit resets": the message goes back into the chat it came from, so the
@@ -1182,19 +1183,21 @@ class ChatRun {
   }
 
   drain() {
-    if (this.turn || this.starting || this.externalCodexTurn || this.waitingQuestion || this.queuePaused || this.authHold || !this.queue.length) return;
+    if (this.turn || this.starting || this.externalCodexTurn || this.waitingQuestion || this.authHold || !this.queue.length) return;
+    const priority = this.queue[0]?.priority === true;
+    if (this.queuePaused && !priority) return;
     const scheduler = this.deps.schedulerQueue;
     // Scheduled prompts only order the queue. A scheduler file that cannot be read must not hold back what you queued yourself.
-    if (scheduler && !scheduler.loaded && !this.schedulerUnreadable) {
+    if (!priority && scheduler && !scheduler.loaded && !this.schedulerUnreadable) {
       return scheduler.load().catch((error) => { this.schedulerUnreadable = true; console.error('[ai-chat-panel] scheduler queue unavailable, draining without it:', error.message); }).then(() => this.drain());
     }
     const tasks = scheduler?.loaded ? scheduler.tasks : [];
-    const next = this.queue[0].queued ? firstPrompt(this.queueState(), tasks.filter(task => task.chatId === this.chat.id)) : this.queue[0];
+    const next = priority || !this.queue[0].queued ? this.queue[0] : firstPrompt(this.queueState(), tasks.filter(task => task.chatId === this.chat.id));
     if (!this.queue.includes(next)) return; // the top scheduled prompt holds the rows beneath it
     this.queue.splice(this.queue.indexOf(next), 1);
     this.queue.unshift(next);
     if (next.editing || next.scheduling || !next.text.trim()) return;
-    const waiting = !next.scheduled && this.pendingUsageReset(next.modelId);
+    const waiting = !next.scheduled && !priority && this.pendingUsageReset(next.modelId);
     if (waiting) {
       return this.scheduleQueuedUntilReset(waiting.model, '', { notBefore: waiting.notBefore });
     }
@@ -1250,13 +1253,17 @@ class ChatRun {
       // A provider picked while its idle update is finishing starts on the new binary.
       await this.deps.waitForCliUpdate?.(plan.agent);
       // Nobody is watching a queued prompt start: when memory is short it waits (up to 10 minutes) instead of tipping the machine into the OOM killer.
-      if (queued) await this.deps.waitForMemory?.();
+      if (queued && !queued.priority) await this.deps.waitForMemory?.();
       // Look before sending what nobody is watching (queued, scheduled, "continue"): a signed-out CLI keeps it queued and says why.
       const blocked = queued ? await this.deps.authGate?.check(plan.agent) : null;
       // Pause, delete, or reorder during planning takes effect before a task starts.
-      if (version !== this.startVersion || (queued && (queued.editing || this.turn || this.queuePaused || this.queue[0] !== queued))) return false;
+      if (version !== this.startVersion || (queued && (queued.editing || this.turn || (this.queuePaused && !queued.priority) || this.queue[0] !== queued))) return false;
       if (blocked) { if (this.deps.authGate.incident(plan.agent)) this.holdForAuth(plan.agent, blocked); return false; } // false: drain looks again, and holds or sends
-      if (queued) { this.queue.shift(); this.queueChanged(); }
+      if (queued) {
+        this.queue.shift();
+        this.queueOrder = this.queueOrder.filter((key) => key !== `turn:${queued.id}` && key !== `scheduled:${queued.id}`);
+        this.queueChanged();
+      }
       if (plan.rerouted && !pinned) selected = defaultModel(plan.agent)?.id || selected;
       this.chat.modelId = selected;
       for (const host of this.hosts) { host.lastRoutedAgent = plan.agent; host.selectModel(selected); }
@@ -1701,13 +1708,17 @@ class ChatWindowHost {
         stored.event.settled = { text: String(message.settled?.text || ''), tone: message.settled?.tone === 'allowed' ? 'allowed' : 'denied' };
         if (stored.event.settled.tone === 'allowed') {
           const text = stored.event.questions.map(q => `${q.question}\n${String(message.answers?.[q.question] || '')}`).join('\n\n');
-          this.run.queue.unshift({ id: crypto.randomUUID(), text, modelId: stored.event.modelId, attachments: [], queued: true, verify: message.verify === true });
+          const id = crypto.randomUUID();
+          // Pin the answer ahead of every queued and scheduled prompt in both queue and queueOrder so it sends immediately.
+          this.run.queue.unshift({ id, text, modelId: stored.event.modelId, attachments: [], queued: true, priority: true, verify: message.verify === true });
+          this.run.queueOrder = [`turn:${id}`, ...this.run.queueOrder.filter((key) => key !== `turn:${id}`)];
           this.run.queueChanged();
         }
         this.run.save();
         this.run.post({ type: 'cardSettled', actionId: message.actionId, ...stored.event.settled }, { except: this });
         this.deps.notifyHistory();
         void this.run.drain();
+        if (stored.event.settled.tone !== 'allowed' && !this.run.queuePaused) this.run.deps.onQueueResumed?.();
         break;
       }
       case 'newChat': this.resetToFreshChat(); break;
@@ -3695,8 +3706,14 @@ class ChatWindowManager {
       fs.copyFileSync(path.resolve(task.workspaceDir || this.deps.workspaceDir, file.absolutePath || file.relativePath), target);
       return target;
     });
-    // The scheduler releases its card after handoff; the chat queue must show and persist it until it starts.
-    if (!run.queueOrder.some(key => key.slice(key.indexOf(':') + 1) === task.id)) run.queueOrder.unshift(`scheduled:${task.id}`);
+    // The scheduler releases its card after handoff; the chat queue must show and persist it until it starts,
+    // without jumping ahead of a priority question answer.
+    if (!run.queueOrder.some(key => key.slice(key.indexOf(':') + 1) === task.id)) {
+      const priorityKeys = new Set(run.queue.filter((turn) => turn.priority).map((turn) => `turn:${turn.id}`));
+      const at = run.queueOrder.findIndex((key) => !priorityKeys.has(key));
+      if (at < 0) run.queueOrder.push(`scheduled:${task.id}`);
+      else run.queueOrder.splice(at, 0, `scheduled:${task.id}`);
+    }
     run.enqueue({ id: task.id, text: task.prompt, modelId: task.modelId || chatModelFor(run.chat, task.model)?.id || 'auto', attachments, scheduled: true, queued: true });
     this.deps.notifyHistory();
     return true;
@@ -4040,6 +4057,23 @@ class LauncherViewProvider {
             void this.pushFleet();
           });
         }
+        break;
+      }
+      case 'openAgyConfig': {
+        const binary = locate('gemini').path;
+        if (!binary) {
+          void vscode.window.showWarningMessage('Clanker Controller: Antigravity CLI (agy) was not found. Install or connect it in Settings first.');
+          break;
+        }
+        const shim = /\.cmd$/i.test(binary) ? resolveShim(binary) : null;
+        const terminal = vscode.window.createTerminal({
+          name: 'Agy /config · Telemetry',
+          cwd: this.deps.workspaceDir,
+          shellPath: shim?.command || binary,
+          shellArgs: shim?.args || [],
+          message: 'Type /config and toggle Enable Telemetry, then type /exit (or press Ctrl+D twice) to close.',
+        });
+        terminal.show(false);
         break;
       }
       case 'setCompletionSound': if (typeof message.enabled === 'boolean') void vscode.workspace.getConfiguration('aiChatPanel').update('completionSound', message.enabled, vscode.ConfigurationTarget.Global); break;

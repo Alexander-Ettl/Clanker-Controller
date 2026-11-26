@@ -49,6 +49,7 @@ test('the plan becomes the finished card body and never leaks onto the start eve
 test('a turn reads only the thinking after its own user message, even when its first streamed step is a tool', () => {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'agy-home-'));
   const previousHome = process.env.HOME;
+  const previousUserProfile = process.env.USERPROFILE;
   try {
     const dir = path.join(home, '.gemini', 'antigravity-cli', 'conversations');
     fs.mkdirSync(dir, { recursive: true });
@@ -62,11 +63,13 @@ test('a turn reads only the thinking after its own user message, even when its f
       .forEach((row) => add.run(...row));
     db.close();
     process.env.HOME = home;
+    process.env.USERPROFILE = home;
     // The first tool this turn streamed is step 5; its thinking is the planner just before it, at 4.
     assert.deepEqual(readThoughts(CONVERSATION, -1, 5).map((t) => t.text), ['new turn']);
     assert.deepEqual(readThoughts(CONVERSATION, 4, 7), []);
   } finally {
     if (previousHome === undefined) delete process.env.HOME; else process.env.HOME = previousHome;
+    if (previousUserProfile === undefined) delete process.env.USERPROFILE; else process.env.USERPROFILE = previousUserProfile;
     fs.rmSync(home, { recursive: true, force: true });
   }
 });

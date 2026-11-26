@@ -143,7 +143,7 @@ async function updateApp(agent, { exec = run, onLine, platform, sourceDir, timeo
   const app = await detectApp(agent, { exec, platform, sourceDir });
   if (!app) return { ok: false, message: `${APPS[agent]?.name || 'The app'} is not installed from an apt repository` };
   if (!app.packages.every((pkg) => PACKAGE_NAME.test(pkg))) return { ok: false, message: 'Unexpected package name' };
-  const refresh = app.sourceFile && /^\/[\w./-]+$/.test(app.sourceFile)
+  const refresh = app.sourceFile && path.isAbsolute(app.sourceFile) && !/[\r\n\0'"$`;&|<>]/.test(app.sourceFile)
     ? 'apt-get update -o Dir::Etc::sourcelist="$src" -o Dir::Etc::sourceparts=- -o APT::Get::List-Cleanup=0 && ' : '';
   // "$1" is the source file (or empty); the installed package names follow it.
   const script = `src="$1"; shift; ${refresh}DEBIAN_FRONTEND=noninteractive apt-get install --only-upgrade -y -o Dpkg::Options::=--force-confold -- "$@"`;
