@@ -16,10 +16,18 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { createRequire } from 'node:module';
+import { fileURLToPath } from 'node:url';
 
 const require = createRequire(import.meta.url);
+// A source checkout has the panel as a sibling (../../ai-chat-panel/lib); a packaged extension bundles this folder
+// at <extension>/voice-router/lib, next to the panel's own lib (../../lib).
+const here = path.dirname(fileURLToPath(import.meta.url));
+const quotaSourcesPath = [
+  path.join(here, '..', '..', 'ai-chat-panel', 'lib', 'quota-sources.js'),
+  path.join(here, '..', '..', 'lib', 'quota-sources.js'),
+].find((file) => fs.existsSync(file)) || '../../ai-chat-panel/lib/quota-sources.js';
 const { parseClaudeCache: parseClaudeCacheCanonical, parseClaudeWeeklyState: parseClaudeWeeklyStateCanonical, findLatestCodexRateLimit } =
-  require('../../ai-chat-panel/lib/quota-sources.js');
+  require(quotaSourcesPath);
 
 const CODEX_TAIL_BYTES = 512 * 1024;
 const CODEX_CANDIDATE_FILES = 5;
